@@ -5,22 +5,30 @@
 package org.mozilla.fenix.components.toolbar
 
 import android.view.Gravity
+import android.view.View
 import android.view.ViewGroup
+import androidx.annotation.VisibleForTesting
 import androidx.appcompat.app.AppCompatActivity
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.wrapContentHeight
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.ComposeView
+import androidx.coordinatorlayout.widget.CoordinatorLayout
 import androidx.coordinatorlayout.widget.CoordinatorLayout.LayoutParams
+import androidx.core.view.isVisible
 import mozilla.components.browser.state.action.AwesomeBarAction
 import mozilla.components.browser.state.state.CustomTabSessionState
+import mozilla.components.browser.state.state.ExternalAppType
 import mozilla.components.browser.state.store.BrowserStore
-import mozilla.components.compose.base.theme.localAcornColors
 import mozilla.components.compose.base.utils.BackInvokedHandler
 import mozilla.components.compose.browser.toolbar.BrowserToolbar
 import mozilla.components.compose.browser.toolbar.store.BrowserToolbarAction.ToolbarGravityUpdated
@@ -28,8 +36,17 @@ import mozilla.components.compose.browser.toolbar.store.BrowserToolbarStore
 import mozilla.components.compose.browser.toolbar.store.ToolbarGravity
 import mozilla.components.compose.browser.toolbar.store.ToolbarGravity.Bottom
 import mozilla.components.compose.browser.toolbar.store.ToolbarGravity.Top
+import mozilla.components.concept.engine.EngineView
+import mozilla.components.concept.toolbar.ScrollableToolbar
 import mozilla.components.feature.toolbar.ToolbarBehaviorController
 import mozilla.components.lib.state.ext.observeAsComposableState
+import mozilla.components.support.ktx.android.view.findViewInHierarchy
+import mozilla.components.support.utils.KeyboardState
+import mozilla.components.support.utils.ext.isKeyboardVisible
+import mozilla.components.support.utils.keyboardAsState
+import mozilla.components.ui.widgets.behavior.DependencyGravity
+import mozilla.components.ui.widgets.behavior.EngineViewScrollingBehavior
+import mozilla.components.ui.widgets.behavior.EngineViewScrollingBehaviorFactory
 import org.mozilla.fenix.browser.store.BrowserScreenStore
 import org.mozilla.fenix.components.AppStore
 import org.mozilla.fenix.components.appstate.AppAction.SearchAction.SearchEnded
@@ -39,8 +56,8 @@ import org.mozilla.fenix.theme.FirefoxTheme
 import org.mozilla.fenix.utils.Settings
 
 /**
- * A wrapper over the [BrowserToolbar] composable to allow for extra customisation and
- * integration in the same framework as the [BrowserToolbarView]
+ * A wrapper over the [BrowserToolbar] composable that owns the toolbar [View] and its
+ * scrolling behaviour.
  *
  * @param activity [AppCompatActivity] hosting the toolbar.
  * @param container [ViewGroup] which will serve as parent of this View.
@@ -53,12 +70,12 @@ import org.mozilla.fenix.utils.Settings
  * @param tabStripContent Composable content for the tab strip.
  * @param searchSuggestionsContent [Composable] as the search suggestions content to be displayed
  * together with this toolbar.
- * @param navigationBarContent Composable content for the navigation bar.
+ * @param navigationBarContent [Composable] content for the navigation bar.
  */
 @Suppress("LongParameterList")
 class BrowserToolbarComposable(
     private val activity: AppCompatActivity,
-    container: ViewGroup,
+    private val container: ViewGroup,
     private val toolbarStore: BrowserToolbarStore,
     private val browserScreenStore: BrowserScreenStore,
     private val appStore: AppStore,
@@ -68,12 +85,12 @@ class BrowserToolbarComposable(
     private val tabStripContent: @Composable () -> Unit,
     private val searchSuggestionsContent: @Composable (Modifier) -> Unit,
     private val navigationBarContent: (@Composable () -> Unit)?,
-) : FenixBrowserToolbarView(
-    context = activity,
-    settings = settings,
-    customTabSession = customTabSession,
-) {
+) : ScrollableToolbar {
     init {
+        if (!settings.shouldUseMinimalBottomToolbarWhenEnteringText) {
+            setupShowingToolbarsAfterKeyboardHidden()
+        }
+
         // Reset the toolbar position whenever coming back to browsing
         // like after changing the toolbar position in settings.
         toolbarStore.dispatch(
@@ -83,11 +100,14 @@ class BrowserToolbarComposable(
         )
     }
 
-    override val layout = ScrollableToolbarComposeView(activity, this) {
+    val layout: View = ScrollableToolbarComposeView(activity, this) {
         val isSearching = toolbarStore.observeAsComposableState { it.isEditMode() }.value
         val shouldShowTabStrip: Boolean = remember { shouldShowTabStrip() }
         val customColors = browserScreenStore.observeAsComposableState { it.customTabColors }
         val shouldUseBottomToolbar = remember(settings) { settings.shouldUseBottomToolbar }
+
+        val toolbarState by toolbarStore.stateFlow.collectAsState()
+        val toolbarCFR = toolbarState.displayState.cfr
 
         DisposableEffect(activity) {
             val toolbarController = ToolbarBehaviorController(
@@ -105,26 +125,28 @@ class BrowserToolbarComposable(
         }
 
         FirefoxTheme {
-            val firefoxColors = FirefoxTheme.colors
-            val customTheme = remember(customColors, firefoxColors) {
-                firefoxColors.copy(
+            val materialColors = MaterialTheme.colorScheme
+            val colorScheme = remember(customColors.value, materialColors) {
+                materialColors.copy(
                     // Toolbar background
-                    layer1 = customColors.value?.toolbarColor?.let { Color(it) } ?: firefoxColors.layer1,
+                    surface = customColors.value?.toolbarColor?.let { Color(it) }
+                        ?: materialColors.surface,
                     // Page origin background
-                    layer3 = when (customTabSession) {
-                        null -> firefoxColors.layer3 // show a different background only for normal tabs
-                        else -> customColors.value?.toolbarColor?.let { Color(it) } ?: firefoxColors.layer1
+                    surfaceContainerHighest = when (customTabSession) {
+                        // show a different background only for normal tabs
+                        null -> materialColors.surfaceContainerHighest
+                        else -> customColors.value?.toolbarColor?.let { Color(it) }
+                            ?: materialColors.surface
                     },
-                    // All text but the title
-                    textPrimary = customColors.value?.readableColor?.let { Color(it) } ?: firefoxColors.textPrimary,
-                    // Title
-                    textSecondary = customColors.value?.readableColor?.let { Color(it) } ?: firefoxColors.textSecondary,
-                    // All icons tint
-                    iconPrimary = customColors.value?.readableColor?.let { Color(it) } ?: firefoxColors.iconPrimary,
+                    onSurface = customColors.value?.readableColor?.let { Color(it) }
+                        ?: materialColors.onSurface,
+                    onSurfaceVariant =
+                        customColors.value?.secondaryReadableColor?.let { Color(it) }
+                            ?: materialColors.onSurfaceVariant,
                 )
             }
 
-            CompositionLocalProvider(localAcornColors provides customTheme) {
+            MaterialTheme(colorScheme = colorScheme) {
                 when (shouldShowTabStrip) {
                     true -> Column(
                         modifier = Modifier
@@ -132,8 +154,15 @@ class BrowserToolbarComposable(
                             .wrapContentHeight(),
                     ) {
                         tabStripContent()
-                        BrowserToolbar(toolbarStore)
-                        searchSuggestionsContent(Modifier.weight(1f))
+                        BrowserToolbar(
+                            store = toolbarStore,
+                            cfr = toolbarCFR,
+                            useMinimalBottomToolbarWhenEnteringText =
+                                settings.shouldUseMinimalBottomToolbarWhenEnteringText,
+                        )
+                        if (customTabSession == null) {
+                            searchSuggestionsContent(Modifier.weight(1f))
+                        }
                     }
 
                     false -> Column(
@@ -142,12 +171,26 @@ class BrowserToolbarComposable(
                             .wrapContentHeight(),
                     ) {
                         if (shouldUseBottomToolbar) {
-                            searchSuggestionsContent(Modifier.weight(1f))
-                            BrowserToolbar(toolbarStore)
+                            if (customTabSession == null) {
+                                searchSuggestionsContent(Modifier.weight(1f))
+                            }
+                            BrowserToolbar(
+                                store = toolbarStore,
+                                cfr = toolbarCFR,
+                                useMinimalBottomToolbarWhenEnteringText =
+                                    settings.shouldUseMinimalBottomToolbarWhenEnteringText,
+                            )
                             navigationBarContent?.invoke()
                         } else {
-                            BrowserToolbar(toolbarStore)
-                            searchSuggestionsContent(Modifier.weight(1f))
+                            BrowserToolbar(
+                                store = toolbarStore,
+                                cfr = toolbarCFR,
+                                useMinimalBottomToolbarWhenEnteringText =
+                                    settings.shouldUseMinimalBottomToolbarWhenEnteringText,
+                            )
+                            if (customTabSession == null) {
+                                searchSuggestionsContent(Modifier.weight(1f))
+                            }
                         }
                     }
                 }
@@ -169,12 +212,135 @@ class BrowserToolbarComposable(
     init {
         container.addView(layout)
         setToolbarBehavior(settings.toolbarPosition)
-        updateDividerVisibility(true)
     }
 
-    override fun updateDividerVisibility(isVisible: Boolean) {
-        // no-op
-        // For the toolbar redesign we will always show the toolbar divider
+    @VisibleForTesting
+    internal val isPwaTabOrTwaTab: Boolean
+        get() = customTabSession?.config?.externalAppType == ExternalAppType.PROGRESSIVE_WEB_APP ||
+            customTabSession?.config?.externalAppType == ExternalAppType.TRUSTED_WEB_ACTIVITY
+
+    override fun expand() {
+        // expand only for normal tabs and custom tabs not for PWA or TWA
+        if (isPwaTabOrTwaTab) {
+            return
+        }
+
+        (layout.layoutParams as CoordinatorLayout.LayoutParams).apply {
+            (behavior as? EngineViewScrollingBehavior)?.forceExpand()
+        }
+    }
+
+    override fun collapse() {
+        // collapse only for normal tabs and custom tabs not for PWA or TWA. Mirror expand()
+        if (isPwaTabOrTwaTab) {
+            return
+        }
+
+        (layout.layoutParams as CoordinatorLayout.LayoutParams).apply {
+            (behavior as? EngineViewScrollingBehavior)?.forceCollapse()
+        }
+    }
+
+    override fun enableScrolling() {
+        if (!container.isKeyboardVisible()) {
+            (layout.layoutParams as CoordinatorLayout.LayoutParams).apply {
+                (behavior as? EngineViewScrollingBehavior)?.enableScrolling()
+            }
+        }
+    }
+
+    override fun disableScrolling() {
+        (layout.layoutParams as CoordinatorLayout.LayoutParams).apply {
+            (behavior as? EngineViewScrollingBehavior)?.disableScrolling()
+        }
+    }
+
+    internal fun gone() {
+        layout.isVisible = false
+    }
+
+    internal fun visible() {
+        layout.isVisible = true
+    }
+
+    /**
+     * Sets whether the toolbar will have a dynamic behavior (to be scrolled) or not.
+     *
+     * This will intrinsically check and disable the dynamic behavior if
+     *  - this is disabled in app settings
+     *  - toolbar is placed at the bottom and tab shows a PWA or TWA
+     *
+     *  Also if the user has not explicitly set a toolbar position and has a screen reader enabled
+     *  the toolbar will be placed at the top and in a fixed position.
+     *
+     * @param toolbarPosition [ToolbarPosition] to set the toolbar to.
+     * @param shouldDisableScroll force disable of the dynamic behavior irrespective of the intrinsic checks.
+     */
+    fun setToolbarBehavior(toolbarPosition: ToolbarPosition, shouldDisableScroll: Boolean = false) {
+        when (toolbarPosition) {
+            ToolbarPosition.BOTTOM -> {
+                if (settings.isDynamicToolbarEnabled &&
+                    !settings.shouldUseFixedTopToolbar
+                ) {
+                    setDynamicToolbarBehavior(true)
+                } else {
+                    expandToolbarAndMakeItFixed()
+                }
+            }
+            ToolbarPosition.TOP -> {
+                if (settings.shouldUseFixedTopToolbar ||
+                    !settings.isDynamicToolbarEnabled ||
+                    shouldDisableScroll
+                ) {
+                    expandToolbarAndMakeItFixed()
+                } else {
+                    setDynamicToolbarBehavior(false)
+                }
+            }
+        }
+    }
+
+    @VisibleForTesting
+    internal fun expandToolbarAndMakeItFixed() {
+        expand()
+        (layout.layoutParams as CoordinatorLayout.LayoutParams).apply {
+            behavior = null
+        }
+    }
+
+    @VisibleForTesting
+    internal fun setDynamicToolbarBehavior(isToolbarAtBottom: Boolean) {
+        (container.findViewInHierarchy { it is EngineView } as? EngineView)?.let { engineView ->
+            (layout.layoutParams as CoordinatorLayout.LayoutParams).apply {
+                behavior = EngineViewScrollingBehaviorFactory(
+                    useScrollData = settings.useNewDynamicToolbarBehaviour,
+                ).build(
+                    engineView = engineView,
+                    dependency = layout,
+                    dependencyGravity = when (isToolbarAtBottom) {
+                        true -> DependencyGravity.Bottom
+                        false -> DependencyGravity.Top
+                    },
+                )
+            }
+        }
+    }
+
+    private fun shouldShowTabStrip() = customTabSession == null && settings.isTabStripEnabled
+
+    private fun setupShowingToolbarsAfterKeyboardHidden() {
+        container.addView(
+            ComposeView(container.context).apply {
+                setContent {
+                    val keyboardState by keyboardAsState()
+                    LaunchedEffect(keyboardState) {
+                        if (keyboardState == KeyboardState.Closed) {
+                            expand()
+                        }
+                    }
+                }
+            },
+        )
     }
 
     private fun buildToolbarGravityConfig(): ToolbarGravity = when (settings.shouldUseBottomToolbar) {

@@ -1,25 +1,23 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set sw=2 ts=8 et tw=80 : */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
+#include "mozilla/net/DNSRequestChild.h"
+
+#include "mozilla/SchedulerGroup.h"
 #include "mozilla/dom/ContentChild.h"
 #include "mozilla/net/ChildDNSService.h"
 #include "mozilla/net/DNSByTypeRecord.h"
-#include "mozilla/net/DNSRequestChild.h"
 #include "mozilla/net/DNSRequestParent.h"
 #include "mozilla/net/NeckoChild.h"
 #include "mozilla/net/SocketProcessChild.h"
-#include "mozilla/SchedulerGroup.h"
 #include "mozilla/net/SocketProcessParent.h"
-#include "mozilla/Unused.h"
-#include "nsIDNSRecord.h"
-#include "nsIDNSByTypeRecord.h"
 #include "nsHostResolver.h"
+#include "nsIDNSByTypeRecord.h"
+#include "nsIDNSRecord.h"
 #include "nsIOService.h"
-#include "nsTArray.h"
 #include "nsNetAddr.h"
+#include "nsTArray.h"
 #include "nsThreadUtils.h"
 
 using namespace mozilla::ipc;
@@ -164,9 +162,7 @@ ChildDNSRecord::GetNextAddrAsString(nsACString& result) {
     return rv;
   }
 
-  char buf[kIPv6CStrBufSize];
-  if (addr.ToStringBuffer(buf, sizeof(buf))) {
-    result.Assign(buf);
+  if (addr.ToString(result)) {
     return NS_OK;
   }
   NS_ERROR("NetAddrToString failed unexpectedly");
@@ -445,11 +441,11 @@ DNSRequestSender::Cancel(nsresult reason) {
   }
 
   if (DNSRequestChild* child = mIPCActor->AsDNSRequestChild()) {
-    Unused << child->SendCancelDNSRequest(mHost, mTrrServer, mPort, mType,
-                                          mOriginAttributes, mFlags, reason);
+    (void)child->SendCancelDNSRequest(mHost, mTrrServer, mPort, mType,
+                                      mOriginAttributes, mFlags, reason);
   } else if (DNSRequestParent* parent = mIPCActor->AsDNSRequestParent()) {
-    Unused << parent->SendCancelDNSRequest(mHost, mTrrServer, mPort, mType,
-                                           mOriginAttributes, mFlags, reason);
+    (void)parent->SendCancelDNSRequest(mHost, mTrrServer, mPort, mType,
+                                       mOriginAttributes, mFlags, reason);
   }
 
   return NS_OK;
@@ -502,7 +498,7 @@ void DNSRequestSender::StartRequest() {
     auto task = [requestParent, self]() {
       RefPtr<SocketProcessParent> socketParent =
           SocketProcessParent::GetSingleton();
-      Unused << socketParent->SendPDNSRequestConstructor(
+      (void)socketParent->SendPDNSRequestConstructor(
           requestParent, self->mHost, self->mTrrServer, self->mPort,
           self->mType, self->mOriginAttributes, self->mFlags);
     };
@@ -563,9 +559,9 @@ bool DNSRequestSender::OnRecvLookupCompleted(const DNSRequestResponse& reply) {
   }
 
   if (DNSRequestChild* child = mIPCActor->AsDNSRequestChild()) {
-    Unused << mozilla::net::DNSRequestChild::Send__delete__(child);
+    (void)mozilla::net::DNSRequestChild::Send__delete__(child);
   } else if (DNSRequestParent* parent = mIPCActor->AsDNSRequestParent()) {
-    Unused << mozilla::net::DNSRequestParent::Send__delete__(parent);
+    (void)mozilla::net::DNSRequestParent::Send__delete__(parent);
   }
 
   return true;

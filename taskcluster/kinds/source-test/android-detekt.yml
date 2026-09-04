@@ -5,6 +5,7 @@
 task-defaults:
     description: 'Run detekt over all modules'
     run:
+        clone-with: hg
         using: gradlew
         gradlew: ['detekt']
     worker:
@@ -16,13 +17,15 @@ task-defaults:
     fetches:
         toolchain:
             - android-sdk-linux
+            - linux64-embedded-uniffi-bindgen
+            - linux64-nimbus-fml
             - android-gradle-dependencies
             - linux64-jdk-repack
     platform: 'lint/opt'
     treeherder:
         kind: test
         tier: 1
-    worker-type: b-linux-gcp
+    worker-type: b-linux
     when:
         files-changed:
             - "mobile/android/android-components/**"
@@ -30,6 +33,7 @@ task-defaults:
 
 detekt-android-components:
     run:
+        clone-with: hg
         pre-gradlew:
             - ["cd", "mobile/android/android-components"]
     treeherder:
@@ -45,6 +49,7 @@ detekt-focus:
         files-changed:
             - "mobile/android/focus-android/**"
     run:
+        clone-with: hg
         pre-gradlew:
             - ["cd", "mobile/android/focus-android"]
     treeherder:
@@ -60,6 +65,7 @@ detekt-fenix:
         files-changed:
             - "mobile/android/fenix/**"
     run:
+        clone-with: hg
         pre-gradlew:
             - ["cd", "mobile/android/fenix"]
         gradlew: [detekt, 'mozilla-detekt-rules:test']

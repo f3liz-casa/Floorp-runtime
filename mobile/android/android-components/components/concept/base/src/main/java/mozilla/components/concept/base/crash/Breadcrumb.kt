@@ -4,7 +4,6 @@
 
 package mozilla.components.concept.base.crash
 
-import android.annotation.SuppressLint
 import android.os.Parcelable
 import kotlinx.parcelize.Parcelize
 import org.json.JSONObject
@@ -16,34 +15,28 @@ import java.util.TimeZone
 /**
  * Represents a single crash breadcrumb.
  */
-@SuppressLint("ParcelCreator")
 @Parcelize
 data class Breadcrumb(
     /**
      * Message of the crash breadcrumb.
      */
     val message: String = "",
-
     /**
      * Data related to the crash breadcrumb.
      */
     val data: Map<String, String> = emptyMap(),
-
     /**
      * Category of the crash breadcrumb.
      */
     val category: String = "",
-
     /**
      * Level of the crash breadcrumb.
      */
     val level: Level = Level.DEBUG,
-
     /**
      * Type of the crash breadcrumb.
      */
     val type: Type = Type.DEFAULT,
-
     /**
      * Date of the crash breadcrumb.
      */

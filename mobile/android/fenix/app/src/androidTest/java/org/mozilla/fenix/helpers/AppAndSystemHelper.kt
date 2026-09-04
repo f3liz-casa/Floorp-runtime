@@ -20,6 +20,7 @@ import android.provider.Settings
 import android.util.Log
 import androidx.appcompat.app.AppCompatDelegate
 import androidx.compose.ui.test.junit4.AndroidComposeTestRule
+import androidx.compose.ui.test.junit4.ComposeTestRule
 import androidx.core.net.toUri
 import androidx.core.os.LocaleListCompat
 import androidx.test.espresso.Espresso
@@ -40,6 +41,7 @@ import kotlinx.coroutines.withContext
 import mozilla.appservices.places.BookmarkRoot
 import mozilla.components.browser.storage.sync.PlacesBookmarksStorage
 import mozilla.components.browser.storage.sync.PlacesHistoryStorage
+import mozilla.components.feature.top.sites.TopSite
 import mozilla.components.support.locale.LocaleManager.resetToSystemDefault
 import mozilla.components.support.locale.LocaleManager.setNewLocale
 import org.junit.Assert
@@ -59,6 +61,7 @@ import org.mozilla.fenix.helpers.MatcherHelper.itemWithResId
 import org.mozilla.fenix.helpers.MatcherHelper.itemWithResIdContainingText
 import org.mozilla.fenix.helpers.NetworkConnectionStatusHelper.checkActiveNetworkState
 import org.mozilla.fenix.helpers.TestAssetHelper.waitingTime
+import org.mozilla.fenix.helpers.TestAssetHelper.waitingTimeLong
 import org.mozilla.fenix.helpers.TestAssetHelper.waitingTimeShort
 import org.mozilla.fenix.helpers.TestHelper.appContext
 import org.mozilla.fenix.helpers.TestHelper.mDevice
@@ -74,7 +77,7 @@ import java.util.regex.Pattern
 object AppAndSystemHelper {
 
     private val bookmarksStorage = PlacesBookmarksStorage(appContext.applicationContext)
-    suspend fun bookmarks() = bookmarksStorage.getTree(BookmarkRoot.Mobile.id)?.children
+    suspend fun bookmarks() = bookmarksStorage.getTree(BookmarkRoot.Mobile.id).getOrNull()?.children
     fun getPermissionAllowID(): String {
         Log.i(TAG, "getPermissionAllowID: Trying to get the permission button resource ID based on API.")
         return when (Build.VERSION.SDK_INT > Build.VERSION_CODES.P) {
@@ -160,7 +163,7 @@ object AppAndSystemHelper {
                         "clearDownloadsFolder: Before cleanup: Downloads storage contains: ${files.size} file(s).",
                     )
                     // Delete all files in the folder
-                    for (file in files!!) {
+                    for (file in files) {
                         Log.i(
                             TAG,
                             "clearDownloadsFolder: Trying to delete $file from \"DOWNLOADS\" folder.",
@@ -227,6 +230,18 @@ object AppAndSystemHelper {
                     "deleteBookmarksStorage: Bookmark deleted. Bookmarks storage contains: ${bookmarks()}",
                 )
             }
+        }
+    }
+
+    suspend fun deletePinnedSitesStorage() {
+        val pinnedSiteStorage = appContext.components.core.pinnedSiteStorage
+        // getPinnedSites() also returns the application's default top sites; only remove the ones
+        // pinned by the user (e.g. via "Add to shortcuts") so we don't wipe the defaults other tests rely on.
+        val userPinnedSites = pinnedSiteStorage.getPinnedSites().filterIsInstance<TopSite.Pinned>()
+        Log.i(TAG, "deletePinnedSitesStorage before cleanup: User-pinned sites: $userPinnedSites")
+        userPinnedSites.forEach {
+            Log.i(TAG, "deletePinnedSitesStorage: Trying to delete $it pinned site from storage.")
+            pinnedSiteStorage.removePinnedSite(it)
         }
     }
 
@@ -381,7 +396,7 @@ object AppAndSystemHelper {
         }
     }
 
-    fun assertNativeAppOpens(appPackageName: String, url: String = "") {
+    fun assertNativeAppOpens(composeTestRule: ComposeTestRule, appPackageName: String, url: String = "") {
         if (isPackageInstalled(appPackageName)) {
             Log.i(TAG, "assertNativeAppOpens: Waiting for the device to be idle $waitingTimeShort ms.")
             mDevice.waitForIdle(waitingTimeShort)
@@ -398,7 +413,7 @@ object AppAndSystemHelper {
             forceCloseApp(appPackageName)
         } else {
             Log.i(TAG, "assertNativeAppOpens: Trying to verify the page redirect URL.")
-            BrowserRobot().verifyUrl(url)
+            BrowserRobot(composeTestRule).verifyUrl(url)
             Log.i(TAG, "assertNativeAppOpens: Verified the page redirect URL.")
         }
     }
@@ -446,7 +461,7 @@ object AppAndSystemHelper {
             TAG,
             "isExternalAppBrowserActivityInCurrentTask: Trying to verify that the latest activity of the application is used for custom tabs or PWAs",
         )
-        return activityManager.appTasks[0].taskInfo.topActivity!!.className == ExternalAppBrowserActivity::class.java.name
+        return activityManager.appTasks[0].taskInfo?.topActivity?.className == ExternalAppBrowserActivity::class.java.name
     }
 
     /**
@@ -488,16 +503,14 @@ object AppAndSystemHelper {
                     .className("android.widget.Button"),
             )
 
-        if (Build.VERSION.SDK_INT >= 23) {
-            if (whileUsingTheAppPermissionButton.waitForExists(waitingTimeShort)) {
-                Log.i(TAG, "grantSystemPermission: Trying to click the \"While using the app\" button.")
-                whileUsingTheAppPermissionButton.click()
-                Log.i(TAG, "grantSystemPermission: Clicked the \"While using the app\" button.")
-            } else if (allowPermissionButton.waitForExists(waitingTimeShort)) {
-                Log.i(TAG, "grantSystemPermission: Trying to click the \"Allow\" button.")
-                allowPermissionButton.click()
-                Log.i(TAG, "grantSystemPermission: Clicked the \"Allow\" button.")
-            }
+        if (whileUsingTheAppPermissionButton.waitForExists(waitingTimeShort)) {
+            Log.i(TAG, "grantSystemPermission: Trying to click the \"While using the app\" button.")
+            whileUsingTheAppPermissionButton.click()
+            Log.i(TAG, "grantSystemPermission: Clicked the \"While using the app\" button.")
+        } else if (allowPermissionButton.waitForExists(waitingTimeShort)) {
+            Log.i(TAG, "grantSystemPermission: Trying to click the \"Allow\" button.")
+            allowPermissionButton.click()
+            Log.i(TAG, "grantSystemPermission: Clicked the \"Allow\" button.")
         }
     }
 
@@ -511,6 +524,15 @@ object AppAndSystemHelper {
         Log.i(TAG, "denyPermission: Clicked the negative camera system permission button.")
     }
 
+    fun denyPermissionAndDontAskAgainButton() {
+        Log.i(TAG, "denyPermissionAndDontAskAgainButton: Waiting $waitingTime ms for the negative camera system permission button to exist.")
+        itemWithResId("com.android.permissioncontroller:id/permission_deny_and_dont_ask_again_button").waitForExists(waitingTime)
+        Log.i(TAG, "denyPermissionAndDontAskAgainButton: Waited for $waitingTime ms for the negative camera system permission button to exist.")
+        Log.i(TAG, "denyPermissionAndDontAskAgainButton: Trying to click the negative camera system permission button.")
+        itemWithResId("com.android.permissioncontroller:id/permission_deny_and_dont_ask_again_button").click()
+        Log.i(TAG, "denyPermissionAndDontAskAgainButton: Clicked the negative camera system permission button.")
+    }
+
     fun verifySystemPhotoAndVideoPickerExists() {
         assertUIObjectExists(itemWithResId("com.google.android.providers.media.module:id/bottom_sheet"))
     }
@@ -522,9 +544,10 @@ object AppAndSystemHelper {
     }
 
     fun clickSystemHomeScreenShortcutAddButton() {
-        when (Build.VERSION.SDK_INT) {
-            in Build.VERSION_CODES.O..Build.VERSION_CODES.R -> clickAddAutomaticallyButton()
-            in Build.VERSION_CODES.S..Build.VERSION_CODES.UPSIDE_DOWN_CAKE -> clickAddToHomeScreenButton()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            clickAddToHomeScreenButton()
+        } else {
+            clickAddAutomaticallyButton()
         }
     }
 
@@ -545,12 +568,16 @@ object AppAndSystemHelper {
     }
 
     fun clickAddToHomeScreenButton() {
-        Log.i(TAG, "clickAddToHomeScreenButton: Waiting for $waitingTime ms for the \"Add to home screen\" system dialog button to exist")
-        itemContainingText("Add to home screen").waitForExists(waitingTime)
-        Log.i(TAG, "clickAddToHomeScreenButton: Waited for $waitingTime ms for the \"Add to home screen\" system dialog button to exist")
+        Log.i(TAG, "clickAddToHomeScreenButton: Waiting for $waitingTimeLong ms for the \"Add to home screen\" system dialog button to appear")
+        val button = mDevice.wait(
+            Until.findObject(By.textContains("Add to home screen")),
+            waitingTimeLong,
+        ) ?: throw AssertionError(
+            "clickAddToHomeScreenButton: \"Add to home screen\" system dialog button did not appear after $waitingTimeLong ms",
+        )
         Log.i(TAG, "clickAddToHomeScreenButton: Trying to click the \"Add to home screen\" system dialog button and wait for $waitingTimeShort ms for a new window")
-        itemContainingText("Add to home screen").clickAndWaitForNewWindow(waitingTimeShort)
-        Log.i(TAG, "clickAddToHomeScreenButton: Clicked the \"Add to home screen\" system dialog button and wait for $waitingTimeShort ms for a new window")
+        button.clickAndWait(Until.newWindow(), waitingTimeShort)
+        Log.i(TAG, "clickAddToHomeScreenButton: Clicked the \"Add to home screen\" system dialog button")
     }
 
     fun isTestLab(): Boolean {
@@ -666,24 +693,46 @@ object AppAndSystemHelper {
         Log.i(TAG, "verifyKeyboardVisibility: Verified the keyboard is visible.")
     }
 
-    fun openAppFromExternalLink(url: String) {
-        val context = InstrumentationRegistry.getInstrumentation().getTargetContext()
-        val intent = Intent().apply {
-            action = Intent.ACTION_VIEW
-            data = url.toUri()
+    fun openAppFromExternalLink(
+        composeTestRule: AndroidComposeTestRule<HomeActivityIntentTestRule, HomeActivity>,
+        url: String,
+    ) {
+        val intent = Intent(Intent.ACTION_VIEW, url.toUri()).apply {
             `package` = TestHelper.packageName
             flags = Intent.FLAG_ACTIVITY_NEW_TASK
         }
+
         try {
-            Log.i(TAG, "openAppFromExternalLink: Trying to start the activity from an external intent.")
-            context.startActivity(intent)
-            Log.i(TAG, "openAppFromExternalLink: Activity started from an external intent.")
-        } catch (ex: ActivityNotFoundException) {
-            Log.i(TAG, "openAppFromExternalLink: Exception caught. Trying to start the activity from a null intent.")
-            intent.setPackage(null)
-            context.startActivity(intent)
-            Log.i(TAG, "openAppFromExternalLink: Started the activity from a null intent.")
+            // Case 1: The app is already running and Compose has a host activity.
+            // Launch the external intent from the existing activity so the
+            // ComposeTestRule can properly track the Compose hierarchy.
+            Log.i(TAG, "openAppFromExternalLink: Host activity exists, launching external intent from activity.")
+            composeTestRule.activity.startActivity(intent)
+        } catch (e: IllegalStateException) {
+            // Case 2: The host activity was finished (cold start scenario).
+            // ComposeTestRule no longer has an activity, so we fall back to
+            // launching the intent from the instrumentation context.
+            Log.i(TAG, "openAppFromExternalLink: No host activity found. Launching external intent from instrumentation context.")
+
+            val context = InstrumentationRegistry
+                .getInstrumentation()
+                .targetContext
+
+            try {
+                context.startActivity(intent)
+                Log.i(TAG, "openAppFromExternalLink: Activity started from instrumentation context.")
+            } catch (ex: ActivityNotFoundException) {
+                // Fallback in case the explicit package cannot handle the intent.
+                Log.i(TAG, "openAppFromExternalLink: ActivityNotFoundException caught. Retrying with null package.")
+                intent.`package` = null
+                context.startActivity(intent)
+                Log.i(TAG, "openAppFromExternalLink: Activity started with null package.")
+            }
         }
+
+        // Ensure Compose has fully settled before any UI assertions or robot actions.
+        composeTestRule.waitForIdle()
+        Log.i(TAG, "openAppFromExternalLink: Compose is idle and ready for assertions.")
     }
 
     /**
@@ -704,7 +753,7 @@ object AppAndSystemHelper {
      * Wrapper to launch the app using the launcher intent.
      */
     fun runWithLauncherIntent(
-        activityTestRule: AndroidComposeTestRule<HomeActivityIntentTestRule, HomeActivity>,
+        activityTestRule: HomeActivityIntentTestRule,
         testBlock: () -> Unit,
     ) {
         val launcherIntent = Intent(Intent.ACTION_MAIN).apply {
@@ -712,7 +761,7 @@ object AppAndSystemHelper {
         }
 
         Log.i(TAG, "runWithLauncherIntent: Trying to launch the activity from an intent: $launcherIntent.")
-        activityTestRule.activityRule.withIntent(launcherIntent).launchActivity(launcherIntent)
+        activityTestRule.withIntent(launcherIntent).launchActivity(launcherIntent)
         Log.i(TAG, "runWithLauncherIntent: Launched the activity from an intent: $launcherIntent.")
         try {
             Log.i(TAG, "runWithLauncherIntent: Trying run the test block.")
@@ -739,11 +788,11 @@ object AppAndSystemHelper {
         if (allowToReadClipboard) {
             Log.i(TAG, "allowOrPreventSystemUIFromReadingTheClipboard: Trying to allow the System UI from reading the clipboard content")
             mDevice.executeShellCommand("appops set com.android.systemui READ_CLIPBOARD allow")
-            Log.i(TAG, "TestSetup: Successfully allowed the System UI from reading the clipboard content")
+            Log.i(TAG, "TestSetupRule: Successfully allowed the System UI from reading the clipboard content")
         } else {
             Log.i(TAG, "allowOrPreventSystemUIFromReadingTheClipboard: Trying to prevent the System UI from reading the clipboard content")
             mDevice.executeShellCommand("appops set com.android.systemui READ_CLIPBOARD deny")
-            Log.i(TAG, "TestSetup: Successfully prevented the System UI from reading the clipboard content")
+            Log.i(TAG, "TestSetupRule: Successfully prevented the System UI from reading the clipboard content")
         }
     }
 
@@ -783,5 +832,20 @@ object AppAndSystemHelper {
 
     suspend fun disableDebugDrawer() = withContext(Dispatchers.IO) {
         DefaultDebugSettingsRepository(context = appContext, writeScope = this).setDebugDrawerEnabled(false)
+    }
+
+    fun setScreenOrientation(
+        composeTestRule: AndroidComposeTestRule<HomeActivityIntentTestRule, HomeActivity>,
+        orientation: Int,
+    ) {
+        Log.i(TAG, "setScreenOrientation: Setting orientation to $orientation.")
+        composeTestRule.activity.requestedOrientation = orientation
+        Log.i(TAG, "setScreenOrientation: Waiting for device to be idle for $waitingTime ms")
+        mDevice.waitForIdle(waitingTime)
+        Log.i(TAG, "setScreenOrientation: Waited for device to be idle for $waitingTime ms")
+        Log.i(TAG, "setScreenOrientation: Waiting for the compose test rule to be idle.")
+        composeTestRule.waitForIdle()
+        Log.i(TAG, "setScreenOrientation: Waited for the compose test rule to be idle.")
+        Log.i(TAG, "setScreenOrientation: Orientation set to $orientation.")
     }
 }

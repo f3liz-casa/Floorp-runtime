@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -9,7 +7,6 @@
 
 #include "ImageTypes.h"
 #include "Units.h"
-#include "mozilla/Attributes.h"
 #include "mozilla/ErrorResult.h"
 #include "mozilla/StaticPrefs_media.h"
 #include "mozilla/dom/HTMLMediaElement.h"
@@ -19,10 +16,16 @@ namespace mozilla {
 
 class FrameStatistics;
 
+namespace gfx {
+class DataSourceSurface;
+}
+
 namespace dom {
 
 class WakeLock;
 class VideoPlaybackQuality;
+class EventHandlerNonNull;
+class PictureInPictureWindow;
 
 class HTMLVideoElement final : public HTMLMediaElement {
   class SecondaryVideoOutput;
@@ -33,7 +36,7 @@ class HTMLVideoElement final : public HTMLMediaElement {
 
   typedef mozilla::dom::NodeInfo NodeInfo;
 
-  explicit HTMLVideoElement(already_AddRefed<NodeInfo>&& aNodeInfo);
+  explicit HTMLVideoElement(already_AddRefed<NodeInfo> aNodeInfo);
 
   NS_IMPL_FROMNODE_HTML_WITH_TAG(HTMLVideoElement, video)
 
@@ -53,9 +56,16 @@ class HTMLVideoElement final : public HTMLMediaElement {
                       nsAttrValue& aResult) override;
   NS_IMETHOD_(bool) IsAttributeMapped(const nsAtom* aAttribute) const override;
 
+  void AfterSetAttr(int32_t aNameSpaceID, nsAtom* aName,
+                    const nsAttrValue* aValue, const nsAttrValue* aOldValue,
+                    nsIPrincipal* aMaybeScriptedPrincipal,
+                    bool aNotify) override;
+
   nsMapRuleToAttributesFunc GetAttributeMappingFunction() const override;
 
   nsresult Clone(NodeInfo*, nsINode** aResult) const override;
+
+  nsresult CopyInnerTo(Element* aDest);
 
   void UnbindFromTree(UnbindContext&) override;
 
@@ -129,6 +139,16 @@ class HTMLVideoElement final : public HTMLMediaElement {
 
   void OnVisibilityChange(Visibility aNewVisibility) override;
 
+  void ClosePictureInPictureWindowAndFireEvent();
+
+  already_AddRefed<Promise> RequestPictureInPicture(ErrorResult& aRv);
+
+  // Picture-in-Picture event handlers
+  EventHandlerNonNull* GetOnenterpictureinpicture();
+  void SetOnenterpictureinpicture(EventHandlerNonNull* aCallback);
+  EventHandlerNonNull* GetOnleavepictureinpicture();
+  void SetOnleavepictureinpicture(EventHandlerNonNull* aCallback);
+
   bool DisablePictureInPicture() const {
     return GetBoolAttr(nsGkAtoms::disablepictureinpicture);
   }
@@ -136,6 +156,9 @@ class HTMLVideoElement final : public HTMLMediaElement {
   void SetDisablePictureInPicture(bool aValue, ErrorResult& aError) {
     SetHTMLBoolAttr(nsGkAtoms::disablepictureinpicture, aValue, aError);
   }
+
+  void SetAssociatedPictureInPictureWindow(PictureInPictureWindow* aWindow);
+  PictureInPictureWindow* GetAssociatedPictureInPictureWindow() const;
 
  protected:
   virtual ~HTMLVideoElement();
@@ -168,6 +191,12 @@ class HTMLVideoElement final : public HTMLMediaElement {
       RefPtr<Promise> aVisualCloneTargetPromise = nullptr);
   bool SetVisualCloneSource(RefPtr<HTMLVideoElement> aVisualCloneSource);
 
+  // Creates a new DataSourceSurface with data copied from aImage.
+  // This is used when creating a static clone of this element, to ensure we
+  // do not hold onto an output buffer from a decoder.
+  static already_AddRefed<gfx::DataSourceSurface> CopyImage(
+      layers::Image* aImage);
+
   // For video elements, we can clone the frames being played to
   // a secondary video element. If we're doing that, we hold a
   // reference to the video element we're cloning to in
@@ -191,6 +220,9 @@ class HTMLVideoElement final : public HTMLMediaElement {
   // Please don't set this to non-nullptr values directly - use
   // SetVisualCloneTarget() instead.
   RefPtr<HTMLVideoElement> mVisualCloneSource;
+
+  // Reference to the current PictureInPictureWindow for this video element
+  RefPtr<PictureInPictureWindow> mPictureInPictureWindow;
 
  private:
   void ResetState() override;

@@ -7,7 +7,7 @@
 
 ChromeUtils.defineESModuleGetters(this, {
   UrlbarProviderQuickSuggest:
-    "resource:///modules/UrlbarProviderQuickSuggest.sys.mjs",
+    "moz-src:///browser/components/urlbar/UrlbarProviderQuickSuggest.sys.mjs",
 });
 
 add_setup(async function setup() {
@@ -33,7 +33,7 @@ add_setup(async function setup() {
       },
     ],
     prefs: [
-      ["suggest.quicksuggest.nonsponsored", true],
+      ["suggest.quicksuggest.all", true],
       ["suggest.quicksuggest.sponsored", true],
       ["quicksuggest.ampTopPickCharThreshold", 0],
     ],
@@ -53,8 +53,8 @@ add_task(async function oneExposureResult_shown_matched() {
     context,
     matches: [
       {
-        ...QuickSuggestTestUtils.ampResult(),
-        exposureTelemetry: UrlbarUtils.EXPOSURE_TELEMETRY.SHOWN,
+        ...QuickSuggestTestUtils.ampResult({ suggestedIndex: -1 }),
+        exposureTelemetry: UrlbarShared.EXPOSURE_TELEMETRY.SHOWN,
       },
     ],
   });
@@ -74,7 +74,7 @@ add_task(async function oneExposureResult_shown_notMatched() {
     matches: [
       {
         ...QuickSuggestTestUtils.wikipediaResult(),
-        exposureTelemetry: UrlbarUtils.EXPOSURE_TELEMETRY.NONE,
+        exposureTelemetry: UrlbarShared.EXPOSURE_TELEMETRY.NONE,
       },
     ],
   });
@@ -93,8 +93,8 @@ add_task(async function oneExposureResult_hidden_matched() {
     context,
     matches: [
       {
-        ...QuickSuggestTestUtils.ampResult(),
-        exposureTelemetry: UrlbarUtils.EXPOSURE_TELEMETRY.HIDDEN,
+        ...QuickSuggestTestUtils.ampResult({ suggestedIndex: -1 }),
+        exposureTelemetry: UrlbarShared.EXPOSURE_TELEMETRY.HIDDEN,
       },
     ],
   });
@@ -114,7 +114,7 @@ add_task(async function oneExposureResult_hidden_notMatched() {
     matches: [
       {
         ...QuickSuggestTestUtils.wikipediaResult(),
-        exposureTelemetry: UrlbarUtils.EXPOSURE_TELEMETRY.NONE,
+        exposureTelemetry: UrlbarShared.EXPOSURE_TELEMETRY.NONE,
       },
     ],
   });
@@ -138,8 +138,8 @@ add_task(async function manyExposureResults_shown_oneMatched_1() {
     context,
     matches: [
       {
-        ...QuickSuggestTestUtils.ampResult(),
-        exposureTelemetry: UrlbarUtils.EXPOSURE_TELEMETRY.SHOWN,
+        ...QuickSuggestTestUtils.ampResult({ suggestedIndex: -1 }),
+        exposureTelemetry: UrlbarShared.EXPOSURE_TELEMETRY.SHOWN,
       },
     ],
   });
@@ -164,7 +164,7 @@ add_task(async function manyExposureResults_shown_oneMatched_2() {
     matches: [
       {
         ...QuickSuggestTestUtils.wikipediaResult(),
-        exposureTelemetry: UrlbarUtils.EXPOSURE_TELEMETRY.SHOWN,
+        exposureTelemetry: UrlbarShared.EXPOSURE_TELEMETRY.SHOWN,
       },
     ],
   });
@@ -192,8 +192,8 @@ add_task(async function manyExposureResults_shown_manyMatched() {
     context,
     matches: [
       {
-        ...QuickSuggestTestUtils.ampResult({ keyword }),
-        exposureTelemetry: UrlbarUtils.EXPOSURE_TELEMETRY.SHOWN,
+        ...QuickSuggestTestUtils.ampResult({ keyword, suggestedIndex: -1 }),
+        exposureTelemetry: UrlbarShared.EXPOSURE_TELEMETRY.SHOWN,
       },
     ],
   });
@@ -217,8 +217,8 @@ add_task(async function manyExposureResults_hidden_oneMatched_1() {
     context,
     matches: [
       {
-        ...QuickSuggestTestUtils.ampResult(),
-        exposureTelemetry: UrlbarUtils.EXPOSURE_TELEMETRY.HIDDEN,
+        ...QuickSuggestTestUtils.ampResult({ suggestedIndex: -1 }),
+        exposureTelemetry: UrlbarShared.EXPOSURE_TELEMETRY.HIDDEN,
       },
     ],
   });
@@ -243,7 +243,7 @@ add_task(async function manyExposureResults_hidden_oneMatched_2() {
     matches: [
       {
         ...QuickSuggestTestUtils.wikipediaResult(),
-        exposureTelemetry: UrlbarUtils.EXPOSURE_TELEMETRY.HIDDEN,
+        exposureTelemetry: UrlbarShared.EXPOSURE_TELEMETRY.HIDDEN,
       },
     ],
   });
@@ -271,12 +271,12 @@ add_task(async function manyExposureResults_hidden_manyMatched() {
     context,
     matches: [
       {
-        ...QuickSuggestTestUtils.ampResult({ keyword }),
-        exposureTelemetry: UrlbarUtils.EXPOSURE_TELEMETRY.HIDDEN,
+        ...QuickSuggestTestUtils.wikipediaResult({ keyword }),
+        exposureTelemetry: UrlbarShared.EXPOSURE_TELEMETRY.HIDDEN,
       },
       {
-        ...QuickSuggestTestUtils.wikipediaResult({ keyword }),
-        exposureTelemetry: UrlbarUtils.EXPOSURE_TELEMETRY.HIDDEN,
+        ...QuickSuggestTestUtils.ampResult({ keyword, suggestedIndex: -1 }),
+        exposureTelemetry: UrlbarShared.EXPOSURE_TELEMETRY.HIDDEN,
       },
     ],
   });

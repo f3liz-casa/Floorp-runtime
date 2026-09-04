@@ -21,6 +21,9 @@ import org.mozilla.focus.ext.requireComponents
 import org.mozilla.focus.ui.theme.FocusTheme
 import org.mozilla.focus.utils.SupportUtils
 
+/**
+ * The first fragment of the onboarding flow.
+ */
 class OnboardingFirstFragment : Fragment() {
     private lateinit var onboardingInteractor: OnboardingInteractor
 
@@ -79,5 +82,12 @@ class OnboardingFirstFragment : Fragment() {
                 )
             }
         }
+    }
+
+    /**
+     * Companion object for the [OnboardingFirstFragment].
+     */
+    companion object {
+        const val FRAGMENT_TAG = "onboarding-first-fragment"
     }
 }

@@ -1,6 +1,7 @@
 import { actionCreators as ac, actionTypes as at } from "common/Actions.mjs";
 import { GlobalOverrider } from "test/unit/utils";
 import { MIN_RICH_FAVICON_SIZE } from "content-src/components/TopSites/TopSitesConstants";
+import { buildTopSitesList } from "content-src/components/TopSites/TopSiteListContainer";
 import {
   TOP_SITES_DEFAULT_ROWS,
   TOP_SITES_MAX_SITES_PER_ROW,
@@ -33,7 +34,11 @@ const perfSvc = {
 const DEFAULT_PROPS = {
   Prefs: { values: { featureConfig: {} } },
   TopSites: { initialized: true, rows: [] },
+  App: {
+    isForStartupCache: false,
+  },
   TopSitesRows: TOP_SITES_DEFAULT_ROWS,
+  TopSitesMaxSitesPerRow: TOP_SITES_MAX_SITES_PER_ROW,
   topSiteIconType: () => "no_image",
   dispatch() {},
   perfSvc,
@@ -412,7 +417,9 @@ describe("<TopSiteLink>", () => {
   it("should have only the title as the text of the link", () => {
     const wrapper = shallow(<TopSiteLink link={link} title="foobar" />);
 
-    assert.equal(wrapper.find("a").text(), "foobar");
+    // The tile also holds a decorative, aria-hidden notification badge, so the
+    // link's visible text is the title label rather than the whole <a>.
+    assert.equal(wrapper.find(".title-label").text(), "foobar");
   });
   it("should render the pin icon for pinned links", () => {
     link.isPinned = true;
@@ -710,6 +717,7 @@ describe("<TopSite>", () => {
     assert.deepEqual(linkMenuProps.options, [
       "CheckPinTopSite",
       "EditTopSite",
+      "AddTopSite",
       "Separator",
       "OpenInNewWindow",
       "OpenInPrivateWindow",
@@ -1017,22 +1025,22 @@ describe("<TopSiteForm>", () => {
     );
 
     it("should render the preview button on invalid urls", () => {
-      assert.equal(0, wrapper.find(".preview").length);
+      assert.equal(0, wrapper.find("#topsites-form-preview-button").length);
 
       wrapper.setState({ customScreenshotUrl: " " });
 
-      assert.equal(1, wrapper.find(".preview").length);
+      assert.equal(1, wrapper.find("#topsites-form-preview-button").length);
     });
 
     it("should render the preview button when input value updated", () => {
-      assert.equal(0, wrapper.find(".preview").length);
+      assert.equal(0, wrapper.find("#topsites-form-preview-button").length);
 
       wrapper.setState({
         customScreenshotUrl: "http://baz.com",
         screenshotPreview: null,
       });
 
-      assert.equal(1, wrapper.find(".preview").length);
+      assert.equal(1, wrapper.find("#topsites-form-preview-button").length);
     });
   });
 
@@ -1047,14 +1055,14 @@ describe("<TopSiteForm>", () => {
     it("shouldn't dispatch a request for invalid urls", () => {
       wrapper.setState({ customScreenshotUrl: " ", url: "foo" });
 
-      wrapper.find(".preview").simulate("click");
+      wrapper.find("#topsites-form-preview-button").simulate("click");
 
       assert.notCalled(wrapper.props().dispatch);
     });
 
     it("should dispatch a PREVIEW_REQUEST", () => {
       wrapper.setState({ customScreenshotUrl: "screenshot" });
-      wrapper.find(".preview").simulate("submit");
+      wrapper.find("#topsites-form-preview-button").simulate("click");
 
       assert.calledTwice(wrapper.props().dispatch);
       assert.calledWith(
@@ -1151,23 +1159,23 @@ describe("<TopSiteForm>", () => {
       assert.equal(0, wrapper.find(".custom-image-input-container").length);
     });
     it("should call onClose if Cancel button is clicked", () => {
-      wrapper.find(".cancel").simulate("click");
+      wrapper.find("#topsites-form-cancel-button").simulate("click");
       assert.calledOnce(wrapper.instance().props.onClose);
     });
     it("should set validationError if url is empty", () => {
       assert.equal(wrapper.state().validationError, false);
-      wrapper.find(".done").simulate("submit");
+      wrapper.find("#topsites-form-save-button").simulate("click");
       assert.equal(wrapper.state().validationError, true);
     });
     it("should set validationError if url is invalid", () => {
       wrapper.setState({ url: "not valid" });
       assert.equal(wrapper.state().validationError, false);
-      wrapper.find(".done").simulate("submit");
+      wrapper.find("#topsites-form-save-button").simulate("click");
       assert.equal(wrapper.state().validationError, true);
     });
     it("should call onClose and dispatch with right args if URL is valid", () => {
       wrapper.setState({ url: "valid.com", label: "a label" });
-      wrapper.find(".done").simulate("submit");
+      wrapper.find("#topsites-form-save-button").simulate("click");
       assert.calledOnce(wrapper.instance().props.onClose);
       assert.calledWith(wrapper.instance().props.dispatch, {
         data: {
@@ -1189,7 +1197,7 @@ describe("<TopSiteForm>", () => {
     });
     it("should not pass empty string label in dispatch data", () => {
       wrapper.setState({ url: "valid.com", label: "" });
-      wrapper.find(".done").simulate("submit");
+      wrapper.find("#topsites-form-save-button").simulate("click");
       assert.calledWith(wrapper.instance().props.dispatch, {
         data: { site: { url: "http://valid.com" }, index: -1 },
         meta: { from: "ActivityStream:Content", to: "ActivityStream:Main" },
@@ -1202,6 +1210,16 @@ describe("<TopSiteForm>", () => {
       wrapper.find(A11yLinkButton).simulate("click");
 
       assert.isTrue(wrapper.state().showCustomScreenshotForm);
+    });
+    it("should swap the custom image link for the input when opened", () => {
+      assert.equal(wrapper.find(".custom-image-input-container").length, 0);
+      assert.equal(wrapper.find(A11yLinkButton).length, 1);
+
+      wrapper.find(A11yLinkButton).simulate("click");
+      wrapper.update();
+
+      assert.equal(wrapper.find(".custom-image-input-container").length, 1);
+      assert.equal(wrapper.find(A11yLinkButton).length, 0);
     });
   });
 
@@ -1243,13 +1261,13 @@ describe("<TopSiteForm>", () => {
       );
     });
     it("should call onClose if Cancel button is clicked", () => {
-      wrapper.find(".cancel").simulate("click");
+      wrapper.find("#topsites-form-cancel-button").simulate("click");
       assert.calledOnce(wrapper.instance().props.onClose);
     });
     it("should show error and not call onClose or dispatch if URL is empty", () => {
       wrapper.setState({ url: "" });
       assert.equal(wrapper.state().validationError, false);
-      wrapper.find(".done").simulate("submit");
+      wrapper.find("#topsites-form-save-button").simulate("click");
       assert.equal(wrapper.state().validationError, true);
       assert.notCalled(wrapper.instance().props.onClose);
       assert.notCalled(wrapper.instance().props.dispatch);
@@ -1257,13 +1275,13 @@ describe("<TopSiteForm>", () => {
     it("should show error and not call onClose or dispatch if URL is invalid", () => {
       wrapper.setState({ url: "not valid" });
       assert.equal(wrapper.state().validationError, false);
-      wrapper.find(".done").simulate("submit");
+      wrapper.find("#topsites-form-save-button").simulate("click");
       assert.equal(wrapper.state().validationError, true);
       assert.notCalled(wrapper.instance().props.onClose);
       assert.notCalled(wrapper.instance().props.dispatch);
     });
     it("should call onClose and dispatch with right args if URL is valid", () => {
-      wrapper.find(".done").simulate("submit");
+      wrapper.find("#topsites-form-save-button").simulate("click");
       assert.calledOnce(wrapper.instance().props.onClose);
       assert.calledTwice(wrapper.instance().props.dispatch);
       assert.calledWith(wrapper.instance().props.dispatch, {
@@ -1293,7 +1311,7 @@ describe("<TopSiteForm>", () => {
     it("should set customScreenshotURL to null if it was removed", () => {
       wrapper.setState({ customScreenshotUrl: "" });
 
-      wrapper.find(".done").simulate("submit");
+      wrapper.find("#topsites-form-save-button").simulate("click");
 
       assert.calledWith(wrapper.instance().props.dispatch, {
         data: {
@@ -1310,7 +1328,7 @@ describe("<TopSiteForm>", () => {
     });
     it("should call onClose and dispatch with right args if URL is valid (negative index)", () => {
       wrapper.setProps({ index: -1 });
-      wrapper.find(".done").simulate("submit");
+      wrapper.find("#topsites-form-save-button").simulate("click");
       assert.calledOnce(wrapper.instance().props.onClose);
       assert.calledTwice(wrapper.instance().props.dispatch);
       assert.calledWith(wrapper.instance().props.dispatch, {
@@ -1328,7 +1346,7 @@ describe("<TopSiteForm>", () => {
     });
     it("should not pass empty string label in dispatch data", () => {
       wrapper.setState({ label: "" });
-      wrapper.find(".done").simulate("submit");
+      wrapper.find("#topsites-form-save-button").simulate("click");
       assert.calledWith(wrapper.instance().props.dispatch, {
         data: {
           site: { url: "https://foo.bar", customScreenshotURL: "http://foo" },
@@ -1343,14 +1361,22 @@ describe("<TopSiteForm>", () => {
         customScreenshotUrl: "foo",
         screenshotPreview: "custom",
       });
-      assert.equal(0, wrapper.find(".preview").length);
-      assert.equal(1, wrapper.find(".done").length);
+      assert.equal(0, wrapper.find("#topsites-form-preview-button").length);
+      assert.equal(
+        1,
+        wrapper.find('moz-button[data-l10n-id="newtab-topsites-save-button"]')
+          .length
+      );
     });
     it("should render the save button if custom screenshot url was cleared", () => {
       wrapper.setState({ customScreenshotUrl: "" });
       wrapper.setProps({ site: { customScreenshotURL: "foo" } });
-      assert.equal(0, wrapper.find(".preview").length);
-      assert.equal(1, wrapper.find(".done").length);
+      assert.equal(0, wrapper.find("#topsites-form-preview-button").length);
+      assert.equal(
+        1,
+        wrapper.find('moz-button[data-l10n-id="newtab-topsites-save-button"]')
+          .length
+      );
     });
   });
 
@@ -1453,13 +1479,15 @@ describe("<TopSiteList>", () => {
   const APP = { isForStartupCache: { App: false } };
 
   it("should render a TopSiteList element", () => {
-    const wrapper = shallow(<TopSiteList {...DEFAULT_PROPS} App={APP} />);
+    const wrapper = shallow(
+      <TopSiteList {...DEFAULT_PROPS} sites={[]} App={APP} />
+    );
     assert.ok(wrapper.exists());
   });
   it("should render a TopSite for each link with the right url", () => {
     const rows = [{ url: "https://foo.com" }, { url: "https://bar.com" }];
     const wrapper = shallow(
-      <TopSiteList {...DEFAULT_PROPS} TopSites={{ rows }} App={APP} />
+      <TopSiteList {...DEFAULT_PROPS} sites={rows} App={APP} />
     );
     const links = wrapper.find(TopSite);
     assert.lengthOf(links, 2);
@@ -1467,7 +1495,7 @@ describe("<TopSiteList>", () => {
       assert.equal(links.get(i).props.link.url, row.url)
     );
   });
-  it("should slice the TopSite rows to the TopSitesRows pref", () => {
+  it("should render the sliced list it is given", () => {
     const rows = [];
     for (
       let i = 0;
@@ -1476,37 +1504,37 @@ describe("<TopSiteList>", () => {
     ) {
       rows.push({ url: `https://foo${i}.com` });
     }
+    const sites = buildTopSitesList(
+      rows,
+      TOP_SITES_DEFAULT_ROWS,
+      TOP_SITES_MAX_SITES_PER_ROW
+    );
     const wrapper = shallow(
       <TopSiteList
         {...DEFAULT_PROPS}
-        TopSites={{ rows }}
+        sites={sites}
         TopSitesRows={TOP_SITES_DEFAULT_ROWS}
         App={APP}
       />
     );
-    const links = wrapper.find(TopSite);
     assert.lengthOf(
-      links,
+      wrapper.find(TopSite),
       TOP_SITES_DEFAULT_ROWS * TOP_SITES_MAX_SITES_PER_ROW
     );
   });
-  it("should add a add topsite button if there is availible space in the row", () => {
+  it("should render an Add button when the list includes one", () => {
     const rows = [{ url: "https://foo.com" }, { url: "https://bar.com" }];
-    const availibleRows = 1;
+    const sites = buildTopSitesList(rows, 1, TOP_SITES_MAX_SITES_PER_ROW);
     const wrapper = shallow(
       <TopSiteList
         {...DEFAULT_PROPS}
-        TopSites={{ rows }}
-        TopSitesRows={availibleRows}
+        sites={sites}
+        TopSitesRows={1}
         App={APP}
       />
     );
     assert.lengthOf(wrapper.find(TopSite), 2, "topSites");
-    assert.lengthOf(
-      wrapper.find(TopSiteAddButton),
-      availibleRows >= wrapper.find(TopSite).length ? 0 : 1,
-      "placeholders"
-    );
+    assert.lengthOf(wrapper.find(TopSiteAddButton), 1, "add button");
   });
   it("should fill sponsored top sites with placeholders while rendering for startup cache", () => {
     const rows = [
@@ -1516,10 +1544,11 @@ describe("<TopSiteList>", () => {
       { url: "https://foo.com" },
       { url: "https://bar.com" },
     ];
+    const sites = buildTopSitesList(rows, 1, TOP_SITES_MAX_SITES_PER_ROW);
     const wrapper = shallow(
       <TopSiteList
         {...DEFAULT_PROPS}
-        TopSites={{ rows }}
+        sites={sites}
         TopSitesRows={1}
         App={{ isForStartupCache: { TopSites: true } }}
       />
@@ -1527,290 +1556,85 @@ describe("<TopSiteList>", () => {
     assert.lengthOf(wrapper.find(TopSite), 2, "topSites");
     assert.lengthOf(wrapper.find(TopSitePlaceholder), 3, "placeholders");
   });
-  it("should update state onDragStart and clear it onDragEnd", () => {
-    const wrapper = shallow(<TopSiteList {...DEFAULT_PROPS} App={{ APP }} />);
-    const instance = wrapper.instance();
-    const index = 7;
-    const link = { url: "https://foo.com" };
-    const title = "foo";
-    instance.onDragEvent({ type: "dragstart" }, index, link, title);
-    assert.equal(instance.state.draggedIndex, index);
-    assert.equal(instance.state.draggedSite, link);
-    assert.equal(instance.state.draggedTitle, title);
-    instance.onDragEvent({ type: "dragend" });
-    assert.deepEqual(instance.state, TopSiteList.DEFAULT_STATE);
-  });
-  it("should clear state when new props arrive after a drop", () => {
-    const site1 = { url: "https://foo.com" };
-    const site2 = { url: "https://bar.com" };
-    const rows = [site1, site2];
-    const wrapper = shallow(
-      <TopSiteList {...DEFAULT_PROPS} TopSites={{ rows }} App={APP} />
-    );
-    const instance = wrapper.instance();
-    instance.setState({
-      draggedIndex: 1,
-      draggedSite: site2,
-      draggedTitle: "bar",
-      topSitesPreview: [],
-    });
-    wrapper.setProps({ TopSites: { rows: [site2, site1] } });
-    assert.deepEqual(instance.state, TopSiteList.DEFAULT_STATE);
-  });
-  it("should dispatch events on drop", () => {
-    const dispatch = sinon.spy();
-    const wrapper = shallow(
-      <TopSiteList {...DEFAULT_PROPS} dispatch={dispatch} App={APP} />
-    );
-    const instance = wrapper.instance();
-    const index = 7;
-    const link = { url: "https://foo.com", customScreenshotURL: "foo" };
-    const title = "foo";
-    instance.onDragEvent({ type: "dragstart" }, index, link, title);
-    dispatch.resetHistory();
-    instance.onDragEvent({ type: "drop" }, 3);
-    assert.calledTwice(dispatch);
-    assert.calledWith(dispatch, {
-      data: {
-        draggedFromIndex: 7,
-        index: 3,
-        site: {
-          label: "foo",
-          url: "https://foo.com",
-          customScreenshotURL: "foo",
-        },
-      },
-      meta: { from: "ActivityStream:Content", to: "ActivityStream:Main" },
-      type: "TOP_SITES_INSERT",
-    });
-    assert.calledWith(dispatch, {
-      data: { action_position: 3, event: "DROP", source: "TOP_SITES" },
-      meta: { from: "ActivityStream:Content", to: "ActivityStream:Main" },
-      type: "TELEMETRY_USER_EVENT",
-    });
-  });
-  it("should make a topSitesPreview onDragEnter", () => {
-    const wrapper = shallow(<TopSiteList {...DEFAULT_PROPS} App={APP} />);
-    const instance = wrapper.instance();
-    const site = { url: "https://foo.com" };
-    instance.setState({
-      draggedIndex: 4,
-      draggedSite: site,
-      draggedTitle: "foo",
-    });
-    const draggedSite = Object.assign({}, site, {
-      isPinned: true,
-      isDragged: true,
-    });
-    instance.onDragEvent({ type: "dragenter" }, 2);
-    assert.ok(instance.state.topSitesPreview);
-    assert.deepEqual(instance.state.topSitesPreview[2], draggedSite);
-  });
-  it("should _makeTopSitesPreview correctly", () => {
-    const site1 = { url: "https://foo.com" };
-    const site2 = { url: "https://bar.com" };
-    const site3 = { url: "https://baz.com" };
-    const rows = [site1, site2, site3];
-    let wrapper = shallow(
-      <TopSiteList
-        {...DEFAULT_PROPS}
-        TopSites={{ rows }}
-        TopSitesRows={1}
-        App={APP}
-      />
-    );
-    const addButton = { isAddButton: true };
-    let instance = wrapper.instance();
-    instance.setState({
-      draggedIndex: 0,
-      draggedSite: site1,
-      draggedTitle: "foo",
-    });
-    let draggedSite = Object.assign({}, site1, {
-      isPinned: true,
-      isDragged: true,
-    });
-    assert.deepEqual(instance._makeTopSitesPreview(1), [
-      site2,
-      draggedSite,
-      site3,
-      addButton,
-      null,
-      null,
-      null,
-      null,
-    ]);
-    assert.deepEqual(instance._makeTopSitesPreview(2), [
-      site2,
-      site3,
-      draggedSite,
-      addButton,
-      null,
-      null,
-      null,
-      null,
-    ]);
-    assert.deepEqual(instance._makeTopSitesPreview(3), [
-      site2,
-      site3,
-      addButton,
-      draggedSite,
-      null,
-      null,
-      null,
-      null,
-    ]);
-    site2.isPinned = true;
-    assert.deepEqual(instance._makeTopSitesPreview(1), [
-      site2,
-      draggedSite,
-      site3,
-      addButton,
-      null,
-      null,
-      null,
-      null,
-    ]);
-    assert.deepEqual(instance._makeTopSitesPreview(2), [
-      site3,
-      site2,
-      draggedSite,
-      addButton,
-      null,
-      null,
-      null,
-      null,
-    ]);
-    site3.isPinned = true;
-    assert.deepEqual(instance._makeTopSitesPreview(1), [
-      site2,
-      draggedSite,
-      site3,
-      addButton,
-      null,
-      null,
-      null,
-      null,
-    ]);
-    assert.deepEqual(instance._makeTopSitesPreview(2), [
-      site2,
-      site3,
-      draggedSite,
-      addButton,
-      null,
-      null,
-      null,
-      null,
-    ]);
-    site2.isPinned = false;
-    assert.deepEqual(instance._makeTopSitesPreview(1), [
-      site2,
-      draggedSite,
-      site3,
-      addButton,
-      null,
-      null,
-      null,
-      null,
-    ]);
-    assert.deepEqual(instance._makeTopSitesPreview(2), [
-      site2,
-      site3,
-      draggedSite,
-      addButton,
-      null,
-      null,
-      null,
-      null,
-    ]);
-    site3.isPinned = false;
-    instance.setState({
-      draggedIndex: 1,
-      draggedSite: site2,
-      draggedTitle: "bar",
-    });
-    draggedSite = Object.assign({}, site2, { isPinned: true, isDragged: true });
-    assert.deepEqual(instance._makeTopSitesPreview(0), [
-      draggedSite,
-      site1,
-      site3,
-      addButton,
-      null,
-      null,
-      null,
-      null,
-    ]);
-    assert.deepEqual(instance._makeTopSitesPreview(2), [
-      site1,
-      site3,
-      draggedSite,
-      addButton,
-      null,
-      null,
-      null,
-      null,
-    ]);
-    site2.type = "SPOC";
-    instance.setState({
-      draggedIndex: 2,
-      draggedSite: site3,
-      draggedTitle: "baz",
-    });
-    draggedSite = Object.assign({}, site3, { isPinned: true, isDragged: true });
-    assert.deepEqual(instance._makeTopSitesPreview(0), [
-      draggedSite,
-      site2,
-      site1,
-      addButton,
-      null,
-      null,
-      null,
-      null,
-    ]);
-    site2.type = "";
-    site2.sponsored_position = 2;
-    instance.setState({
-      draggedIndex: 2,
-      draggedSite: site3,
-      draggedTitle: "baz",
-    });
-    draggedSite = Object.assign({}, site3, { isPinned: true, isDragged: true });
-    assert.deepEqual(instance._makeTopSitesPreview(0), [
-      draggedSite,
-      site2,
-      site1,
-      addButton,
-      null,
-      null,
-      null,
-      null,
-    ]);
-  });
   it("should add a className hide-for-narrow to sites after 6/row", () => {
     const rows = [];
     for (let i = 0; i < TOP_SITES_MAX_SITES_PER_ROW; i++) {
       rows.push({ url: `https://foo${i}.com` });
     }
+    const sites = buildTopSitesList(rows, 1, TOP_SITES_MAX_SITES_PER_ROW);
     const wrapper = mount(
       <TopSiteList
         {...DEFAULT_PROPS}
-        TopSites={{ rows }}
+        sites={sites}
         TopSitesRows={1}
         App={APP}
       />
     );
     assert.lengthOf(wrapper.find("li.hide-for-narrow"), 2);
   });
+
+  describe("Keyboard navigation", () => {
+    let sandbox;
+    let wrapper;
+    let instance;
+    let focusTargets;
+
+    beforeEach(() => {
+      sandbox = sinon.createSandbox();
+      const rows = [
+        { url: "https://foo.com" },
+        { url: "https://bar.com" },
+        { url: "https://baz.com" },
+      ];
+      wrapper = shallow(
+        <TopSiteList {...DEFAULT_PROPS} sites={rows} App={APP} />
+      );
+      instance = wrapper.instance();
+
+      // The flat focus order onKeyDown walks: tile links and the add button
+      // (both matched by "a, .add-button") in DOM order.
+      focusTargets = [
+        { focus: sandbox.spy(), tabIndex: -1 },
+        { focus: sandbox.spy(), tabIndex: -1 },
+        { focus: sandbox.spy(), tabIndex: -1 },
+      ];
+      instance.focusRef = { querySelectorAll: () => focusTargets };
+    });
+
+    afterEach(() => {
+      sandbox.restore();
+    });
+
+    it("should navigate to the next focus target with ArrowRight", () => {
+      instance.onKeyDown({ key: "ArrowRight", target: focusTargets[0] });
+
+      assert.calledOnce(focusTargets[1].focus);
+      assert.equal(focusTargets[1].tabIndex, 0);
+    });
+
+    it("should navigate to the previous focus target with ArrowLeft", () => {
+      instance.onKeyDown({ key: "ArrowLeft", target: focusTargets[1] });
+
+      assert.calledOnce(focusTargets[0].focus);
+      assert.equal(focusTargets[0].tabIndex, 0);
+    });
+
+    it("should reset the roving focus index when the row count changes", () => {
+      // A stale focusedIndex (from a now-removed row) would leave the row with
+      // no tab stop; changing the row count re-homes it to the first tile.
+      instance.setState({ focusedIndex: 15 });
+      wrapper.setProps({ TopSitesRows: 2 });
+      assert.equal(instance.state.focusedIndex, 0);
+    });
+  });
 });
 
 describe("TopSiteAddButton", () => {
   it("should dispatch a TOP_SITES_EDIT action when the addbutton is clicked", () => {
     const dispatch = sinon.spy();
-    const wrapper = shallow(
-      <TopSiteAddButton dispatch={dispatch} index={7} isAddButton={true} />
-    );
+    const wrapper = shallow(<TopSiteAddButton dispatch={dispatch} index={7} />);
 
-    wrapper.find(".add-button").first().simulate("click");
+    wrapper.find("moz-button").first().simulate("click");
 
     assert.calledOnce(dispatch);
     assert.calledWithExactly(dispatch, {
@@ -1906,7 +1730,12 @@ describe("#TopSiteFormInput", () => {
     it("should reset the error state on value change", () => {
       wrapper.find("input").simulate("change", { target: { value: "bar" } });
 
-      assert.isFalse(wrapper.state().validationError);
+      assert.equal(
+        wrapper.findWhere(
+          n => n.prop("data-l10n-id") === "newtab-topsites-url-validation"
+        ).length,
+        0
+      );
     });
   });
 });

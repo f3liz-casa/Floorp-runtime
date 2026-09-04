@@ -14,6 +14,8 @@ import androidx.core.graphics.BlendModeCompat.SRC_IN
 import androidx.core.graphics.drawable.toBitmap
 import mozilla.components.support.ktx.android.content.getColorFromAttr
 import org.mozilla.fenix.R
+import com.google.android.material.R as materialR
+import mozilla.components.ui.icons.R as iconsR
 
 /**
  * Provides themed/tinted icons for search suggestions.
@@ -37,6 +39,14 @@ interface SuggestionIconProvider {
      * @return A [Bitmap] of the "search with" icon, or null if it cannot be loaded/created.
      */
     fun getSearchWithIconBitmap(): Bitmap?
+
+    /**
+     * Provides a trending search icon, tinted with the primary text color.
+     * The result is cached for efficiency.
+     *
+     * @return A [Bitmap] of the trending search icon, or null if it cannot be loaded/created.
+     */
+    fun getTrendingSearchIconBitmap(): Bitmap?
 
     /**
      * Provides a standard history icon.
@@ -93,14 +103,10 @@ interface SuggestionIconProvider {
      * @param tintWithPrimaryColor If true, the icon will be tinted with the primary text color.
      * @return A [Bitmap] of the icon, or null if it cannot be loaded/created.
      */
-    fun getGenericIconBitmap(@DrawableRes drawableRes: Int, tintWithPrimaryColor: Boolean = false): Bitmap?
-
-    /**
-     * Provides a standard settings icon.
-     *
-     * @return A [Bitmap] of the settings icon, or null if it cannot be loaded/created.
-     */
-    fun getSettingsIconBitmap(): Bitmap?
+    fun getGenericIconBitmap(
+        @DrawableRes drawableRes: Int,
+        tintWithPrimaryColor: Boolean = false,
+    ): Bitmap?
 }
 
 /**
@@ -113,11 +119,11 @@ interface SuggestionIconProvider {
 class DefaultSuggestionIconProvider(private val context: Context) : SuggestionIconProvider {
 
     private val primaryTextColor: Int by lazy {
-        context.getColorFromAttr(R.attr.textPrimary)
+        context.getColorFromAttr(materialR.attr.colorOnSurface)
     }
 
     private val searchIconBitmapInstance: Bitmap? by lazy {
-        AppCompatResources.getDrawable(context, R.drawable.ic_search)?.apply {
+        AppCompatResources.getDrawable(context, iconsR.drawable.mozac_ic_search_24)?.apply {
             colorFilter = createBlendModeColorFilterCompat(
                 primaryTextColor,
                 SRC_IN,
@@ -129,8 +135,22 @@ class DefaultSuggestionIconProvider(private val context: Context) : SuggestionIc
         AppCompatResources.getDrawable(context, R.drawable.ic_search_with)?.toBitmap()
     }
 
+    private val trendingSearchIconBitmapInstance: Bitmap? by lazy {
+        AppCompatResources.getDrawable(context, iconsR.drawable.mozac_ic_arrow_trending_24)?.apply {
+            colorFilter = createBlendModeColorFilterCompat(
+                primaryTextColor,
+                SRC_IN,
+            )
+        }?.toBitmap()
+    }
+
     private val historyIconBitmapInstance: Bitmap? by lazy {
-        AppCompatResources.getDrawable(context, R.drawable.ic_history)?.toBitmap()
+        AppCompatResources.getDrawable(context, iconsR.drawable.mozac_ic_history_24)?.apply {
+            colorFilter = createBlendModeColorFilterCompat(
+                primaryTextColor,
+                SRC_IN,
+            )
+        }?.toBitmap()
     }
 
     override fun getSearchIconBitmap(): Bitmap? {
@@ -139,6 +159,10 @@ class DefaultSuggestionIconProvider(private val context: Context) : SuggestionIc
 
     override fun getSearchWithIconBitmap(): Bitmap? {
         return searchWithIconBitmapInstance
+    }
+
+    override fun getTrendingSearchIconBitmap(): Bitmap? {
+        return trendingSearchIconBitmapInstance
     }
 
     override fun getHistoryIconBitmap(): Bitmap? {
@@ -165,7 +189,10 @@ class DefaultSuggestionIconProvider(private val context: Context) : SuggestionIc
         return AppCompatResources.getDrawable(context, R.drawable.ic_search_results_device_tablet)
     }
 
-    override fun getGenericIconBitmap(@DrawableRes drawableRes: Int, tintWithPrimaryColor: Boolean): Bitmap? {
+    override fun getGenericIconBitmap(
+        @DrawableRes drawableRes: Int,
+        tintWithPrimaryColor: Boolean,
+    ): Bitmap? {
         return AppCompatResources.getDrawable(context, drawableRes)?.apply {
             if (tintWithPrimaryColor) {
                 colorFilter = createBlendModeColorFilterCompat(
@@ -175,12 +202,4 @@ class DefaultSuggestionIconProvider(private val context: Context) : SuggestionIc
             }
         }?.toBitmap()
     }
-
-    override fun getSettingsIconBitmap(): Bitmap? =
-        AppCompatResources.getDrawable(context, R.drawable.mozac_ic_settings_24)?.apply {
-            colorFilter = createBlendModeColorFilterCompat(
-                context.getColorFromAttr(R.attr.textPrimary),
-                SRC_IN,
-            )
-        }?.toBitmap()
 }

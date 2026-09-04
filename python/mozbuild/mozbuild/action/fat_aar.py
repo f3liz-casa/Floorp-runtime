@@ -30,26 +30,24 @@ def _download_zip(distdir, arch):
     jobs = {
         "arm64-v8a": "android-aarch64-opt",
         "armeabi-v7a": "android-arm-opt",
-        "x86": "android-x86-opt",
         "x86_64": "android-x86_64-opt",
     }
 
     dest = mozpath.join(distdir, "input", arch)
-    subprocess.check_call(
-        [
-            sys.executable,
-            mozpath.join(buildconfig.topsrcdir, "mach"),
-            "artifact",
-            "install",
-            "--job",
-            jobs[arch],
-            "--distdir",
-            dest,
-            "--no-tests",
-            "--no-process",
-            "--maven-zip",
-        ]
-    )
+    subprocess.check_call([
+        sys.executable,
+        mozpath.join(buildconfig.topsrcdir, "mach"),
+        "artifact",
+        "install",
+        "--job",
+        jobs[arch],
+        "--distdir",
+        dest,
+        "--no-tests",
+        "--no-process",
+        "--artifact-filter",
+        "public/build/target.maven.zip",
+    ])
     return mozpath.join(dest, "target.maven.zip")
 
 
@@ -82,7 +80,6 @@ def fat_aar(distdir, zip_paths, no_process=False, no_compatibility_check=False):
             for (path, file) in JarFinder(zip_path, JarReader(zip_path)).find(
                 "**/geckoview-*.aar"
             )
-            if "exoplayer2" not in path
         ]
         if len(aars) != 1:
             raise ValueError(
@@ -94,12 +91,14 @@ def fat_aar(distdir, zip_paths, no_process=False, no_compatibility_check=False):
             aar_file.file.filename, JarReader(fileobj=aar_file.open())
         )
         for path, fileobj in UnpackFinder(jar_finder):
+            path_with_prefix = mozpath.join("geckoview", path)
+
             # Native libraries go straight through.
             if mozpath.match(path, "jni/**"):
-                copier.add(path, fileobj)
+                copier.add(path_with_prefix, fileobj)
 
             elif path in arch_prefs:
-                copier.add(path, fileobj)
+                copier.add(path_with_prefix, fileobj)
 
             elif path in ("classes.jar", "annotations.zip"):
                 # annotations.zip differs due to timestamps, but the contents should not.
@@ -110,35 +109,35 @@ def fat_aar(distdir, zip_paths, no_process=False, no_compatibility_check=False):
                 z = ZipFile(BytesIO(fileobj.open().read()))
                 for r in z.namelist():
                     fingerprint = sha1(z.open(r).read()).hexdigest()
-                    diffs[f"{path}!/{r}"][fingerprint].append(arch)
+                    diffs[f"{path_with_prefix}!/{r}"][fingerprint].append(arch)
 
             else:
                 fingerprint = sha1(fileobj.open().read()).hexdigest()
                 # There's no need to distinguish `target.maven.zip` from `assets/omni.ja` here,
                 # since in practice they will never overlap.
-                diffs[path][fingerprint].append(arch)
+                diffs[path_with_prefix][fingerprint].append(arch)
 
             missing_arch_prefs.discard(path)
 
     # Some differences are allowed across the architecture-specific AARs.  We could allow-list
     # the actual content, but it's not necessary right now.
     allow_pattern_list = {
-        "AndroidManifest.xml",  # Min SDK version is different for 32- and 64-bit builds.
-        "classes.jar!/org/mozilla/gecko/util/HardwareUtils.class",  # Min SDK as well.
-        "classes.jar!/org/mozilla/geckoview/BuildConfig.class",
+        "geckoview/AndroidManifest.xml",  # Min SDK version is different for 32- and 64-bit builds.
+        "geckoview/classes.jar!/org/mozilla/gecko/util/HardwareUtils.class",  # Min SDK as well.
+        "geckoview/classes.jar!/org/mozilla/geckoview/BuildConfig.class",
         # Each input captures its CPU architecture.
-        "chrome/toolkit/content/global/buildconfig.html",
+        "geckoview/chrome/toolkit/content/global/buildconfig.html",
         # Bug 1556162: localized resources are not deterministic across
         # per-architecture builds triggered from the same push.
-        "**/*.ftl",
-        "**/*.dtd",
-        "**/*.properties",
+        "geckoview/**/*.ftl",
+        "geckoview/**/*.dtd",
+        "geckoview/**/*.properties",
     }
 
     not_allowed = OrderedDict()
 
     def format_diffs(ds):
-        # Like '  armeabi-v7a, arm64-v8a -> XXX\n  x86, x86_64 -> YYY'.
+        # Like '  armeabi-v7a, arm64-v8a -> XXX\n  x86_64 -> YYY'.
         return "\n".join(
             sorted(
                 "  {archs} -> {fingerprint}".format(
@@ -180,7 +179,7 @@ def fat_aar(distdir, zip_paths, no_process=False, no_compatibility_check=False):
     return 0
 
 
-_ALL_ARCHS = ("armeabi-v7a", "arm64-v8a", "x86_64", "x86")
+_ALL_ARCHS = ("armeabi-v7a", "arm64-v8a", "x86_64")
 
 
 def main(argv):

@@ -1,14 +1,14 @@
-/* -*- Mode: C++; tab-width: 40; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef mozilla_widget_InitData_h__
-#define mozilla_widget_InitData_h__
+#ifndef mozilla_widget_InitData_h_
+#define mozilla_widget_InitData_h_
 
 #include <cstdint>
-#include "mozilla/TypedEnumBits.h"
+
 #include "X11UndefineNone.h"
+#include "mozilla/TypedEnumBits.h"
 
 namespace mozilla::widget {
 
@@ -71,6 +71,15 @@ enum class TransparencyMode : uint8_t {
   // WidgetMessageUtils.h
 };
 
+// There are different types of Picture-in-Picture windows on the web
+enum class PiPType : uint8_t {
+  NoPiP,
+  // https://w3c.github.io/picture-in-picture
+  MediaPiP,
+  // https://wicg.github.io/document-picture-in-picture
+  DocumentPiP
+};
+
 // Basic struct for widget initialization data.
 // @see Create member function of nsIWidget
 struct InitData {
@@ -86,11 +95,13 @@ struct InitData {
   bool mIsDragPopup = false;  // true for drag feedback panels
   // true if window creation animation is suppressed, e.g. for session restore
   bool mIsAnimationSuppressed = false;
+  // true if the window should not auto-enter native fullscreen on its initial
+  // show, e.g. a window created by detaching a tab from a fullscreen window
+  bool mIsInitialFullscreenSuppressed = false;
   // true if the window should support an alpha channel, if available.
   bool mHasRemoteContent = false;
   bool mAlwaysOnTop = false;
-  // Whether we're a PictureInPicture window
-  bool mPIPWindow = false;
+  PiPType mPiPType = PiPType::NoPiP;
   // True if the window is user-resizable.
   bool mResizable = false;
   bool mIsPrivate = false;

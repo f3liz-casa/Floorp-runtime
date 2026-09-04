@@ -1,20 +1,15 @@
-/* -*- Mode: rust; rust-indent-offset: 4 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 use pkcs11_bindings::*;
+use rsclientcerts_util::error::{Error, ErrorType};
+use rsclientcerts_util::error_here;
 use std::collections::{BTreeMap, BTreeSet};
 use std::convert::TryInto;
-use std::iter::FromIterator;
+use std::marker::PhantomData;
 
-use crate::error::{Error, ErrorType};
-use crate::error_here;
-use crate::util::CryptokiCert;
-
-extern "C" {
-    fn IsGeckoSearchingForClientAuthCertificates() -> bool;
-}
+use crate::cryptoki::CryptokiCert;
 
 pub trait CryptokiObject {
     fn matches(&self, attrs: &[(CK_ATTRIBUTE_TYPE, Vec<u8>)]) -> bool;
@@ -42,6 +37,20 @@ pub trait ClientCertsBackend {
     fn get_slot_info(&self) -> CK_SLOT_INFO;
     fn get_token_info(&self) -> CK_TOKEN_INFO;
     fn get_mechanism_list(&self) -> Vec<CK_MECHANISM_TYPE>;
+    fn change_password(&mut self, _from: &[u8], _to: &[u8]) -> Result<(), Error> {
+        Err(error_here!(ErrorType::LibraryFailure))
+    }
+    fn login(&mut self, _password: &[u8]) -> Result<(), Error> {
+        Err(error_here!(ErrorType::LibraryFailure))
+    }
+    fn logout(&mut self) {}
+    fn is_logged_in(&self) -> bool {
+        false
+    }
+}
+
+pub trait IsSearchingForClientCerts {
+    fn is_searching_for_client_certs() -> bool;
 }
 
 const SUPPORTED_ATTRIBUTES: &[CK_ATTRIBUTE_TYPE] = &[
@@ -168,7 +177,7 @@ impl<B: ClientCertsBackend> Slot<B> {
 /// The `Manager` keeps track of the state of this module with respect to the PKCS #11
 /// specification. This includes what sessions are open, which search and sign operations are
 /// ongoing, and what objects are known and by what handle.
-pub struct Manager<B: ClientCertsBackend> {
+pub struct Manager<B: ClientCertsBackend, S: IsSearchingForClientCerts> {
     /// A map of open session handle to slot ID. Sessions can be created (opened) on a particular
     /// slot and later closed.
     sessions: BTreeMap<CK_SESSION_HANDLE, CK_SLOT_ID>,
@@ -181,21 +190,33 @@ pub struct Manager<B: ClientCertsBackend> {
     next_session: CK_SESSION_HANDLE,
     /// The list of slots managed by this Manager. The slot at index n has slot ID n + 1.
     slots: Vec<Slot<B>>,
+    phantom: PhantomData<S>,
 }
 
-impl<B: ClientCertsBackend> Manager<B> {
-    pub fn new(slots: Vec<B>) -> Manager<B> {
+impl<B: ClientCertsBackend, S: IsSearchingForClientCerts> Manager<B, S> {
+    pub fn new(slots: Vec<B>) -> Manager<B, S> {
         Manager {
             sessions: BTreeMap::new(),
             searches: BTreeMap::new(),
             signs: BTreeMap::new(),
             next_session: 1,
             slots: slots.into_iter().map(Slot::new).collect(),
+            phantom: PhantomData,
         }
     }
 
-    pub fn get_slot_ids(&self) -> Vec<CK_SLOT_ID> {
-        Vec::from_iter(1..=self.slots.len().try_into().unwrap())
+    /// Get a list of slot IDs. If `token_present` is `true`, returns only the IDs of present
+    /// slots. Otherwise, returns all slot IDs.
+    pub fn get_slot_ids(&self, token_present: bool) -> Vec<CK_SLOT_ID> {
+        let mut slot_ids = Vec::with_capacity(self.slots.len());
+        for (index, slot) in self.slots.iter().enumerate() {
+            if slot.backend.get_slot_info().flags & CKF_TOKEN_PRESENT == CKF_TOKEN_PRESENT
+                || !token_present
+            {
+                slot_ids.push((index + 1).try_into().unwrap());
+            }
+        }
+        slot_ids
     }
 
     pub fn get_slot_info(&self, slot_id: CK_SLOT_ID) -> Result<CK_SLOT_INFO, Error> {
@@ -231,6 +252,53 @@ impl<B: ClientCertsBackend> Manager<B> {
         self.sessions
             .retain(|_, existing_slot_id| *existing_slot_id != slot_id);
         Ok(())
+    }
+
+    pub fn change_password(
+        &mut self,
+        session: CK_SESSION_HANDLE,
+        from: &[u8],
+        to: &[u8],
+    ) -> Result<(), Error> {
+        let Some(slot_id) = self.sessions.get(&session) else {
+            return Err(error_here!(ErrorType::InvalidArgument));
+        };
+        let slot = self.slot_id_to_slot_mut(*slot_id)?;
+        slot.backend.change_password(from, to)
+    }
+
+    pub fn login(&mut self, session: CK_SESSION_HANDLE, password: &[u8]) -> Result<(), Error> {
+        let Some(slot_id) = self.sessions.get(&session) else {
+            return Err(error_here!(ErrorType::InvalidArgument));
+        };
+        let slot = self.slot_id_to_slot_mut(*slot_id)?;
+        slot.backend.login(password)
+    }
+
+    pub fn logout(&mut self, session: CK_SESSION_HANDLE) -> Result<(), Error> {
+        let Some(slot_id) = self.sessions.get(&session) else {
+            return Err(error_here!(ErrorType::InvalidArgument));
+        };
+        let slot = self.slot_id_to_slot_mut(*slot_id)?;
+        slot.backend.logout();
+        Ok(())
+    }
+
+    pub fn get_session_info(&self, session: CK_SESSION_HANDLE) -> Result<CK_SESSION_INFO, Error> {
+        let Some(slot_id) = self.sessions.get(&session) else {
+            return Err(error_here!(ErrorType::InvalidArgument));
+        };
+        let slot = self.slot_id_to_slot(*slot_id)?;
+        Ok(CK_SESSION_INFO {
+            slotID: *slot_id,
+            state: if slot.backend.is_logged_in() {
+                CKS_RO_USER_FUNCTIONS
+            } else {
+                CKS_RO_PUBLIC_SESSION
+            },
+            flags: CKF_SERIAL_SESSION,
+            ulDeviceError: 0,
+        })
     }
 
     fn slot_id_to_slot(&self, slot_id: CK_SLOT_ID) -> Result<&Slot<B>, Error> {
@@ -282,7 +350,7 @@ impl<B: ClientCertsBackend> Manager<B> {
         // authentication certificates (or all certificates).
         // Since these searches are relatively rare, this minimizes the impact of doing these
         // re-scans.
-        if unsafe { IsGeckoSearchingForClientAuthCertificates() } {
+        if S::is_searching_for_client_certs() {
             slot.maybe_find_new_objects()?;
         }
         let mut handles = Vec::new();

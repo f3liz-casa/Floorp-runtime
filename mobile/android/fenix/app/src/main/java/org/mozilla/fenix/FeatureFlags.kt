@@ -23,25 +23,9 @@ object FeatureFlags {
     const val PULL_TO_REFRESH_ENABLED = true
 
     /**
-     * Enables new search settings UI with two extra fragments, for managing the default engine
-     * and managing search shortcuts in the quick search menu.
-     */
-    const val UNIFIED_SEARCH_SETTINGS = true
-
-    /**
      * Allows users to enable Firefox Suggest.
      */
     const val FX_SUGGEST = true
-
-    /**
-     * Enable Meta attribution.
-     */
-    const val META_ATTRIBUTION_ENABLED = true
-
-    /**
-     * Enables the Unified Trust Panel.
-     */
-    val UNIFIED_TRUST_PANEL = Config.channel.isNightlyOrDebug
 
     /**
      * Disables the Onboarding feature for debug builds by default. Set this to `true` if you need
@@ -52,7 +36,7 @@ object FeatureFlags {
     val onboardingFeatureEnabled = !Config.channel.isDebug
 
     /**
-     * Enables the custom review pre-prompt.
+     * Enables Firefox Labs.
      */
-    const val CUSTOM_REVIEW_PROMPT_ENABLED = true
+    const val FIREFOX_LABS = true
 }

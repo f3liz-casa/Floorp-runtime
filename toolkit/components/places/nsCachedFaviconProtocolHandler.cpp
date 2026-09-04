@@ -1,4 +1,3 @@
-//* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -49,9 +48,8 @@ static nsresult GetDefaultIcon(nsIChannel* aOriginalChannel,
   nsCOMPtr<nsILoadInfo> loadInfo = aOriginalChannel->LoadInfo();
   rv = NS_NewChannelInternal(aChannel, defaultIconURI, loadInfo);
   NS_ENSURE_SUCCESS(rv, rv);
-  Unused << (*aChannel)->SetContentType(
-      nsLiteralCString(FAVICON_DEFAULT_MIMETYPE));
-  Unused << aOriginalChannel->SetContentType(
+  (void)(*aChannel)->SetContentType(nsLiteralCString(FAVICON_DEFAULT_MIMETYPE));
+  (void)aOriginalChannel->SetContentType(
       nsLiteralCString(FAVICON_DEFAULT_MIMETYPE));
   return NS_OK;
 }
@@ -272,6 +270,10 @@ NS_IMETHODIMP
 nsCachedFaviconProtocolHandler::NewChannel(nsIURI* aURI, nsILoadInfo* aLoadInfo,
                                            nsIChannel** _retval) {
   NS_ENSURE_ARG_POINTER(aURI);
+
+  if (!nsContentUtils::IsImageType(aLoadInfo->GetExternalContentPolicyType())) {
+    return NS_ERROR_CONTENT_BLOCKED;
+  }
 
   nsCOMPtr<nsIURI> cachedFaviconURI;
   nsresult rv = ParseCachedFaviconURI(aURI, getter_AddRefs(cachedFaviconURI));

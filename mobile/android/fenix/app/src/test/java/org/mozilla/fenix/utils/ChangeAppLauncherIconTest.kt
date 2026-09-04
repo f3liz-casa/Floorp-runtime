@@ -9,8 +9,14 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import androidx.core.content.pm.ShortcutInfoCompat
-import mozilla.components.support.test.any
-import mozilla.components.support.test.mock
+import io.mockk.MockKAnnotations
+import io.mockk.confirmVerified
+import io.mockk.every
+import io.mockk.impl.annotations.RelaxedMockK
+import io.mockk.verify
+import kotlinx.coroutines.Job
+import mozilla.components.concept.base.crash.Breadcrumb
+import mozilla.components.concept.base.crash.CrashReporting
 import mozilla.components.support.test.robolectric.testContext
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -18,24 +24,20 @@ import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
-import org.mockito.Mock
-import org.mockito.Mockito.never
-import org.mockito.Mockito.verify
-import org.mockito.Mockito.verifyNoInteractions
-import org.mockito.Mockito.`when`
-import org.mockito.MockitoAnnotations.openMocks
 import org.robolectric.RobolectricTestRunner
 
 @RunWith(RobolectricTestRunner::class)
 class ChangeAppLauncherIconTest {
 
-    @Mock
+    @RelaxedMockK
     private lateinit var shortcutWrapper: ShortcutManagerWrapper
     private lateinit var shortcutsUpdater: ShortcutsUpdater
+    private lateinit var fakeCrashReporter: CrashReporting
 
     @Before
     fun setup() {
-        openMocks(this)
+        MockKAnnotations.init(this)
+        fakeCrashReporter = TestCrashReporter()
         shortcutsUpdater = ShortcutsUpdaterDefault(testContext)
     }
 
@@ -62,6 +64,7 @@ class ChangeAppLauncherIconTest {
             appAlias,
             alternativeAppAlias,
             true,
+            fakeCrashReporter,
         )
 
         val appAliasState = packageManager.getComponentEnabledSetting(appAlias)
@@ -71,7 +74,7 @@ class ChangeAppLauncherIconTest {
             packageManager.getComponentEnabledSetting(alternativeAppAlias)
         assertTrue(alternativeAppAliasState == PackageManager.COMPONENT_ENABLED_STATE_DISABLED)
 
-        verifyNoInteractions(shortcutWrapper)
+        confirmVerified(shortcutWrapper)
     }
 
     @Test
@@ -104,6 +107,7 @@ class ChangeAppLauncherIconTest {
             appAlias,
             alternativeAppAlias,
             true,
+            fakeCrashReporter,
         )
 
         val appAliasState = packageManager.getComponentEnabledSetting(appAlias)
@@ -136,7 +140,7 @@ class ChangeAppLauncherIconTest {
             PackageManager.DONT_KILL_APP,
         )
 
-        `when`(shortcutWrapper.getPinnedShortcuts()).thenThrow(IllegalStateException())
+        every { shortcutWrapper.getPinnedShortcuts() } throws IllegalStateException()
 
         changeAppLauncherIcon(
             testContext,
@@ -145,6 +149,7 @@ class ChangeAppLauncherIconTest {
             appAlias,
             alternativeAppAlias,
             true,
+            fakeCrashReporter,
         )
 
         val appAliasState = packageManager.getComponentEnabledSetting(appAlias)
@@ -154,8 +159,8 @@ class ChangeAppLauncherIconTest {
             packageManager.getComponentEnabledSetting(alternativeAppAlias)
         assertTrue(alternativeAppAliasState == PackageManager.COMPONENT_ENABLED_STATE_ENABLED)
 
-        verify(shortcutWrapper).getPinnedShortcuts()
-        verify(shortcutWrapper, never()).updateShortcuts(any())
+        verify { shortcutWrapper.getPinnedShortcuts() }
+        verify(exactly = 0) { shortcutWrapper.updateShortcuts(any()) }
     }
 
     @Test
@@ -174,7 +179,7 @@ class ChangeAppLauncherIconTest {
             PackageManager.DONT_KILL_APP,
         )
 
-        `when`(shortcutWrapper.updateShortcuts(any())).thenThrow(IllegalArgumentException())
+        every { shortcutWrapper.updateShortcuts(any()) } throws IllegalArgumentException()
 
         changeAppLauncherIcon(
             testContext,
@@ -183,6 +188,7 @@ class ChangeAppLauncherIconTest {
             appAlias,
             alternativeAppAlias,
             true,
+            fakeCrashReporter,
         )
 
         val appAliasState = packageManager.getComponentEnabledSetting(appAlias)
@@ -192,8 +198,8 @@ class ChangeAppLauncherIconTest {
             packageManager.getComponentEnabledSetting(alternativeAppAlias)
         assertTrue(alternativeAppAliasState == PackageManager.COMPONENT_ENABLED_STATE_ENABLED)
 
-        verify(shortcutWrapper).getPinnedShortcuts()
-        verify(shortcutWrapper).updateShortcuts(any())
+        verify { shortcutWrapper.getPinnedShortcuts() }
+        verify { shortcutWrapper.updateShortcuts(any()) }
     }
 
     @Test
@@ -226,6 +232,7 @@ class ChangeAppLauncherIconTest {
             appAlias,
             alternativeAppAlias,
             false,
+            fakeCrashReporter,
         )
 
         val appAliasState = packageManager.getComponentEnabledSetting(appAlias)
@@ -259,7 +266,7 @@ class ChangeAppLauncherIconTest {
             PackageManager.DONT_KILL_APP,
         )
 
-        `when`(shortcutWrapper.getPinnedShortcuts()).thenReturn(mock())
+        every { shortcutWrapper.getPinnedShortcuts() } returns emptyList()
 
         changeAppLauncherIcon(
             testContext,
@@ -268,6 +275,7 @@ class ChangeAppLauncherIconTest {
             appAlias,
             alternativeAppAlias,
             false,
+            fakeCrashReporter,
         )
 
         val appAliasState = packageManager.getComponentEnabledSetting(appAlias)
@@ -277,7 +285,7 @@ class ChangeAppLauncherIconTest {
             packageManager.getComponentEnabledSetting(alternativeAppAlias)
         assertTrue(alternativeAppAliasState == PackageManager.COMPONENT_ENABLED_STATE_ENABLED)
 
-        verifyNoInteractions(shortcutWrapper)
+        confirmVerified(shortcutWrapper)
     }
 
     @Test
@@ -296,7 +304,7 @@ class ChangeAppLauncherIconTest {
             PackageManager.DONT_KILL_APP,
         )
 
-        `when`(shortcutWrapper.getPinnedShortcuts()).thenThrow(IllegalStateException())
+        every { shortcutWrapper.getPinnedShortcuts() } throws IllegalStateException()
 
         changeAppLauncherIcon(
             testContext,
@@ -305,6 +313,7 @@ class ChangeAppLauncherIconTest {
             appAlias,
             alternativeAppAlias,
             false,
+            fakeCrashReporter,
         )
 
         val appAliasState = packageManager.getComponentEnabledSetting(appAlias)
@@ -314,8 +323,8 @@ class ChangeAppLauncherIconTest {
             packageManager.getComponentEnabledSetting(alternativeAppAlias)
         assertTrue(alternativeAppAliasState == PackageManager.COMPONENT_ENABLED_STATE_DISABLED)
 
-        verify(shortcutWrapper).getPinnedShortcuts()
-        verify(shortcutWrapper, never()).updateShortcuts(any())
+        verify { shortcutWrapper.getPinnedShortcuts() }
+        verify(exactly = 0) { shortcutWrapper.updateShortcuts(any()) }
     }
 
     @Test
@@ -334,7 +343,7 @@ class ChangeAppLauncherIconTest {
             PackageManager.DONT_KILL_APP,
         )
 
-        `when`(shortcutWrapper.updateShortcuts(any())).thenThrow(IllegalArgumentException())
+        every { shortcutWrapper.updateShortcuts(any()) } throws IllegalArgumentException()
 
         changeAppLauncherIcon(
             testContext,
@@ -343,6 +352,7 @@ class ChangeAppLauncherIconTest {
             appAlias,
             alternativeAppAlias,
             false,
+            fakeCrashReporter,
         )
 
         val appAliasState = packageManager.getComponentEnabledSetting(appAlias)
@@ -352,8 +362,8 @@ class ChangeAppLauncherIconTest {
             packageManager.getComponentEnabledSetting(alternativeAppAlias)
         assertTrue(alternativeAppAliasState == PackageManager.COMPONENT_ENABLED_STATE_DISABLED)
 
-        verify(shortcutWrapper).getPinnedShortcuts()
-        verify(shortcutWrapper).updateShortcuts(any())
+        verify { shortcutWrapper.getPinnedShortcuts() }
+        verify { shortcutWrapper.updateShortcuts(any()) }
     }
 
     // general changeAppLauncherIcon tests
@@ -384,7 +394,8 @@ class ChangeAppLauncherIconTest {
             shortcutInfo = shortcutsUpdater,
             appAlias = appAlias,
             newAppAlias = newAppAlias,
-            updateShortcuts = { _, _, _ -> false },
+            crashReporter = fakeCrashReporter,
+            updateShortcuts = { _, _, _, _ -> false },
         )
 
         assertEquals(PackageManager.COMPONENT_ENABLED_STATE_ENABLED, packageManager.getComponentEnabledSetting(appAlias))
@@ -417,7 +428,8 @@ class ChangeAppLauncherIconTest {
             shortcutInfo = shortcutsUpdater,
             appAlias = appAlias,
             newAppAlias = newAppAlias,
-            updateShortcuts = { _, _, _ -> true },
+            crashReporter = fakeCrashReporter,
+            updateShortcuts = { _, _, _, _ -> true },
         )
 
         assertEquals(PackageManager.COMPONENT_ENABLED_STATE_DISABLED, packageManager.getComponentEnabledSetting(appAlias))
@@ -443,6 +455,7 @@ class ChangeAppLauncherIconTest {
                 shortcutManager = throwingWrapper,
                 shortcutInfo = shortcutsUpdater,
                 targetAlias = ComponentName("test", "AppAlternative"),
+                crashReporter = fakeCrashReporter,
             ),
         )
     }
@@ -465,6 +478,7 @@ class ChangeAppLauncherIconTest {
                 shortcutManager = throwingWrapper,
                 shortcutInfo = shortcutsUpdater,
                 targetAlias = ComponentName("test", "AppAlternative"),
+                crashReporter = fakeCrashReporter,
             ),
         )
     }
@@ -476,6 +490,7 @@ class ChangeAppLauncherIconTest {
                 shortcutManager = TestShortcutManagerWrapper(testContext),
                 shortcutInfo = shortcutsUpdater,
                 targetAlias = ComponentName("test", "AppAlternative"),
+                crashReporter = fakeCrashReporter,
             ),
         )
     }
@@ -494,6 +509,78 @@ class ChangeAppLauncherIconTest {
         assertEquals(shortcut.shortLabel, result.shortLabel)
         assertEquals(shortcut.intent, result.intent)
         assertEquals(newAppAlias, result.activity)
+    }
+
+    @Test
+    fun `GIVEN getPinnedShortcuts throws WHEN changeAppLauncherIcon is called THEN the error is submitted to a crash recorder`() {
+        val packageManager = testContext.packageManager
+        val appAlias = ComponentName("test", "App")
+        packageManager.setComponentEnabledSetting(
+            appAlias,
+            PackageManager.COMPONENT_ENABLED_STATE_DISABLED,
+            PackageManager.DONT_KILL_APP,
+        )
+        val alternativeAppAlias = ComponentName("test", "AppAlternative")
+        packageManager.setComponentEnabledSetting(
+            alternativeAppAlias,
+            PackageManager.COMPONENT_ENABLED_STATE_ENABLED,
+            PackageManager.DONT_KILL_APP,
+        )
+        val fakeCrashReporter = TestCrashReporter()
+        val error = IllegalStateException("Pinned shortcuts were too fast to catch!")
+        val shortcutWrapper = object : ShortcutManagerWrapper {
+            override fun getPinnedShortcuts(): List<ShortcutInfoCompat> { throw error }
+            override fun updateShortcuts(updatedShortcuts: List<ShortcutInfoCompat>) {}
+        }
+
+        changeAppLauncherIcon(
+            testContext,
+            shortcutWrapper,
+            shortcutsUpdater,
+            appAlias,
+            alternativeAppAlias,
+            true,
+            fakeCrashReporter,
+        )
+
+        assertTrue(fakeCrashReporter.submitCaughtExceptionInvoked)
+        assertTrue(fakeCrashReporter.errors.contains(error))
+    }
+
+    @Test
+    fun `GIVEN updateShortcuts throws WHEN changeAppLauncherIcon is called THEN the error is submitted to a crash recorder`() {
+        val packageManager = testContext.packageManager
+        val appAlias = ComponentName("test", "App")
+        packageManager.setComponentEnabledSetting(
+            appAlias,
+            PackageManager.COMPONENT_ENABLED_STATE_DISABLED,
+            PackageManager.DONT_KILL_APP,
+        )
+        val alternativeAppAlias = ComponentName("test", "AppAlternative")
+        packageManager.setComponentEnabledSetting(
+            alternativeAppAlias,
+            PackageManager.COMPONENT_ENABLED_STATE_ENABLED,
+            PackageManager.DONT_KILL_APP,
+        )
+        val fakeCrashReporter = TestCrashReporter()
+        val error = IllegalArgumentException("Provided shortcuts were too cool to be updated!")
+        val shortcutWrapper = object : ShortcutManagerWrapper {
+            override fun getPinnedShortcuts(): List<ShortcutInfoCompat> { return emptyList() }
+            override fun updateShortcuts(updatedShortcuts: List<ShortcutInfoCompat>) { throw error }
+        }
+
+        changeAppLauncherIcon(
+            testContext,
+            shortcutWrapper,
+            shortcutsUpdater,
+            appAlias,
+            alternativeAppAlias,
+            true,
+            fakeCrashReporter,
+        )
+
+        assertTrue(fakeCrashReporter.submitCaughtExceptionInvoked)
+        assertTrue(fakeCrashReporter.errors.contains(error))
     }
 }
 
@@ -519,4 +606,17 @@ private class TestShortcutManagerWrapper(context: Context) : ShortcutManagerWrap
         defaultImplementation.updateShortcuts(updatedShortcuts)
         updateShortcutsCapture = updatedShortcuts
     }
+}
+
+private class TestCrashReporter() : CrashReporting {
+    var submitCaughtExceptionInvoked = false
+    var errors: MutableList<Throwable> = mutableListOf()
+
+    override fun submitCaughtException(throwable: Throwable): Job {
+        submitCaughtExceptionInvoked = true
+        errors.add(throwable)
+        return Job().apply { complete() }
+    }
+
+    override fun recordCrashBreadcrumb(breadcrumb: Breadcrumb) {}
 }

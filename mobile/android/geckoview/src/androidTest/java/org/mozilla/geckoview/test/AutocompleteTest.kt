@@ -1,5 +1,4 @@
-/* -*- Mode: Java; c-basic-offset: 4; tab-width: 4; indent-tabs-mode: nil; -*-
- * Any copyright is dedicated to the Public Domain.
+/* Any copyright is dedicated to the Public Domain.
    http://creativecommons.org/publicdomain/zero/1.0/ */
 
 package org.mozilla.geckoview.test
@@ -9,12 +8,14 @@ import android.os.Looper
 import android.view.KeyEvent
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.filters.MediumTest
+import junit.framework.TestCase.assertTrue
 import org.hamcrest.Matchers.equalTo
 import org.hamcrest.Matchers.isEmptyOrNullString
 import org.hamcrest.Matchers.not
 import org.hamcrest.Matchers.notNullValue
 import org.junit.Test
 import org.junit.runner.RunWith
+import org.mozilla.geckoview.Autocomplete
 import org.mozilla.geckoview.Autocomplete.Address
 import org.mozilla.geckoview.Autocomplete.AddressSelectOption
 import org.mozilla.geckoview.Autocomplete.CreditCard
@@ -36,7 +37,21 @@ import org.mozilla.geckoview.test.rule.GeckoSessionTestRule.AssertCalled
 @RunWith(AndroidJUnit4::class)
 @MediumTest
 class AutocompleteTest : BaseSessionTest() {
+	@org.junit.Before
+    fun setup() {
+        // Ensure programmatic focus is allowed to open the autofill popup
+        // for all tests in this class.
+        sessionRule.setPrefsUntilTestEnd(
+            mapOf(
+                "extensions.formautofill.skipProgrammaticCheckForTests" to true,
+            ),
+        )
+    }
+
     val acceptDelay: Long = 100
+
+    // Controls how long a selection prompt is kept open after its field blurs.
+    private val dismissDelayPref = "geckoview.autocomplete.selection_dismiss_delay_ms"
 
     // This is a utility to delete previous credit card and address information.
     // Some credit card tests may not use fetched data since pop up is opened
@@ -107,6 +122,7 @@ class AutocompleteTest : BaseSessionTest() {
                 // Enable login management since it's disabled in automation.
                 "signon.rememberSignons" to true,
                 "signon.autofillForms.http" to true,
+                "signon.testOnlyNotWaitForPaint" to true,
             ),
         )
 
@@ -450,6 +466,187 @@ class AutocompleteTest : BaseSessionTest() {
     }
 
     @Test
+    fun creditCardSelectCoalescesAcrossSameTypeFields() {
+        // Workaround to fetch and open prompt
+        clearData()
+
+        // Keep the coalesce window open long enough that the deferred dismissal
+        // can't fire mid-test, so focusing the second field deterministically
+        // coalesces into the existing prompt regardless of how slow the
+        // autocomplete search is on the device.
+        sessionRule.setPrefsUntilTestEnd(mapOf(dismissDelayPref to 60000))
+
+        // Moving focus between two credit card fields should keep the existing
+        // selection prompt alive instead of dismissing and reopening it, which
+        // would flicker. The delegate should therefore see a single
+        // onCreditCardSelect and no dismissal while focus moves between fields.
+        val savedCC = arrayOf(
+            CreditCard.Builder()
+                .guid("test-guid1")
+                .name("Peter Parker")
+                .number("1234-1234-1234-1234")
+                .expirationMonth("04")
+                .expirationYear("22")
+                .build(),
+        )
+
+        mainSession.loadTestPath(CC_FORM_HTML_PATH)
+        mainSession.waitForPageStop()
+
+        sessionRule.delegateUntilTestEnd(object : StorageDelegate {
+            @AssertCalled
+            override fun onCreditCardFetch(): GeckoResult<Array<CreditCard>>? {
+                return GeckoResult.fromValue(savedCC)
+            }
+        })
+
+        var promptDismissed = false
+        val dismissed = GeckoResult<PromptDelegate.PromptResponse>()
+        val promptInstanceDelegate = object : PromptDelegate.PromptInstanceDelegate {
+            override fun onPromptDismiss(prompt: PromptDelegate.BasePrompt) {
+                promptDismissed = true
+                dismissed.complete(prompt.dismiss())
+            }
+        }
+
+        val promptOpened = GeckoResult<Void>()
+        mainSession.delegateUntilTestEnd(object : PromptDelegate {
+            // Coalescing means focusing the second field must not open a second
+            // prompt; a regression that dismisses + reopens calls this twice.
+            @AssertCalled(count = 1)
+            override fun onCreditCardSelect(
+                session: GeckoSession,
+                prompt: AutocompleteRequest<CreditCardSelectOption>,
+            ): GeckoResult<PromptDelegate.PromptResponse>? {
+                prompt.setDelegate(promptInstanceDelegate)
+                Handler(Looper.getMainLooper()).postDelayed({
+                    promptOpened.complete(null)
+                }, acceptDelay)
+                // Leave the prompt open; do not confirm.
+                return GeckoResult()
+            }
+        })
+
+        // Open the prompt on the first credit card field.
+        mainSession.evaluateJS("document.querySelector('#name').focus()")
+        sessionRule.waitForResult(promptOpened)
+
+        // Move focus to a second credit card field and let its autocomplete
+        // cycle run. With coalescing, no second prompt opens and the existing
+        // one is not dismissed. The window is large, so the dismissal cannot
+        // fire here regardless of timing.
+        val settled = GeckoResult<Void>()
+        mainSession.evaluateJS("document.querySelector('#number').focus()")
+        Handler(Looper.getMainLooper()).postDelayed({
+            settled.complete(null)
+        }, acceptDelay * 5)
+        sessionRule.waitForResult(settled)
+
+        assertThat(
+            "The prompt should stay open while focus moves between same-type fields",
+            promptDismissed,
+            equalTo(false),
+        )
+
+        // Shrink the window so the dismissal is immediate, then confirm focus
+        // leaving the field still dismisses the (single) prompt.
+        sessionRule.setPrefsUntilTestEnd(mapOf(dismissDelayPref to 0))
+        mainSession.evaluateJS("document.querySelector('#number').blur()")
+        sessionRule.waitForResult(dismissed)
+    }
+
+    @Test
+    fun addressSelectCoalescesAcrossSameTypeFields() {
+        // Workaround to fetch and open prompt
+        clearData()
+
+        // Keep the coalesce window open long enough that the deferred dismissal
+        // can't fire mid-test, so focusing the second field deterministically
+        // coalesces into the existing prompt regardless of how slow the
+        // autocomplete search is on the device.
+        sessionRule.setPrefsUntilTestEnd(mapOf(dismissDelayPref to 60000))
+
+        // As with credit cards, moving focus between two address fields should
+        // keep the existing prompt rather than flickering.
+        val savedAddress = Address.Builder()
+            .guid("test-guid")
+            .name("Peter Parker")
+            .givenName("Peter")
+            .familyName("Parker")
+            .streetAddress("20 Ingram Street, Forest Hills Gardens, Queens")
+            .postalCode("11375")
+            .country("US")
+            .email("spiderman@newyork.com")
+            .tel("+1 180090021")
+            .organization("")
+            .build()
+
+        mainSession.loadTestPath(ADDRESS_FORM_HTML_PATH)
+        mainSession.waitForPageStop()
+
+        sessionRule.delegateUntilTestEnd(object : StorageDelegate {
+            @AssertCalled
+            override fun onAddressFetch(): GeckoResult<Array<Address>>? {
+                return GeckoResult.fromValue(arrayOf(savedAddress))
+            }
+        })
+
+        var promptDismissed = false
+        val dismissed = GeckoResult<PromptDelegate.PromptResponse>()
+        val promptInstanceDelegate = object : PromptDelegate.PromptInstanceDelegate {
+            override fun onPromptDismiss(prompt: PromptDelegate.BasePrompt) {
+                promptDismissed = true
+                dismissed.complete(prompt.dismiss())
+            }
+        }
+
+        val promptOpened = GeckoResult<Void>()
+        mainSession.delegateUntilTestEnd(object : PromptDelegate {
+            // Coalescing means focusing the second field must not open a second
+            // prompt; a regression that dismisses + reopens calls this twice.
+            @AssertCalled(count = 1)
+            override fun onAddressSelect(
+                session: GeckoSession,
+                prompt: AutocompleteRequest<AddressSelectOption>,
+            ): GeckoResult<PromptDelegate.PromptResponse>? {
+                prompt.setDelegate(promptInstanceDelegate)
+                Handler(Looper.getMainLooper()).postDelayed({
+                    promptOpened.complete(null)
+                }, acceptDelay)
+                // Leave the prompt open; do not confirm.
+                return GeckoResult()
+            }
+        })
+
+        // Open the prompt on the first address field.
+        mainSession.evaluateJS("document.querySelector('#givenName').focus()")
+        sessionRule.waitForResult(promptOpened)
+
+        // Move focus to a second address field and let its autocomplete cycle
+        // run. With coalescing, no second prompt opens and the existing one is
+        // not dismissed. The window is large, so the dismissal cannot fire here
+        // regardless of timing.
+        val settled = GeckoResult<Void>()
+        mainSession.evaluateJS("document.querySelector('#streetAddress').focus()")
+        Handler(Looper.getMainLooper()).postDelayed({
+            settled.complete(null)
+        }, acceptDelay * 5)
+        sessionRule.waitForResult(settled)
+
+        assertThat(
+            "The prompt should stay open while focus moves between same-type fields",
+            promptDismissed,
+            equalTo(false),
+        )
+
+        // Shrink the window so the dismissal is immediate, then confirm focus
+        // leaving the field still dismisses the (single) prompt.
+        sessionRule.setPrefsUntilTestEnd(mapOf(dismissDelayPref to 0))
+        mainSession.evaluateJS("document.querySelector('#streetAddress').blur()")
+        sessionRule.waitForResult(dismissed)
+    }
+
+    @Test
     fun fetchAddresses() {
         val fetchHandled = GeckoResult<Void>()
 
@@ -506,7 +703,7 @@ class AutocompleteTest : BaseSessionTest() {
                     equalTo(savedAddresses.size),
                 )
 
-                val addressOption = prompt.options.find { it.value.familyName == selectedAddress.familyName }
+                val addressOption = prompt.options.find { it.value.guid == selectedAddress.guid }
                 val address = addressOption?.value
 
                 assertThat("Address should not be null", address, notNullValue())
@@ -658,6 +855,38 @@ class AutocompleteTest : BaseSessionTest() {
     }
 
     @Test
+    fun addressSelectAndFillWithoutGivenName() {
+        val name = "Peter Parker"
+        val streetAddress = "20 Ingram Street, Forest Hills Gardens, Queens"
+        val postalCode = "11375"
+        val country = "US"
+        val email = "spiderman@newyork.com"
+        val tel = "+1 180090021"
+        val organization = ""
+        val guid = "test-guid"
+        val builder = Address.Builder()
+            .guid(guid)
+            .name(name)
+            .streetAddress(streetAddress)
+            .postalCode(postalCode)
+            .country(country)
+            .email(email)
+            .tel(tel)
+            .organization(organization)
+
+        val savedAddress = builder.build()
+
+        val expectedAddress = builder
+            .givenName("Peter")
+            .familyName("Parker")
+            .build()
+
+        val savedAddresses = arrayOf(savedAddress)
+
+        checkAddressesForCorrectness(savedAddresses, expectedAddress)
+    }
+
+    @Test
     fun addressSelectAndFillMultipleAddresses() {
         val names = arrayOf("Peter Parker", "Wade Wilson")
         val givenNames = arrayOf("Peter", "Wade")
@@ -775,6 +1004,7 @@ class AutocompleteTest : BaseSessionTest() {
                 "signon.rememberSignons" to true,
                 "signon.autofillForms.http" to true,
                 "signon.userInputRequiredToCapture.enabled" to false,
+                "signon.testOnlyNotWaitForPaint" to true,
             ),
         )
 
@@ -838,6 +1068,7 @@ class AutocompleteTest : BaseSessionTest() {
                 "signon.rememberSignons" to true,
                 "signon.autofillForms.http" to true,
                 "signon.userInputRequiredToCapture.enabled" to false,
+                "signon.testOnlyNotWaitForPaint" to true,
             ),
         )
 
@@ -912,6 +1143,7 @@ class AutocompleteTest : BaseSessionTest() {
                 "signon.rememberSignons" to true,
                 "signon.autofillForms.http" to true,
                 "signon.userInputRequiredToCapture.enabled" to false,
+                "signon.testOnlyNotWaitForPaint" to true,
             ),
         )
 
@@ -994,6 +1226,7 @@ class AutocompleteTest : BaseSessionTest() {
                 "signon.rememberSignons" to true,
                 "signon.autofillForms.http" to true,
                 "signon.userInputRequiredToCapture.enabled" to false,
+                "signon.testOnlyNotWaitForPaint" to true,
             ),
         )
 
@@ -1414,6 +1647,64 @@ class AutocompleteTest : BaseSessionTest() {
     }
 
     @Test
+    fun formSubmissionWithUnchangedCreditCardShouldNotTriggerSave() {
+        val ccName = "Jane Doe"
+        val ccNumber = "5555444433331111"
+        val ccExpMonth = "6"
+        val ccExpYear = "2024"
+        val savedCreditCard = CreditCard.Builder()
+            .guid("test-guid-1")
+            .name(ccName)
+            .number(ccNumber)
+            .expirationMonth(ccExpMonth)
+            .expirationYear(ccExpYear)
+            .build()
+
+        val savedCreditCards = arrayOf(savedCreditCard)
+
+        mainSession.loadTestPath(CC_FORM_HTML_PATH)
+        mainSession.waitForPageStop()
+
+        // Setup delegates for fetching data and handling prompts.
+        sessionRule.delegateUntilTestEnd(object : StorageDelegate, PromptDelegate {
+            @AssertCalled
+            override fun onCreditCardFetch(): GeckoResult<Array<CreditCard>> {
+                return GeckoResult.fromValue(savedCreditCards)
+            }
+
+            // These should NOT be called because no information has changed.
+            @AssertCalled(count = 0)
+            override fun onCreditCardSave(creditCard: CreditCard) = Unit
+
+            @AssertCalled(count = 0)
+            override fun onCreditCardSave(
+                session: GeckoSession,
+                request: AutocompleteRequest<CreditCardSaveOption>,
+            ): GeckoResult<PromptDelegate.PromptResponse> {
+                // This block should not be reached. If it is, the test will fail.
+                return GeckoResult.fromValue(request.dismiss())
+            }
+        })
+
+        // Fill in the fields with the same saved data
+        mainSession.evaluateJS("document.querySelector('#name').focus()")
+        mainSession.evaluateJS("document.querySelector('#name').value = '$ccName'")
+        mainSession.evaluateJS("document.querySelector('#name').focus()")
+        mainSession.evaluateJS("document.querySelector('#number').value = '$ccNumber'")
+        mainSession.evaluateJS("document.querySelector('#number').focus()")
+        mainSession.evaluateJS("document.querySelector('#expMonth').value = '$ccExpMonth'")
+        mainSession.evaluateJS("document.querySelector('#expMonth').focus()")
+        mainSession.evaluateJS("document.querySelector('#expYear').value = '$ccExpYear'")
+        mainSession.evaluateJS("document.querySelector('#expYear').focus()")
+
+        // Submit the form
+        mainSession.evaluateJS("document.querySelector('form').requestSubmit()")
+
+        // Wait for the form to submit
+        mainSession.waitForRoundTrip()
+    }
+
+    @Test
     fun creditCardUpdateAccept() {
         val ccName = "MyCard"
         val ccNumber1 = "5105105105105100"
@@ -1554,6 +1845,7 @@ class AutocompleteTest : BaseSessionTest() {
                 "signon.rememberSignons" to true,
                 "signon.autofillForms.http" to true,
                 "signon.userInputRequiredToCapture.enabled" to false,
+                "signon.testOnlyNotWaitForPaint" to true,
             ),
         )
 
@@ -1664,6 +1956,7 @@ class AutocompleteTest : BaseSessionTest() {
                 "signon.rememberSignons" to true,
                 "signon.autofillForms.http" to true,
                 "signon.userInputRequiredToCapture.enabled" to false,
+                "signon.testOnlyNotWaitForPaint" to true,
             ),
         )
 
@@ -1750,6 +2043,7 @@ class AutocompleteTest : BaseSessionTest() {
                 "signon.autofillForms.http" to true,
                 "dom.disable_open_during_load" to false,
                 "signon.userInputRequiredToCapture.enabled" to false,
+                "signon.testOnlyNotWaitForPaint" to true,
             ),
         )
 
@@ -2028,6 +2322,7 @@ class AutocompleteTest : BaseSessionTest() {
                 "signon.autofillForms.http" to true,
                 "dom.disable_open_during_load" to false,
                 "signon.userInputRequiredToCapture.enabled" to false,
+                "signon.testOnlyNotWaitForPaint" to true,
             ),
         )
 
@@ -2293,6 +2588,7 @@ class AutocompleteTest : BaseSessionTest() {
                 "signon.generation.available" to true,
                 "dom.disable_open_during_load" to false,
                 "signon.userInputRequiredToCapture.enabled" to false,
+                "signon.testOnlyNotWaitForPaint" to true,
             ),
         )
 
@@ -2495,6 +2791,7 @@ class AutocompleteTest : BaseSessionTest() {
                 "signon.rememberSignons" to true,
                 "signon.autofillForms.http" to true,
                 "signon.userInputRequiredToCapture.enabled" to false,
+                "signon.testOnlyNotWaitForPaint" to true,
             ),
         )
 
@@ -2558,5 +2855,162 @@ class AutocompleteTest : BaseSessionTest() {
         sessionRule.waitForResult(promptHandled)
         mainSession.evaluateJS("document.querySelector('#user1').blur()")
         sessionRule.waitForResult(result)
+    }
+
+    @Test
+    fun testAddressStructureGetFieldsForUS() {
+        val structureResult = Autocomplete.AddressStructure.getAddressStructure("US")
+
+        try {
+            sessionRule.waitForResult(structureResult)
+            assertTrue("Should not be able to retreive a structure.", true)
+        } catch (e: Exception) {
+            assertTrue("Should not have an exception.", false)
+        }
+
+        sessionRule.waitForResult(structureResult).let { fields ->
+            val expectedResult = listOf(
+                Pair("name", "autofill-address-name"),
+                Pair("organization", "autofill-address-organization"),
+                Pair("street-address", "autofill-address-street"),
+                Pair("address-level2", "autofill-address-city"),
+                Pair("address-level1", "autofill-address-state"),
+                Pair("postal-code", "autofill-address-zip"),
+                Pair("country", "autofill-address-country"),
+                Pair("tel", "autofill-address-tel"),
+                Pair("email", "autofill-address-email"),
+            )
+
+            expectedResult.forEachIndexed { index, pair ->
+                assertTrue(
+                    "Result should have id: ${pair.first}, localizationKey: ${pair.second}",
+                    fields[index].id == pair.first && fields[index].localizationKey == pair.second,
+                )
+            }
+        }
+    }
+
+    @Test
+    fun testAddressStructureGetFieldsForJP() {
+        val structureResult = Autocomplete.AddressStructure.getAddressStructure("JP")
+
+        try {
+            sessionRule.waitForResult(structureResult)
+            assertTrue("Should not be able to retreive a structure.", true)
+        } catch (e: Exception) {
+            assertTrue("Should not have an exception.", false)
+        }
+
+        sessionRule.waitForResult(structureResult).let { fields ->
+            val expectedResult = listOf(
+                Pair("postal-code", "autofill-address-postal-code"),
+                Pair("address-level1", "autofill-address-prefecture"),
+                Pair("address-level2", "autofill-address-city"),
+                Pair("street-address", "autofill-address-street"),
+                Pair("organization", "autofill-address-organization"),
+                Pair("name", "autofill-address-name"),
+                Pair("country", "autofill-address-country"),
+                Pair("tel", "autofill-address-tel"),
+                Pair("email", "autofill-address-email"),
+            )
+
+            expectedResult.forEachIndexed { index, pair ->
+                assertTrue(
+                    "Result should have id: ${pair.first}, localizationKey: ${pair.second}",
+                    fields[index].id == pair.first && fields[index].localizationKey == pair.second,
+                )
+            }
+        }
+    }
+
+    @Test
+    fun loginSelectRelayUsername() {
+        sessionRule.setPrefsUntilTestEnd(
+            mapOf(
+                // Enable login management since it's disabled in automation.
+                "signon.rememberSignons" to true,
+                "signon.autofillForms.http" to true,
+                "signon.generation.enabled" to true,
+                "signon.generation.available" to true,
+                "dom.disable_open_during_load" to false,
+                "signon.userInputRequiredToCapture.enabled" to false,
+                "signon.testOnlyNotWaitForPaint" to true,
+                "signon.firefoxRelay.feature" to "enabled",
+            ),
+        )
+
+        // Test:
+        // 1. Load a sign-up form page.
+        // 2. Focus on the username input field.
+        //    a. Ensure onLoginSelect is called with a generate relay option.
+        //    b. Return the login entry with a hard-coded relay username.
+        // 3. Submit the login form.
+        //    a. Ensure onLoginSave is called with accordingly.
+
+        val genRelayUsername = "userRelay"
+
+        val selectHandled = GeckoResult<Void>()
+
+        mainSession.loadTestPath(FORMS4_HTML_PATH)
+        mainSession.waitForPageStop()
+
+        mainSession.delegateUntilTestEnd(object : PromptDelegate {
+            @AssertCalled
+            override fun onLoginSelect(
+                session: GeckoSession,
+                prompt: AutocompleteRequest<LoginSelectOption>,
+            ): GeckoResult<PromptDelegate.PromptResponse>? {
+                assertThat("Session should not be null", session, notNullValue())
+
+                assertThat(
+                    "There should be one option",
+                    prompt.options.size,
+                    equalTo(1),
+                )
+
+                val option = prompt.options[0]
+                val login = option.value
+
+                // GENERATE_RELAY_USERNAME option is only offered when users are signed in to their FxAccount.
+                // However, Gecko currently doesn't detect whether the FxAccount is signed in on mobile,
+                // so this option is always OFFER_RELAY_INTEGRATION.
+                assertThat(
+                    "Hint should match",
+                    option.hint,
+                    equalTo(SelectOption.Hint.FIREFOX_RELAY),
+                )
+
+                // Change `hint` to FILL_LOGIN to instruct Gecko to fill the generated relay username.
+                val hint = SelectOption.Hint.FIREFOX_RELAY
+                val origin = GeckoSessionTestRule.TEST_ENDPOINT
+                val relayUsername = LoginEntry.Builder()
+                    .origin(origin)
+                    .formActionOrigin(origin)
+                    .username(genRelayUsername)
+                    .build()
+
+                Handler(Looper.getMainLooper()).postDelayed({
+                    selectHandled.complete(null)
+                }, acceptDelay)
+
+                return GeckoResult.fromValue(prompt.confirm(LoginSelectOption(relayUsername, hint)))
+            }
+        })
+
+        // focus on username.
+        mainSession.evaluateJS("document.querySelector('#user1').focus()")
+        sessionRule.waitForResult(selectHandled)
+
+        assertThat(
+            "Filled username should match",
+            mainSession.evaluateJS("document.querySelector('#user1').value") as String,
+            equalTo(genRelayUsername),
+        )
+
+         assertThat(
+             "Password should be empty",
+             mainSession.evaluateJS("document.querySelector('#pass1').value") as String,
+             equalTo(""),
+         )
     }
 }

@@ -1,12 +1,9 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "APZCTreeManagerTester.h"
 #include "APZTestCommon.h"
-
 #include "InputUtils.h"
 #include "mozilla/StaticPrefs_layout.h"
 #include "mozilla/StaticPrefs_mousewheel.h"
@@ -138,7 +135,7 @@ TEST_F(APZCSnappingTesterMock, Snap_After_Pinch) {
   PinchWithPinchInput(apzc, ScreenIntPoint(50, 50), ScreenIntPoint(50, 50),
                       1.2f);
 
-  apzc->AssertStateIsSmoothMsdScroll();
+  apzc->AssertInSmoothMsdScroll();
 }
 
 // Currently fails on Android because on the platform we have a different
@@ -208,7 +205,7 @@ TEST_F(APZCSnappingTesterMock, SnapOnPanEndWithZeroVelocity) {
              ScreenPoint(0, 0), mcc->Time());
 
   // Now a smooth animation has been triggered for snapping to 30.
-  apzc->AssertStateIsSmoothMsdScroll();
+  apzc->AssertInSmoothMsdScroll();
 
   apzc->AdvanceAnimationsUntilEnd();
   // The snapped position should be 30 rather than 100 because it's the nearest
@@ -291,7 +288,7 @@ TEST_F(APZCSnappingTesterMock, SnapOnPanEndWithPositiveVelocity) {
   mcc->AdvanceByMillis(5);
 
   // A smooth animation has been triggered by the pan-end event above.
-  apzc->AssertStateIsSmoothMsdScroll();
+  apzc->AssertInSmoothMsdScroll();
 
   apzc->AdvanceAnimationsUntilEnd();
   EXPECT_EQ(apzc->GetCurrentAsyncScrollOffset(

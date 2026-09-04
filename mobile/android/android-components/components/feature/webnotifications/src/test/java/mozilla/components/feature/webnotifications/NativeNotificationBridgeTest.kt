@@ -22,7 +22,6 @@ import mozilla.components.support.test.mock
 import mozilla.components.support.test.robolectric.testContext
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotEquals
-import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
@@ -30,6 +29,7 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.mockito.Mockito.doReturn
 import org.mockito.Mockito.verify
+import kotlin.test.assertNotNull
 
 private const val TEST_TITLE = "test title"
 private const val TEST_TAG = "test tag"
@@ -40,8 +40,17 @@ private const val TEST_CHANNEL = "testChannel"
 @RunWith(AndroidJUnit4::class)
 class NativeNotificationBridgeTest {
     private val blankNotification = WebNotification(
-        TEST_TITLE, TEST_TAG, TEST_TEXT, TEST_URL, null, null,
-        null, true, mock(), 0, privateBrowsing = false,
+        TEST_TITLE,
+        TEST_TAG,
+        TEST_TEXT,
+        TEST_URL,
+        null,
+        null,
+        null,
+        true,
+        mock(),
+        0,
+        privateBrowsing = false,
     )
 
     private lateinit var icons: BrowserIcons

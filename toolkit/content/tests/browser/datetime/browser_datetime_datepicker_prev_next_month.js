@@ -371,7 +371,7 @@ add_task(async function test_datepicker_reopened_prev_next_month_btn() {
   await ready;
 
   Assert.equal(
-    helper.panel.querySelector("#dateTimePopupFrame").contentDocument
+    helper.panel.querySelector("#DateTimePickerPanelPopupFrame").contentDocument
       .activeElement.textContent,
     "2",
     "Picker is opened with a focus set to the currently selected date"
@@ -382,7 +382,7 @@ add_task(async function test_datepicker_reopened_prev_next_month_btn() {
   // Move focus from the selected date to the Previous Month button,
   // and activate it to move calendar from 2023-05-02 to 2023-04-02:
   EventUtils.synthesizeKey("KEY_Tab", {
-    repeat: 2,
+    repeat: 5,
   });
   EventUtils.synthesizeKey(" ", {});
 
@@ -437,7 +437,7 @@ add_task(async function test_datepicker_reopened_prev_next_month_btn() {
   // Move focus from the focused date to the Next Month button and activate it,
   // (from 2023-04-02 to 2023-05-02):
   EventUtils.synthesizeKey("KEY_Tab", {
-    repeat: 4,
+    repeat: 7,
   });
   EventUtils.synthesizeKey(" ", {});
 

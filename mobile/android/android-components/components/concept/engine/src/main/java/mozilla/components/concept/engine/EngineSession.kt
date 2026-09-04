@@ -6,7 +6,6 @@ package mozilla.components.concept.engine
 
 import android.content.Intent
 import androidx.annotation.CallSuper
-import mozilla.components.concept.engine.EngineSession.BounceTrackingProtectionMode
 import mozilla.components.concept.engine.EngineSession.TrackingProtectionPolicy.CookiePolicy.ACCEPT_ALL
 import mozilla.components.concept.engine.EngineSession.TrackingProtectionPolicy.CookiePolicy.ACCEPT_FIRST_PARTY_AND_ISOLATE_OTHERS
 import mozilla.components.concept.engine.content.blocking.Tracker
@@ -14,6 +13,8 @@ import mozilla.components.concept.engine.history.HistoryItem
 import mozilla.components.concept.engine.manifest.WebAppManifest
 import mozilla.components.concept.engine.media.RecordingDevice
 import mozilla.components.concept.engine.mediasession.MediaSession
+import mozilla.components.concept.engine.pageextraction.ContentParams
+import mozilla.components.concept.engine.pageextraction.PageMetadata
 import mozilla.components.concept.engine.permission.PermissionRequest
 import mozilla.components.concept.engine.prompt.PromptRequest
 import mozilla.components.concept.engine.translate.TranslationEngineState
@@ -25,6 +26,7 @@ import mozilla.components.concept.fetch.Response
 import mozilla.components.support.base.observer.Observable
 import mozilla.components.support.base.observer.ObserverRegistry
 import org.json.JSONObject
+import java.security.cert.X509Certificate
 
 /**
  * Class representing a single engine session.
@@ -60,13 +62,23 @@ abstract class EngineSession(
         fun onProgress(progress: Int) = Unit
         fun onLoadingStateChange(loading: Boolean) = Unit
         fun onNavigationStateChange(canGoBack: Boolean? = null, canGoForward: Boolean? = null) = Unit
-        fun onSecurityChange(secure: Boolean, host: String? = null, issuer: String? = null) = Unit
-        fun onTrackerBlockingEnabledChange(enabled: Boolean) = Unit
 
         /**
-         * Event to indicate a new [CookieBannerHandlingStatus] is available.
+         * Event to indicate the top-level connection security has changed.
+         *
+         * @param secure If true, the connection is considered secure (e.g. delivered over TLS with no errors).
+         * @param host The domain name of the server that was connected to.
+         * @param issuer The name of the organization that issued the server certificate, if present.
+         * @param certificate The certificate presented by the server, if any.
          */
-        fun onCookieBannerChange(status: CookieBannerHandlingStatus) = Unit
+        fun onSecurityChange(
+            secure: Boolean,
+            host: String? = null,
+            issuer: String? = null,
+            certificate: X509Certificate? = null,
+        ) = Unit
+
+        fun onTrackerBlockingEnabledChange(enabled: Boolean) = Unit
         fun onTrackerBlocked(tracker: Tracker) = Unit
         fun onTrackerLoaded(tracker: Tracker) = Unit
         fun onNavigateBack() = Unit
@@ -206,6 +218,14 @@ abstract class EngineSession(
          * @param muted True if audio of this media session is muted.
          */
         fun onMediaMuteChanged(muted: Boolean) = Unit
+
+        /**
+         * Notify that the tab's W3C Audio Session type changed, used to pick
+         * the matching platform audio focus.
+         *
+         * @param type The audio-session type the tab is now claiming.
+         */
+        fun onMediaAudioSessionTypeChanged(type: MediaSession.AudioSessionType) = Unit
 
         /**
          * Notify on changed fullscreen state.
@@ -390,7 +410,6 @@ abstract class EngineSession(
      * Represents a safe browsing policy, which is indicates with type of site should be alerted
      * to user as possible harmful.
      */
-    @Suppress("MagicNumber")
     enum class SafeBrowsingPolicy(val id: Int) {
         NONE(0),
 
@@ -415,9 +434,14 @@ abstract class EngineSession(
         PHISHING(1 shl 13),
 
         /**
+         * Blocks harmful add-on sites.
+         */
+        HARMFULADDON(1 shl 14),
+
+        /**
          * Blocks all unsafe sites.
          */
-        RECOMMENDED(MALWARE.id + UNWANTED.id + HARMFUL.id + PHISHING.id),
+        RECOMMENDED(MALWARE.id + UNWANTED.id + HARMFUL.id + PHISHING.id + HARMFULADDON.id),
     }
 
     /**
@@ -482,7 +506,6 @@ abstract class EngineSession(
             ACCEPT_FIRST_PARTY_AND_ISOLATE_OTHERS(5),
         }
 
-        @Suppress("MagicNumber")
         enum class TrackingCategory(val id: Int) {
 
             NONE(0),
@@ -656,50 +679,8 @@ abstract class EngineSession(
     }
 
     /**
-     * Represents settings options for cookie banner handling.
-     */
-    @Suppress("MagicNumber")
-    enum class CookieBannerHandlingMode(val mode: Int) {
-        /**
-         * The feature is turned off and cookie banners are not handled
-         */
-        DISABLED(0),
-
-        /**
-         * Reject cookies if possible
-         */
-        REJECT_ALL(1),
-
-        /**
-         * Reject cookies if possible. If rejecting is not possible, accept cookies
-         */
-        REJECT_OR_ACCEPT_ALL(2),
-    }
-
-    /**
-     * Represents a status for cookie banner handling.
-     */
-    enum class CookieBannerHandlingStatus {
-        /**
-         * Indicates a cookie banner was detected.
-         */
-        DETECTED,
-
-        /**
-         * Indicates a cookie banner was handled.
-         */
-        HANDLED,
-
-        /**
-         * Indicates a cookie banner has not been detected yet.
-         */
-        NO_DETECTED,
-    }
-
-    /**
      * Represents settings options for bounce tracking protection.
      */
-    @Suppress("MagicNumber")
     enum class BounceTrackingProtectionMode(val mode: Int) {
         /**
          * Fully disabled.
@@ -807,6 +788,12 @@ abstract class EngineSession(
             const val LOAD_FLAGS_BYPASS_LOAD_URI_DELEGATE: Int = 1 shl 7
             const val ALLOW_ADDITIONAL_HEADERS: Int = 1 shl 15
             const val ALLOW_JAVASCRIPT_URL: Int = 1 shl 16
+
+            const val APP_LINK_LAUNCH_TYPE_COLD: Int = 1 shl 8
+            const val APP_LINK_LAUNCH_TYPE_WARM: Int = 1 shl 9
+            const val APP_LINK_LAUNCH_TYPE_HOT: Int = 1 shl 10
+            const val APP_LINK_LAUNCH_TYPE_UNKNOWN: Int = 0
+
             internal const val ALL = BYPASS_CACHE + BYPASS_PROXY + EXTERNAL + ALLOW_POPUPS +
                 BYPASS_CLASSIFIER + LOAD_FLAGS_FORCE_ALLOW_DATA_URI + LOAD_FLAGS_REPLACE_HISTORY +
                 LOAD_FLAGS_BYPASS_LOAD_URI_DELEGATE + ALLOW_ADDITIONAL_HEADERS + ALLOW_JAVASCRIPT_URL
@@ -947,6 +934,20 @@ abstract class EngineSession(
     abstract fun restoreState(state: EngineSessionState): Boolean
 
     /**
+     * Flushes the session state of the engine session.
+     *
+     * This method triggers an asynchronous flush of the current
+     * session state. The most recent state is not returned directly
+     * by this call. Instead, the updated session state will be
+     * delivered asynchronously through the observer callbacks:
+     *
+     * [EngineSession.Observer.onStateUpdated]
+     *
+     * [EngineSession.Observer.onHistoryStateChanged]
+     */
+    abstract fun flushSessionState()
+
+    /**
      * Updates the tracking protection [policy] for this engine session.
      * If you want to disable tracking protection use [TrackingProtectionPolicy.none].
      *
@@ -960,16 +961,6 @@ abstract class EngineSession(
     abstract fun toggleDesktopMode(enable: Boolean, reload: Boolean = false)
 
     /**
-     * Checks if there is a rule for handling a cookie banner for the current website in the session.
-     *
-     * @param onSuccess callback invoked if the engine API returned a valid response. Please note
-     * that the response can be null - which can indicate a bug, a miscommunication
-     * or other unexpected failure.
-     * @param onError callback invoked if there was an error getting the response.
-     */
-    abstract fun hasCookieBannerRuleForSession(onResult: (Boolean) -> Unit, onException: (Throwable) -> Unit)
-
-    /**
      * Checks if the current session is using a PDF viewer.
      *
      * @param onSuccess callback invoked if the engine API returned a valid response. Please note
@@ -978,6 +969,38 @@ abstract class EngineSession(
      * @param onError callback invoked if there was an error getting the response.
      */
     abstract fun checkForPdfViewer(onResult: (Boolean) -> Unit, onException: (Throwable) -> Unit)
+
+    /**
+     * Send the broken site report using Glean.
+     *
+     * @param details The {@link JSONObject} returned by getBrokenSiteReport.
+     * @param description the description of the issue which the user has input.
+     * @param reason the reason for breakage that the user has input.
+     * @param url the final URL the user has input.
+     * @param sendTabSpecificInfo whether to send tab-specific info in the report.
+     * @param sendBlockedUrls whether the user opted into sending ETP-blocked URLs in the report.
+     * @param onResult callback invoked if the engine API returned a valid response.
+     * @param onException callback invoked if there was an error getting the response.
+     */
+    @Suppress("LongParameterList")
+    abstract fun sendGleanBrokenSiteReport(
+      details: JSONObject?,
+      description: String?,
+      reason: String,
+      url: String,
+      sendTabSpecificInfo: Boolean,
+      sendBlockedUrls: Boolean,
+      onResult: () -> Unit,
+      onException: (Throwable) -> Unit,
+    )
+
+    /**
+     * Gets the broken site report.
+     *
+     * @param onResult callback invoked if the engine API returned a valid response.
+     * @param onException callback invoked if there was an error getting the response.
+     */
+    abstract fun getBrokenSiteReport(onResult: (JSONObject) -> Unit, onException: (Throwable) -> Unit)
 
     /**
      * Gets the web compat info.
@@ -1114,4 +1137,37 @@ abstract class EngineSession(
      * @param enabled True if the activity is in picture-in-picture mode.
      */
     open fun onPipModeChanged(enabled: Boolean) = Unit
+
+    /**
+     * Gets the page text content of this session.
+     *
+     * @param options options controlling how the text is extracted
+     */
+    open fun getPageContent(
+        options: ContentParams = ContentParams(),
+        onResult: (String) -> Unit,
+        onException: (Throwable) -> Unit,
+    ) = Unit
+
+    /**
+     * Gets metadata about the current page.
+     */
+    open fun getPageMetadata(
+        onResult: (PageMetadata) -> Unit,
+        onException: (Throwable) -> Unit,
+    ) = Unit
+
+    /**
+     * Allow the Engine to handle back navigation events to dismiss some HTML elements such as &lt;dialog&gt;.
+     *
+     * @param onResult callback invoked if the engine API returned a valid response.
+     */
+    abstract fun processBackPressed(onResult: (Boolean) -> Unit)
+
+    /**
+     * Asynchronously determine if the page loaded in this session uses a QWAC.
+     *
+     * @param onResult Callback to call with the QWAC or null if none.
+     */
+    open fun qwacStatus(onResult: (X509Certificate?) -> Unit) = Unit
 }

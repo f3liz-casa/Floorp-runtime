@@ -14,15 +14,18 @@
 #include <cstdint>
 #include <memory>
 #include <optional>
-#include <string>
+#include <span>
 
-#include "api/array_view.h"
+#include "absl/strings/string_view.h"
 #include "api/call/bitrate_allocation.h"
 #include "rtc_base/buffer.h"
 #include "rtc_base/checks.h"
 #include "rtc_base/trace_event.h"
 
 namespace webrtc {
+
+// TODO(peah): Rationale
+static_assert(AudioEncoder::kMaxNumberOfChannels <= 255, "");
 
 ANAStats::ANAStats() = default;
 ANAStats::~ANAStats() = default;
@@ -42,7 +45,7 @@ int AudioEncoder::RtpTimestampRateHz() const {
 }
 
 AudioEncoder::EncodedInfo AudioEncoder::Encode(uint32_t rtp_timestamp,
-                                               ArrayView<const int16_t> audio,
+                                               std::span<const int16_t> audio,
                                                Buffer* encoded) {
   TRACE_EVENT0("webrtc", "AudioEncoder::Encode");
   RTC_CHECK_EQ(audio.size(),
@@ -74,14 +77,12 @@ void AudioEncoder::SetMaxPlaybackRate(int /* frequency_hz */) {}
 
 void AudioEncoder::SetTargetBitrate(int /* target_bps */) {}
 
-ArrayView<std::unique_ptr<AudioEncoder>>
+std::span<std::unique_ptr<AudioEncoder>>
 AudioEncoder::ReclaimContainedEncoders() {
-  return nullptr;
+  return {};
 }
 
-bool AudioEncoder::EnableAudioNetworkAdaptor(
-    const std::string& /* config_string */,
-    RtcEventLog* /* event_log */) {
+bool AudioEncoder::EnableAudioNetworkAdaptor(absl::string_view /*config*/) {
   return false;
 }
 
@@ -119,5 +120,4 @@ ANAStats AudioEncoder::GetANAStats() const {
   return ANAStats();
 }
 
-constexpr int AudioEncoder::kMaxNumberOfChannels;
 }  // namespace webrtc

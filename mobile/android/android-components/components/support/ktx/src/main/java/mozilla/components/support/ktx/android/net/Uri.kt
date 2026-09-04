@@ -147,12 +147,15 @@ fun Uri.toFileUri(context: Context, dirToCopy: String = "/temps"): Uri {
     }
 
     val temporalFile = File(cacheUploadDirectory, getFileName(contentResolver))
+    @Suppress("TooGenericExceptionCaught")
     try {
         contentResolver.openInputStream(this)!!.use { inStream ->
             copyFile(temporalFile, inStream)
         }
     } catch (e: IOException) {
         Logger("Uri.kt").warn("Could not convert uri to file uri", e)
+    } catch (e: RuntimeException) {
+        Logger("Uri.kt").warn("Could not access file from uri", e)
     }
     return "file:///${Uri.encode(temporalFile.absolutePath)}".toUri()
 }
@@ -184,9 +187,11 @@ internal fun Uri.getFileNameForContentUris(contentResolver: ContentResolver): St
  * Generate a file name using a randomUUID + the current timestamp.
  */
 @VisibleForTesting
-internal fun generateFileName(fileExtension: String = ""): String {
+internal fun generateFileName(
+    fileExtension: String = "",
+    timeStamp: Long = System.currentTimeMillis(),
+): String {
     val randomId = UUID.randomUUID().toString().removePrefix("-").trim()
-    val timeStamp = System.currentTimeMillis()
     return if (fileExtension.isNotEmpty()) {
         "$randomId$timeStamp.$fileExtension"
     } else {
@@ -199,16 +204,26 @@ internal fun generateFileName(fileExtension: String = ""): String {
  * @param contentResolver the contentResolver that will be used to check the permission
  * @return true is the URI is readable
  */
+@Suppress("TooGenericExceptionCaught")
 fun Uri.isReadable(contentResolver: ContentResolver): Boolean {
-    try {
+    return try {
         val projection = arrayOf("_id") // Minimal projection
         val isReadable = contentResolver.query(this, projection, null, null, null)?.use {
             true
         } ?: false
-        Logger.debug("Read permission was ${if (!isReadable) "not" else ""}granted on this URI")
-        return isReadable
+        Logger.debug("Read permission was ${if (!isReadable) "not" else ""} granted on this URI")
+        isReadable
     } catch (e: SecurityException) {
         Logger.debug("Read permission was not granted on this URI", e)
-        return false
+        false
+    } catch (e: IllegalStateException) {
+        Logger.debug("Unable to query URI (IllegalStateException)", e)
+        false
+    } catch (e: IllegalArgumentException) {
+        Logger.debug("Unable to query URI (IllegalArgumentException)", e)
+        false
+    } catch (e: NullPointerException) {
+        Logger.debug("Unable to query URI (NullPointerException)", e)
+        false
     }
 }

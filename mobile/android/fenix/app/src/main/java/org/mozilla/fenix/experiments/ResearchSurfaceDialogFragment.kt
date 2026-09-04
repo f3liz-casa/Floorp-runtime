@@ -4,7 +4,6 @@
 
 package org.mozilla.fenix.experiments
 
-import android.annotation.SuppressLint
 import android.content.pm.ActivityInfo
 import android.os.Bundle
 import android.view.LayoutInflater
@@ -19,7 +18,6 @@ import org.mozilla.fenix.theme.FirefoxTheme
 /**
  * Dialog displaying the fullscreen research surface message.
  */
-
 class ResearchSurfaceDialogFragment : DialogFragment() {
     private val args by navArgs<ResearchSurfaceDialogFragmentArgs>()
     private lateinit var bundleArgs: Bundle
@@ -34,7 +32,6 @@ class ResearchSurfaceDialogFragment : DialogFragment() {
      */
     var onDismiss: () -> Unit = {}
 
-    @SuppressLint("SourceLockedOrientationActivity")
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setStyle(STYLE_NO_TITLE, R.style.ResearchSurfaceDialogStyle)

@@ -2,6 +2,11 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
+// eslint-disable-next-line mozilla/use-static-import
+const { AppConstants } = ChromeUtils.importESModule(
+  "resource://gre/modules/AppConstants.sys.mjs"
+);
+
 const lazy = {};
 
 ChromeUtils.defineLazyGetter(lazy, "logConsole", function () {
@@ -16,6 +21,12 @@ ChromeUtils.defineLazyGetter(lazy, "logConsole", function () {
   });
 });
 
+const EXTRA_ARGS_TYPES_ALLOWLIST = [
+  "event",
+  "memory_distribution",
+  "timing_distribution",
+];
+
 /**
  * Module for managing Glean telemetry metrics and pings in the New Tab page.
  * This object provides functionality to:
@@ -26,10 +37,32 @@ ChromeUtils.defineLazyGetter(lazy, "logConsole", function () {
  */
 export const NewTabGleanUtils = {
   /**
+   * Internal Promise.withResolvers() object for tracking metrics and pings
+   * registration completion. Contains resolve, reject functions and a promise
+   * that resolves when registerMetricsAndPings completes.
+   *
+   * @type {{promise: Promise<void>, resolve: Function, reject: Function}}
+   * @private
+   */
+  _registrationDone: Promise.withResolvers(),
+
+  /**
+   * Gets the promise that resolves when metrics and pings registration is
+   * complete. This allows external code to wait for registration to finish
+   * before using registered metrics.
+   *
+   * @returns {Promise<void>} A promise that resolves when
+   *   registerMetricsAndPings completes
+   */
+  get registrationDone() {
+    return this._registrationDone.promise;
+  },
+
+  /**
    * Fetches and parses a JSON file from a given resource URI.
    *
    * @param {string} resourceURI - The URI of the JSON file to fetch and parse
-   * @returns {Promise<Object>} A promise that resolves to the parsed JSON object
+   * @returns {Promise<object>} A promise that resolves to the parsed JSON object
    */
   async readJSON(resourceURI) {
     let result = await fetch(resourceURI);
@@ -82,26 +115,29 @@ export const NewTabGleanUtils = {
       lazy.logConsole.debug(
         "Successfully registered metrics and pings found in the JSON file"
       );
+      this._registrationDone.resolve();
       return true;
     } catch (e) {
       lazy.logConsole.error(
         "Failed to complete registration of metrics and pings found in runtime metrics JSON:",
         e
       );
+      this._registrationDone.resolve();
       return false;
     }
   },
 
   /**
    * Registers a metric in Glean if it doesn't already exist.
-   * @param {Object} options - The metric configuration options
+   *
+   * @param {object} options - The metric configuration options
    * @param {string} options.type - The type of metric (e.g., "text", "counter")
    * @param {string} options.category - The category the metric belongs to
    * @param {string} options.name - The name of the metric
    * @param {string[]} options.pings - Array of ping names this metric belongs to
    * @param {string} options.lifetime - The lifetime of the metric
    * @param {boolean} [options.disabled] - Whether the metric is disabled
-   * @param {Object} [options.extraArgs] - Additional arguments for the metric
+   * @param {object} [options.extraArgs] - Additional arguments for the metric
    * @throws {Error} If a new metrics registration fails and error will be logged in console
    */
   registerMetricIfNeeded(options) {
@@ -122,9 +158,13 @@ export const NewTabGleanUtils = {
         return;
       }
 
-      // Convert extraArgs to JSON string for metrics type event
+      // Convert extraArgs to JSON string for metrics types in allowlist
       let extraArgsJson = null;
-      if (type === "event" && extraArgs && Object.keys(extraArgs).length) {
+      if (
+        EXTRA_ARGS_TYPES_ALLOWLIST.includes(type) &&
+        extraArgs &&
+        Object.keys(extraArgs).length
+      ) {
         extraArgsJson = JSON.stringify(extraArgs);
       }
 
@@ -132,15 +172,30 @@ export const NewTabGleanUtils = {
       lazy.logConsole.debug(`Registering metric ${name} at runtime`);
 
       // Register the metric
-      Services.fog.registerRuntimeMetric(
-        type,
-        category,
-        name,
-        pings,
-        `"${lifetime}"`,
-        disabled,
-        extraArgsJson
-      );
+      // @backward-compat { version 154 }
+      // The runtime registration API grew an additional parameter in Fx154.
+      if (Services.vc.compare(AppConstants.MOZ_APP_VERSION, "154.0a1") < 0) {
+        Services.fog.registerRuntimeMetric(
+          type,
+          category,
+          name,
+          pings,
+          `"${lifetime}"`,
+          disabled,
+          extraArgsJson
+        );
+      } else {
+        Services.fog.registerRuntimeMetric(
+          type,
+          category,
+          name,
+          pings,
+          `"${lifetime}"`,
+          disabled,
+          false /* aInSession */,
+          extraArgsJson
+        );
+      }
       gleanSuccessMetric.set(true);
     } catch (e) {
       gleanSuccessMetric.set(false);
@@ -151,7 +206,8 @@ export const NewTabGleanUtils = {
 
   /**
    * Registers a ping in Glean if it doesn't already exist.
-   * @param {Object} options - The ping configuration options
+   *
+   * @param {object} options - The ping configuration options
    * @param {string} options.name - The name of the ping
    * @param {boolean} [options.includeClientId] - Whether to include client ID
    * @param {boolean} [options.sendIfEmpty] - Whether to send ping if empty
@@ -215,6 +271,7 @@ export const NewTabGleanUtils = {
   /**
    * Converts a dotted snake case string to camel case.
    * Example: "foo.bar_baz" becomes "fooBarBaz"
+   *
    * @param {string} metricNameOrCategory - The string in dotted snake case format
    * @returns {string} The converted camel case string
    */
@@ -249,6 +306,7 @@ export const NewTabGleanUtils = {
   /**
    * Converts a kebab case string to camel case.
    * Example: "foo-bar-baz" becomes "fooBarBaz"
+   *
    * @param {string} pingName - The string in kebab case format
    * @returns {string} The converted camel case string
    */

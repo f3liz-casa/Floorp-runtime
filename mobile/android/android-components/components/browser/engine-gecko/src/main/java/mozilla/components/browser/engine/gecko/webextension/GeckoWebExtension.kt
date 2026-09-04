@@ -260,8 +260,15 @@ class GeckoWebExtension(
                 ext: GeckoNativeWebExtension,
                 tabDetails: GeckoNativeWebExtension.CreateTabDetails,
             ): GeckoResult<GeckoSession>? {
+                // TODO bug 1372178: extensions cannot set (non-)privateness.
+                val isPrivate = tabHandler.isInPrivateBrowsing()
+                if (isPrivate && !this@GeckoWebExtension.isAllowedInPrivateBrowsing()) {
+                    return null
+                }
+
                 val geckoEngineSession = GeckoEngineSession(
-                    runtime,
+                    runtime = runtime,
+                    privateMode = isPrivate,
                     defaultSettings = defaultSettings,
                     openGeckoSession = false,
                 )
@@ -271,22 +278,13 @@ class GeckoWebExtension(
                     geckoEngineSession,
                     tabDetails.active == true,
                     tabDetails.url ?: "",
+                    isPrivate,
                 )
                 return GeckoResult.fromValue(geckoEngineSession.geckoSession)
             }
 
             override fun onOpenOptionsPage(ext: GeckoNativeWebExtension) {
-                ext.metaData.optionsPageUrl?.let { optionsPageUrl ->
-                    tabHandler.onNewTab(
-                        this@GeckoWebExtension,
-                        GeckoEngineSession(
-                            runtime,
-                            defaultSettings = defaultSettings,
-                        ),
-                        false,
-                        optionsPageUrl,
-                    )
-                }
+                tabHandler.onOpenOptionsPage(this@GeckoWebExtension)
             }
         }
 
@@ -395,7 +393,7 @@ class GeckoWebExtension(
     }
 
     override fun isAllowedInPrivateBrowsing(): Boolean {
-        return isBuiltIn() || nativeExtension.metaData.allowedInPrivateBrowsing
+        return nativeExtension.metaData.allowedInPrivateBrowsing
     }
 
     override suspend fun loadIcon(size: Int): Bitmap? {
@@ -403,8 +401,11 @@ class GeckoWebExtension(
     }
 
     @VisibleForTesting
-    internal fun getIcon(size: Int): GeckoResult<Bitmap> {
-        return nativeExtension.metaData.icon.getBitmap(size)
+    internal fun getIcon(size: Int): GeckoResult<Bitmap?> {
+        return nativeExtension.metaData.icon.getBitmap(size).then(
+            { GeckoResult.fromValue(it) },
+            { GeckoResult.fromValue(null) },
+        )
     }
 
     /**
@@ -442,7 +443,12 @@ class GeckoPort(
 
 private fun GeckoNativeWebExtensionAction.convert(): Action {
     val loadIcon: (suspend (Int) -> Bitmap?)? = icon?.let {
-        { size -> icon?.getBitmap(size)?.await() }
+        { size ->
+            icon?.getBitmap(size)?.then(
+                { GeckoResult.fromValue(it) },
+                { GeckoResult.fromValue(null) },
+            )?.await()
+        }
     }
 
     val onClick = { click() }

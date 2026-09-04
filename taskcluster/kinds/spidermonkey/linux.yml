@@ -9,6 +9,7 @@ task-defaults:
         env:
             MOZ_JS_UPLOAD_BINARIES_DEFAULT: "0"
     run:
+        clone-with: hg
         tooltool-downloads: public
 
 sm-package-linux64/opt:
@@ -19,6 +20,7 @@ sm-package-linux64/opt:
         symbol: SM(pkg)
         platform: linux64/opt
     run:
+        clone-with: hg
         using: spidermonkey-package
         spidermonkey-variant: plain
     fetches:
@@ -42,6 +44,7 @@ sm-plain-linux64/debug:
         platform: linux64/debug
         symbol: SM(p)
     run:
+        clone-with: hg
         spidermonkey-variant: plaindebug
     fetches:
         toolchain:
@@ -63,6 +66,7 @@ sm-plain-linux64/opt:
         symbol: SM(p)
         platform: linux64/opt
     run:
+        clone-with: hg
         spidermonkey-variant: plain
     fetches:
         toolchain:
@@ -85,6 +89,7 @@ sm-nojit-linux64/opt:
         symbol: SM(nojit)
         platform: linux64/opt
     run:
+        clone-with: hg
         spidermonkey-variant: nojit
     fetches:
         toolchain:
@@ -107,6 +112,7 @@ sm-pbl-linux64/opt:
         platform: linux64/opt
         tier: 2
     run:
+        clone-with: hg
         spidermonkey-variant: pbl
     fetches:
         toolchain:
@@ -129,6 +135,7 @@ sm-pbl-linux64/debug:
         platform: linux64/debug
         tier: 2
     run:
+        clone-with: hg
         spidermonkey-variant: pbl-debug
     fetches:
         toolchain:
@@ -150,6 +157,7 @@ sm-plain-linux32/debug:
         platform: linux32/debug
         symbol: SM(p)
     run:
+        clone-with: hg
         spidermonkey-variant: plaindebug
         spidermonkey-platform: linux
     fetches:
@@ -173,6 +181,7 @@ sm-arm-sim-linux32/debug:
         platform: linux32/debug
         symbol: SM(arm)
     run:
+        clone-with: hg
         spidermonkey-variant: arm-sim
     fetches:
         toolchain:
@@ -195,10 +204,95 @@ sm-arm64-sim-linux64/debug:
         platform: linux64/debug
         symbol: SM(arm64)
     run:
+        clone-with: hg
         spidermonkey-variant: arm64-sim
     worker:
         env:
             MOZ_JS_UPLOAD_BINARIES_DEFAULT: "1"
+    fetches:
+        toolchain:
+            - linux64-clang
+            - linux64-rust
+            - linux64-cbindgen
+            - linux64-dump_syms
+            - linux64-breakpad-injector
+            - linux64-minidump-stackwalk
+            - linux64-llvm-symbolizer
+            - linux64-pkgconf
+            - sysroot-x86_64-linux-gnu
+
+sm-mips64-sim-linux64/debug:
+    description: "Spidermonkey MIPS64 sim"
+    index:
+        job-name: sm-mips64-sim-linux64-debug
+    treeherder:
+        platform: linux64/debug
+        symbol: SM(mips64)
+        tier: 3
+    run:
+        clone-with: hg
+        spidermonkey-variant: mips64-sim
+    worker:
+        env:
+            MOZ_JS_UPLOAD_BINARIES_DEFAULT: "1"
+    # Disable by default but allow try pushes to explicitly request.
+    run-on-projects: []
+    fetches:
+        toolchain:
+            - linux64-clang
+            - linux64-rust
+            - linux64-cbindgen
+            - linux64-dump_syms
+            - linux64-breakpad-injector
+            - linux64-minidump-stackwalk
+            - linux64-llvm-symbolizer
+            - linux64-pkgconf
+            - sysroot-x86_64-linux-gnu
+
+sm-loong64-sim-linux64/debug:
+    description: "Spidermonkey LOONG64 sim"
+    index:
+        job-name: sm-loong64-sim-linux64-debug
+    treeherder:
+        platform: linux64/debug
+        symbol: SM(loong64)
+        tier: 3
+    run:
+        clone-with: hg
+        spidermonkey-variant: loong64-sim
+    worker:
+        env:
+            MOZ_JS_UPLOAD_BINARIES_DEFAULT: "1"
+    # Disable by default but allow try pushes to explicitly request.
+    run-on-projects: []
+    fetches:
+        toolchain:
+            - linux64-clang
+            - linux64-rust
+            - linux64-cbindgen
+            - linux64-dump_syms
+            - linux64-breakpad-injector
+            - linux64-minidump-stackwalk
+            - linux64-llvm-symbolizer
+            - linux64-pkgconf
+            - sysroot-x86_64-linux-gnu
+
+sm-riscv64-sim-linux64/debug:
+    description: "Spidermonkey RISCV64 sim"
+    index:
+        job-name: sm-riscv64-sim-linux64-debug
+    treeherder:
+        platform: linux64/debug
+        symbol: SM(riscv64)
+        tier: 3
+    run:
+        clone-with: hg
+        spidermonkey-variant: riscv64-sim
+    worker:
+        env:
+            MOZ_JS_UPLOAD_BINARIES_DEFAULT: "1"
+    # Disable by default but allow try pushes to explicitly request.
+    run-on-projects: []
     fetches:
         toolchain:
             - linux64-clang
@@ -222,6 +316,7 @@ sm-asan-linux64/opt:
         env:
             MOZ_JS_UPLOAD_BINARIES_DEFAULT: "1"
     run:
+        clone-with: hg
         spidermonkey-variant: asan
     fetches:
         toolchain:
@@ -243,6 +338,7 @@ sm-compacting-linux64/debug:
         platform: linux64/debug
         symbol: SM(cgc)
     run:
+        clone-with: hg
         spidermonkey-variant: compacting
     fetches:
         toolchain:
@@ -265,6 +361,7 @@ sm-linux64-wasi/opt:
         symbol: SM(wasi)
         tier: 2
     run:
+        clone-with: hg
         spidermonkey-variant: wasi
     fetches:
         toolchain:
@@ -286,6 +383,7 @@ sm-linux64-wasi-intl/opt:
         symbol: SM(wasi-intl)
         tier: 2
     run:
+        clone-with: hg
         spidermonkey-variant: wasi-intl
     fetches:
         toolchain:
@@ -306,6 +404,7 @@ sm-wasm-no-experimental-linux64/debug:
         symbol: SM(wasm-no-experimental)
         tier: 2
     run:
+        clone-with: hg
         spidermonkey-variant: wasm-noexperimental
     fetches:
         toolchain:
@@ -329,6 +428,7 @@ sm-linux64-wasi-pbl/opt:
         symbol: SM(wasi-pbl)
         tier: 2
     run:
+        clone-with: hg
         spidermonkey-variant: wasi-pbl
     fetches:
         toolchain:
@@ -352,8 +452,9 @@ sm-msan-linux64/opt:
         env:
             MOZ_JS_UPLOAD_BINARIES_DEFAULT: "1"
     run:
+        clone-with: hg
         spidermonkey-variant: msan
-    # Disable by default by allow try pushes to explicitly request.
+    # Disable by default but allow try pushes to explicitly request.
     run-on-projects: []
     fetches:
         toolchain:
@@ -378,6 +479,7 @@ sm-tsan-linux64/opt:
         env:
             MOZ_JS_UPLOAD_BINARIES_DEFAULT: "1"
     run:
+        clone-with: hg
         spidermonkey-variant: tsan
     fetches:
         toolchain:
@@ -400,7 +502,31 @@ sm-rootanalysis-linux64/debug:
         platform: linux64/debug
         symbol: SM(r)
     run:
+        clone-with: hg
         spidermonkey-variant: rootanalysis
+    fetches:
+        toolchain:
+            - linux64-clang
+            - linux64-rust
+            - linux64-cbindgen
+            - linux64-dump_syms
+            - linux64-breakpad-injector
+            - linux64-minidump-stackwalk
+            - linux64-llvm-symbolizer
+            - linux64-pkgconf
+            - sysroot-x86_64-linux-gnu
+
+sm-concurrent-linux64/debug:
+    description: "Spidermonkey Concurrent Marking"
+    index:
+        job-name: sm-concurrent-linux64-debug
+    treeherder:
+        platform: linux64/debug
+        symbol: SM(cm)
+        tier: 2
+    run:
+        clone-with: hg
+        spidermonkey-variant: concurrent
     fetches:
         toolchain:
             - linux64-clang
@@ -421,6 +547,7 @@ sm-nonunified-linux64/debug:
         platform: linux64/debug
         symbol: SM(nu)
     run:
+        clone-with: hg
         spidermonkey-variant: nonunified
     fetches:
         toolchain:
@@ -445,6 +572,7 @@ sm-fuzzing-linux64/opt:
         env:
             MOZ_JS_UPLOAD_BINARIES_DEFAULT: "1"
     run:
+        clone-with: hg
         spidermonkey-variant: fuzzing
     fetches:
         toolchain:
@@ -458,6 +586,86 @@ sm-fuzzing-linux64/opt:
             - linux64-pkgconf
             - sysroot-x86_64-linux-gnu
 
+sm-fuzzing-linux32/opt:
+    description: "Spidermonkey Fuzzing"
+    index:
+        job-name: sm-linux32-fuzzing
+    treeherder:
+        platform: linux32/opt
+        symbol: SM(f)
+    worker:
+        env:
+            MOZ_JS_UPLOAD_BINARIES_DEFAULT: "1"
+    run:
+        clone-with: hg
+        spidermonkey-variant: fuzzing
+        spidermonkey-platform: linux
+    fetches:
+        toolchain:
+            - linux64-clang
+            - linux64-rust
+            - linux64-cbindgen
+            - linux64-dump_syms
+            - linux64-breakpad-injector
+            - linux64-minidump-stackwalk
+            - linux32-llvm-symbolizer
+            - linux64-pkgconf
+            - sysroot-i686-linux-gnu
+            - sysroot-x86_64-linux-gnu
+
+sm-fuzzing-asan-linux32/opt:
+    description: "Spidermonkey Fuzzing"
+    index:
+        job-name: sm-linux32-fuzzing-asan
+    treeherder:
+        platform: linux32/opt
+        symbol: SM(fa)
+    worker:
+        env:
+            MOZ_JS_UPLOAD_BINARIES_DEFAULT: "1"
+    run:
+        spidermonkey-variant: fuzzing-asan
+        spidermonkey-platform: linux
+    fetches:
+        toolchain:
+            - linux64-clang
+            - linux64-rust
+            - linux64-cbindgen
+            - linux64-dump_syms
+            - linux64-breakpad-injector
+            - linux64-minidump-stackwalk
+            - linux32-llvm-symbolizer
+            - linux64-pkgconf
+            - sysroot-i686-linux-gnu
+            - sysroot-x86_64-linux-gnu
+
+sm-fuzzing-linux32/debug:
+    description: "Spidermonkey Fuzzing"
+    index:
+        job-name: sm-linux32-fuzzing-debug
+    treeherder:
+        platform: linux32/debug
+        symbol: SM(f)
+    worker:
+        env:
+            MOZ_JS_UPLOAD_BINARIES_DEFAULT: "1"
+    run:
+        clone-with: hg
+        spidermonkey-variant: fuzzing-debug
+        spidermonkey-platform: linux
+    fetches:
+        toolchain:
+            - linux64-clang
+            - linux64-rust
+            - linux64-cbindgen
+            - linux64-dump_syms
+            - linux64-breakpad-injector
+            - linux64-minidump-stackwalk
+            - linux32-llvm-symbolizer
+            - linux64-pkgconf
+            - sysroot-i686-linux-gnu
+            - sysroot-x86_64-linux-gnu
+
 sm-fuzzilli-linux64/debug:
     description: "Spidermonkey Fuzzilli debug"
     index:
@@ -469,6 +677,7 @@ sm-fuzzilli-linux64/debug:
         env:
             MOZ_JS_UPLOAD_BINARIES_DEFAULT: "1"
     run:
+        clone-with: hg
         spidermonkey-variant: fuzzilli
     fetches:
         toolchain:
@@ -489,6 +698,7 @@ sm-fuzzilli-linux64-aarch64/debug:
         env:
             MOZ_JS_UPLOAD_BINARIES_DEFAULT: "1"
     run:
+        clone-with: hg
         spidermonkey-variant: fuzzilli-aarch64
     fetches:
         toolchain:
@@ -510,6 +720,7 @@ sm-gdb-linux64/debug:
         tier: 2
         symbol: SM(gdb)
     run:
+        clone-with: hg
         spidermonkey-variant: gdb
     fetches:
         toolchain:

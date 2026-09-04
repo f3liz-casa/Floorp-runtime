@@ -4,21 +4,25 @@
 
 //! Specified types for box properties.
 
+use crate::derives::*;
 pub use crate::logical_geometry::WritingModeProperty;
 use crate::parser::{Parse, ParserContext};
 use crate::properties::{LonghandId, PropertyDeclarationId, PropertyId};
+pub use crate::typed_om::{KeywordValue, ToTyped, TypedValue};
 use crate::values::generics::box_::{
-    GenericContainIntrinsicSize, GenericLineClamp, GenericPerspective, GenericVerticalAlign,
-    VerticalAlignKeyword,
+    BaselineShiftKeyword, BlockEllipsis, GenericBaselineShift, GenericContainIntrinsicSize,
+    GenericLineClamp, GenericOverflowClipMargin, GenericPerspective, MaxLines,
+    OverflowClipMarginBox,
 };
 use crate::values::specified::length::{LengthPercentage, NonNegativeLength};
-use crate::values::specified::{AllowQuirks, Integer, NonNegativeNumberOrPercentage};
+use crate::values::specified::{AllowQuirks, NonNegativeNumberOrPercentage, PositiveInteger};
 use crate::values::CustomIdent;
 use cssparser::Parser;
 use num_traits::FromPrimitive;
 use std::fmt::{self, Write};
-use style_traits::{CssWriter, KeywordsCollectFn, ParseError};
+use style_traits::{CssWriter, KeywordsCollectFn, ParseError /*CssString*/};
 use style_traits::{SpecifiedValueInfo, StyleParseErrorKind, ToCss};
+use thin_vec::ThinVec;
 
 #[cfg(not(feature = "servo"))]
 fn grid_enabled() -> bool {
@@ -27,7 +31,93 @@ fn grid_enabled() -> bool {
 
 #[cfg(feature = "servo")]
 fn grid_enabled() -> bool {
-    style_config::get_bool("layout.grid.enabled")
+    static_prefs::pref!("layout.grid.enabled")
+}
+
+#[inline]
+fn appearance_base_enabled(_context: &ParserContext) -> bool {
+    static_prefs::pref!("layout.css.appearance-base.enabled")
+}
+
+#[inline]
+fn appearance_base_select_enabled(_context: &ParserContext) -> bool {
+    static_prefs::pref!("dom.select.customizable_select.enabled")
+}
+
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Eq,
+    MallocSizeOf,
+    PartialEq,
+    Parse,
+    ToCss,
+    SpecifiedValueInfo,
+    ToComputedValue,
+    ToResolvedValue,
+    ToShmem,
+    ToTyped,
+)]
+#[css(bitflags(
+    single = "none",
+    mixed = "block,block-start,block-end",
+    overlapping_bits
+))]
+#[repr(C)]
+/// Specified value of the `margin-trim` property, which trims the margins of a
+/// container's children where they meet the container's edges.
+/// https://drafts.csswg.org/css-box-4/#propdef-margin-trim
+/// Pending https://github.com/w3c/csswg-drafts/issues/13731, we're only targetting block
+/// trimming for now and skipping `inline-start` and `inline-end`
+pub struct MarginTrim(u8);
+bitflags! {
+    impl MarginTrim: u8 {
+        /// `none` variant, no margins are trimmed.
+        const NONE = 0;
+        /// Trim the block-start margin of the first child.
+        const BLOCK_START = 1 << 0;
+        /// Trim the block-end margin of the last child.
+        const BLOCK_END = 1 << 1;
+        /// `block` shorthand: both block-axis margins.
+        const BLOCK = MarginTrim::BLOCK_START.bits() | MarginTrim::BLOCK_END.bits();
+    }
+}
+
+/// The specified value of `overflow-clip-margin`.
+pub type OverflowClipMargin = GenericOverflowClipMargin<NonNegativeLength>;
+
+impl Parse for OverflowClipMargin {
+    // <visual-box> || <length [0,∞]>
+    fn parse<'i>(
+        context: &ParserContext,
+        input: &mut Parser<'i, '_>,
+    ) -> Result<Self, ParseError<'i>> {
+        use crate::Zero;
+        let mut offset = None;
+        let mut visual_box = None;
+        loop {
+            if offset.is_none() {
+                offset = input
+                    .try_parse(|i| NonNegativeLength::parse(context, i))
+                    .ok();
+            }
+            if visual_box.is_none() {
+                visual_box = input.try_parse(OverflowClipMarginBox::parse).ok();
+                if visual_box.is_some() {
+                    continue;
+                }
+            }
+            break;
+        }
+        if offset.is_none() && visual_box.is_none() {
+            return Err(input.new_custom_error(StyleParseErrorKind::UnspecifiedError));
+        }
+        Ok(Self {
+            offset: offset.unwrap_or_else(NonNegativeLength::zero),
+            visual_box: visual_box.unwrap_or(OverflowClipMarginBox::PaddingBox),
+        })
+    }
 }
 
 /// Defines an element’s display type, which consists of
@@ -110,6 +200,7 @@ impl DisplayInside {
     Hash,
     MallocSizeOf,
     PartialEq,
+    ToAnimatedValue,
     ToComputedValue,
     ToResolvedValue,
     ToShmem,
@@ -176,54 +267,54 @@ impl Display {
     // Internal table boxes.
 
     pub const TableRowGroup: Self = Self(
-        ((DisplayOutside::InternalTable as u16) << Self::OUTSIDE_SHIFT) |
-            DisplayInside::TableRowGroup as u16,
+        ((DisplayOutside::InternalTable as u16) << Self::OUTSIDE_SHIFT)
+            | DisplayInside::TableRowGroup as u16,
     );
     pub const TableHeaderGroup: Self = Self(
-        ((DisplayOutside::InternalTable as u16) << Self::OUTSIDE_SHIFT) |
-            DisplayInside::TableHeaderGroup as u16,
+        ((DisplayOutside::InternalTable as u16) << Self::OUTSIDE_SHIFT)
+            | DisplayInside::TableHeaderGroup as u16,
     );
     pub const TableFooterGroup: Self = Self(
-        ((DisplayOutside::InternalTable as u16) << Self::OUTSIDE_SHIFT) |
-            DisplayInside::TableFooterGroup as u16,
+        ((DisplayOutside::InternalTable as u16) << Self::OUTSIDE_SHIFT)
+            | DisplayInside::TableFooterGroup as u16,
     );
     pub const TableColumn: Self = Self(
-        ((DisplayOutside::InternalTable as u16) << Self::OUTSIDE_SHIFT) |
-            DisplayInside::TableColumn as u16,
+        ((DisplayOutside::InternalTable as u16) << Self::OUTSIDE_SHIFT)
+            | DisplayInside::TableColumn as u16,
     );
     pub const TableColumnGroup: Self = Self(
-        ((DisplayOutside::InternalTable as u16) << Self::OUTSIDE_SHIFT) |
-            DisplayInside::TableColumnGroup as u16,
+        ((DisplayOutside::InternalTable as u16) << Self::OUTSIDE_SHIFT)
+            | DisplayInside::TableColumnGroup as u16,
     );
     pub const TableRow: Self = Self(
-        ((DisplayOutside::InternalTable as u16) << Self::OUTSIDE_SHIFT) |
-            DisplayInside::TableRow as u16,
+        ((DisplayOutside::InternalTable as u16) << Self::OUTSIDE_SHIFT)
+            | DisplayInside::TableRow as u16,
     );
     pub const TableCell: Self = Self(
-        ((DisplayOutside::InternalTable as u16) << Self::OUTSIDE_SHIFT) |
-            DisplayInside::TableCell as u16,
+        ((DisplayOutside::InternalTable as u16) << Self::OUTSIDE_SHIFT)
+            | DisplayInside::TableCell as u16,
     );
 
     /// Internal ruby boxes.
     #[cfg(feature = "gecko")]
     pub const RubyBase: Self = Self(
-        ((DisplayOutside::InternalRuby as u16) << Self::OUTSIDE_SHIFT) |
-            DisplayInside::RubyBase as u16,
+        ((DisplayOutside::InternalRuby as u16) << Self::OUTSIDE_SHIFT)
+            | DisplayInside::RubyBase as u16,
     );
     #[cfg(feature = "gecko")]
     pub const RubyBaseContainer: Self = Self(
-        ((DisplayOutside::InternalRuby as u16) << Self::OUTSIDE_SHIFT) |
-            DisplayInside::RubyBaseContainer as u16,
+        ((DisplayOutside::InternalRuby as u16) << Self::OUTSIDE_SHIFT)
+            | DisplayInside::RubyBaseContainer as u16,
     );
     #[cfg(feature = "gecko")]
     pub const RubyText: Self = Self(
-        ((DisplayOutside::InternalRuby as u16) << Self::OUTSIDE_SHIFT) |
-            DisplayInside::RubyText as u16,
+        ((DisplayOutside::InternalRuby as u16) << Self::OUTSIDE_SHIFT)
+            | DisplayInside::RubyText as u16,
     );
     #[cfg(feature = "gecko")]
     pub const RubyTextContainer: Self = Self(
-        ((DisplayOutside::InternalRuby as u16) << Self::OUTSIDE_SHIFT) |
-            DisplayInside::RubyTextContainer as u16,
+        ((DisplayOutside::InternalRuby as u16) << Self::OUTSIDE_SHIFT)
+            | DisplayInside::RubyTextContainer as u16,
     );
 
     /// Make a raw display value from <display-outside> and <display-inside> values.
@@ -285,11 +376,11 @@ impl Display {
     pub fn is_ruby_type(&self) -> bool {
         match self.inside() {
             #[cfg(feature = "gecko")]
-            DisplayInside::Ruby |
-            DisplayInside::RubyBase |
-            DisplayInside::RubyText |
-            DisplayInside::RubyBaseContainer |
-            DisplayInside::RubyTextContainer => true,
+            DisplayInside::Ruby
+            | DisplayInside::RubyBase
+            | DisplayInside::RubyText
+            | DisplayInside::RubyBaseContainer
+            | DisplayInside::RubyTextContainer => true,
             _ => false,
         }
     }
@@ -485,6 +576,36 @@ impl ToCss for Display {
     }
 }
 
+impl ToTyped for Display {
+    fn to_typed(&self, dest: &mut ThinVec<TypedValue>) -> Result<(), ()> {
+        // Note: The specification does not currently define how display multi
+        // keywords should be reified into Typed OM. The current behavior
+        // follows existing WPT coverage (display.html). Syncing spec with
+        // UA/WPT behavior tracked in
+        // https://github.com/w3c/csswg-drafts/issues/13907
+
+        let outside = self.outside();
+        let inside = self.inside();
+
+        #[cfg(feature = "gecko")]
+        if outside == DisplayOutside::Block && inside == DisplayInside::Ruby {
+            return Err(());
+        }
+
+        if self.is_list_item()
+            && (outside != DisplayOutside::Block || inside != DisplayInside::Flow)
+        {
+            return Err(());
+        }
+
+        let keyword = self.to_css_cssstring();
+        debug_assert!(!AsRef::<[u8]>::as_ref(&keyword).contains(&b' '));
+
+        dest.push(TypedValue::Keyword(KeywordValue(keyword)));
+        return Ok(());
+    }
+}
+
 impl Parse for Display {
     fn parse<'i, 't>(
         _: &ParserContext,
@@ -574,12 +695,12 @@ impl SpecifiedValueInfo for Display {
 pub type ContainIntrinsicSize = GenericContainIntrinsicSize<NonNegativeLength>;
 
 /// A specified value for the `line-clamp` property.
-pub type LineClamp = GenericLineClamp<Integer>;
+pub type LineClamp = GenericLineClamp<PositiveInteger>;
 
-/// A specified value for the `vertical-align` property.
-pub type VerticalAlign = GenericVerticalAlign<LengthPercentage>;
+/// A specified value for the `baseline-shift` property.
+pub type BaselineShift = GenericBaselineShift<LengthPercentage>;
 
-impl Parse for VerticalAlign {
+impl Parse for BaselineShift {
     fn parse<'i, 't>(
         context: &ParserContext,
         input: &mut Parser<'i, 't>,
@@ -587,13 +708,109 @@ impl Parse for VerticalAlign {
         if let Ok(lp) =
             input.try_parse(|i| LengthPercentage::parse_quirky(context, i, AllowQuirks::Yes))
         {
-            return Ok(GenericVerticalAlign::Length(lp));
+            return Ok(BaselineShift::Length(lp));
         }
 
-        Ok(GenericVerticalAlign::Keyword(VerticalAlignKeyword::parse(
-            input,
-        )?))
+        Ok(BaselineShift::Keyword(BaselineShiftKeyword::parse(input)?))
     }
+}
+
+/// A specified value for the `dominant-baseline` property.
+/// https://drafts.csswg.org/css-inline-3/#dominant-baseline
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Eq,
+    FromPrimitive,
+    Hash,
+    MallocSizeOf,
+    Parse,
+    PartialEq,
+    SpecifiedValueInfo,
+    ToCss,
+    ToShmem,
+    ToComputedValue,
+    ToResolvedValue,
+    ToTyped,
+)]
+#[repr(u8)]
+pub enum DominantBaseline {
+    /// Equivalent to 'alphabetic' in horizontal writing modes and in vertical writing
+    /// modes when 'text-orientation' is sideways. Equivalent to 'central' in vertical
+    /// writing modes when 'text-orientation' is 'mixed' or 'upright'.
+    Auto,
+    /// Use the text-under baseline.
+    #[parse(aliases = "text-after-edge")]
+    TextBottom,
+    /// Use the alphabetic baseline.
+    Alphabetic,
+    /// Use the ideographic-under baseline.
+    Ideographic,
+    /// In general, use the x-middle baselines; except under text-orientation: upright
+    /// (where the alphabetic and x-height baselines are essentially meaningless) use
+    /// the central baseline instead.
+    Middle,
+    /// Use the central baseline.
+    Central,
+    /// Use the math baseline.
+    Mathematical,
+    /// Use the hanging baseline.
+    Hanging,
+    /// Use the text-over baseline.
+    #[parse(aliases = "text-before-edge")]
+    TextTop,
+}
+
+/// A specified value for the `alignment-baseline` property.
+/// https://drafts.csswg.org/css-inline-3/#alignment-baseline
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Eq,
+    FromPrimitive,
+    Hash,
+    MallocSizeOf,
+    Parse,
+    PartialEq,
+    SpecifiedValueInfo,
+    ToCss,
+    ToShmem,
+    ToComputedValue,
+    ToResolvedValue,
+    ToTyped,
+)]
+#[repr(u8)]
+pub enum AlignmentBaseline {
+    /// Use the dominant baseline choice of the parent.
+    Baseline,
+    /// Use the text-under baseline.
+    TextBottom,
+    /// Use the alphabetic baseline.
+    #[cfg(feature = "gecko")]
+    Alphabetic,
+    /// Use the ideographic-under baseline.
+    #[cfg(feature = "gecko")]
+    Ideographic,
+    /// In general, use the x-middle baselines; except under text-orientation: upright
+    /// (where the alphabetic and x-height baselines are essentially meaningless) use
+    /// the central baseline instead.
+    Middle,
+    /// Use the central baseline.
+    #[cfg(feature = "gecko")]
+    Central,
+    /// Use the math baseline.
+    #[cfg(feature = "gecko")]
+    Mathematical,
+    /// Use the hanging baseline.
+    #[cfg(feature = "gecko")]
+    Hanging,
+    /// Use the text-over baseline.
+    TextTop,
+    /// Used to implement the deprecated "align=middle" attribute for HTML img elements.
+    #[cfg(feature = "gecko")]
+    MozMiddleWithBaseline,
 }
 
 /// A specified value for the `baseline-source` property.
@@ -612,6 +829,7 @@ impl Parse for VerticalAlign {
     ToShmem,
     ToComputedValue,
     ToResolvedValue,
+    ToTyped,
 )]
 #[repr(u8)]
 pub enum BaselineSource {
@@ -623,17 +841,28 @@ pub enum BaselineSource {
     Last,
 }
 
+impl BaselineSource {
+    /// Parse baseline source, but without the auto keyword, for the shorthand.
+    pub fn parse_non_auto<'i>(input: &mut Parser<'i, '_>) -> Result<Self, ParseError<'i>> {
+        Ok(try_match_ident_ignore_ascii_case! { input,
+            "first" => Self::First,
+            "last" => Self::Last,
+        })
+    }
+}
+
 /// https://drafts.csswg.org/css-scroll-snap-1/#snap-axis
 #[allow(missing_docs)]
-#[cfg_attr(feature = "servo", derive(Deserialize, Serialize))]
 #[derive(
     Clone,
     Copy,
     Debug,
+    Deserialize,
     Eq,
     MallocSizeOf,
     Parse,
     PartialEq,
+    Serialize,
     SpecifiedValueInfo,
     ToComputedValue,
     ToCss,
@@ -651,15 +880,16 @@ pub enum ScrollSnapAxis {
 
 /// https://drafts.csswg.org/css-scroll-snap-1/#snap-strictness
 #[allow(missing_docs)]
-#[cfg_attr(feature = "servo", derive(Deserialize, Serialize))]
 #[derive(
     Clone,
     Copy,
     Debug,
+    Deserialize,
     Eq,
     MallocSizeOf,
     Parse,
     PartialEq,
+    Serialize,
     SpecifiedValueInfo,
     ToComputedValue,
     ToCss,
@@ -676,20 +906,23 @@ pub enum ScrollSnapStrictness {
 
 /// https://drafts.csswg.org/css-scroll-snap-1/#scroll-snap-type
 #[allow(missing_docs)]
-#[cfg_attr(feature = "servo", derive(Deserialize, Serialize))]
 #[derive(
     Clone,
     Copy,
     Debug,
+    Deserialize,
     Eq,
     MallocSizeOf,
     PartialEq,
+    Serialize,
     SpecifiedValueInfo,
     ToComputedValue,
     ToResolvedValue,
     ToShmem,
+    ToTyped,
 )]
 #[repr(C)]
+#[typed(todo_derive_fields)]
 pub struct ScrollSnapType {
     axis: ScrollSnapAxis,
     strictness: ScrollSnapStrictness,
@@ -783,8 +1016,10 @@ pub enum ScrollSnapAlignKeyword {
     ToComputedValue,
     ToResolvedValue,
     ToShmem,
+    ToTyped,
 )]
 #[repr(C)]
+#[typed(todo_derive_fields)]
 pub struct ScrollSnapAlign {
     block: ScrollSnapAlignKeyword,
     inline: ScrollSnapAlignKeyword,
@@ -830,20 +1065,22 @@ impl ToCss for ScrollSnapAlign {
 }
 
 #[allow(missing_docs)]
-#[cfg_attr(feature = "servo", derive(Deserialize, Serialize))]
 #[derive(
     Clone,
     Copy,
     Debug,
+    Deserialize,
     Eq,
     MallocSizeOf,
     Parse,
     PartialEq,
+    Serialize,
     SpecifiedValueInfo,
     ToComputedValue,
     ToCss,
     ToResolvedValue,
     ToShmem,
+    ToTyped,
 )]
 #[repr(u8)]
 pub enum ScrollSnapStop {
@@ -852,20 +1089,22 @@ pub enum ScrollSnapStop {
 }
 
 #[allow(missing_docs)]
-#[cfg_attr(feature = "servo", derive(Deserialize, Serialize))]
 #[derive(
     Clone,
     Copy,
     Debug,
+    Deserialize,
     Eq,
     MallocSizeOf,
     Parse,
     PartialEq,
+    Serialize,
     SpecifiedValueInfo,
     ToComputedValue,
     ToCss,
     ToResolvedValue,
     ToShmem,
+    ToTyped,
 )]
 #[repr(u8)]
 pub enum OverscrollBehavior {
@@ -875,47 +1114,27 @@ pub enum OverscrollBehavior {
 }
 
 #[allow(missing_docs)]
-#[cfg_attr(feature = "servo", derive(Deserialize, Serialize))]
 #[derive(
     Clone,
     Copy,
     Debug,
+    Deserialize,
     Eq,
     MallocSizeOf,
     Parse,
     PartialEq,
+    Serialize,
     SpecifiedValueInfo,
     ToComputedValue,
     ToCss,
     ToResolvedValue,
     ToShmem,
+    ToTyped,
 )]
 #[repr(u8)]
 pub enum OverflowAnchor {
     Auto,
     None,
-}
-
-#[allow(missing_docs)]
-#[cfg_attr(feature = "servo", derive(Deserialize, Serialize))]
-#[derive(
-    Clone,
-    Copy,
-    Debug,
-    Eq,
-    MallocSizeOf,
-    Parse,
-    PartialEq,
-    SpecifiedValueInfo,
-    ToComputedValue,
-    ToCss,
-    ToResolvedValue,
-    ToShmem,
-)]
-#[repr(u8)]
-pub enum OverflowClipBox {
-    PaddingBox,
-    ContentBox,
 }
 
 #[derive(
@@ -929,9 +1148,11 @@ pub enum OverflowClipBox {
     ToCss,
     ToResolvedValue,
     ToShmem,
+    ToTyped,
 )]
 #[css(comma)]
 #[repr(C)]
+#[typed(no_multiple_values)]
 /// Provides a rendering hint to the user agent, stating what kinds of changes
 /// the author expects to perform on the element.
 ///
@@ -1014,16 +1235,16 @@ fn change_bits_for_longhand(longhand: LonghandId) -> WillChangeBits {
             WillChangeBits::STACKING_CONTEXT_UNCONDITIONAL | WillChangeBits::POSITION
         },
         LonghandId::ZIndex => WillChangeBits::Z_INDEX,
-        LonghandId::Transform |
-        LonghandId::TransformStyle |
-        LonghandId::Translate |
-        LonghandId::Rotate |
-        LonghandId::Scale |
-        LonghandId::OffsetPath => WillChangeBits::TRANSFORM,
+        LonghandId::Transform
+        | LonghandId::TransformStyle
+        | LonghandId::Translate
+        | LonghandId::Rotate
+        | LonghandId::Scale
+        | LonghandId::OffsetPath => WillChangeBits::TRANSFORM,
         LonghandId::Filter | LonghandId::BackdropFilter => {
-            WillChangeBits::STACKING_CONTEXT_UNCONDITIONAL |
-                WillChangeBits::BACKDROP_ROOT |
-                WillChangeBits::FIXPOS_CB_NON_SVG
+            WillChangeBits::STACKING_CONTEXT_UNCONDITIONAL
+                | WillChangeBits::BACKDROP_ROOT
+                | WillChangeBits::FIXPOS_CB_NON_SVG
         },
         LonghandId::ViewTransitionName => {
             WillChangeBits::VIEW_TRANSITION_NAME | WillChangeBits::BACKDROP_ROOT
@@ -1112,6 +1333,7 @@ impl Parse for WillChange {
     ToCss,
     ToResolvedValue,
     ToShmem,
+    ToTyped,
 )]
 #[css(bitflags(single = "none,auto,manipulation", mixed = "pan-x,pan-y,pinch-zoom"))]
 #[repr(C)]
@@ -1154,6 +1376,7 @@ impl TouchAction {
     ToCss,
     ToResolvedValue,
     ToShmem,
+    ToTyped,
 )]
 #[css(bitflags(
     single = "none,strict,content",
@@ -1210,39 +1433,146 @@ impl Parse for ContainIntrinsicSize {
     }
 }
 
-impl Parse for LineClamp {
-    /// none | <positive-integer>
+impl Parse for MaxLines<PositiveInteger> {
     fn parse<'i, 't>(
         context: &ParserContext,
         input: &mut Parser<'i, 't>,
     ) -> Result<Self, ParseError<'i>> {
-        if let Ok(i) =
+        let mut lines = None;
+        let mut auto = false;
+
+        loop {
+            if lines.is_none() {
+                if let Ok(value) = input.try_parse(|i| PositiveInteger::parse(context, i)) {
+                    lines = Some(value);
+                    continue;
+                }
+            }
+
+            if !auto && input.try_parse(|i| i.expect_ident_matching("auto")).is_ok() {
+                auto = true;
+                continue;
+            }
+
+            break;
+        }
+
+        match (lines, auto) {
+            (Some(value), true) => Ok(MaxLines::lines(value, true)),
+            (Some(value), false) => Ok(MaxLines::lines(value, false)),
+            (None, true) => Ok(MaxLines::auto()),
+            (None, false) => Err(input.new_custom_error(StyleParseErrorKind::UnspecifiedError)),
+        }
+    }
+}
+
+impl Parse for LineClamp {
+    fn parse<'i, 't>(
+        context: &ParserContext,
+        input: &mut Parser<'i, 't>,
+    ) -> Result<Self, ParseError<'i>> {
+        if input.try_parse(|i| i.expect_ident_matching("none")).is_ok() {
+            return Ok(Self::none());
+        }
+
+        let mut max_lines = None;
+        let mut block_ellipsis = None;
+
+        loop {
+            if max_lines.is_none() {
+                if let Ok(value) = input.try_parse(|i| MaxLines::parse(context, i)) {
+                    max_lines = Some(value);
+                    continue;
+                }
+            }
+            if block_ellipsis.is_none() {
+                if let Ok(value) = input.try_parse(|i| BlockEllipsis::parse(context, i)) {
+                    block_ellipsis = Some(value);
+                    continue;
+                }
+            }
+
+            break;
+        }
+
+        if max_lines.is_none() && block_ellipsis.is_none() {
+            return Err(input.new_custom_error(StyleParseErrorKind::UnspecifiedError));
+        }
+
+        let webkit_legacy = input
+            .try_parse(|i| i.expect_ident_matching("-webkit-legacy"))
+            .is_ok();
+
+        let block_ellipsis = block_ellipsis.unwrap_or(BlockEllipsis::Ellipsis);
+        let max_lines = max_lines.unwrap_or_else(MaxLines::auto);
+
+        Ok(Self {
+            max_lines,
+            block_ellipsis,
+            webkit_legacy,
+        })
+    }
+}
+
+impl LineClamp {
+    /// Parses the legacy `-webkit-line-clamp` syntax.
+    pub fn parse_legacy<'i, 't>(
+        context: &ParserContext,
+        input: &mut Parser<'i, 't>,
+    ) -> Result<Self, ParseError<'i>> {
+        if let Ok(value) =
             input.try_parse(|i| crate::values::specified::PositiveInteger::parse(context, i))
         {
-            return Ok(Self(i.0));
+            return Ok(Self {
+                max_lines: MaxLines::lines(value, false),
+                block_ellipsis: BlockEllipsis::Ellipsis,
+                webkit_legacy: true,
+            });
         }
         input.expect_ident_matching("none")?;
         Ok(Self::none())
     }
+
+    /// Serializes the legacy `-webkit-line-clamp` syntax.
+    pub(crate) fn to_css_legacy<W>(&self, dest: &mut CssWriter<W>) -> fmt::Result
+    where
+        W: fmt::Write,
+    {
+        if self.is_none() {
+            return dest.write_str("none");
+        }
+
+        if !self.webkit_legacy || !self.block_ellipsis.is_ellipsis() {
+            return Ok(());
+        }
+
+        let Some(lines) = self.max_lines.lines_value() else {
+            return Ok(());
+        };
+
+        lines.to_css(dest)
+    }
 }
 
 /// https://drafts.csswg.org/css-contain-2/#content-visibility
-#[cfg_attr(feature = "servo", derive(Deserialize, Serialize))]
 #[derive(
     Clone,
     Copy,
     Debug,
+    Deserialize,
     Eq,
     FromPrimitive,
     MallocSizeOf,
     Parse,
     PartialEq,
+    Serialize,
     SpecifiedValueInfo,
     ToAnimatedValue,
     ToComputedValue,
     ToCss,
     ToResolvedValue,
     ToShmem,
+    ToTyped,
 )]
 #[repr(u8)]
 pub enum ContentVisibility {
@@ -1269,6 +1599,7 @@ pub enum ContentVisibility {
     Parse,
     ToResolvedValue,
     ToShmem,
+    ToTyped,
 )]
 #[css(bitflags(
     single = "normal",
@@ -1302,8 +1633,8 @@ impl ContainerType {
         if self.contains(Self::SIZE | Self::INLINE_SIZE) {
             return false;
         }
-        if self.contains(Self::SCROLL_STATE) &&
-            !static_prefs::pref!("layout.css.scroll-state.enabled")
+        if self.contains(Self::SCROLL_STATE)
+            && !static_prefs::pref!("layout.css.scroll-state.enabled")
         {
             return false;
         }
@@ -1333,6 +1664,7 @@ impl ContainerType {
     ToCss,
     ToResolvedValue,
     ToShmem,
+    ToTyped,
 )]
 pub struct ContainerName(#[css(iterable, if_empty = "none")] pub crate::OwnedSlice<CustomIdent>);
 
@@ -1398,22 +1730,24 @@ pub type Perspective = GenericPerspective<NonNegativeLength>;
 
 /// https://drafts.csswg.org/css-box/#propdef-float
 #[allow(missing_docs)]
-#[cfg_attr(feature = "servo", derive(Deserialize, Serialize))]
 #[derive(
     Clone,
     Copy,
     Debug,
+    Deserialize,
     Eq,
     FromPrimitive,
     Hash,
     MallocSizeOf,
     Parse,
     PartialEq,
+    Serialize,
     SpecifiedValueInfo,
     ToComputedValue,
     ToCss,
     ToResolvedValue,
     ToShmem,
+    ToTyped,
 )]
 #[repr(u8)]
 pub enum Float {
@@ -1434,22 +1768,24 @@ impl Float {
 
 /// https://drafts.csswg.org/css2/#propdef-clear
 #[allow(missing_docs)]
-#[cfg_attr(feature = "servo", derive(Deserialize, Serialize))]
 #[derive(
     Clone,
     Copy,
     Debug,
+    Deserialize,
     Eq,
     FromPrimitive,
     Hash,
     MallocSizeOf,
     Parse,
     PartialEq,
+    Serialize,
     SpecifiedValueInfo,
     ToComputedValue,
     ToCss,
     ToResolvedValue,
     ToShmem,
+    ToTyped,
 )]
 #[repr(u8)]
 pub enum Clear {
@@ -1464,9 +1800,21 @@ pub enum Clear {
 
 /// https://drafts.csswg.org/css-ui/#propdef-resize
 #[allow(missing_docs)]
-#[cfg_attr(feature = "servo", derive(Deserialize, Serialize))]
 #[derive(
-    Clone, Copy, Debug, Eq, Hash, MallocSizeOf, Parse, PartialEq, SpecifiedValueInfo, ToCss, ToShmem,
+    Clone,
+    Copy,
+    Debug,
+    Deserialize,
+    Eq,
+    Hash,
+    MallocSizeOf,
+    Parse,
+    PartialEq,
+    Serialize,
+    SpecifiedValueInfo,
+    ToCss,
+    ToShmem,
+    ToTyped,
 )]
 pub enum Resize {
     None,
@@ -1496,6 +1844,7 @@ pub enum Resize {
     ToComputedValue,
     ToResolvedValue,
     ToShmem,
+    ToTyped,
 )]
 #[repr(u8)]
 pub enum Appearance {
@@ -1528,6 +1877,13 @@ pub enum Appearance {
     Textfield,
     /// The dropdown button(s) that open up a dropdown list.
     MenulistButton,
+    /// https://drafts.csswg.org/css-forms/#appearance
+    #[parse(condition = "appearance_base_enabled")]
+    Base,
+    /// Only relevant to the <select> element and ::picker(select) pseudo-element, allowing them to
+    /// be styled.
+    #[parse(condition = "appearance_base_select_enabled")]
+    BaseSelect,
     /// Menu Popup background.
     #[parse(condition = "ParserContext::chrome_rules_enabled")]
     Menupopup,
@@ -1646,6 +2002,7 @@ pub enum Appearance {
     ToComputedValue,
     ToResolvedValue,
     ToShmem,
+    ToTyped,
 )]
 #[repr(u8)]
 pub enum BreakBetween {
@@ -1715,6 +2072,7 @@ impl BreakBetween {
     ToComputedValue,
     ToResolvedValue,
     ToShmem,
+    ToTyped,
 )]
 #[repr(u8)]
 pub enum BreakWithin {
@@ -1773,6 +2131,7 @@ impl BreakWithin {
     ToComputedValue,
     ToResolvedValue,
     ToShmem,
+    ToTyped,
 )]
 #[repr(u8)]
 pub enum Overflow {
@@ -1835,6 +2194,7 @@ impl Overflow {
     ToCss,
     ToResolvedValue,
     ToShmem,
+    ToTyped,
 )]
 #[repr(C)]
 #[css(bitflags(
@@ -1865,9 +2225,10 @@ impl ScrollbarGutter {
 
 /// A specified value for the zoom property.
 #[derive(
-    Clone, Copy, Debug, MallocSizeOf, PartialEq, Parse, SpecifiedValueInfo, ToCss, ToShmem,
+    Clone, Debug, MallocSizeOf, PartialEq, Parse, SpecifiedValueInfo, ToCss, ToShmem, ToTyped,
 )]
 #[allow(missing_docs)]
+#[typed(todo_derive_fields)]
 pub enum Zoom {
     Normal,
     /// An internal value that resets the effective zoom to 1. Used for scrollbar parts, which

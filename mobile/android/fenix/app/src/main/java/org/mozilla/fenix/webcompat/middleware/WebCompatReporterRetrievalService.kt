@@ -4,15 +4,13 @@
 
 package org.mozilla.fenix.webcompat.middleware
 
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
+import kotlinx.coroutines.suspendCancellableCoroutine
 import mozilla.components.browser.state.selector.selectedTab
 import mozilla.components.browser.state.state.BrowserState
 import mozilla.components.browser.state.store.BrowserStore
 import mozilla.components.support.base.log.logger.Logger
-import org.mozilla.fenix.webcompat.middleware.WebCompatInfoDto.WebCompatBrowserDto.ExperimentDto
+import org.json.JSONObject
 import kotlin.coroutines.resume
-import kotlin.coroutines.suspendCoroutine
 
 /**
  * Service that handles the submission requests for the report broken site feature.
@@ -20,53 +18,38 @@ import kotlin.coroutines.suspendCoroutine
 interface WebCompatReporterRetrievalService {
 
     /**
-     * Returns [WebCompatInfoDto] or null if the services fails to retrieve the data.
+     * Returns [JSONObject] or null if the services fails to retrieve the data.
      */
-    suspend fun retrieveInfo(): WebCompatInfoDto?
+    suspend fun retrieveInfo(): JSONObject?
 }
 
 /**
  * The default implementation of [WebCompatReporterRetrievalService].
  *
  * @param browserStore [BrowserStore] used to access [BrowserState].
- * @param webCompatInfoDeserializer Used to deserialize Json to [WebCompatInfoDto].
- * @param nimbusExperimentsProvider A [NimbusExperimentsProvider] used to get active experiments
- * and experiment branches.
  */
 class DefaultWebCompatReporterRetrievalService(
     private val browserStore: BrowserStore,
-    private val webCompatInfoDeserializer: WebCompatInfoDeserializer,
-    private val nimbusExperimentsProvider: NimbusExperimentsProvider,
 ) : WebCompatReporterRetrievalService {
 
-    private val logger = Logger("WebCompatReporterRetrievalService")
+    private val logger = Logger("DefaultWebCompatReporterRetrievalService")
 
-    override suspend fun retrieveInfo(): WebCompatInfoDto? = withContext(Dispatchers.Main) {
-        suspendCoroutine { continuation ->
-            browserStore.state.selectedTab?.engineState?.engineSession?.getWebCompatInfo(
+    override suspend fun retrieveInfo(): JSONObject? {
+        val session = browserStore.state.selectedTab?.engineState?.engineSession
+            ?: return null
+
+        return suspendCancellableCoroutine { continuation ->
+            session.getBrokenSiteReport(
                 onResult = { details ->
-                    val webCompatInfo = webCompatInfoDeserializer.decode(string = details.toString())
-                    if (webCompatInfo != null) {
-                        continuation.resume(
-                            webCompatInfo.copy(
-                                browser = webCompatInfo.browser.copy(
-                                    experiments = nimbusExperimentsProvider.activeExperiments.map({ experiment ->
-                                        ExperimentDto(
-                                            branch = nimbusExperimentsProvider.getExperimentBranch(experiment.slug),
-                                            slug = experiment.slug,
-                                            kind = "nimbusExperiment",
-                                        )
-                                    }),
-                                ),
-                            ),
-                        )
-                    } else {
-                        continuation.resume(webCompatInfo)
+                    if (continuation.isActive) {
+                        continuation.resume(details)
                     }
                 },
-                onException = {
-                    logger.error("Error retrieving web compat info", it)
-                    continuation.resume(null)
+                onException = { exception ->
+                    logger.error("Error retrieving web compat info from engine", exception)
+                    if (continuation.isActive) {
+                        continuation.resume(null)
+                    }
                 },
             )
         }

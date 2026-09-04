@@ -22,7 +22,10 @@ import org.mozilla.fenix.ext.components
  * Whenever the application was updated we still consider the application to be "recently updated"
  * for the next few days.
  */
-class WhatsNew private constructor(private val storage: WhatsNewStorage) {
+class WhatsNew private constructor(
+    private val storage: WhatsNewStorage,
+    private val currentTimeMillis: () -> Long = { System.currentTimeMillis() },
+) {
 
     private fun hasBeenUpdatedRecently(currentVersion: WhatsNewVersion): Boolean {
         val lastKnownAppVersion = storage.getVersion()
@@ -32,7 +35,7 @@ class WhatsNew private constructor(private val storage: WhatsNewStorage) {
             currentVersion.majorVersionNumber > lastKnownAppVersion.majorVersionNumber
         ) {
             storage.setVersion(currentVersion)
-            storage.setDateOfUpdate(System.currentTimeMillis())
+            storage.setDateOfUpdate(currentTimeMillis())
             return true
         }
 
@@ -71,7 +74,7 @@ class WhatsNew private constructor(private val storage: WhatsNewStorage) {
         fun shouldHighlightWhatsNew(context: Context): Boolean {
             return shouldHighlightWhatsNew(
                 ContextWhatsNewVersion(context),
-                context.components.strictMode.resetAfter(StrictMode.allowThreadDiskReads()) {
+                context.components.strictMode.allowViolation(StrictMode::allowThreadDiskReads) {
                     SharedPreferenceWhatsNewStorage(context)
                 },
             )

@@ -4,9 +4,8 @@
 
 package mozilla.components.service.sync.autofill
 
-import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import mozilla.components.concept.storage.Address
 import mozilla.components.concept.storage.CreditCard
@@ -17,6 +16,7 @@ import mozilla.components.concept.storage.CreditCardsAddressesStorage
 import mozilla.components.concept.storage.CreditCardsAddressesStorageDelegate
 import mozilla.components.concept.storage.ManagedKey
 import mozilla.components.concept.storage.NewCreditCardFields
+import mozilla.components.concept.storage.UpdatableAddressFields
 import mozilla.components.concept.storage.UpdatableCreditCardFields
 import mozilla.components.support.ktx.kotlin.last4Digits
 
@@ -24,14 +24,14 @@ import mozilla.components.support.ktx.kotlin.last4Digits
  * [CreditCardsAddressesStorageDelegate] implementation.
  *
  * @param storage The [CreditCardsAddressesStorage] used for looking up addresses and credit cards to autofill.
- * @param scope [CoroutineScope] for long running operations. Defaults to using the [Dispatchers.IO].
+ * @param dispatcher [CoroutineDispatcher] for long running operations. Defaults to using the [Dispatchers.IO].
  * @param isCreditCardAutofillEnabled callback allowing to limit [storage] operations if autofill is disabled.
  * @param validationDelegate The [DefaultCreditCardValidationDelegate] used to check if a credit card
  * can be saved in [storage] and returns information about why it can or cannot
  */
 class GeckoCreditCardsAddressesStorageDelegate(
     private val storage: Lazy<CreditCardsAddressesStorage>,
-    private val scope: CoroutineScope = CoroutineScope(Dispatchers.IO),
+    private val dispatcher: CoroutineDispatcher = Dispatchers.IO,
     private val validationDelegate: DefaultCreditCardValidationDelegate = DefaultCreditCardValidationDelegate(storage),
     private val isCreditCardAutofillEnabled: () -> Boolean = { false },
     private val isAddressAutofillEnabled: () -> Boolean = { false },
@@ -50,7 +50,7 @@ class GeckoCreditCardsAddressesStorageDelegate(
         return crypto.decrypt(key, encryptedCardNumber)
     }
 
-    override suspend fun onAddressesFetch(): List<Address> = withContext(scope.coroutineContext) {
+    override suspend fun onAddressesFetch(): List<Address> = withContext(dispatcher) {
         if (!isAddressAutofillEnabled()) {
             emptyList()
         } else {
@@ -59,11 +59,30 @@ class GeckoCreditCardsAddressesStorageDelegate(
     }
 
     override suspend fun onAddressSave(address: Address) {
-        TODO("Not yet implemented")
+        val fields = UpdatableAddressFields(
+            name = address.name,
+            organization = address.organization,
+            streetAddress = address.streetAddress,
+            addressLevel3 = address.addressLevel3,
+            addressLevel2 = address.addressLevel2,
+            addressLevel1 = address.addressLevel1,
+            postalCode = address.postalCode,
+            country = address.country,
+            tel = address.tel,
+            email = address.email,
+        )
+
+        withContext(dispatcher) {
+            if (address.guid.isBlank()) {
+                storage.value.addAddress(fields)
+            } else {
+                storage.value.updateAddress(address.guid, fields)
+            }
+        }
     }
 
     override suspend fun onCreditCardsFetch(): List<CreditCard> =
-        withContext(scope.coroutineContext) {
+        withContext(dispatcher) {
             if (!isCreditCardAutofillEnabled()) {
                 emptyList()
             } else {
@@ -74,7 +93,7 @@ class GeckoCreditCardsAddressesStorageDelegate(
     override suspend fun onCreditCardSave(creditCard: CreditCardEntry) {
         if (!creditCard.isValid) return
 
-        scope.launch {
+        withContext(dispatcher) {
             when (val result = validationDelegate.shouldCreateOrUpdate(creditCard)) {
                 is CreditCardValidationDelegate.Result.CanBeCreated -> {
                     storage.value.addCreditCard(

@@ -6,11 +6,16 @@ package mozilla.components.browser.engine.gecko.permission
 
 import android.Manifest.permission.ACCESS_COARSE_LOCATION
 import android.Manifest.permission.ACCESS_FINE_LOCATION
+import android.Manifest.permission.ACCESS_LOCAL_NETWORK
 import android.Manifest.permission.CAMERA
 import android.Manifest.permission.RECORD_AUDIO
+import android.os.Build
+import androidx.annotation.OptIn
 import androidx.annotation.VisibleForTesting
+import mozilla.components.ExperimentalAndroidComponentsApi
 import mozilla.components.concept.engine.permission.Permission
 import mozilla.components.concept.engine.permission.PermissionRequest
+import org.mozilla.geckoview.ExperimentalGeckoViewApi
 import org.mozilla.geckoview.GeckoResult
 import org.mozilla.geckoview.GeckoSession.PermissionDelegate
 import org.mozilla.geckoview.GeckoSession.PermissionDelegate.ContentPermission.VALUE_ALLOW
@@ -50,7 +55,7 @@ sealed class GeckoPermissionRequest constructor(
      * @property type the type of the requested content permission (will be
      * mapped to corresponding [Permission]).
      * @property geckoPermission Indicates which gecko permissions is requested.
-     * @property geckoResult the gecko result that serves as a callback to grant/reject the requested permissions.
+     * @property geckoResults the gecko result that serves as a callback to grant/reject the requested permissions.
      */
     data class Content(
         override val uri: String,
@@ -79,7 +84,7 @@ sealed class GeckoPermissionRequest constructor(
 
         override fun grant(permissions: List<Permission>) {
             if (!isCompleted) {
-                geckoResults.forEach {
+                geckoResults.toList().forEach {
                     it.complete(VALUE_ALLOW)
                 }
             }
@@ -88,7 +93,7 @@ sealed class GeckoPermissionRequest constructor(
 
         override fun reject() {
             if (!isCompleted) {
-                geckoResults.forEach {
+                geckoResults.toList().forEach {
                     it.complete(VALUE_DENY)
                 }
             }
@@ -104,6 +109,12 @@ sealed class GeckoPermissionRequest constructor(
                     it.geckoResults.clear()
                 }
             }
+        }
+
+        @OptIn(ExperimentalGeckoViewApi::class)
+        @kotlin.OptIn(ExperimentalAndroidComponentsApi::class)
+        override fun notifyShown() {
+            geckoPermission.notifyShown()
         }
 
         override fun equals(other: Any?): Boolean {
@@ -144,22 +155,26 @@ sealed class GeckoPermissionRequest constructor(
         override val uri: String? = null
 
         companion object {
-            val permissionsMap = mapOf(
-                ACCESS_COARSE_LOCATION to Permission.AppLocationCoarse(ACCESS_COARSE_LOCATION),
-                ACCESS_FINE_LOCATION to Permission.AppLocationFine(ACCESS_FINE_LOCATION),
-                CAMERA to Permission.AppCamera(CAMERA),
-                RECORD_AUDIO to Permission.AppAudio(RECORD_AUDIO),
-            )
+            val permissionsMap = buildMap {
+                put(ACCESS_COARSE_LOCATION, Permission.AppLocationCoarse(ACCESS_COARSE_LOCATION))
+                put(ACCESS_FINE_LOCATION, Permission.AppLocationFine(ACCESS_FINE_LOCATION))
+                put(CAMERA, Permission.AppCamera(CAMERA))
+                put(RECORD_AUDIO, Permission.AppAudio(RECORD_AUDIO))
+
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.CINNAMON_BUN) {
+                    put(ACCESS_LOCAL_NETWORK, Permission.AppLocalNetworkAccess(ACCESS_LOCAL_NETWORK))
+                }
+            }
         }
 
         override fun grant(permissions: List<Permission>) {
-            callbacks.forEach {
+            callbacks.toList().forEach {
                 it.grant()
             }
         }
 
         override fun reject() {
-            callbacks.forEach {
+            callbacks.toList().forEach {
                 it.reject()
             }
         }
@@ -224,7 +239,7 @@ sealed class GeckoPermissionRequest constructor(
                 else -> Permission.Generic(mediaSource.id, mediaSource.name)
             }
 
-            @Suppress("ComplexMethod", "SwitchIntDef")
+            @Suppress("SwitchIntDef")
             private fun mapVideoPermission(mediaSource: MediaSource) = when (mediaSource.source) {
                 SOURCE_CAMERA -> Permission.ContentVideoCamera(mediaSource.id, mediaSource.name)
                 SOURCE_SCREEN -> Permission.ContentVideoScreen(mediaSource.id, mediaSource.name)

@@ -5,12 +5,10 @@
 import { CardGrid } from "content-src/components/DiscoveryStreamComponents/CardGrid/CardGrid";
 import { CollapsibleSection } from "content-src/components/CollapsibleSection/CollapsibleSection";
 import { connect } from "react-redux";
-import { DSMessage } from "content-src/components/DiscoveryStreamComponents/DSMessage/DSMessage";
 import { ReportContent } from "../DiscoveryStreamComponents/ReportContent/ReportContent";
-import { DSSignup } from "content-src/components/DiscoveryStreamComponents/DSSignup/DSSignup";
-import { DSTextPromo } from "content-src/components/DiscoveryStreamComponents/DSTextPromo/DSTextPromo";
 import { Highlights } from "content-src/components/DiscoveryStreamComponents/Highlights/Highlights";
 import { HorizontalRule } from "content-src/components/DiscoveryStreamComponents/HorizontalRule/HorizontalRule";
+// eslint-disable-next-line no-shadow
 import { Navigation } from "content-src/components/DiscoveryStreamComponents/Navigation/Navigation";
 import { PrivacyLink } from "content-src/components/DiscoveryStreamComponents/PrivacyLink/PrivacyLink";
 import React from "react";
@@ -19,6 +17,16 @@ import { selectLayoutRender } from "content-src/lib/selectLayoutRender";
 import { TopSites } from "content-src/components/TopSites/TopSites";
 import { CardSections } from "../DiscoveryStreamComponents/CardSections/CardSections";
 import { Widgets } from "content-src/components/Widgets/Widgets";
+import {
+  ASROUTER_NEWTAB_MESSAGE_POSITIONS,
+  shouldShowASRouterNewTabMessage,
+} from "../../lib/asrouter-message-utils.mjs";
+import { ErrorBoundary } from "content-src/components/ErrorBoundary/ErrorBoundary";
+import { MessageWrapper } from "content-src/components/MessageWrapper/MessageWrapper";
+import { ExternalComponentWrapper } from "content-src/components/ExternalComponentWrapper/ExternalComponentWrapper";
+
+// @nova-cleanup(remove-pref): Remove PREF_NOVA_ENABLED
+const PREF_NOVA_ENABLED = "nova.enabled";
 
 const ALLOWED_CSS_URL_PREFIXES = [
   "chrome://",
@@ -116,36 +124,15 @@ export class _DiscoveryStreamBase extends React.PureComponent {
       case "Highlights":
         return <Highlights />;
       case "TopSites":
+        // @nova-cleanup(remove-conditional): Remove this guard when DiscoveryStreamBase
+        // is no longer used in the Nova layout
+        if (this.props.Prefs.values[PREF_NOVA_ENABLED]) {
+          return null;
+        }
         return (
           <div className="ds-top-sites">
             <TopSites isFixed={true} title={component.header?.title} />
           </div>
-        );
-      case "TextPromo":
-        return (
-          <DSTextPromo
-            dispatch={this.props.dispatch}
-            type={component.type}
-            data={component.data}
-          />
-        );
-      case "Signup":
-        return (
-          <DSSignup
-            dispatch={this.props.dispatch}
-            type={component.type}
-            data={component.data}
-          />
-        );
-      case "Message":
-        return (
-          <DSMessage
-            title={component.header && component.header.title}
-            subtitle={component.header && component.header.subtitle}
-            link_text={component.header && component.header.link_text}
-            link_url={component.header && component.header.link_url}
-            icon={component.header && component.header.icon}
-          />
         );
       case "SectionTitle":
         return <SectionTitle header={component.header} />;
@@ -173,10 +160,9 @@ export class _DiscoveryStreamBase extends React.PureComponent {
               data={component.data}
               dispatch={this.props.dispatch}
               type={component.type}
-              firstVisibleTimestamp={this.props.firstVisibleTimestamp}
               ctaButtonSponsors={component.properties.ctaButtonSponsors}
               ctaButtonVariant={component.properties.ctaButtonVariant}
-              spocMessageVariant={component.properties.spocMessageVariant}
+              spocsLoading={this.props.spocsLoading}
             />
           );
         }
@@ -193,13 +179,11 @@ export class _DiscoveryStreamBase extends React.PureComponent {
             hideCardBackground={component.properties.hideCardBackground}
             fourCardLayout={component.properties.fourCardLayout}
             compactGrid={component.properties.compactGrid}
-            onboardingExperience={component.properties.onboardingExperience}
             ctaButtonSponsors={component.properties.ctaButtonSponsors}
             ctaButtonVariant={component.properties.ctaButtonVariant}
-            spocMessageVariant={component.properties.spocMessageVariant}
             hideDescriptions={this.props.DiscoveryStream.hideDescriptions}
-            firstVisibleTimestamp={this.props.firstVisibleTimestamp}
             spocPositions={component.spocs?.positions}
+            placeholder={this.props.spocsLoading}
           />
         );
       }
@@ -222,7 +206,7 @@ export class _DiscoveryStreamBase extends React.PureComponent {
   }
 
   render() {
-    const { locale, mayHaveSponsoredStories } = this.props;
+    const { locale } = this.props;
     // Bug 1980459 - Note that selectLayoutRender acts as a selector that transforms layout data based on current
     // preferences and experiment flags. It runs after Redux state is populated but before render.
     // Components removed in selectLayoutRender (e.g., Widgets or TopSites) will not appear in the
@@ -234,19 +218,15 @@ export class _DiscoveryStreamBase extends React.PureComponent {
       prefs: this.props.Prefs.values,
       locale,
     });
+    // @nova-cleanup(remove-pref): Delete this line; remove all !novaEnabled guards on ASRouterNewTabMessage blocks below.
+    const novaEnabled = this.props.Prefs.values[PREF_NOVA_ENABLED];
     const sectionsEnabled =
       this.props.Prefs.values["discoverystream.sections.enabled"];
-    const { config } = this.props.DiscoveryStream;
     const topicSelectionEnabled =
       this.props.Prefs.values["discoverystream.topicSelection.enabled"];
     const reportAdsEnabled =
       this.props.Prefs.values["discoverystream.reportAds.enabled"];
     const spocsEnabled = this.props.Prefs.values["unifiedAds.spocs.enabled"];
-
-    // Allow rendering without extracting special components
-    if (!config.collapsible) {
-      return this.renderLayout(layoutRender);
-    }
 
     // Find the first component of a type and remove it from layout
     const extractComponent = type => {
@@ -278,11 +258,16 @@ export class _DiscoveryStreamBase extends React.PureComponent {
 
     // There are two ways to enable widgets:
     // Via `widgets.system.*` prefs or Nimbus experiment
+    const widgetsNimbusTrainhopEnabled =
+      this.props.Prefs.values.trainhopConfig?.widgets?.enabled;
     const widgetsNimbusEnabled = this.props.Prefs.values.widgetsConfig?.enabled;
     const widgetsSystemPrefsEnabled =
       this.props.Prefs.values["widgets.system.enabled"];
 
-    const widgets = widgetsNimbusEnabled || widgetsSystemPrefsEnabled;
+    const widgets =
+      widgetsNimbusTrainhopEnabled ||
+      widgetsNimbusEnabled ||
+      widgetsSystemPrefsEnabled;
 
     const message = extractComponent("Message") || {
       header: {
@@ -311,6 +296,14 @@ export class _DiscoveryStreamBase extends React.PureComponent {
           <ReportContent spocs={DiscoveryStream.spocs} />
         )}
 
+        {/**
+         * The ABOVE_TOPSITES ASRouterNewTabMessage rendering actually occurs in Base.jsx
+         * for silly reasons. Essentially, it's easier for the browser_asrouter_newtab_message
+         * mochitest-browser test to render a test message if it doesn't have to rely on
+         * DiscoveryStreamBase being rendered. Thankfully, this can all be removed
+         * after Nova ships.
+         */}
+
         {topSites &&
           this.renderLayout([
             {
@@ -319,6 +312,27 @@ export class _DiscoveryStreamBase extends React.PureComponent {
               sectionType: "topsites",
             },
           ])}
+
+        {
+          // @nova-cleanup(remove-conditional): Remove this entire block; Base.jsx handles ABOVE_WIDGETS in the Nova layout.
+        }
+        {!novaEnabled &&
+          shouldShowASRouterNewTabMessage(
+            this.props.Messages,
+            "ASRouterNewTabMessage",
+            ASROUTER_NEWTAB_MESSAGE_POSITIONS.ABOVE_WIDGETS
+          ) && (
+            <ErrorBoundary>
+              <MessageWrapper dispatch={this.props.dispatch}>
+                <ExternalComponentWrapper
+                  type="ASROUTER_NEWTAB_MESSAGE"
+                  messageData={this.props.Messages.messageData}
+                  className="asrouter-newtab-message-wrapper"
+                />
+              </MessageWrapper>
+            </ErrorBoundary>
+          )}
+
         {widgets &&
           this.renderLayout([
             {
@@ -327,6 +341,31 @@ export class _DiscoveryStreamBase extends React.PureComponent {
               sectionType: "widgets",
             },
           ])}
+
+        {
+          //@nova-cleanup(remove-conditional): Remove this entire block; in the Nova layout Base.jsx passes ABOVE_CONTENT_FEED in via the aboveContentFeed prop below. */
+        }
+        {!novaEnabled &&
+          shouldShowASRouterNewTabMessage(
+            this.props.Messages,
+            "ASRouterNewTabMessage",
+            ASROUTER_NEWTAB_MESSAGE_POSITIONS.ABOVE_CONTENT_FEED
+          ) && (
+            <ErrorBoundary>
+              <MessageWrapper dispatch={this.props.dispatch}>
+                <ExternalComponentWrapper
+                  type="ASROUTER_NEWTAB_MESSAGE"
+                  messageData={this.props.Messages.messageData}
+                  className="asrouter-newtab-message-wrapper"
+                />
+              </MessageWrapper>
+            </ErrorBoundary>
+          )}
+
+        {/* Nova only: the ABOVE_CONTENT_FEED message, built in Base.jsx. This is
+        the widgets/feed boundary, which only exists inside this component. */}
+        {this.props.aboveContentFeed}
+
         {!!layoutRender.length && (
           <CollapsibleSection
             className="ds-layout"
@@ -339,10 +378,8 @@ export class _DiscoveryStreamBase extends React.PureComponent {
             showPrefName={topStories.pref.feed}
             title={sectionTitle}
             subTitle={subTitle}
-            mayHaveSponsoredStories={mayHaveSponsoredStories}
             mayHaveTopicsSelection={topicSelectionEnabled}
             sectionsEnabled={sectionsEnabled}
-            spocMessageVariant={message?.properties?.spocMessageVariant}
             eventSource="CARDGRID"
           >
             {this.renderLayout(layoutRender)}
@@ -406,6 +443,7 @@ export class _DiscoveryStreamBase extends React.PureComponent {
 
 export const DiscoveryStreamBase = connect(state => ({
   DiscoveryStream: state.DiscoveryStream,
+  Messages: state.Messages,
   Prefs: state.Prefs,
   Sections: state.Sections,
   document: globalThis.document,

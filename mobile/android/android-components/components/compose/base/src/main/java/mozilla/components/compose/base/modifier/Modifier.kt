@@ -7,9 +7,14 @@ package mozilla.components.compose.base.modifier
 import android.graphics.Rect
 import android.os.SystemClock
 import androidx.annotation.FloatRange
-import androidx.compose.foundation.LocalIndication
+import androidx.compose.animation.animateColor
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -138,14 +143,16 @@ private const val MINIMUM_TIME_TO_SETTLE_MS = 1000
  * @param settleTime The amount of time to wait before calling [onVisible].
  * @param onVisible Invoked when the UI is visible to the user.
  * @param screenBounds Optional override to specify the exact bounds to detect the on-screen visibility.
+ * @param currentTimeMillis provider for the current time in milliseconds, injectable for testing.
  */
 fun Modifier.onShown(
     @FloatRange(from = 0.0, to = 1.0) threshold: Float,
     settleTime: Int = MINIMUM_TIME_TO_SETTLE_MS,
     onVisible: () -> Unit,
     screenBounds: Rect? = null,
+    currentTimeMillis: () -> Long = { System.currentTimeMillis() },
 ): Modifier {
-    val initialTime = System.currentTimeMillis()
+    val initialTime = currentTimeMillis()
     var lastVisibleCoordinates: LayoutCoordinates? = null
 
     return composed {
@@ -166,7 +173,7 @@ fun Modifier.onShown(
 
         onGloballyPositioned { coordinates ->
             if (!wasEventReported && coordinates.isVisible(bounds, threshold)) {
-                if (System.currentTimeMillis() - initialTime > settleTime) {
+                if (currentTimeMillis() - initialTime > settleTime) {
                     wasEventReported = true
                     onVisible()
                 } else {
@@ -260,26 +267,38 @@ fun Modifier.horizontalFadeGradient(
 )
 
 /**
- * Applies a clickable modifier to a Composable if [onClick] is not null.
-
- * @param enabled Controls the enabled state of the clickable modifier.
- * @param onClick Will be called when the user clicks on the element. If `null`,
- * the `clickable` modifier will not be applied.
- * @return The [Modifier] instance, either with or without the `clickable` modifier applied.
+ * Applies a shimmering skeleton loading effect to the current [Modifier].
+ *
+ * This can be used as a placeholder for UI elements while their content is loading.
+ *
+ * @param durationMillis The duration in milliseconds of the shimmer animation cycle.
+ * Defaults to `1000`.
+ * @param initialColor The starting color of the gradient animation. Defaults to [Color.LightGray].
+ * @param targetColor The ending color of the gradient animation. Defaults to [Color.White].
+ *
+ * @return A [Modifier] that displays a skeleton loader effect.
  */
 @Composable
-fun Modifier.optionalClickable(
-    enabled: Boolean = true,
-    onClick: (() -> Unit)?,
-): Modifier = if (onClick != null) {
-    this.clickable(
-        interactionSource = remember { MutableInteractionSource() },
-        indication = LocalIndication.current,
-        enabled = enabled,
-        onClick = onClick,
+fun Modifier.skeletonLoader(
+    durationMillis: Int = 1000,
+    initialColor: Color = MaterialTheme.colorScheme.surfaceContainerHighest,
+    targetColor: Color = Color.White,
+): Modifier {
+    val transition = rememberInfiniteTransition(label = "infinite")
+
+    val color by transition.animateColor(
+        initialValue = initialColor,
+        targetValue = targetColor,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis, easing = LinearEasing),
+            repeatMode = RepeatMode.Reverse,
+        ),
+        label = "color",
     )
-} else {
-    this
+
+    return drawBehind {
+        drawRect(color = color)
+    }
 }
 
 /**

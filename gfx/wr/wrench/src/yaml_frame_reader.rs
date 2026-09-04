@@ -2,6 +2,7 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
+use crate::AU_PER_DEV_PX;
 use euclid::SideOffsets2D;
 use gleam::gl;
 use image::GenericImageView;
@@ -155,7 +156,7 @@ impl ExternalImageHandler for LocalExternalImageHandler {
         key: ExternalImageId,
         _channel_index: u8,
         _is_composited: bool,
-    ) -> ExternalImage {
+    ) -> ExternalImage<'_> {
         let (id, desc) = self.texture_ids[key.0 as usize];
         ExternalImage {
             uv: TexelRect::new(0.0, 0.0, desc.size.width as f32, desc.size.height as f32),
@@ -333,6 +334,12 @@ pub struct YamlFrameReader {
     scroll_offsets: HashMap<ExternalScrollId, Vec<SampledScrollOffset>>,
     next_external_scroll_id: u64,
 
+    /// Dynamic transform property values sent with the frame (top-level
+    /// `transform-properties` yaml key). Lets a `transform-binding` reference
+    /// frame's value change across frames, which is what drives the animating
+    /// (has-moved) latch used for text raster space.
+    transform_properties: Vec<PropertyValue<LayoutTransform>>,
+
     image_map: HashMap<(PathBuf, Option<i64>), (ImageKey, LayoutSize)>,
 
     fonts: HashMap<FontDescriptor, FontKey>,
@@ -340,6 +347,18 @@ pub struct YamlFrameReader {
     font_render_mode: Option<FontRenderMode>,
     snapshots: HashMap<String, Snapshot>,
     allow_mipmaps: bool,
+
+    /// Device pixel scale applied to the root pipeline as a scale reference
+    /// frame, so that reftests can exercise rendering at different device pixel
+    /// ratios (see the `scale(...)` reftest option).
+    device_pixel_scale: f32,
+
+    /// When a device pixel scale is emulated, the pipeline's implicit root
+    /// reference frame and root scroll node are above the scale reference frame,
+    /// so yaml references to them are redirected to scaled equivalents and the
+    /// root scroll offset (applied above the scale) is scaled by hand.
+    dppx_root_reference_frame: Option<SpatialId>,
+    dppx_root_scroll_node: Option<SpatialId>,
 
     /// A HashMap that allows specifying a numeric id for clip and clip chains in YAML
     /// and having each of those ids correspond to a unique ClipId.
@@ -356,8 +375,6 @@ pub struct YamlFrameReader {
     keyframes: Option<Yaml>,
 
     external_image_handler: Option<Box<LocalExternalImageHandler>>,
-
-    next_spatial_key: u64,
 }
 
 impl YamlFrameReader {
@@ -370,11 +387,15 @@ impl YamlFrameReader {
             frame_count: 0,
             display_lists: Vec::new(),
             scroll_offsets: HashMap::new(),
+            transform_properties: Vec::new(),
             fonts: HashMap::new(),
             font_instances: HashMap::new(),
             font_render_mode: None,
             snapshots: HashMap::new(),
             allow_mipmaps: false,
+            device_pixel_scale: 1.0,
+            dppx_root_reference_frame: None,
+            dppx_root_scroll_node: None,
             image_map: HashMap::new(),
             user_clip_id_map: HashMap::new(),
             user_clipchain_id_map: HashMap::new(),
@@ -386,7 +407,6 @@ impl YamlFrameReader {
             keyframes: None,
             external_image_handler: Some(Box::new(LocalExternalImageHandler::new())),
             next_external_scroll_id: 1000,      // arbitrary to easily see in logs which are implicit
-            next_spatial_key: 0,
         }
     }
 
@@ -414,8 +434,11 @@ impl YamlFrameReader {
 
     pub fn new_from_args(args: &clap::ArgMatches) -> YamlFrameReader {
         let yaml_file = args.value_of("INPUT").map(PathBuf::from).unwrap();
+        YamlFrameReader::new(&yaml_file)
+    }
 
-        let mut y = YamlFrameReader::new(&yaml_file);
+    pub fn new_from_show_args(args: &clap::ArgMatches) -> YamlFrameReader {
+        let mut y = YamlFrameReader::new_from_args(args);
 
         y.keyframes = args.value_of("keyframes").map(|path| {
             let mut file = File::open(&path).unwrap();
@@ -434,6 +457,22 @@ impl YamlFrameReader {
     pub fn reset(&mut self) {
         self.scroll_offsets.clear();
         self.display_lists.clear();
+        self.transform_properties.clear();
+    }
+
+    fn parse_transform_properties(&mut self, yaml: &Yaml) {
+        if let Some(props) = yaml["transform-properties"].as_vec() {
+            for prop in props {
+                let id = prop["id"].as_i64().expect("transform-property needs an id") as u64;
+                let value = prop["transform"]
+                    .as_transform(&LayoutPoint::zero())
+                    .unwrap_or_default();
+                self.transform_properties.push(PropertyValue {
+                    key: PropertyBindingKey::new(id),
+                    value,
+                });
+            }
+        }
     }
 
     fn build(&mut self, wrench: &mut Wrench) {
@@ -445,6 +484,8 @@ impl YamlFrameReader {
             .expect("Failed to parse YAML file");
 
         self.reset();
+
+        self.parse_transform_properties(&yaml);
 
         if let Some(pipelines) = yaml["pipelines"].as_vec() {
             for pipeline in pipelines {
@@ -493,7 +534,54 @@ impl YamlFrameReader {
         self.spatial_id_stack.clear();
         self.spatial_id_stack.push(SpatialId::root_scroll_node(pipeline_id));
 
-        builder.begin();
+        builder.begin(AU_PER_DEV_PX);
+
+        // Apply the requested device pixel scale to the root pipeline by
+        // wrapping its content in a scale reference frame. In this architecture
+        // the device pixel ratio is expressed through the transform tree, so a
+        // uniform root scale renders the scene as if at that device pixel ratio
+        // (exercising snapping, raster scale selection, etc.).
+        //
+        // The pipeline's implicit root reference frame and root scroll node are
+        // ancestors of that scale, so a second scale reference frame is created
+        // as a sibling for content that the yaml explicitly attaches to the root
+        // reference frame (fixed position content), which must be scaled but must
+        // not scroll.
+        self.dppx_root_reference_frame = None;
+        self.dppx_root_scroll_node = None;
+        let dppx_reference_frame = if send_transaction && self.device_pixel_scale != 1.0 {
+            let scale = self.device_pixel_scale;
+            let transform = PropertyBinding::Value(LayoutTransform::scale(scale, scale, 1.0));
+            let kind = ReferenceFrameKind::Transform {
+                is_2d_scale_translation: true,
+                should_snap: false,
+                paired_with_perspective: false,
+            };
+
+            let fixed_id = builder.push_reference_frame(
+                LayoutPoint::zero(),
+                SpatialId::root_reference_frame(pipeline_id),
+                TransformStyle::Flat,
+                transform,
+                kind,
+            );
+            builder.pop_reference_frame();
+            self.dppx_root_reference_frame = Some(fixed_id);
+
+            let ref_frame_id = builder.push_reference_frame(
+                LayoutPoint::zero(),
+                *self.spatial_id_stack.last().unwrap(),
+                TransformStyle::Flat,
+                transform,
+                kind,
+            );
+            self.dppx_root_scroll_node = Some(ref_frame_id);
+            self.spatial_id_stack.push(ref_frame_id);
+            true
+        } else {
+            false
+        };
+
         let mut info = CommonItemProperties {
             clip_rect: LayoutRect::zero(),
             clip_chain_id: ClipChainId::INVALID,
@@ -501,6 +589,12 @@ impl YamlFrameReader {
             flags: PrimitiveFlags::default(),
         };
         self.add_stacking_context_from_yaml(builder, wrench, yaml, IsRoot(true), &mut info);
+
+        if dppx_reference_frame {
+            self.spatial_id_stack.pop().unwrap();
+            builder.pop_reference_frame();
+        }
+
         let (pipeline, payload) = builder.end();
         self.display_lists.push(DisplayList {
             pipeline,
@@ -541,9 +635,11 @@ impl YamlFrameReader {
         match *item {
             Yaml::Integer(value) => Some(self.user_spatial_id_map[&(value as u64)]),
             Yaml::String(ref id_string) if id_string == "root-reference-frame" =>
-                Some(SpatialId::root_reference_frame(pipeline_id)),
+                Some(self.dppx_root_reference_frame
+                    .unwrap_or_else(|| SpatialId::root_reference_frame(pipeline_id))),
             Yaml::String(ref id_string) if id_string == "root-scroll-node" =>
-                Some(SpatialId::root_scroll_node(pipeline_id)),
+                Some(self.dppx_root_scroll_node
+                    .unwrap_or_else(|| SpatialId::root_scroll_node(pipeline_id))),
             Yaml::BadValue => None,
             _ => {
                 println!("Unable to parse SpatialId {:?}", item);
@@ -601,6 +697,9 @@ impl YamlFrameReader {
                     image::DynamicImage::ImageLuma8(_) => {
                         (ImageFormat::R8, image.to_bytes())
                     }
+                    image::DynamicImage::ImageLumaA8(_) => {
+                        (ImageFormat::RG8, image.to_bytes())
+                    }
                     image::DynamicImage::ImageRgba8(_) => {
                         let mut pixels = image.to_bytes();
                         premultiply(pixels.as_mut_slice());
@@ -618,6 +717,12 @@ impl YamlFrameReader {
                             ]);
                         }
                         (ImageFormat::BGRA8, pixels)
+                    }
+                    image::DynamicImage::ImageLuma16(_) => {
+                        (ImageFormat::R16, image.to_bytes())
+                    }
+                    image::DynamicImage::ImageLumaA16(_) => {
+                        (ImageFormat::RG16, image.to_bytes())
                     }
                     _ => panic!("We don't support whatever your crazy image type is, come on"),
                 };
@@ -778,6 +883,10 @@ impl YamlFrameReader {
         self.allow_mipmaps = allow_mipmaps;
     }
 
+    pub fn set_device_pixel_scale(&mut self, scale: f32) {
+        self.device_pixel_scale = scale;
+    }
+
     pub fn set_font_render_mode(&mut self, render_mode: Option<FontRenderMode>) {
         self.font_render_mode = render_mode;
     }
@@ -847,16 +956,6 @@ impl YamlFrameReader {
         let bounds = self.resolve_rect(&item[bounds_key]);
         let color = self.resolve_colorf(&item["color"]).unwrap_or(ColorF::BLACK);
         dl.push_rect(info, bounds, color);
-    }
-
-    fn handle_clear_rect(
-        &self,
-        dl: &mut DisplayListBuilder,
-        item: &Yaml,
-        info: &CommonItemProperties,
-    ) {
-        let bounds = item["bounds"].as_rect().expect("clear-rect type must have bounds");
-        dl.push_clear_rect(info, bounds);
     }
 
     fn handle_hit_test(
@@ -1076,6 +1175,9 @@ impl YamlFrameReader {
                     let radius = item["radius"]
                         .as_border_radius()
                         .unwrap_or_else(BorderRadius::zero);
+                    let inset = item["inset"]
+                        .as_side_offsets()
+                        .unwrap_or_else(LayoutSideOffsets::zero);
 
                     let colors = broadcast(&colors, 4);
                     let styles = broadcast(&styles, 4);
@@ -1103,6 +1205,7 @@ impl YamlFrameReader {
                         bottom,
                         right,
                         radius,
+                        inset,
                         do_aa,
                     }))
                 }
@@ -1220,6 +1323,35 @@ impl YamlFrameReader {
         } else {
             BoxShadowClipMode::Outset
         };
+        let shadow_radius = item["shadow-radius"].as_border_radius().unwrap_or_else(|| {
+            let adjust_radius = |border_radius: f32, spread_amount: f32| {
+                if border_radius > 0.0 {
+                    (border_radius + spread_amount).max(0.0)
+                } else {
+                    0.0
+                }
+            };
+            let adjust_corner = |corner: LayoutSize, spread_amount: f32| {
+                LayoutSize::new(
+                    adjust_radius(corner.width, spread_amount),
+                    adjust_radius(corner.height, spread_amount),
+                )
+            };
+            let spread_amount = match clip_mode {
+                BoxShadowClipMode::Outset => spread_radius,
+                BoxShadowClipMode::Inset => -spread_radius,
+            };
+            BorderRadius {
+                top_left: adjust_corner(border_radius.top_left, spread_amount),
+                top_right: adjust_corner(border_radius.top_right, spread_amount),
+                bottom_right: adjust_corner(border_radius.bottom_right, spread_amount),
+                bottom_left: adjust_corner(border_radius.bottom_left, spread_amount),
+                shape_top_left: border_radius.shape_top_left,
+                shape_top_right: border_radius.shape_top_right,
+                shape_bottom_left: border_radius.shape_bottom_left,
+                shape_bottom_right: border_radius.shape_bottom_right,
+            }
+        });
 
         dl.push_box_shadow(
             info,
@@ -1229,6 +1361,7 @@ impl YamlFrameReader {
             blur_radius,
             spread_radius,
             border_radius,
+            shadow_radius,
             clip_mode,
         );
     }
@@ -1240,8 +1373,7 @@ impl YamlFrameReader {
         item: &Yaml,
         info: &mut CommonItemProperties,
     ) {
-        // TODO(gw): Support other YUV color depth and spaces.
-        let color_depth = ColorDepth::Color8;
+        // TODO(gw): Support other YUV color spaces.
         let color_space = YuvColorSpace::Rec709;
         let color_range = ColorRange::Limited;
 
@@ -1285,6 +1417,15 @@ impl YamlFrameReader {
 
                 YuvData::NV16(y_key, uv_key)
             }
+            "p210" => {
+                let y_path = rsrc_path(&item["src-y"], &self.aux_dir);
+                let (y_key, _) = self.add_or_get_image(&y_path, None, item, wrench);
+
+                let uv_path = rsrc_path(&item["src-uv"], &self.aux_dir);
+                let (uv_key, _) = self.add_or_get_image(&uv_path, None, item, wrench);
+
+                YuvData::P210(y_key, uv_key)
+            }
             "interleaved" => {
                 let yuv_path = rsrc_path(&item["src"], &self.aux_dir);
                 let (yuv_key, _) = self.add_or_get_image(&yuv_path, None, item, wrench);
@@ -1294,6 +1435,15 @@ impl YamlFrameReader {
             _ => {
                 panic!("unexpected yuv format");
             }
+        };
+
+        let color_depth = match yuv_data.get_format() {
+            YuvFormat::NV12 |
+            YuvFormat::NV16 |
+            YuvFormat::PlanarYCbCr |
+            YuvFormat::InterleavedYCbCr => ColorDepth::Color8,
+            YuvFormat::P010 |
+            YuvFormat::P210 => ColorDepth::Color10,
         };
 
         let bounds = item["bounds"].as_vec_f32().unwrap();
@@ -1581,6 +1731,7 @@ impl YamlFrameReader {
                 ("backface-visible", PrimitiveFlags::IS_BACKFACE_VISIBLE),
                 ("scrollbar-container", PrimitiveFlags::IS_SCROLLBAR_CONTAINER),
                 ("prefer-compositor-surface", PrimitiveFlags::PREFER_COMPOSITOR_SURFACE),
+                ("checkerboard-background", PrimitiveFlags::CHECKERBOARD_BACKGROUND),
             ] {
                 if let Some(value) = item[key].as_bool() {
                     flags.set(flag, value);
@@ -1598,7 +1749,6 @@ impl YamlFrameReader {
             match item_type {
                 "rect" => self.handle_rect(dl, item, &info),
                 "hit-test" => self.handle_hit_test(dl, item, &mut info),
-                "clear-rect" => self.handle_clear_rect(dl, item, &info),
                 "line" => self.handle_line(dl, item, &mut info),
                 "image" => self.handle_image(dl, wrench, item, &mut info),
                 "yuv-image" => self.handle_yuv_image(dl, wrench, item, &mut info),
@@ -1628,12 +1778,6 @@ impl YamlFrameReader {
                 self.spatial_id_stack.pop().unwrap();
             }
         }
-    }
-
-    fn next_spatial_key(&mut self) -> SpatialTreeItemKey {
-        let key = SpatialTreeItemKey::new(self.next_spatial_key, 0);
-        self.next_spatial_key += 1;
-        key
     }
 
     fn handle_scroll_frame(
@@ -1698,7 +1842,6 @@ impl YamlFrameReader {
             external_scroll_offset,
             scroll_generation,
             has_scroll_linked_effect,
-            self.next_spatial_key(),
         );
         if let Some(numeric_id) = numeric_id {
             self.add_spatial_id_mapping(numeric_id, spatial_id);
@@ -1735,7 +1878,6 @@ impl YamlFrameReader {
             yaml["vertical-offset-bounds"].as_sticky_offset_bounds(),
             yaml["horizontal-offset-bounds"].as_sticky_offset_bounds(),
             yaml["previously-applied-offset"].as_vector().unwrap_or_else(LayoutVector2D::zero),
-            self.next_spatial_key(),
             None,
         );
 
@@ -1905,12 +2047,15 @@ impl YamlFrameReader {
             .as_point()
             .unwrap_or(default_transform_origin);
 
+        let is_2d = yaml["is-2d"].as_bool().unwrap_or(false);
+        let should_snap = yaml["should-snap"].as_bool().unwrap_or(false);
+
         let reference_frame_kind = if !yaml["perspective"].is_badvalue() {
             ReferenceFrameKind::Perspective { scrolling_relative_to: None }
         } else {
             ReferenceFrameKind::Transform {
-                is_2d_scale_translation: false,
-                should_snap: false,
+                is_2d_scale_translation: is_2d,
+                should_snap,
                 paired_with_perspective: yaml["paired-with-perspective"].as_bool().unwrap_or(false),
             }
         };
@@ -1926,13 +2071,27 @@ impl YamlFrameReader {
             _ => yaml["perspective"].as_matrix4d(),
         };
 
+        let transform_value = transform.or(perspective).unwrap_or_default();
+
+        // A `transform-binding` id makes the reference frame's transform a
+        // property Binding rather than a static Value, so it is treated as
+        // animating (is_ancestor_or_self_animating). The bound value is the
+        // computed transform above; nothing needs to update it for the binding
+        // to count as animating.
+        let transform_binding = match yaml["transform-binding"].as_i64() {
+            Some(id) => PropertyBinding::Binding(
+                PropertyBindingKey::new(id as u64),
+                transform_value,
+            ),
+            None => PropertyBinding::Value(transform_value),
+        };
+
         let reference_frame_id = dl.push_reference_frame(
             bounds.min,
             *self.spatial_id_stack.last().unwrap(),
             transform_style,
-            transform.or(perspective).unwrap_or_default().into(),
+            transform_binding,
             reference_frame_kind,
-            self.next_spatial_key(),
         );
 
         let numeric_id = yaml["id"].as_i64();
@@ -1979,7 +2138,6 @@ impl YamlFrameReader {
             scale_from,
             vertical_flip,
             rotation,
-            self.next_spatial_key(),
         );
 
         let numeric_id = yaml["id"].as_i64();
@@ -2019,22 +2177,37 @@ impl YamlFrameReader {
         let default_bounds = || LayoutRect::from_size(wrench.window_size_f32());
         let mut bounds = yaml["bounds"].as_rect().unwrap_or_else(default_bounds);
 
-        let pushed_reference_frame =
-            if !yaml["transform"].is_badvalue() || !yaml["perspective"].is_badvalue() {
-                let reference_frame_id = self.push_reference_frame(dl, default_bounds, yaml);
-                self.spatial_id_stack.push(reference_frame_id);
-                bounds.max -= bounds.min.to_vector();
-                bounds.min = LayoutPoint::zero();
-                true
-            } else {
-                false
-            };
-
-        let clip_chain_id = self.to_clip_chain_id(&yaml["clip-chain"], dl);
-
         let transform_style = yaml["transform-style"]
             .as_transform_style()
             .unwrap_or(TransformStyle::Flat);
+
+        let has_transform = !yaml["transform"].is_badvalue() || !yaml["perspective"].is_badvalue();
+        let pushed_reference_frame = if has_transform || bounds.min != LayoutPoint::zero() {
+            let reference_frame_id = if has_transform {
+                self.push_reference_frame(dl, default_bounds, yaml)
+            } else {
+                let parent_spatial_id = *self.spatial_id_stack.last().unwrap();
+                dl.push_reference_frame(
+                    bounds.min,
+                    parent_spatial_id,
+                    transform_style,
+                    PropertyBinding::Value(LayoutTransform::identity()),
+                    ReferenceFrameKind::Transform {
+                        is_2d_scale_translation: true,
+                        should_snap: false,
+                        paired_with_perspective: false,
+                    },
+                )
+            };
+            self.spatial_id_stack.push(reference_frame_id);
+            bounds.max -= bounds.min.to_vector();
+            bounds.min = LayoutPoint::zero();
+            true
+        } else {
+            false
+        };
+
+        let clip_chain_id = self.to_clip_chain_id(&yaml["clip-chain"], dl);
         let mix_blend_mode = yaml["mix-blend-mode"]
             .as_mix_blend_mode()
             .unwrap_or(MixBlendMode::Normal);
@@ -2047,6 +2220,14 @@ impl YamlFrameReader {
         if is_root {
             if let Some(vector) = yaml["scroll-offset"].as_vector() {
                 let external_id = ExternalScrollId(0, dl.pipeline_id);
+                // The root scroll node is an ancestor of the emulated device
+                // pixel scale, so unlike scroll frames declared in the yaml its
+                // offset is not scaled by the transform tree.
+                let vector = if self.dppx_root_scroll_node.is_some() {
+                    vector * self.device_pixel_scale
+                } else {
+                    vector
+                };
                 self.scroll_offsets.insert(
                     external_id,
                     vec![SampledScrollOffset {
@@ -2059,7 +2240,6 @@ impl YamlFrameReader {
 
         let filters = yaml["filters"].as_vec_filter_op().unwrap_or_default();
         let filter_datas = yaml["filter-datas"].as_vec_filter_data().unwrap_or_default();
-        let filter_primitives = yaml["filter-primitives"].as_vec_filter_primitive().unwrap_or_default();
 
         let snapshot = if !yaml["snapshot"].is_badvalue() {
             let yaml = &yaml["snapshot"];
@@ -2087,7 +2267,6 @@ impl YamlFrameReader {
         flags.set(StackingContextFlags::WRAPS_BACKDROP_FILTER, wraps_backdrop_filter);
 
         dl.push_stacking_context(
-            bounds.min,
             *self.spatial_id_stack.last().unwrap(),
             info.flags,
             clip_chain_id,
@@ -2095,7 +2274,6 @@ impl YamlFrameReader {
             mix_blend_mode,
             &filters,
             &filter_datas,
-            &filter_primitives,
             raster_space,
             flags,
             snapshot,
@@ -2126,13 +2304,11 @@ impl YamlFrameReader {
 
         let filters = item["filters"].as_vec_filter_op().unwrap_or_default();
         let filter_datas = item["filter-datas"].as_vec_filter_data().unwrap_or_default();
-        let filter_primitives = item["filter-primitives"].as_vec_filter_primitive().unwrap_or_default();
 
         dl.push_backdrop_filter(
             info,
             &filters,
             &filter_datas,
-            &filter_primitives,
         );
     }
 }
@@ -2166,6 +2342,7 @@ impl WrenchThing for YamlFrameReader {
                 &mut self.frame_count,
                 self.display_lists.clone(),
                 &self.scroll_offsets,
+                &self.transform_properties,
             );
         } else {
             wrench.refresh();

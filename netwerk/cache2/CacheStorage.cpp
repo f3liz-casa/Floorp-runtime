@@ -2,14 +2,13 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#include "CacheLog.h"
 #include "CacheStorage.h"
-#include "CacheStorageService.h"
+
 #include "CacheEntry.h"
+#include "CacheLog.h"
 #include "CacheObserver.h"
-
+#include "CacheStorageService.h"
 #include "nsICacheEntryDoomCallback.h"
-
 #include "nsIURI.h"
 #include "nsNetUtil.h"
 
@@ -28,6 +27,24 @@ NS_IMETHODIMP CacheStorage::AsyncOpenURI(nsIURI* aURI,
                                          const nsACString& aIdExtension,
                                          uint32_t aFlags,
                                          nsICacheEntryOpenCallback* aCallback) {
+  NS_ENSURE_ARG(aURI);
+
+  nsresult rv;
+
+  nsCOMPtr<nsIURI> noRefURI;
+  rv = NS_GetURIWithoutRef(aURI, getter_AddRefs(noRefURI));
+  NS_ENSURE_SUCCESS(rv, rv);
+
+  nsAutoCString asciiSpec;
+  rv = noRefURI->GetAsciiSpec(asciiSpec);
+  NS_ENSURE_SUCCESS(rv, rv);
+
+  return AsyncOpenURIString(asciiSpec, aIdExtension, aFlags, aCallback);
+}
+
+NS_IMETHODIMP CacheStorage::AsyncOpenURIString(
+    const nsACString& aURI, const nsACString& aIdExtension, uint32_t aFlags,
+    nsICacheEntryOpenCallback* aCallback) {
   if (!CacheStorageService::Self()) return NS_ERROR_NOT_INITIALIZED;
 
   if (MOZ_UNLIKELY(!CacheObserver::UseDiskCache()) && mWriteToDisk &&
@@ -42,22 +59,11 @@ NS_IMETHODIMP CacheStorage::AsyncOpenURI(nsIURI* aURI,
     return NS_OK;
   }
 
-  NS_ENSURE_ARG(aURI);
   NS_ENSURE_ARG(aCallback);
 
-  nsresult rv;
-
-  nsCOMPtr<nsIURI> noRefURI;
-  rv = NS_GetURIWithoutRef(aURI, getter_AddRefs(noRefURI));
-  NS_ENSURE_SUCCESS(rv, rv);
-
-  nsAutoCString asciiSpec;
-  rv = noRefURI->GetAsciiSpec(asciiSpec);
-  NS_ENSURE_SUCCESS(rv, rv);
-
   RefPtr<CacheEntryHandle> entry;
-  rv = CacheStorageService::Self()->AddStorageEntry(
-      this, asciiSpec, aIdExtension, aFlags, getter_AddRefs(entry));
+  nsresult rv = CacheStorageService::Self()->AddStorageEntry(
+      this, aURI, aIdExtension, aFlags, getter_AddRefs(entry));
   if (NS_FAILED(rv)) {
     aCallback->OnCacheEntryAvailable(nullptr, false, rv);
     return NS_OK;

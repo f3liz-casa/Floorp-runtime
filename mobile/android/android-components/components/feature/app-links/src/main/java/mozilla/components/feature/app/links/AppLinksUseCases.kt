@@ -18,10 +18,10 @@ import androidx.core.net.toUri
 import mozilla.components.support.base.log.logger.Logger
 import mozilla.components.support.ktx.android.content.pm.isPackageInstalled
 import mozilla.components.support.ktx.android.net.isHttpOrHttps
+import mozilla.components.support.ktx.kotlin.trimmed
 import mozilla.components.support.utils.Browsers
 import mozilla.components.support.utils.BrowsersCache
-import mozilla.components.support.utils.ext.queryIntentActivitiesCompat
-import mozilla.components.support.utils.ext.resolveActivityCompat
+import mozilla.components.support.utils.ext.packageManagerCompatHelper
 import java.net.URISyntaxException
 
 @VisibleForTesting(otherwise = VisibleForTesting.PRIVATE)
@@ -53,8 +53,8 @@ private const val ANDROID_RESOLVER_PACKAGE_NAME = "android"
 class AppLinksUseCases(
     private val context: Context,
     private var launchInApp: () -> Boolean = { false },
-    private val alwaysDeniedSchemes: Set<String> = ALWAYS_DENY_SCHEMES,
-    private val installedBrowsers: Browsers = BrowsersCache.all(context),
+    private val alwaysDeniedSchemes: AlwaysDeniedSchemes = AlwaysDeniedSchemes(ALWAYS_DENY_SCHEMES),
+    private val installedBrowsers: () -> Browsers = { BrowsersCache.all(context) },
 ) {
     @Suppress(
         "QueryPermissionsNeeded", // We expect our browsers to have the QUERY_ALL_PACKAGES permission
@@ -63,7 +63,7 @@ class AppLinksUseCases(
     @VisibleForTesting(otherwise = VisibleForTesting.PRIVATE)
     internal fun findActivities(intent: Intent): List<ResolveInfo> {
         return try {
-            context.packageManager
+            context.packageManagerCompatHelper
                 .queryIntentActivitiesCompat(intent, PackageManager.GET_RESOLVED_FILTER)
         } catch (e: RuntimeException) {
             Logger("AppLinksUseCases").error("failed to query activities", e)
@@ -71,8 +71,17 @@ class AppLinksUseCases(
         }
     }
 
+    @Suppress("TooGenericExceptionCaught")
     private fun findDefaultActivity(intent: Intent): ResolveInfo? {
-        return context.packageManager.resolveActivityCompat(intent, PackageManager.MATCH_DEFAULT_ONLY)
+        return try {
+            context.packageManagerCompatHelper.resolveActivityCompat(
+                intent,
+                PackageManager.MATCH_DEFAULT_ONLY,
+            )
+        } catch (e: RuntimeException) {
+            Logger("AppLinksUseCases").error("failed to resolve activity", e)
+            null
+        }
     }
 
     /**
@@ -85,12 +94,14 @@ class AppLinksUseCases(
      * @param includeInstallAppFallback If {true} then offer an app-link to the installed market app
      * if no web fallback is available.
      */
-    @Suppress("ComplexMethod")
     inner class GetAppLinkRedirect internal constructor(
         private val includeHttpAppLinks: Boolean = false,
         private val includeInstallAppFallback: Boolean = false,
     ) {
+        @Suppress("CyclomaticComplexMethod")
         operator fun invoke(url: String): AppLinkRedirect {
+            // Absurdly long URLs put unneeded pressure on the system and can even lead to crashes.
+            val url = url.trimmed()
             val urlHash = (url + includeHttpAppLinks + includeHttpAppLinks).hashCode()
             val currentTimeStamp = SystemClock.elapsedRealtime()
             // since redirectCache is mutable, get the latest
@@ -105,24 +116,18 @@ class AppLinksUseCases(
             val isAppIntentHttpOrHttps = redirectData.appIntent?.data?.isHttpOrHttps ?: false
             val isEngineSupportedScheme = ENGINE_SUPPORTED_SCHEMES.contains(url.toUri().scheme)
             val isBrowserRedirect = redirectData.resolveInfo?.activityInfo?.packageName?.let { packageName ->
-                installedBrowsers.isInstalled(packageName)
+                installedBrowsers().isInstalled(packageName)
             } ?: false
 
             val appName = redirectData.resolveInfo?.let { resolveInfo ->
                 getAppNameFromResolveInfo(context, resolveInfo)
             } ?: ""
 
-            // Only set fallback URL if url is not a Google PlayStore URL
-            // The reason here is we already handled that case with the market place URL
-            val fallbackUrl = redirectData.fallbackUrl?.takeIf {
-                !isPlayStoreURL(it) || redirectData.resolveInfo == null
-            }?.toString()
-
             val appIntent = when {
                 redirectData.resolveInfo == null -> null
                 isBrowserRedirect && isEngineSupportedScheme -> null
                 includeHttpAppLinks && isAppIntentHttpOrHttps -> redirectData.appIntent
-                !launchInApp() && (isEngineSupportedScheme || fallbackUrl != null) -> null
+                !launchInApp() && (isEngineSupportedScheme || redirectData.fallbackUrl != null) -> null
                 else -> redirectData.appIntent
             }
 
@@ -130,7 +135,7 @@ class AppLinksUseCases(
             val appLinkRedirect = AppLinkRedirect(
                 appIntent = appIntent,
                 appName = appName,
-                fallbackUrl = fallbackUrl,
+                fallbackUrl = redirectData.fallbackUrl,
                 marketplaceIntent = redirectData.marketplaceIntent,
             )
 
@@ -149,7 +154,7 @@ class AppLinksUseCases(
 
             val marketplaceIntent = intent?.`package`?.let {
                 if (includeInstallAppFallback &&
-                    !context.packageManager.isPackageInstalled(it)
+                    !context.packageManagerCompatHelper.isPackageInstalled(it)
                 ) {
                     safeParseUri(MARKET_INTENT_URI_PACKAGE_PREFIX + it, 0)
                 } else {
@@ -163,7 +168,7 @@ class AppLinksUseCases(
 
             val appIntent = when {
                 intent?.data == null -> null
-                alwaysDeniedSchemes.contains(intent.data?.scheme) -> null
+                alwaysDeniedSchemes.shouldDeny(intent.data?.scheme) -> null
                 else -> intent
             }
 
@@ -171,8 +176,7 @@ class AppLinksUseCases(
                 it.addCategory(Intent.CATEGORY_BROWSABLE)
                 it.component = null
                 it.flags = Intent.FLAG_ACTIVITY_NEW_TASK
-                it.selector?.addCategory(Intent.CATEGORY_BROWSABLE)
-                it.selector?.component = null
+                it.selector = null
                 it.putExtra(EXTRA_APPLICATION_ID, context.packageName)
             }
 
@@ -198,9 +202,25 @@ class AppLinksUseCases(
                 }
             }
 
+            /**
+             * Determines the fallback URL to use when attempting to redirect to an external app.
+             *
+             * The fallback URL is taken from the intent's `EXTRA_BROWSER_FALLBACK_URL` only if:
+             * - The original URL scheme is not supported by the engine, AND
+             * - The provided fallback URL is not a Google Play Store URL OR application is not
+             * installed. (Handled by marketplace intent)
+             */
+            val fallbackUrl = appIntent?.getStringExtra(EXTRA_BROWSER_FALLBACK_URL)?.takeIf {
+                val schemeEngineSupported = url.toUri().scheme in ENGINE_SUPPORTED_SCHEMES
+                val appInstalled = resolveInfo != null
+
+                val isPlayStoreUrlForInstalledApp = isPlayStoreURL(it) && appInstalled
+                !schemeEngineSupported && !isPlayStoreUrlForInstalledApp
+            }
+
             return RedirectData(
                 appIntent = appIntent,
-                fallbackUrl = null,
+                fallbackUrl = fallbackUrl,
                 marketplaceIntent = marketplaceIntent,
                 resolveInfo = resolveInfo,
             )
@@ -227,22 +247,27 @@ class AppLinksUseCases(
          *
          * @param appIntent the [Intent] to open the external app for.
          * @param launchInNewTask whether or not the app should be launched in a new task.
+         * @param clearTop whether if the app should be launched with the top of the back stack cleared.
          * @param failedToLaunchAction callback invoked in case opening the external app fails.
          */
         operator fun invoke(
             appIntent: Intent?,
             launchInNewTask: Boolean = true,
+            clearTop: Boolean = false,
             failedToLaunchAction: (fallbackUrl: String?) -> Unit = {},
         ) {
             appIntent?.let {
                 try {
                     val scheme = appIntent.data?.scheme
-                    if (scheme != null && alwaysDeniedSchemes.contains(scheme)) {
+                    if (alwaysDeniedSchemes.shouldDeny(scheme)) {
                         return
                     }
 
                     if (launchInNewTask) {
                         it.flags = it.flags or Intent.FLAG_ACTIVITY_NEW_TASK
+                    }
+                    if (clearTop) {
+                        it.flags = it.flags or Intent.FLAG_ACTIVITY_CLEAR_TOP
                     }
                     context.startActivity(it)
                 } catch (e: Exception) {
@@ -319,10 +344,21 @@ class AppLinksUseCases(
             redirectCache = null
         }
 
-        // list of scheme from https://searchfox.org/mozilla-central/source/netwerk/build/components.conf
+        // list of scheme from https://searchfox.org/firefox-main/source/netwerk/build/components.conf
         internal val ENGINE_SUPPORTED_SCHEMES: Set<String> = setOf(
-            "about", "data", "file", "ftp", "http",
-            "https", "moz-extension", "moz-safe-about", "resource", "view-source", "ws", "wss", "blob",
+            "about",
+            "data",
+            "file",
+            "ftp",
+            "http",
+            "https",
+            "moz-extension",
+            "moz-safe-about",
+            "resource",
+            "view-source",
+            "ws",
+            "wss",
+            "blob",
         )
 
         internal val ALWAYS_DENY_SCHEMES: Set<String> =

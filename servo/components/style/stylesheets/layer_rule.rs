@@ -6,6 +6,7 @@
 //!
 //! [layer]: https://drafts.csswg.org/css-cascade-5/#layering
 
+use crate::derives::*;
 use crate::parser::{Parse, ParserContext};
 use crate::shared_lock::{DeepCloneWithLock, Locked};
 use crate::shared_lock::{SharedRwLock, SharedRwLockReadGuard, ToCssWithGuard};
@@ -164,7 +165,7 @@ impl ToCssWithGuard for LayerBlockRule {
     fn to_css(
         &self,
         guard: &SharedRwLockReadGuard,
-        dest: &mut crate::str::CssStringWriter,
+        dest: &mut style_traits::CssStringWriter,
     ) -> fmt::Result {
         dest.write_str("@layer")?;
         if let Some(ref name) = self.name {
@@ -206,7 +207,7 @@ impl ToCssWithGuard for LayerStatementRule {
     fn to_css(
         &self,
         _: &SharedRwLockReadGuard,
-        dest: &mut crate::str::CssStringWriter,
+        dest: &mut style_traits::CssStringWriter,
     ) -> fmt::Result {
         let mut writer = CssWriter::new(dest);
         writer.write_str("@layer ")?;

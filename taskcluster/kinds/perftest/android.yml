@@ -15,6 +15,7 @@ task-defaults:
             PYTHONPATH: "testing/mozbase/mozdevice:third_party/python/six"
 
     run:
+        clone-with: hg
         sparse-profile: perftest
         checkout: true
         cwd: '{checkout}'
@@ -29,12 +30,13 @@ hw-a55-aarch64-shippable-startup-chrome-m-newssite-applink-startup:
     worker-type: t-lambda-perf-a55
     description: Run android cold_view_nav_end (newssite) perftest on Chrome on a Samsung A55
     treeherder:
-        symbol: perftest-chrome(newssite-applink-startup)
+        symbol: perftest-chrome(newssite-applink)
         tier: 2
     platform: android-hw-a55-14-0-aarch64-shippable/opt
     attributes:
         cron: true
     run:
+        clone-with: hg
         command: >-
             mkdir -p $MOZ_FETCHES_DIR/../artifacts &&
             cd $GECKO_PATH &&
@@ -49,12 +51,12 @@ hw-a55-aarch64-shippable-startup-fenix-newssite-applink-startup:
     worker-type: t-lambda-perf-a55
     description: Run android cold_view_nav_end (newssite) perftest on Fenix on a Samsung A55
     treeherder:
-        symbol: perftest-fenix(newssite-applink-startup)
+        symbol: perftest-fenix(newssite-applink)
         tier: 2
     platform: android-hw-a55-14-0-aarch64-shippable/opt
     attributes:
         cron: false
-    run-on-projects: [trunk-only]
+    run-on-projects: [autoland]
     fetches:
         build:
             - artifact: target.arm64-v8a.apk
@@ -62,6 +64,7 @@ hw-a55-aarch64-shippable-startup-fenix-newssite-applink-startup:
     require-build:
         android-hw-a55-14-0-aarch64-shippable/opt: signing-apk-fenix-nightly-simulation
     run:
+        clone-with: hg
         command: >-
             mkdir -p $MOZ_FETCHES_DIR/../artifacts &&
             cd $GECKO_PATH &&
@@ -72,133 +75,19 @@ hw-a55-aarch64-shippable-startup-fenix-newssite-applink-startup:
             --perfherder
             --android-install-apk $MOZ_FETCHES_DIR/target.arm64-v8a.apk
             --output $MOZ_FETCHES_DIR/../artifacts
-
-hw-a55-aarch64-shippable-startup-fenix-newssite-applink-startup-simpleperf:
-    worker-type: t-lambda-perf-a55
-    description: Profile android cold_view_nav_end perftest on Fenix on a Samsung A55
-    treeherder:
-        symbol: perftest-fenix(newssite-applink-profile)
-        tier: 2
-    platform: android-hw-a55-14-0-aarch64-shippable/opt
-    attributes:
-        cron: false
-    run-on-projects: []
-    dependencies:
-        android-aarch64-shippable: build-android-aarch64-shippable/opt
-    fetches:
-        build:
-            - artifact: target.arm64-v8a.apk
-              extract: false
-        android-aarch64-shippable:
-            - artifact: target.crashreporter-symbols.zip
-              extract: true
-        toolchain:
-            - linux64-android-simpleperf-linux-repack
-            - linux64-samply
-    require-build:
-        android-hw-a55-14-0-aarch64-shippable/opt: signing-apk-fenix-nightly-simulation
-    run:
-        command: >-
-            mkdir -p $MOZ_FETCHES_DIR/../artifacts &&
-            cd $GECKO_PATH &&
-            python3 python/mozperftest/mozperftest/runner.py
-            --flavor custom-script
-            --app fenix
-            testing/performance/mobile-startup/cvne-newssite.sh
-            --perfherder
-            --android-install-apk $MOZ_FETCHES_DIR/target.arm64-v8a.apk
-            --output $MOZ_FETCHES_DIR/../artifacts
-            --simpleperf
-            --simpleperf-path $MOZ_FETCHES_DIR/android-simpleperf
-
-hw-p6-aarch64-shippable-startup-fenix-newssite-applink-startup-simpleperf:
-    worker-type: t-bitbar-gw-perf-p6
-    description: Profile android cold_view_nav_end perftest on Fenix on a Pixel 6
-    treeherder:
-        symbol: perftest-fenix(newssite-applink-profile)
-        tier: 2
-    platform: android-hw-p6-13-0-aarch64-shippable/opt
-    attributes:
-        cron: false
-    run-on-projects: []
-    dependencies:
-        android-aarch64-shippable: build-android-aarch64-shippable/opt
-    fetches:
-        build:
-            - artifact: target.arm64-v8a.apk
-              extract: false
-        android-aarch64-shippable:
-            - artifact: target.crashreporter-symbols.zip
-              extract: true
-        toolchain:
-            - linux64-android-simpleperf-linux-repack
-            - linux64-samply
-    require-build:
-        android-hw-p6-13-0-aarch64-shippable/opt: signing-apk-fenix-nightly-simulation
-    run:
-        command: >-
-            mkdir -p $MOZ_FETCHES_DIR/../artifacts &&
-            cd $GECKO_PATH &&
-            python3 python/mozperftest/mozperftest/runner.py
-            --flavor custom-script
-            --app fenix
-            testing/performance/mobile-startup/cvne-newssite.sh
-            --perfherder
-            --android-install-apk $MOZ_FETCHES_DIR/target.arm64-v8a.apk
-            --output $MOZ_FETCHES_DIR/../artifacts
-            --simpleperf
-            --simpleperf-path $MOZ_FETCHES_DIR/android-simpleperf
-
-hw-s24-aarch64-shippable-startup-fenix-newssite-applink-startup-simpleperf:
-    worker-type: t-bitbar-gw-perf-s24
-    description: Profile android cold_view_nav_end perftest on Fenix on a Samsung S24
-    treeherder:
-        symbol: perftest-fenix(newssite-applink-profile)
-        tier: 2
-    platform: android-hw-s24-14-0-aarch64-shippable/opt
-    attributes:
-        cron: false
-    run-on-projects: []
-    dependencies:
-        android-aarch64-shippable: build-android-aarch64-shippable/opt
-    fetches:
-        build:
-            - artifact: target.arm64-v8a.apk
-              extract: false
-        android-aarch64-shippable:
-            - artifact: target.crashreporter-symbols.zip
-              extract: true
-        toolchain:
-            - linux64-android-simpleperf-linux-repack
-            - linux64-samply
-    require-build:
-        android-hw-s24-14-0-aarch64-shippable/opt: signing-apk-fenix-nightly-simulation
-    run:
-        command: >-
-            mkdir -p $MOZ_FETCHES_DIR/../artifacts &&
-            cd $GECKO_PATH &&
-            python3 python/mozperftest/mozperftest/runner.py
-            --flavor custom-script
-            --app fenix
-            testing/performance/mobile-startup/cvne-newssite.sh
-            --perfherder
-            --android-install-apk $MOZ_FETCHES_DIR/target.arm64-v8a.apk
-            --output $MOZ_FETCHES_DIR/../artifacts
-            --simpleperf
-            --simpleperf-path $MOZ_FETCHES_DIR/android-simpleperf
-
 
 hw-p6-aarch64-shippable-startup-chrome-m-newssite-applink-startup:
     worker-type: t-bitbar-gw-perf-p6
     description: Run android cold_view_nav_end (newssite) perftest on Chrome on a Google Pixel 6
     treeherder:
-        symbol: perftest-chrome(newssite-applink-startup)
+        symbol: perftest-chrome(newssite-applink)
         tier: 2
     platform: android-hw-p6-13-0-aarch64-shippable/opt
     attributes:
         cron: true
     run-on-projects: []
     run:
+        clone-with: hg
         command: >-
             mkdir -p $MOZ_FETCHES_DIR/../artifacts &&
             cd $GECKO_PATH &&
@@ -213,11 +102,11 @@ hw-p6-aarch64-shippable-startup-fenix-newssite-applink-startup:
     worker-type: t-bitbar-gw-perf-p6
     description: Run android cold_view_nav_end (newssite) perftest on Fenix on a Pixel 6
     treeherder:
-        symbol: perftest-fenix(newssite-applink-startup)
+        symbol: perftest-fenix(newssite-applink)
         tier: 2
     platform: android-hw-p6-13-0-aarch64-shippable/opt
     attributes:
-        cron: true
+        cron: false
     run-on-projects: []
     fetches:
         build:
@@ -226,6 +115,7 @@ hw-p6-aarch64-shippable-startup-fenix-newssite-applink-startup:
     require-build:
         android-hw-p6-13-0-aarch64-shippable/opt: signing-apk-fenix-nightly-simulation
     run:
+        clone-with: hg
         command: >-
             mkdir -p $MOZ_FETCHES_DIR/../artifacts &&
             cd $GECKO_PATH &&
@@ -241,13 +131,14 @@ hw-s24-aarch64-shippable-startup-chrome-m-newssite-applink-startup:
     worker-type: t-bitbar-gw-perf-s24
     description: Run android cold_view_nav_end (newssite) perftest on Chrome on a Samsung S24
     treeherder:
-        symbol: perftest-chrome(newssite-applink-startup)
+        symbol: perftest-chrome(newssite-applink)
         tier: 2
     platform: android-hw-s24-14-0-aarch64-shippable/opt
     attributes:
         cron: true
     run-on-projects: []
     run:
+        clone-with: hg
         command: >-
             mkdir -p $MOZ_FETCHES_DIR/../artifacts &&
             cd $GECKO_PATH &&
@@ -262,11 +153,11 @@ hw-s24-aarch64-shippable-startup-fenix-newssite-applink-startup:
     worker-type: t-bitbar-gw-perf-s24
     description: Run android cold_view_nav_end (newssite) perftest on Fenix on a Samsung S24
     treeherder:
-        symbol: perftest-fenix(newssite-applink-startup)
+        symbol: perftest-fenix(newssite-applink)
         tier: 2
     platform: android-hw-s24-14-0-aarch64-shippable/opt
     attributes:
-        cron: true
+        cron: false
     run-on-projects: []
     fetches:
         build:
@@ -275,6 +166,7 @@ hw-s24-aarch64-shippable-startup-fenix-newssite-applink-startup:
     require-build:
         android-hw-s24-14-0-aarch64-shippable/opt: signing-apk-fenix-nightly-simulation
     run:
+        clone-with: hg
         command: >-
             mkdir -p $MOZ_FETCHES_DIR/../artifacts &&
             cd $GECKO_PATH &&
@@ -290,12 +182,13 @@ hw-a55-aarch64-shippable-startup-chrome-m-shopify-applink-startup:
     worker-type: t-lambda-perf-a55
     description: Run android cold_view_nav_end (shopify) perftest on Chrome on a Samsung A55
     treeherder:
-        symbol: perftest-chrome(shopify-applink-startup)
+        symbol: perftest-chrome(shopify-applink)
         tier: 2
     platform: android-hw-a55-14-0-aarch64-shippable/opt
     attributes:
         cron: true
     run:
+        clone-with: hg
         command: >-
             mkdir -p $MOZ_FETCHES_DIR/../artifacts &&
             cd $GECKO_PATH &&
@@ -310,12 +203,12 @@ hw-a55-aarch64-shippable-startup-fenix-shopify-applink-startup:
     worker-type: t-lambda-perf-a55
     description: Run android cold_view_nav_end (shopify) perftest on Fenix on a Samsung A55
     treeherder:
-        symbol: perftest-fenix(shopify-applink-startup)
+        symbol: perftest-fenix(shopify-applink)
         tier: 2
     platform: android-hw-a55-14-0-aarch64-shippable/opt
     attributes:
         cron: false
-    run-on-projects: [trunk-only]
+    run-on-projects: [autoland]
     fetches:
         build:
             - artifact: target.arm64-v8a.apk
@@ -323,6 +216,7 @@ hw-a55-aarch64-shippable-startup-fenix-shopify-applink-startup:
     require-build:
         android-hw-a55-14-0-aarch64-shippable/opt: signing-apk-fenix-nightly-simulation
     run:
+        clone-with: hg
         command: >-
             mkdir -p $MOZ_FETCHES_DIR/../artifacts &&
             cd $GECKO_PATH &&
@@ -334,69 +228,45 @@ hw-a55-aarch64-shippable-startup-fenix-shopify-applink-startup:
             --android-install-apk $MOZ_FETCHES_DIR/target.arm64-v8a.apk
             --output $MOZ_FETCHES_DIR/../artifacts
 
-hw-a55-aarch64-shippable-startup-fenix-shopify-applink-startup-simpleperf:
-    worker-type: t-lambda-perf-a55
-    description: Profile android cold_view_nav_end perftest on Fenix on a Samsung A55
-    treeherder:
-        symbol: perftest-fenix(shopify-applink-profile)
-        tier: 2
-    platform: android-hw-a55-14-0-aarch64-shippable/opt
-    attributes:
-        cron: false
-    run-on-projects: []
-    dependencies:
-        android-aarch64-shippable: build-android-aarch64-shippable/opt
-    fetches:
-        build:
-            - artifact: target.arm64-v8a.apk
-              extract: false
-        android-aarch64-shippable:
-            - artifact: target.crashreporter-symbols.zip
-              extract: true
-        toolchain:
-            - linux64-android-simpleperf-linux-repack
-            - linux64-samply
-    require-build:
-        android-hw-a55-14-0-aarch64-shippable/opt: signing-apk-fenix-nightly-simulation
-    run:
-        command: >-
-            mkdir -p $MOZ_FETCHES_DIR/../artifacts &&
-            cd $GECKO_PATH &&
-            python3 python/mozperftest/mozperftest/runner.py
-            --flavor custom-script
-            --app fenix
-            testing/performance/mobile-startup/cvne-shopify.sh
-            --perfherder
-            --android-install-apk $MOZ_FETCHES_DIR/target.arm64-v8a.apk
-            --output $MOZ_FETCHES_DIR/../artifacts
-            --simpleperf
-            --simpleperf-path $MOZ_FETCHES_DIR/android-simpleperf
-
-hw-p6-aarch64-shippable-startup-fenix-shopify-applink-startup-simpleperf:
+hw-p6-aarch64-shippable-startup-chrome-m-shopify-applink-startup:
     worker-type: t-bitbar-gw-perf-p6
-    description: Profile android cold_view_nav_end perftest on Fenix on a Pixel 6
+    description: Run android cold_view_nav_end (shopify) perftest on Chrome on a Pixel 6
     treeherder:
-        symbol: perftest-fenix(shopify-applink-profile)
+        symbol: perftest-chrome(shopify-applink)
+        tier: 2
+    platform: android-hw-p6-13-0-aarch64-shippable/opt
+    attributes:
+        cron: true
+    run:
+        clone-with: hg
+        command: >-
+            mkdir -p $MOZ_FETCHES_DIR/../artifacts &&
+            cd $GECKO_PATH &&
+            python3 python/mozperftest/mozperftest/runner.py
+            --flavor custom-script
+            --app chrome-m
+            testing/performance/mobile-startup/cvne-shopify.sh
+            --perfherder
+            --output $MOZ_FETCHES_DIR/../artifacts
+
+hw-p6-aarch64-shippable-startup-fenix-shopify-applink-startup:
+    worker-type: t-bitbar-gw-perf-p6
+    description: Run android cold_view_nav_end (shopify) perftest on Fenix on a Pixel 6
+    treeherder:
+        symbol: perftest-fenix(shopify-applink)
         tier: 2
     platform: android-hw-p6-13-0-aarch64-shippable/opt
     attributes:
         cron: false
     run-on-projects: []
-    dependencies:
-        android-aarch64-shippable: build-android-aarch64-shippable/opt
     fetches:
         build:
             - artifact: target.arm64-v8a.apk
               extract: false
-        android-aarch64-shippable:
-            - artifact: target.crashreporter-symbols.zip
-              extract: true
-        toolchain:
-            - linux64-android-simpleperf-linux-repack
-            - linux64-samply
     require-build:
         android-hw-p6-13-0-aarch64-shippable/opt: signing-apk-fenix-nightly-simulation
     run:
+        clone-with: hg
         command: >-
             mkdir -p $MOZ_FETCHES_DIR/../artifacts &&
             cd $GECKO_PATH &&
@@ -407,34 +277,46 @@ hw-p6-aarch64-shippable-startup-fenix-shopify-applink-startup-simpleperf:
             --perfherder
             --android-install-apk $MOZ_FETCHES_DIR/target.arm64-v8a.apk
             --output $MOZ_FETCHES_DIR/../artifacts
-            --simpleperf
-            --simpleperf-path $MOZ_FETCHES_DIR/android-simpleperf
 
-hw-s24-aarch64-shippable-startup-fenix-shopify-applink-startup-simpleperf:
+hw-s24-aarch64-shippable-startup-chrome-m-shopify-applink-startup:
     worker-type: t-bitbar-gw-perf-s24
-    description: Profile android cold_view_nav_end perftest on Fenix on a Samsung S24
+    description: Run android cold_view_nav_end (shopify) perftest on Chrome on a Samsung S24
     treeherder:
-        symbol: perftest-fenix(shopify-applink-profile)
+        symbol: perftest-chrome(shopify-applink)
+        tier: 2
+    platform: android-hw-s24-14-0-aarch64-shippable/opt
+    attributes:
+        cron: true
+    run:
+        clone-with: hg
+        command: >-
+            mkdir -p $MOZ_FETCHES_DIR/../artifacts &&
+            cd $GECKO_PATH &&
+            python3 python/mozperftest/mozperftest/runner.py
+            --flavor custom-script
+            --app chrome-m
+            testing/performance/mobile-startup/cvne-shopify.sh
+            --perfherder
+            --output $MOZ_FETCHES_DIR/../artifacts
+
+hw-s24-aarch64-shippable-startup-fenix-shopify-applink-startup:
+    worker-type: t-bitbar-gw-perf-s24
+    description: Run android cold_view_nav_end (shopify) perftest on Fenix on a Samsung S24
+    treeherder:
+        symbol: perftest-fenix(shopify-applink)
         tier: 2
     platform: android-hw-s24-14-0-aarch64-shippable/opt
     attributes:
         cron: false
     run-on-projects: []
-    dependencies:
-        android-aarch64-shippable: build-android-aarch64-shippable/opt
     fetches:
         build:
             - artifact: target.arm64-v8a.apk
               extract: false
-        android-aarch64-shippable:
-            - artifact: target.crashreporter-symbols.zip
-              extract: true
-        toolchain:
-            - linux64-android-simpleperf-linux-repack
-            - linux64-samply
     require-build:
         android-hw-s24-14-0-aarch64-shippable/opt: signing-apk-fenix-nightly-simulation
     run:
+        clone-with: hg
         command: >-
             mkdir -p $MOZ_FETCHES_DIR/../artifacts &&
             cd $GECKO_PATH &&
@@ -445,20 +327,19 @@ hw-s24-aarch64-shippable-startup-fenix-shopify-applink-startup-simpleperf:
             --perfherder
             --android-install-apk $MOZ_FETCHES_DIR/target.arm64-v8a.apk
             --output $MOZ_FETCHES_DIR/../artifacts
-            --simpleperf
-            --simpleperf-path $MOZ_FETCHES_DIR/android-simpleperf
 
-hw-a55-aarch64-shippable-startup-chrome-m-tab-restore-shopify:
+hw-a55-aarch64-shippable-startup-chrome-m-tab-restore-startup:
     worker-type: t-lambda-perf-a55
     description: Run android startup restore perftest on Chrome on a Samsung A55
     treeherder:
-        symbol: perftest-chrome(tab-restore-shopify)
+        symbol: perftest-chrome(tab-restore)
         tier: 2
     platform: android-hw-a55-14-0-aarch64-shippable/opt
     attributes:
         cron: true
     run-on-projects: [trunk-only]
     run:
+        clone-with: hg
         command: >-
              mkdir -p $MOZ_FETCHES_DIR/../artifacts &&
              cd $GECKO_PATH &&
@@ -469,16 +350,16 @@ hw-a55-aarch64-shippable-startup-chrome-m-tab-restore-shopify:
              --perfherder
              --output $MOZ_FETCHES_DIR/../artifacts
 
-hw-a55-aarch64-shippable-startup-fenix-tab-restore-shopify:
+hw-a55-aarch64-shippable-startup-fenix-tab-restore-startup:
     worker-type: t-lambda-perf-a55
     description: Run android startup restore perftest on Fenix on a Samsung A55
     treeherder:
-        symbol: perftest-fenix(tab-restore-shopify)
+        symbol: perftest-fenix(tab-restore)
         tier: 2
     platform: android-hw-a55-14-0-aarch64-shippable/opt
     attributes:
         cron: false
-    run-on-projects: [trunk-only]
+    run-on-projects: [autoland]
     fetches:
         build:
             - artifact: target.arm64-v8a.apk
@@ -486,6 +367,7 @@ hw-a55-aarch64-shippable-startup-fenix-tab-restore-shopify:
     require-build:
         android-hw-a55-14-0-aarch64-shippable/opt: signing-apk-fenix-nightly-simulation
     run:
+        clone-with: hg
         command: >-
             mkdir -p $MOZ_FETCHES_DIR/../artifacts &&
             cd $GECKO_PATH &&
@@ -497,17 +379,18 @@ hw-a55-aarch64-shippable-startup-fenix-tab-restore-shopify:
             --android-install-apk $MOZ_FETCHES_DIR/target.arm64-v8a.apk
             --output $MOZ_FETCHES_DIR/../artifacts
 
-hw-p6-aarch64-shippable-startup-chrome-m-tab-restore-shopify:
+hw-p6-aarch64-shippable-startup-chrome-m-tab-restore-startup:
     worker-type: t-bitbar-gw-perf-p6
     description: Run android startup restore perftest on Chrome on a Pixel6
     treeherder:
-        symbol: perftest-chrome(tab-restore-shopify)
+        symbol: perftest-chrome(tab-restore)
         tier: 2
     platform: android-hw-p6-13-0-aarch64-shippable/opt
     attributes:
         cron: true
     run-on-projects: []
     run:
+        clone-with: hg
         command: >-
              mkdir -p $MOZ_FETCHES_DIR/../artifacts &&
              cd $GECKO_PATH &&
@@ -518,15 +401,15 @@ hw-p6-aarch64-shippable-startup-chrome-m-tab-restore-shopify:
              --perfherder
              --output $MOZ_FETCHES_DIR/../artifacts
 
-hw-p6-aarch64-shippable-startup-fenix-tab-restore-shopify:
+hw-p6-aarch64-shippable-startup-fenix-tab-restore-startup:
     worker-type: t-bitbar-gw-perf-p6
     description: Run android startup restore perftest on Fenix on a Pixel6
     treeherder:
-        symbol: perftest-fenix(tab-restore-shopify)
+        symbol: perftest-fenix(tab-restore)
         tier: 2
     platform: android-hw-p6-13-0-aarch64-shippable/opt
     attributes:
-        cron: true
+        cron: false
     run-on-projects: []
     fetches:
         build:
@@ -535,6 +418,7 @@ hw-p6-aarch64-shippable-startup-fenix-tab-restore-shopify:
     require-build:
         android-hw-p6-13-0-aarch64-shippable/opt: signing-apk-fenix-nightly-simulation
     run:
+        clone-with: hg
         command: >-
             mkdir -p $MOZ_FETCHES_DIR/../artifacts &&
             cd $GECKO_PATH &&
@@ -546,17 +430,18 @@ hw-p6-aarch64-shippable-startup-fenix-tab-restore-shopify:
             --android-install-apk $MOZ_FETCHES_DIR/target.arm64-v8a.apk
             --output $MOZ_FETCHES_DIR/../artifacts
 
-hw-s24-aarch64-shippable-startup-chrome-m-tab-restore-shopify:
+hw-s24-aarch64-shippable-startup-chrome-m-tab-restore-startup:
     worker-type: t-bitbar-gw-perf-s24
     description: Run android startup restore perftest on Chrome on a Samsung S24
     treeherder:
-        symbol: perftest-chrome(tab-restore-shopify)
+        symbol: perftest-chrome(tab-restore)
         tier: 2
     platform: android-hw-s24-14-0-aarch64-shippable/opt
     attributes:
         cron: true
     run-on-projects: []
     run:
+        clone-with: hg
         command: >-
              mkdir -p $MOZ_FETCHES_DIR/../artifacts &&
              cd $GECKO_PATH &&
@@ -567,15 +452,15 @@ hw-s24-aarch64-shippable-startup-chrome-m-tab-restore-shopify:
              --perfherder
              --output $MOZ_FETCHES_DIR/../artifacts
 
-hw-s24-aarch64-shippable-startup-fenix-tab-restore-shopify:
+hw-s24-aarch64-shippable-startup-fenix-tab-restore-startup:
     worker-type: t-bitbar-gw-perf-s24
     description: Run android startup restore perftest on Fenix on a Samsung S24
     treeherder:
-        symbol: perftest-fenix(tab-restore-shopify)
+        symbol: perftest-fenix(tab-restore)
         tier: 2
     platform: android-hw-s24-14-0-aarch64-shippable/opt
     attributes:
-        cron: true
+        cron: false
     run-on-projects: []
     fetches:
         build:
@@ -584,6 +469,7 @@ hw-s24-aarch64-shippable-startup-fenix-tab-restore-shopify:
     require-build:
         android-hw-s24-14-0-aarch64-shippable/opt: signing-apk-fenix-nightly-simulation
     run:
+        clone-with: hg
         command: >-
             mkdir -p $MOZ_FETCHES_DIR/../artifacts &&
             cd $GECKO_PATH &&
@@ -594,131 +480,18 @@ hw-s24-aarch64-shippable-startup-fenix-tab-restore-shopify:
             --perfherder
             --android-install-apk $MOZ_FETCHES_DIR/target.arm64-v8a.apk
             --output $MOZ_FETCHES_DIR/../artifacts
-
-hw-a55-aarch64-shippable-startup-fenix-tab-restore-simpleperf:
-    worker-type: t-lambda-perf-a55
-    description: Profile android tab restore startup on Fenix on a Samsung A55
-    treeherder:
-        symbol: perftest-fenix(tab-restore-profile)
-        tier: 2
-    platform: android-hw-a55-14-0-aarch64-shippable/opt
-    attributes:
-        cron: false
-    run-on-projects: []
-    dependencies:
-        android-aarch64-shippable: build-android-aarch64-shippable/opt
-    fetches:
-        build:
-            - artifact: target.arm64-v8a.apk
-              extract: false
-        android-aarch64-shippable:
-            - artifact: target.crashreporter-symbols.zip
-              extract: true
-        toolchain:
-            - linux64-samply
-            - linux64-android-simpleperf-linux-repack
-    require-build:
-        android-hw-a55-14-0-aarch64-shippable/opt: signing-apk-fenix-nightly-simulation
-    run:
-        command: >-
-            mkdir -p $MOZ_FETCHES_DIR/../artifacts &&
-            cd $GECKO_PATH &&
-            python3 python/mozperftest/mozperftest/runner.py
-            --flavor custom-script
-            --app fenix
-            testing/performance/mobile-startup/restore.sh
-            --perfherder
-            --android-install-apk $MOZ_FETCHES_DIR/target.arm64-v8a.apk
-            --output $MOZ_FETCHES_DIR/../artifacts
-            --simpleperf
-            --simpleperf-path $MOZ_FETCHES_DIR/android-simpleperf
-
-hw-p6-aarch64-shippable-startup-fenix-tab-restore-simpleperf:
-    worker-type: t-bitbar-gw-perf-p6
-    description: Profile android tab restore startup on Fenix on a Pixel 6
-    treeherder:
-        symbol: perftest-fenix(tab-restore-profile)
-        tier: 2
-    platform: android-hw-p6-13-0-aarch64-shippable/opt
-    attributes:
-        cron: false
-    run-on-projects: []
-    dependencies:
-        android-aarch64-shippable: build-android-aarch64-shippable/opt
-    fetches:
-        build:
-            - artifact: target.arm64-v8a.apk
-              extract: false
-        android-aarch64-shippable:
-            - artifact: target.crashreporter-symbols.zip
-              extract: true
-        toolchain:
-            - linux64-samply
-            - linux64-android-simpleperf-linux-repack
-    require-build:
-        android-hw-p6-13-0-aarch64-shippable/opt: signing-apk-fenix-nightly-simulation
-    run:
-        command: >-
-            mkdir -p $MOZ_FETCHES_DIR/../artifacts &&
-            cd $GECKO_PATH &&
-            python3 python/mozperftest/mozperftest/runner.py
-            --flavor custom-script
-            --app fenix
-            testing/performance/mobile-startup/restore.sh
-            --perfherder
-            --android-install-apk $MOZ_FETCHES_DIR/target.arm64-v8a.apk
-            --output $MOZ_FETCHES_DIR/../artifacts
-            --simpleperf
-            --simpleperf-path $MOZ_FETCHES_DIR/android-simpleperf
-
-hw-s24-aarch64-shippable-startup-fenix-tab-restore-simpleperf:
-    worker-type: t-bitbar-gw-perf-s24
-    description: Profile android tab restore startup on Fenix on a Samsung S24
-    treeherder:
-        symbol: perftest-fenix(tab-restore-profile)
-        tier: 2
-    platform: android-hw-s24-14-0-aarch64-shippable/opt
-    attributes:
-        cron: false
-    run-on-projects: []
-    dependencies:
-        android-aarch64-shippable: build-android-aarch64-shippable/opt
-    fetches:
-        build:
-            - artifact: target.arm64-v8a.apk
-              extract: false
-        android-aarch64-shippable:
-            - artifact: target.crashreporter-symbols.zip
-              extract: true
-        toolchain:
-            - linux64-samply
-            - linux64-android-simpleperf-linux-repack
-    require-build:
-        android-hw-s24-14-0-aarch64-shippable/opt: signing-apk-fenix-nightly-simulation
-    run:
-        command: >-
-            mkdir -p $MOZ_FETCHES_DIR/../artifacts &&
-            cd $GECKO_PATH &&
-            python3 python/mozperftest/mozperftest/runner.py
-            --flavor custom-script
-            --app fenix
-            testing/performance/mobile-startup/restore.sh
-            --perfherder
-            --android-install-apk $MOZ_FETCHES_DIR/target.arm64-v8a.apk
-            --output $MOZ_FETCHES_DIR/../artifacts
-            --simpleperf
-            --simpleperf-path $MOZ_FETCHES_DIR/android-simpleperf
 
 hw-a55-aarch64-shippable-startup-chrome-m-homeview-startup:
     worker-type: t-lambda-perf-a55
     description: Run android homeview startup perftest on Chrome on a Samsung A55
     treeherder:
-        symbol: perftest-chrome(homeview-startup)
+        symbol: perftest-chrome(homeview)
         tier: 2
     platform: android-hw-a55-14-0-aarch64-shippable/opt
     attributes:
         cron: true
     run:
+        clone-with: hg
         command: >-
             mkdir -p $MOZ_FETCHES_DIR/../artifacts &&
             cd $GECKO_PATH &&
@@ -733,12 +506,12 @@ hw-a55-aarch64-shippable-startup-fenix-homeview-startup:
     worker-type: t-lambda-perf-a55
     description: Run android homeview startup perftest on Fenix on a Samsung A55
     treeherder:
-        symbol: perftest-fenix(homeview-startup)
+        symbol: perftest-fenix(homeview)
         tier: 2
     platform: android-hw-a55-14-0-aarch64-shippable/opt
     attributes:
         cron: false
-    run-on-projects: [trunk-only]
+    run-on-projects: [autoland]
     fetches:
         build:
             - artifact: target.arm64-v8a.apk
@@ -746,6 +519,7 @@ hw-a55-aarch64-shippable-startup-fenix-homeview-startup:
     require-build:
         android-hw-a55-14-0-aarch64-shippable/opt: signing-apk-fenix-nightly-simulation
     run:
+        clone-with: hg
         command: >-
             mkdir -p $MOZ_FETCHES_DIR/../artifacts &&
             cd $GECKO_PATH &&
@@ -757,69 +531,45 @@ hw-a55-aarch64-shippable-startup-fenix-homeview-startup:
             --android-install-apk $MOZ_FETCHES_DIR/target.arm64-v8a.apk
             --output $MOZ_FETCHES_DIR/../artifacts
 
-hw-a55-aarch64-shippable-startup-fenix-homeview-startup-simpleperf:
-    worker-type: t-lambda-perf-a55
-    description: Profile android homeview startup perftest on Fenix on a Samsung A55
-    treeherder:
-        symbol: perftest-fenix(homeview-startup-profile)
-        tier: 2
-    platform: android-hw-a55-14-0-aarch64-shippable/opt
-    attributes:
-        cron: false
-    run-on-projects: []
-    dependencies:
-        android-aarch64-shippable: build-android-aarch64-shippable/opt
-    fetches:
-        build:
-            - artifact: target.arm64-v8a.apk
-              extract: false
-        android-aarch64-shippable:
-            - artifact: target.crashreporter-symbols.zip
-              extract: true
-        toolchain:
-            - linux64-android-simpleperf-linux-repack
-            - linux64-samply
-    require-build:
-        android-hw-a55-14-0-aarch64-shippable/opt: signing-apk-fenix-nightly-simulation
-    run:
-        command: >-
-            mkdir -p $MOZ_FETCHES_DIR/../artifacts &&
-            cd $GECKO_PATH &&
-            python3 python/mozperftest/mozperftest/runner.py
-            --flavor custom-script
-            --app fenix
-            testing/performance/mobile-startup/homeview.sh
-            --perfherder
-            --android-install-apk $MOZ_FETCHES_DIR/target.arm64-v8a.apk
-            --output $MOZ_FETCHES_DIR/../artifacts
-            --simpleperf
-            --simpleperf-path $MOZ_FETCHES_DIR/android-simpleperf
-
-hw-p6-aarch64-shippable-startup-fenix-homeview-startup-simpleperf:
+hw-p6-aarch64-shippable-startup-chrome-m-homeview-startup:
     worker-type: t-bitbar-gw-perf-p6
-    description: Profile android homeview startup perftest on Fenix on a Pixel 6
+    description: Run android homeview startup perftest on Chrome on a Pixel 6
     treeherder:
-        symbol: perftest-fenix(homeview-startup-profile)
+        symbol: perftest-chrome(homeview)
+        tier: 2
+    platform: android-hw-p6-13-0-aarch64-shippable/opt
+    attributes:
+        cron: true
+    run:
+        clone-with: hg
+        command: >-
+            mkdir -p $MOZ_FETCHES_DIR/../artifacts &&
+            cd $GECKO_PATH &&
+            python3 python/mozperftest/mozperftest/runner.py
+            --flavor custom-script
+            --app chrome-m
+            testing/performance/mobile-startup/homeview.sh
+            --perfherder
+            --output $MOZ_FETCHES_DIR/../artifacts
+
+hw-p6-aarch64-shippable-startup-fenix-homeview-startup:
+    worker-type: t-bitbar-gw-perf-p6
+    description: Run android homeview startup perftest on Fenix on a Pixel 6
+    treeherder:
+        symbol: perftest-fenix(homeview)
         tier: 2
     platform: android-hw-p6-13-0-aarch64-shippable/opt
     attributes:
         cron: false
     run-on-projects: []
-    dependencies:
-        android-aarch64-shippable: build-android-aarch64-shippable/opt
     fetches:
         build:
             - artifact: target.arm64-v8a.apk
               extract: false
-        android-aarch64-shippable:
-            - artifact: target.crashreporter-symbols.zip
-              extract: true
-        toolchain:
-            - linux64-android-simpleperf-linux-repack
-            - linux64-samply
     require-build:
         android-hw-p6-13-0-aarch64-shippable/opt: signing-apk-fenix-nightly-simulation
     run:
+        clone-with: hg
         command: >-
             mkdir -p $MOZ_FETCHES_DIR/../artifacts &&
             cd $GECKO_PATH &&
@@ -830,34 +580,46 @@ hw-p6-aarch64-shippable-startup-fenix-homeview-startup-simpleperf:
             --perfherder
             --android-install-apk $MOZ_FETCHES_DIR/target.arm64-v8a.apk
             --output $MOZ_FETCHES_DIR/../artifacts
-            --simpleperf
-            --simpleperf-path $MOZ_FETCHES_DIR/android-simpleperf
 
-hw-s24-aarch64-shippable-startup-fenix-homeview-startup-simpleperf:
+hw-s24-aarch64-shippable-startup-chrome-m-homeview-startup:
     worker-type: t-bitbar-gw-perf-s24
-    description: Profile android homeview startup perftest on Fenix on a Samsung S24
+    description: Run android homeview startup perftest on Chrome on a Samsung S24
     treeherder:
-        symbol: perftest-fenix(homeview-startup-profile)
+        symbol: perftest-chrome(homeview)
+        tier: 2
+    platform: android-hw-s24-14-0-aarch64-shippable/opt
+    attributes:
+        cron: true
+    run:
+        clone-with: hg
+        command: >-
+            mkdir -p $MOZ_FETCHES_DIR/../artifacts &&
+            cd $GECKO_PATH &&
+            python3 python/mozperftest/mozperftest/runner.py
+            --flavor custom-script
+            --app chrome-m
+            testing/performance/mobile-startup/homeview.sh
+            --perfherder
+            --output $MOZ_FETCHES_DIR/../artifacts
+
+hw-s24-aarch64-shippable-startup-fenix-homeview-startup:
+    worker-type: t-bitbar-gw-perf-s24
+    description: Run android homeview startup perftest on Fenix on a Samsung S24
+    treeherder:
+        symbol: perftest-fenix(homeview)
         tier: 2
     platform: android-hw-s24-14-0-aarch64-shippable/opt
     attributes:
         cron: false
     run-on-projects: []
-    dependencies:
-        android-aarch64-shippable: build-android-aarch64-shippable/opt
     fetches:
         build:
             - artifact: target.arm64-v8a.apk
               extract: false
-        android-aarch64-shippable:
-            - artifact: target.crashreporter-symbols.zip
-              extract: true
-        toolchain:
-            - linux64-android-simpleperf-linux-repack
-            - linux64-samply
     require-build:
         android-hw-s24-14-0-aarch64-shippable/opt: signing-apk-fenix-nightly-simulation
     run:
+        clone-with: hg
         command: >-
             mkdir -p $MOZ_FETCHES_DIR/../artifacts &&
             cd $GECKO_PATH &&
@@ -868,9 +630,6 @@ hw-s24-aarch64-shippable-startup-fenix-homeview-startup-simpleperf:
             --perfherder
             --android-install-apk $MOZ_FETCHES_DIR/target.arm64-v8a.apk
             --output $MOZ_FETCHES_DIR/../artifacts
-            --simpleperf
-            --simpleperf-path $MOZ_FETCHES_DIR/android-simpleperf
-
 
 hw-a55-aarch64:
     worker-type: t-bitbar-gw-perf-a55
@@ -881,10 +640,10 @@ hw-a55-aarch64:
 
 hw-a55-aarch64-shippable-startup-fenix-cold-main-first-frame:
     worker-type: t-lambda-perf-a55
-    run-on-projects: [trunk-only]
+    run-on-projects: [autoland]
     description: Run android startup perftest on Fenix on a Samsung A55
     treeherder:
-        symbol: perftest-fenix(startup-first-frame)
+        symbol: perftest-fenix(first-frame)
         tier: 2
     platform: android-hw-a55-14-0-aarch64-shippable/opt
     attributes:
@@ -896,6 +655,7 @@ hw-a55-aarch64-shippable-startup-fenix-cold-main-first-frame:
     require-build:
         android-hw-a55-14-0-aarch64-shippable/opt: signing-apk-fenix-nightly-simulation
     run:
+        clone-with: hg
         command: >-
             mkdir -p $MOZ_FETCHES_DIR/../artifacts &&
             cd $GECKO_PATH &&
@@ -909,10 +669,10 @@ hw-a55-aarch64-shippable-startup-fenix-cold-main-first-frame:
 
 hw-a55-aarch64-shippable-startup-fenix-cold-view-nav-start:
     worker-type: t-lambda-perf-a55
-    run-on-projects: [trunk-only]
+    run-on-projects: [autoland]
     description: Run android startup perftest on Fenix on a Samsung A55
     treeherder:
-        symbol: perftest-fenix(startup-navigation-start)
+        symbol: perftest-fenix(navigation-start)
         tier: 2
     platform: android-hw-a55-14-0-aarch64-shippable/opt
     attributes:
@@ -924,6 +684,7 @@ hw-a55-aarch64-shippable-startup-fenix-cold-view-nav-start:
     require-build:
         android-hw-a55-14-0-aarch64-shippable/opt: signing-apk-fenix-nightly-simulation
     run:
+        clone-with: hg
         command: >-
             mkdir -p $MOZ_FETCHES_DIR/../artifacts &&
             cd $GECKO_PATH &&
@@ -939,7 +700,7 @@ hw-a55-aarch64-shippable-startup-focus-cold-main-first-frame:
     worker-type: t-lambda-perf-a55
     description: Run android startup perftest on Focus on a Samsung A55
     treeherder:
-        symbol: perftest-focus(startup-first-frame)
+        symbol: perftest-focus(first-frame)
         tier: 2
     platform: android-hw-a55-14-0-aarch64-shippable/opt
     attributes:
@@ -951,6 +712,7 @@ hw-a55-aarch64-shippable-startup-focus-cold-main-first-frame:
     require-build:
         android-hw-a55-14-0-aarch64-shippable/opt: signing-apk-focus-nightly
     run:
+        clone-with: hg
         command: >-
             mkdir -p $MOZ_FETCHES_DIR/../artifacts &&
             cd $GECKO_PATH &&
@@ -967,7 +729,7 @@ hw-a55-aarch64-shippable-startup-focus-cold-view-nav-start:
     worker-type: t-lambda-perf-a55
     description: Run android startup perftest on Focus on a Samsung A55
     treeherder:
-        symbol: perftest-focus(startup-navigation-start)
+        symbol: perftest-focus(navigation-start)
         tier: 2
     platform: android-hw-a55-14-0-aarch64-shippable/opt
     attributes:
@@ -979,6 +741,7 @@ hw-a55-aarch64-shippable-startup-focus-cold-view-nav-start:
     require-build:
         android-hw-a55-14-0-aarch64-shippable/opt: signing-apk-focus-nightly
     run:
+        clone-with: hg
         command: >-
             mkdir -p $MOZ_FETCHES_DIR/../artifacts &&
             cd $GECKO_PATH &&
@@ -996,7 +759,7 @@ hw-a55-aarch64-shippable-startup-geckoview-cold-main-first-frame:
     run-on-projects: [trunk-only]
     description: Run android startup perftest on Geckoview on a Samsung A55
     treeherder:
-        symbol: perftest(startup-first-frame)
+        symbol: perftest(first-frame)
         tier: 2
     platform: android-hw-a55-14-0-aarch64-shippable/opt
     attributes:
@@ -1008,6 +771,7 @@ hw-a55-aarch64-shippable-startup-geckoview-cold-main-first-frame:
     require-build:
         android-hw-a55-14-0-aarch64-shippable/opt: build-android-aarch64-shippable/opt
     run:
+        clone-with: hg
         command: >-
             mkdir -p $MOZ_FETCHES_DIR/../artifacts &&
             cd $GECKO_PATH &&
@@ -1024,7 +788,7 @@ hw-a55-aarch64-shippable-startup-geckoview-cold-view-nav-start:
     run-on-projects: [trunk-only]
     description: Run android startup perftest on Geckoview_example on a Samsung A55
     treeherder:
-        symbol: perftest(startup-navigation-start)
+        symbol: perftest(navigation-start)
         tier: 2
     platform: android-hw-a55-14-0-aarch64-shippable/opt
     attributes:
@@ -1036,6 +800,7 @@ hw-a55-aarch64-shippable-startup-geckoview-cold-view-nav-start:
     require-build:
         android-hw-a55-14-0-aarch64-shippable/opt: build-android-aarch64-shippable/opt
     run:
+        clone-with: hg
         command: >-
             mkdir -p $MOZ_FETCHES_DIR/../artifacts &&
             cd $GECKO_PATH &&
@@ -1051,12 +816,13 @@ hw-a55-aarch64-shippable-startup-chrome-m-cold-main-first-frame:
     worker-type: t-lambda-perf-a55
     description: Run android startup perftest on Chrome on a Samsung A55
     treeherder:
-        symbol: perftest-chrome(startup-first-frame)
+        symbol: perftest-chrome(first-frame)
         tier: 2
     platform: android-hw-a55-14-0-aarch64-shippable/opt
     attributes:
         cron: true
     run:
+        clone-with: hg
         command: >-
             mkdir -p $MOZ_FETCHES_DIR/../artifacts &&
             cd $GECKO_PATH &&
@@ -1064,6 +830,167 @@ hw-a55-aarch64-shippable-startup-chrome-m-cold-main-first-frame:
             --flavor custom-script
             --app chrome-m
             testing/performance/mobile-startup/cmff.sh
+            --output $MOZ_FETCHES_DIR/../artifacts
+            --perfherder
+
+hw-p6-aarch64-shippable-startup-fenix-cold-main-first-frame:
+    worker-type: t-bitbar-gw-perf-p6
+    run-on-projects: []
+    description: Run android startup perftest on Fenix on a Pixel6
+    treeherder:
+        symbol: perftest-fenix(first-frame)
+        tier: 2
+    platform: android-hw-p6-13-0-aarch64-shippable/opt
+    attributes:
+        cron: false
+    fetches:
+        build:
+            - artifact: target.arm64-v8a.apk
+              extract: false
+    require-build:
+        android-hw-p6-13-0-aarch64-shippable/opt: signing-apk-fenix-nightly-simulation
+    run:
+        clone-with: hg
+        command: >-
+            mkdir -p $MOZ_FETCHES_DIR/../artifacts &&
+            cd $GECKO_PATH &&
+            python3 python/mozperftest/mozperftest/runner.py
+            --flavor custom-script
+            --app fenix
+            testing/performance/mobile-startup/cmff.sh
+            --android-install-apk $MOZ_FETCHES_DIR/target.arm64-v8a.apk
+            --output $MOZ_FETCHES_DIR/../artifacts
+            --perfherder
+
+hw-p6-aarch64-shippable-startup-chrome-m-cold-main-first-frame:
+    worker-type: t-bitbar-gw-perf-p6
+    run-on-projects: []
+    description: Run android startup perftest on Chrome on a Pixel6
+    treeherder:
+        symbol: perftest-chrome(first-frame)
+        tier: 2
+    platform: android-hw-p6-13-0-aarch64-shippable/opt
+    attributes:
+        cron: true
+    run:
+        clone-with: hg
+        command: >-
+            mkdir -p $MOZ_FETCHES_DIR/../artifacts &&
+            cd $GECKO_PATH &&
+            python3 python/mozperftest/mozperftest/runner.py
+            --flavor custom-script
+            --app chrome-m
+            testing/performance/mobile-startup/cmff.sh
+            --output $MOZ_FETCHES_DIR/../artifacts
+            --perfherder
+
+hw-p6-aarch64-shippable-startup-fenix-cold-view-nav-start:
+    worker-type: t-bitbar-gw-perf-p6
+    run-on-projects: []
+    description: Run android startup perftest on Fenix on a Pixel6
+    treeherder:
+        symbol: perftest-fenix(navigation-start)
+        tier: 2
+    platform: android-hw-p6-13-0-aarch64-shippable/opt
+    attributes:
+        cron: false
+    fetches:
+        build:
+            - artifact: target.arm64-v8a.apk
+              extract: false
+    require-build:
+        android-hw-p6-13-0-aarch64-shippable/opt: signing-apk-fenix-nightly-simulation
+    run:
+        clone-with: hg
+        command: >-
+            mkdir -p $MOZ_FETCHES_DIR/../artifacts &&
+            cd $GECKO_PATH &&
+            python3 python/mozperftest/mozperftest/runner.py
+            --flavor custom-script
+            --app fenix
+            testing/performance/mobile-startup/cvns.sh
+            --android-install-apk $MOZ_FETCHES_DIR/target.arm64-v8a.apk
+            --output $MOZ_FETCHES_DIR/../artifacts
+            --perfherder
+
+
+hw-s24-aarch64-shippable-startup-fenix-cold-main-first-frame:
+    worker-type: t-bitbar-gw-perf-s24
+    run-on-projects: []
+    description: Run android startup perftest on Fenix on a Samsung S24
+    treeherder:
+        symbol: perftest-fenix(first-frame)
+        tier: 2
+    platform: android-hw-s24-14-0-aarch64-shippable/opt
+    attributes:
+        cron: false
+    fetches:
+        build:
+            - artifact: target.arm64-v8a.apk
+              extract: false
+    require-build:
+        android-hw-s24-14-0-aarch64-shippable/opt: signing-apk-fenix-nightly-simulation
+    run:
+        clone-with: hg
+        command: >-
+            mkdir -p $MOZ_FETCHES_DIR/../artifacts &&
+            cd $GECKO_PATH &&
+            python3 python/mozperftest/mozperftest/runner.py
+            --flavor custom-script
+            --app fenix
+            testing/performance/mobile-startup/cmff.sh
+            --android-install-apk $MOZ_FETCHES_DIR/target.arm64-v8a.apk
+            --output $MOZ_FETCHES_DIR/../artifacts
+            --perfherder
+
+hw-s24-aarch64-shippable-startup-chrome-m-cold-main-first-frame:
+    worker-type: t-bitbar-gw-perf-s24
+    run-on-projects: []
+    description: Run android startup perftest on Chrome on a Samsung S24
+    treeherder:
+        symbol: perftest-chrome(first-frame)
+        tier: 2
+    platform: android-hw-s24-14-0-aarch64-shippable/opt
+    attributes:
+        cron: true
+    run:
+        clone-with: hg
+        command: >-
+            mkdir -p $MOZ_FETCHES_DIR/../artifacts &&
+            cd $GECKO_PATH &&
+            python3 python/mozperftest/mozperftest/runner.py
+            --flavor custom-script
+            --app chrome-m
+            testing/performance/mobile-startup/cmff.sh
+            --output $MOZ_FETCHES_DIR/../artifacts
+            --perfherder
+
+hw-s24-aarch64-shippable-startup-fenix-cold-view-nav-start:
+    worker-type: t-bitbar-gw-perf-s24
+    run-on-projects: []
+    description: Run android startup perftest on Fenix on a Samsung S24
+    treeherder:
+        symbol: perftest-fenix(navigation-start)
+        tier: 2
+    platform: android-hw-s24-14-0-aarch64-shippable/opt
+    attributes:
+        cron: false
+    fetches:
+        build:
+            - artifact: target.arm64-v8a.apk
+              extract: false
+    require-build:
+        android-hw-s24-14-0-aarch64-shippable/opt: signing-apk-fenix-nightly-simulation
+    run:
+        clone-with: hg
+        command: >-
+            mkdir -p $MOZ_FETCHES_DIR/../artifacts &&
+            cd $GECKO_PATH &&
+            python3 python/mozperftest/mozperftest/runner.py
+            --flavor custom-script
+            --app fenix
+            testing/performance/mobile-startup/cvns.sh
+            --android-install-apk $MOZ_FETCHES_DIR/target.arm64-v8a.apk
             --output $MOZ_FETCHES_DIR/../artifacts
             --perfherder
 
@@ -1076,6 +1003,7 @@ hw-a55-aarch64-perfstats-gv:
     attributes:
         cron: false
     run:
+        clone-with: hg
         command: >-
             mkdir -p $MOZ_FETCHES_DIR/../artifacts &&
             cd $GECKO_PATH &&
@@ -1105,6 +1033,7 @@ hw-a55-aarch64-perfstats-fenix:
     attributes:
         cron: false
     run:
+        clone-with: hg
         command: >-
             mkdir -p $MOZ_FETCHES_DIR/../artifacts &&
             cd $GECKO_PATH &&
@@ -1140,6 +1069,7 @@ hw-a55-record-websites:
         - secrets:get:project/releng/gecko/build/level-{level}/conditioned-profiles
         - secrets:get:project/perftest/gecko/level-{level}/perftest-login
     run:
+        clone-with: hg
         command: >-
             mkdir -p $MOZ_FETCHES_DIR/../artifacts &&
             cd $GECKO_PATH &&
@@ -1177,6 +1107,7 @@ hw-a55-background-resource-fenix:
     require-build:
         android-hw-a55-14-0-aarch64-shippable/opt: signing-apk-fenix-nightly-simulation
     run:
+        clone-with: hg
         command: >-
             mkdir -p $MOZ_FETCHES_DIR/../artifacts &&
             cd $GECKO_PATH &&
@@ -1202,6 +1133,7 @@ hw-a55-background-resource-chrome:
         toolchain:
             - android-xmlstarlet
     run:
+        clone-with: hg
         command: >-
             mkdir -p $MOZ_FETCHES_DIR/../artifacts &&
             cd $GECKO_PATH &&
@@ -1231,6 +1163,7 @@ hw-a55-foreground-resource-fenix:
     require-build:
         android-hw-a55-14-0-aarch64-shippable/opt: signing-apk-fenix-nightly-simulation
     run:
+        clone-with: hg
         command: >-
             mkdir -p $MOZ_FETCHES_DIR/../artifacts &&
             cd $GECKO_PATH &&
@@ -1256,6 +1189,7 @@ hw-a55-foreground-resource-chrome:
         toolchain:
             - android-xmlstarlet
     run:
+        clone-with: hg
         command: >-
             mkdir -p $MOZ_FETCHES_DIR/../artifacts &&
             cd $GECKO_PATH &&

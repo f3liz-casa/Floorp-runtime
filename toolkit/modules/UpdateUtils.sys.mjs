@@ -8,8 +8,6 @@ const lazy = {};
 
 ChromeUtils.defineESModuleGetters(lazy, {
   WindowsRegistry: "resource://gre/modules/WindowsRegistry.sys.mjs",
-  WindowsVersionInfo:
-    "resource://gre/modules/components-utils/WindowsVersionInfo.sys.mjs",
   ctypes: "resource://gre/modules/ctypes.sys.mjs",
 });
 
@@ -381,7 +379,7 @@ export var UpdateUtils = {
    *                      branch values reset when Firefox shuts down.
    * @return A Promise that, once the setting has been saved, resolves with the
    *         value that was saved.
-   * @throw  If there is an I/O error when attempting to write to the config
+   * @throws If there is an I/O error when attempting to write to the config
    *         file, the returned Promise will reject with a DOMException.
    */
   writeUpdateConfigSetting(prefName, value, options) {
@@ -876,7 +874,7 @@ async function readUpdateConfig() {
  * @param  config
  *           The configuration object to write.
  * @return The configuration object written.
- * @throw  A DOMException will be thrown on I/O error.
+ * @throws A DOMException will be thrown on I/O error.
  */
 async function writeUpdateConfig(config) {
   let path = UpdateUtils.getConfigFilePath();
@@ -1083,33 +1081,36 @@ ChromeUtils.defineLazyGetter(UpdateUtils, "OSVersion", function () {
 
   if (osVersion) {
     if (AppConstants.platform == "win") {
-      // Add service pack and build number
-      try {
-        const { servicePackMajor, servicePackMinor, buildNumber } =
-          lazy.WindowsVersionInfo.get();
-        osVersion += `.${servicePackMajor}.${servicePackMinor}.${buildNumber}`;
-      } catch (err) {
-        console.error("Unable to retrieve windows version information: ", err);
+      const CURRENT_VERSION_PATH =
+        "SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion";
+
+      // 'CurrentBuild' is a REG_SZ for some reason, so coerce it to a number
+      // first.
+      let build = Number(
+        lazy.WindowsRegistry.readRegKey(
+          Ci.nsIWindowsRegKey.ROOT_KEY_LOCAL_MACHINE,
+          CURRENT_VERSION_PATH,
+          "CurrentBuild",
+          Ci.nsIWindowsRegKey.WOW64_64
+        )
+      );
+      if (Number.isInteger(build)) {
+        osVersion += `.0.0.${build}`;
+      } else {
         osVersion += ".unknown";
       }
 
-      // add UBR if on Windows 10
-      if (
-        Services.vc.compare(Services.sysinfo.getProperty("version"), "10") >= 0
-      ) {
-        const WINDOWS_UBR_KEY_PATH =
-          "SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion";
-        let ubr = lazy.WindowsRegistry.readRegKey(
-          Ci.nsIWindowsRegKey.ROOT_KEY_LOCAL_MACHINE,
-          WINDOWS_UBR_KEY_PATH,
-          "UBR",
-          Ci.nsIWindowsRegKey.WOW64_64
-        );
-        if (ubr !== undefined) {
-          osVersion += `.${ubr}`;
-        } else {
-          osVersion += ".unknown";
-        }
+      // The value of UBR is already a REG_DWORD, so don't coerce it.
+      let ubr = lazy.WindowsRegistry.readRegKey(
+        Ci.nsIWindowsRegKey.ROOT_KEY_LOCAL_MACHINE,
+        CURRENT_VERSION_PATH,
+        "UBR",
+        Ci.nsIWindowsRegKey.WOW64_64
+      );
+      if (Number.isInteger(ubr)) {
+        osVersion += `.${ubr}`;
+      } else {
+        osVersion += ".unknown";
       }
 
       // Add processor architecture

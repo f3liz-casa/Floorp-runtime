@@ -9,11 +9,12 @@ test:
         symbol: Wp
         kind: test
         tier: 1
-    worker-type: t-linux-docker
+    worker-type: t-linux-docker-amd
     worker:
         docker-image: {in-tree: "lint"}
         max-run-time: 1800
     run:
+        clone-with: hg
         using: mach
         mach: webidl-parser-test --verbose
     when:

@@ -5,7 +5,7 @@
 package org.mozilla.fenix.termsofuse.store
 
 import mozilla.components.lib.state.Middleware
-import mozilla.components.lib.state.MiddlewareContext
+import mozilla.components.lib.state.Store
 
 /**
  * [Middleware] that reacts to various [TermsOfUsePromptAction]s
@@ -16,25 +16,39 @@ class TermsOfUsePromptPreferencesMiddleware(
     private val repository: TermsOfUsePromptRepository,
 ) : Middleware<TermsOfUsePromptState, TermsOfUsePromptAction> {
     override fun invoke(
-        context: MiddlewareContext<TermsOfUsePromptState, TermsOfUsePromptAction>,
+        store: Store<TermsOfUsePromptState, TermsOfUsePromptAction>,
         next: (TermsOfUsePromptAction) -> Unit,
         action: TermsOfUsePromptAction,
     ) {
         when (action) {
-            is TermsOfUsePromptAction.OnAcceptClicked -> {
+            is TermsOfUsePromptAction.OnAcceptClicked ->
                 repository.updateHasAcceptedTermsOfUsePreference()
-            }
 
-            is TermsOfUsePromptAction.OnNotNowClicked -> {
+            is TermsOfUsePromptAction.OnRemindMeLaterClicked -> {
                 repository.updateHasPostponedAcceptingTermsOfUsePreference()
             }
 
-            is TermsOfUsePromptAction.OnPromptManuallyDismissed -> {
+            is TermsOfUsePromptAction.OnPromptManuallyDismissed ->
                 repository.updateHasPostponedAcceptingTermsOfUsePreference()
-            }
 
             is TermsOfUsePromptAction.OnPromptDismissed -> {
                 repository.updateLastTermsOfUsePromptTimeInMillis()
+                repository.isShowingPrompt = false
+            }
+
+            is TermsOfUsePromptAction.OnImpression -> {
+                repository.incrementTermsOfUsePromptDisplayedCount()
+            }
+
+            is TermsOfUsePromptAction.OnPromptCreated -> {
+                repository.isShowingPrompt = true
+            }
+
+            // no-ops
+            is TermsOfUsePromptAction.OnLearnMoreClicked,
+            is TermsOfUsePromptAction.OnPrivacyNoticeClicked,
+            is TermsOfUsePromptAction.OnTermsOfUseClicked,
+                -> {
             }
         }
 

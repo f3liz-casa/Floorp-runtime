@@ -74,17 +74,22 @@ pub enum BasicParseErrorKind<'i> {
     AtRuleBodyInvalid,
     /// A qualified rule was encountered that was invalid.
     QualifiedRuleInvalid,
+    /// We've gone over the nesting limit.
+    TooManyNestedBlocks,
 }
 
 impl fmt::Display for BasicParseErrorKind<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            BasicParseErrorKind::TooManyNestedBlocks => {
+                write!(f, "nesting block limit reached")
+            }
             BasicParseErrorKind::UnexpectedToken(token) => {
-                write!(f, "unexpected token: {:?}", token)
+                write!(f, "unexpected token: {token:?}")
             }
             BasicParseErrorKind::EndOfInput => write!(f, "unexpected end of input"),
             BasicParseErrorKind::AtRuleInvalid(rule) => {
-                write!(f, "invalid @ rule encountered: '@{}'", rule)
+                write!(f, "invalid @ rule encountered: '@{rule}'")
             }
             BasicParseErrorKind::AtRuleBodyInvalid => write!(f, "invalid @ rule body encountered"),
             BasicParseErrorKind::QualifiedRuleInvalid => {
@@ -230,6 +235,8 @@ impl<E: fmt::Display + fmt::Debug> std::error::Error for ParseError<'_, E> {}
 pub struct ParserInput<'i> {
     tokenizer: Tokenizer<'i>,
     cached_token: Option<CachedToken<'i>>,
+    current_block_depth: u8,
+    nested_block_limit: u8,
 }
 
 struct CachedToken<'i> {
@@ -239,12 +246,24 @@ struct CachedToken<'i> {
 }
 
 impl<'i> ParserInput<'i> {
+    /// 75 nested blocks seems reasonable enough.
+    const REASONABLE_NESTED_BLOCK_LIMIT: u8 = 75;
+
     /// Create a new input for a parser.
     pub fn new(input: &'i str) -> ParserInput<'i> {
         ParserInput {
             tokenizer: Tokenizer::new(input),
+            nested_block_limit: Self::REASONABLE_NESTED_BLOCK_LIMIT,
+            current_block_depth: 0,
             cached_token: None,
         }
+    }
+
+    /// Sets a limit for how many nested blocks we're allowed to parse. This is useful to avoid
+    /// running out of stack space. By default, it's set to `REASONABLE_NESTED_BLOCK_LIMIT`, but it
+    /// can be overridden or cleared. A limit of 0 will be equivalent to no limit at all.
+    pub fn set_nested_block_limit(&mut self, limit: u8) {
+        self.nested_block_limit = limit;
     }
 
     #[inline]
@@ -295,7 +314,7 @@ impl BlockType {
 ///
 /// The union of two sets can be obtained with the `|` operator. Example:
 ///
-/// ```{rust,ignore}
+/// ```rust,ignore
 /// input.parse_until_before(Delimiter::CurlyBracketBlock | Delimiter::Semicolon)
 /// ```
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
@@ -379,6 +398,10 @@ macro_rules! expect {
         }
     }
 }
+
+/// A list of arbitrary substitution functions. Should be lowercase ascii.
+/// See https://drafts.csswg.org/css-values-5/#arbitrary-substitution
+pub type ArbitrarySubstitutionFunctions<'a> = &'a [&'static str];
 
 impl<'i: 't, 't> Parser<'i, 't> {
     /// Create a new parser
@@ -546,19 +569,23 @@ impl<'i: 't, 't> Parser<'i, 't> {
         self.at_start_of = state.at_start_of;
     }
 
-    /// Start looking for `var()` / `env()` functions. (See the
-    /// `.seen_var_or_env_functions()` method.)
+    /// Start looking for arbitrary substitution functions like `var()` / `env()` functions.
+    /// (See the `.seen_arbitrary_substitution_functions()` method.)
     #[inline]
-    pub fn look_for_var_or_env_functions(&mut self) {
-        self.input.tokenizer.look_for_var_or_env_functions()
+    pub fn look_for_arbitrary_substitution_functions(
+        &mut self,
+        fns: ArbitrarySubstitutionFunctions<'i>,
+    ) {
+        self.input
+            .tokenizer
+            .look_for_arbitrary_substitution_functions(fns)
     }
 
-    /// Return whether a `var()` or `env()` function has been seen by the
-    /// tokenizer since either `look_for_var_or_env_functions` was called, and
-    /// stop looking.
+    /// Return whether a relevant function has been seen by the tokenizer since
+    /// `look_for_arbitrary_substitution_functions` was called, and stop looking.
     #[inline]
-    pub fn seen_var_or_env_functions(&mut self) -> bool {
-        self.input.tokenizer.seen_var_or_env_functions()
+    pub fn seen_arbitrary_substitution_functions(&mut self) -> bool {
+        self.input.tokenizer.seen_arbitrary_substitution_functions()
     }
 
     /// The old name of `try_parse`, which requires raw identifiers in the Rust 2018 edition.
@@ -651,9 +678,7 @@ impl<'i: 't, 't> Parser<'i, 't> {
             .input
             .cached_token
             .as_ref()
-            .map_or(false, |cached_token| {
-                cached_token.start_position == token_start_position
-            });
+            .is_some_and(|cached_token| cached_token.start_position == token_start_position);
         let token = if using_cached_token {
             let cached_token = self.input.cached_token.as_ref().unwrap();
             self.input.tokenizer.reset(&cached_token.end_state);
@@ -1127,6 +1152,14 @@ where
          token was just consumed.\
          ",
     );
+    if parser.input.current_block_depth >= parser.input.nested_block_limit
+        && parser.input.nested_block_limit != 0
+    {
+        return Err(parser.new_error(BasicParseErrorKind::TooManyNestedBlocks));
+    }
+    // Fine to use wrapping addition, overflow can only occur without a limit.
+    parser.input.current_block_depth = parser.input.current_block_depth.wrapping_add(1);
+
     let closing_delimiter = match block_type {
         BlockType::CurlyBracket => ClosingDelimiter::CloseCurlyBracket,
         BlockType::SquareBracket => ClosingDelimiter::CloseSquareBracket,
@@ -1146,6 +1179,8 @@ where
         }
     }
     consume_until_end_of_block(block_type, &mut parser.input.tokenizer);
+    // See above.
+    parser.input.current_block_depth = parser.input.current_block_depth.wrapping_sub(1);
     result
 }
 

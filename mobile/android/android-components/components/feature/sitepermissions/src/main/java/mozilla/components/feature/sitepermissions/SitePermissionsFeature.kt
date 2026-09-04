@@ -15,6 +15,7 @@ import androidx.annotation.DrawableRes
 import androidx.annotation.StringRes
 import androidx.annotation.VisibleForTesting
 import androidx.fragment.app.FragmentManager
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.cancel
@@ -22,6 +23,7 @@ import kotlinx.coroutines.flow.distinctUntilChangedBy
 import kotlinx.coroutines.flow.mapNotNull
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import mozilla.components.ExperimentalAndroidComponentsApi
 import mozilla.components.browser.state.action.ContentAction
 import mozilla.components.browser.state.action.ContentAction.UpdatePermissionHighlightsStateAction
 import mozilla.components.browser.state.action.ContentAction.UpdatePermissionHighlightsStateAction.AutoPlayAudibleBlockingAction
@@ -36,6 +38,7 @@ import mozilla.components.browser.state.action.ContentAction.UpdatePermissionHig
 import mozilla.components.browser.state.action.ContentAction.UpdatePermissionHighlightsStateAction.MicrophoneChangedAction
 import mozilla.components.browser.state.action.ContentAction.UpdatePermissionHighlightsStateAction.NotificationChangedAction
 import mozilla.components.browser.state.action.ContentAction.UpdatePermissionHighlightsStateAction.PersistentStorageChangedAction
+import mozilla.components.browser.state.action.SystemPermissionRequestAction
 import mozilla.components.browser.state.selector.findTabOrCustomTabOrSelectedTab
 import mozilla.components.browser.state.state.ContentState
 import mozilla.components.browser.state.state.SessionState
@@ -80,10 +83,6 @@ import mozilla.components.ui.icons.R as iconsR
 
 internal const val PROMPT_FRAGMENT_TAG = "mozac_feature_sitepermissions_prompt_dialog"
 
-@VisibleForTesting
-internal const val STORAGE_ACCESS_DOCUMENTATION_URL =
-    "https://developer.mozilla.org/en-US/docs/Web/API/Storage_Access_API"
-
 /**
  * This feature will collect [PermissionRequest] from [ContentState] and display
  * suitable [SitePermissionsDialogFragment].
@@ -102,8 +101,10 @@ internal const val STORAGE_ACCESS_DOCUMENTATION_URL =
  * the ActivityCompat.shouldShowRequestPermissionRationale or the Fragment.shouldShowRequestPermissionRationale values.
  * @property exitFullscreenUseCase optional the use case in charge of exiting fullscreen
  * @property shouldShowDoNotAskAgainCheckBox optional Visibility for Do not ask again Checkbox
- **/
+ * @property shouldHide Whether the site permissions prompt should be hidden.
+ */
 
+@OptIn(ExperimentalAndroidComponentsApi::class) // permissionRequest.notifyShown()
 @Suppress("TooManyFunctions", "LargeClass")
 class SitePermissionsFeature(
     private val context: Context,
@@ -119,18 +120,29 @@ class SitePermissionsFeature(
     private val store: BrowserStore,
     private val exitFullscreenUseCase: SessionUseCases.ExitFullScreenUseCase = SessionUseCases(store).exitFullscreen,
     private val shouldShowDoNotAskAgainCheckBox: Boolean = true,
+    private val mainDispatcher: CoroutineDispatcher = Dispatchers.Main,
+    private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
+    private val shouldHide: () -> Boolean = { false },
 ) : LifecycleAwareFeature, PermissionsFeature {
     @VisibleForTesting
     internal val selectOrAddUseCase by lazy {
         SelectOrAddUseCase(store)
     }
 
+    /**
+     * Provider that helps create the "learn more" url for a given permission.
+     *
+     * This provider is automatically unregistered when the lifecycle `onStop()` is called.
+     * As a result, it is recommended to set this in the corresponding `onStart()` lifecycle method.
+     */
+    var learnMoreUrlProvider: SitePermissionsLearnMoreUrlProvider? = null
+
     private val logger = Logger("SitePermissionsFeature")
 
     internal val ioCoroutineScope by lazy { coroutineScopeInitializer() }
 
     internal var coroutineScopeInitializer = {
-        CoroutineScope(Dispatchers.IO)
+        CoroutineScope(ioDispatcher)
     }
     private var sitePermissionScope: CoroutineScope? = null
     private var appPermissionScope: CoroutineScope? = null
@@ -148,11 +160,25 @@ class SitePermissionsFeature(
         setupPermissionRequestsCollector()
         setupAppPermissionRequestsCollector()
         setupLoadingCollector()
+        maybeSetUpDefaultLearnMoreUrlProvider()
+    }
+
+    /**
+     * Conditionally sets a default value for [learnMoreUrlProvider] in case nothing was set at the
+     * start.
+     *
+     * The [DefaultSitePermissionsLearnMoreUrlProvider] helps to preserve existing behavior for the
+     * [ContentCrossOriginStorageAccess] permission
+     */
+    private fun maybeSetUpDefaultLearnMoreUrlProvider() {
+        if (learnMoreUrlProvider == null) {
+            learnMoreUrlProvider = DefaultSitePermissionsLearnMoreUrlProvider()
+        }
     }
 
     @VisibleForTesting
     internal fun setupLoadingCollector() {
-        loadingScope = store.flowScoped { flow ->
+        loadingScope = store.flowScoped(dispatcher = mainDispatcher) { flow ->
             flow.mapNotNull { state ->
                 state.findTabOrCustomTabOrSelectedTab(sessionId)
             }.distinctUntilChangedBy { it.content.loading }.collect { tab ->
@@ -169,7 +195,7 @@ class SitePermissionsFeature(
     @VisibleForTesting
     internal fun setupAppPermissionRequestsCollector() {
         appPermissionScope =
-            store.flowScoped { flow ->
+            store.flowScoped(dispatcher = mainDispatcher) { flow ->
                 flow.mapNotNull { state ->
                     state.findTabOrCustomTabOrSelectedTab(sessionId)?.content?.appPermissionRequestsList
                 }
@@ -184,7 +210,7 @@ class SitePermissionsFeature(
     @VisibleForTesting
     internal fun setupPermissionRequestsCollector() {
         sitePermissionScope =
-            store.flowScoped { flow ->
+            store.flowScoped(dispatcher = mainDispatcher) { flow ->
                 flow.mapNotNull { state ->
                     state.findTabOrCustomTabOrSelectedTab(sessionId)?.content?.permissionRequestsList
                 }
@@ -245,6 +271,10 @@ class SitePermissionsFeature(
         appPermissionScope?.cancel()
         loadingScope?.cancel()
         storage.clearTemporaryPermissions()
+        learnMoreUrlProvider = null
+        if (shouldHide()) {
+            hideSitePermissionsPrompt()
+        }
     }
 
     /**
@@ -256,11 +286,13 @@ class SitePermissionsFeature(
     @Suppress("NestedBlockDepth")
     override fun onPermissionsResult(permissions: Array<String>, grantResults: IntArray) {
         val currentContentState = getCurrentContentState()
-        val appPermissionRequest = findRequestedAppPermission(permissions)
+        val appPermissionRequest = findRequestedAppPermission(permissions) ?: return
 
-        if (appPermissionRequest == null || currentContentState == null) {
+        if (currentContentState == null) {
+            store.dispatch(SystemPermissionRequestAction.SystemPermissionStateRequestNotInProgress)
             return
         }
+
         if (grantResults.isNotEmpty() && areAllPermissionsGranted(permissions, grantResults)) {
             appPermissionRequest.grant()
         } else {
@@ -276,6 +308,7 @@ class SitePermissionsFeature(
                 }
             }
         }
+        store.dispatch(SystemPermissionRequestAction.SystemPermissionStateRequestNotInProgress)
         consumeAppPermissionRequest(appPermissionRequest)
     }
 
@@ -338,11 +371,16 @@ class SitePermissionsFeature(
     internal fun onContentPermissionGranted(
         permissionRequest: PermissionRequest,
         shouldStore: Boolean,
+        onCheckSystemNotificationPermission: () -> Unit = {},
     ) {
         permissionRequest.grant()
         if (shouldStore) {
             getCurrentContentState()?.let { contentState ->
                 storeSitePermissions(contentState, permissionRequest, ALLOWED)
+            }
+            val requestedPermission = permissionRequest.permissions[0]
+            if (requestedPermission is ContentNotification) {
+                onCheckSystemNotificationPermission()
             }
         } else {
             storage.saveTemporary(permissionRequest)
@@ -353,10 +391,13 @@ class SitePermissionsFeature(
         permissionId: String,
         sessionId: String,
         shouldStore: Boolean,
+        onCheckSystemNotificationPermission: () -> Unit = {},
     ) {
         findRequestedPermission(permissionId)?.let { permissionRequest ->
             consumePermissionRequest(permissionRequest, sessionId)
-            onContentPermissionGranted(permissionRequest, shouldStore)
+            onContentPermissionGranted(permissionRequest, shouldStore) {
+                onCheckSystemNotificationPermission()
+            }
 
             if (!permissionRequest.containsVideoAndAudioSources()) {
                 emitPermissionAllowed(permissionRequest.permissions.first())
@@ -386,16 +427,16 @@ class SitePermissionsFeature(
     internal fun onLearnMorePress(
         permissionId: String,
         sessionId: String,
+        learnMoreLink: String,
     ) {
         findRequestedPermission(permissionId)?.let { permissionRequest ->
             consumePermissionRequest(permissionRequest, sessionId)
             onContentPermissionDeny(permissionRequest, false)
 
-            val permission = permissionRequest.permissions.first()
-            if (permission is ContentCrossOriginStorageAccess) {
+            if (learnMoreLink.isNotEmpty()) {
                 store.state.findTabOrCustomTabOrSelectedTab(sessionId)?.let {
                     selectOrAddUseCase.invoke(
-                        url = STORAGE_ACCESS_DOCUMENTATION_URL,
+                        url = learnMoreLink,
                         private = it.content.private,
                         source = SessionState.Source.Internal.TextSelection,
                     )
@@ -409,7 +450,11 @@ class SitePermissionsFeature(
         sessionId: String,
     ) {
         findRequestedPermission(permissionId)?.let { permissionRequest ->
-            consumePermissionRequest(permissionRequest, sessionId)
+            // When the screen is locked, shouldHide() is true.
+            // Interactions with the UnlockScreen should not dismiss the prompt.
+            if (!shouldHide()) {
+                consumePermissionRequest(permissionRequest, sessionId)
+            }
             onContentPermissionDeny(permissionRequest, false)
         }
     }
@@ -495,6 +540,7 @@ class SitePermissionsFeature(
             // This won't have any effect if we are not in fullscreen.
             exitFullscreenUseCase.invoke(tab.id)
             prompt.show(fragmentManager, PROMPT_FRAGMENT_TAG)
+            permissionRequest.notifyShown()
             prompt
         }
     }
@@ -569,7 +615,7 @@ class SitePermissionsFeature(
     }
 
     @VisibleForTesting
-    @Suppress("ComplexMethod")
+    @Suppress("CyclomaticComplexMethod")
     internal fun updatePermissionToolbarIndicator(
         request: PermissionRequest,
         value: SitePermissions.Status,
@@ -706,11 +752,8 @@ class SitePermissionsFeature(
         origin: String,
     ): SitePermissions {
         val rules = sitePermissionsRules
-        return rules?.toSitePermissions(
-            origin,
-            savedAt = System.currentTimeMillis(),
-        )
-            ?: SitePermissions(origin, savedAt = System.currentTimeMillis())
+        return rules?.toSitePermissions(origin)
+            ?: SitePermissions(origin)
     }
 
     private fun PermissionRequest.isForAutoplay() =
@@ -833,6 +876,7 @@ class SitePermissionsFeature(
         permission: Permission,
         origin: String,
     ): SitePermissionsDialogFragment {
+        val learnMoreLink = learnMoreUrlProvider?.getUrl(permission).orEmpty()
         return when (permission) {
             is ContentGeoLocation -> {
                 createSinglePermissionPrompt(
@@ -844,6 +888,7 @@ class SitePermissionsFeature(
                     showDoNotAskAgainCheckBox = shouldShowDoNotAskAgainCheckBox,
                     shouldSelectRememberChoice = dialogConfig?.shouldPreselectDoNotAskAgain
                         ?: DialogConfig.DEFAULT_PRESELECT_DO_NOT_ASK_AGAIN,
+                    learnMoreLink = learnMoreLink,
                 )
             }
             is ContentNotification -> {
@@ -856,6 +901,7 @@ class SitePermissionsFeature(
                     showDoNotAskAgainCheckBox = false,
                     shouldSelectRememberChoice = false,
                     isNotificationRequest = true,
+                    learnMoreLink = learnMoreLink,
                 )
             }
             is ContentAudioCapture, is ContentAudioMicrophone -> {
@@ -868,6 +914,7 @@ class SitePermissionsFeature(
                     showDoNotAskAgainCheckBox = shouldShowDoNotAskAgainCheckBox,
                     shouldSelectRememberChoice = dialogConfig?.shouldPreselectDoNotAskAgain
                         ?: DialogConfig.DEFAULT_PRESELECT_DO_NOT_ASK_AGAIN,
+                    learnMoreLink = learnMoreLink,
                 )
             }
             is ContentVideoCamera, is ContentVideoCapture -> {
@@ -880,6 +927,7 @@ class SitePermissionsFeature(
                     showDoNotAskAgainCheckBox = shouldShowDoNotAskAgainCheckBox,
                     shouldSelectRememberChoice = dialogConfig?.shouldPreselectDoNotAskAgain
                         ?: DialogConfig.DEFAULT_PRESELECT_DO_NOT_ASK_AGAIN,
+                    learnMoreLink = learnMoreLink,
                 )
             }
             is ContentPersistentStorage -> {
@@ -891,6 +939,7 @@ class SitePermissionsFeature(
                     iconsR.drawable.mozac_ic_storage_24,
                     showDoNotAskAgainCheckBox = false,
                     shouldSelectRememberChoice = true,
+                    learnMoreLink = learnMoreLink,
                 )
             }
             is ContentMediaKeySystemAccess -> {
@@ -902,6 +951,7 @@ class SitePermissionsFeature(
                     iconsR.drawable.mozac_ic_link_24,
                     showDoNotAskAgainCheckBox = false,
                     shouldSelectRememberChoice = true,
+                    learnMoreLink = learnMoreLink,
                 )
             }
             is ContentCrossOriginStorageAccess -> {
@@ -911,6 +961,7 @@ class SitePermissionsFeature(
                     permissionRequest = permissionRequest,
                     showDoNotAskAgainCheckBox = false,
                     shouldSelectRememberChoice = true,
+                    learnMoreLink = learnMoreLink,
                 )
             }
             is ContentLocalDeviceAccess -> {
@@ -921,9 +972,10 @@ class SitePermissionsFeature(
                     titleId = R.string.mozac_feature_sitepermissions_local_device_access_title,
                     iconId = iconsR.drawable.mozac_ic_device_desktop_24,
                     showDoNotAskAgainCheckBox = true,
-                    doNotAskAgainCheckBoxLabel = R.string.mozac_feature_sitepermissions_do_not_ask_again_on_this_site3,
+                    doNotAskAgainCheckBoxLabel = R.string.mozac_feature_sitepermissions_do_not_ask_again_on_this_site4,
                     shouldSelectRememberChoice = false,
                     negativeButtonResId = R.string.mozac_feature_sitepermissions_block,
+                    learnMoreLink = learnMoreLink,
                 )
             }
             is ContentLocalNetworkAccess -> {
@@ -932,11 +984,12 @@ class SitePermissionsFeature(
                     origin,
                     permissionRequest,
                     titleId = R.string.mozac_feature_sitepermissions_local_network_access_title,
-                    iconId = iconsR.drawable.mozac_ic_router_24,
+                    iconId = iconsR.drawable.mozac_ic_local_network_24,
                     showDoNotAskAgainCheckBox = true,
-                    doNotAskAgainCheckBoxLabel = R.string.mozac_feature_sitepermissions_do_not_ask_again_on_this_site3,
+                    doNotAskAgainCheckBoxLabel = R.string.mozac_feature_sitepermissions_do_not_ask_again_on_this_site4,
                     shouldSelectRememberChoice = false,
                     negativeButtonResId = R.string.mozac_feature_sitepermissions_block,
+                    learnMoreLink = learnMoreLink,
                 )
             }
             else ->
@@ -968,6 +1021,7 @@ class SitePermissionsFeature(
         shouldSelectRememberChoice: Boolean,
         isNotificationRequest: Boolean = false,
         @StringRes negativeButtonResId: Int? = null,
+        learnMoreLink: String? = null,
     ): SitePermissionsDialogFragment {
         val trimmedOrigin = trimOriginHttpsSchemeAndPort(origin)
         val title = context.getString(titleId, trimmedOrigin)
@@ -981,6 +1035,7 @@ class SitePermissionsFeature(
             titleIcon = iconId,
             permissionRequestId = permissionRequest.id,
             feature = this,
+            learnMoreLink = learnMoreLink,
             shouldShowDoNotAskAgainCheckBox = showDoNotAskAgainCheckBox,
             doNotAskAgainCheckBoxLabel = if (doNotAskAgainCheckBoxLabel != null) {
                 context.getString(doNotAskAgainCheckBoxLabel)
@@ -1000,6 +1055,7 @@ class SitePermissionsFeature(
         permissionRequest: PermissionRequest,
         showDoNotAskAgainCheckBox: Boolean,
         shouldSelectRememberChoice: Boolean,
+        learnMoreLink: String,
     ): SitePermissionsDialogFragment {
         val trimmedOrigin = trimOriginHttpsSchemeAndPort(origin)
         val currentSession = store.state.findTabOrCustomTabOrSelectedTab(sessionId)
@@ -1027,7 +1083,7 @@ class SitePermissionsFeature(
             shouldShowDoNotAskAgainCheckBox = showDoNotAskAgainCheckBox,
             isNotificationRequest = false,
             shouldSelectDoNotAskAgainCheckBox = shouldSelectRememberChoice,
-            shouldShowLearnMoreLink = true,
+            learnMoreLink = learnMoreLink,
         )
     }
 
@@ -1094,6 +1150,14 @@ class SitePermissionsFeature(
             // Re-assign the feature instance so that the fragment can invoke us once the
             // user makes a selection or cancels the dialog.
             fragment.feature = this
+        }
+    }
+
+    internal fun hideSitePermissionsPrompt() {
+        fragmentManager.findFragmentByTag(PROMPT_FRAGMENT_TAG)?.let { fragment ->
+            fragmentManager.beginTransaction()
+                .remove(fragment)
+                .commitAllowingStateLoss()
         }
     }
 

@@ -16,6 +16,7 @@ kind-dependencies:
 
 
 task-defaults:
+    run-on-repo-type: [hg]
     attributes:
         build_platform: android
         build-type: regular
@@ -26,12 +27,15 @@ task-defaults:
     fetches:
         toolchain:
             - android-sdk-linux
+            - linux64-embedded-uniffi-bindgen
+            - linux64-nimbus-fml
             - android-gradle-dependencies
             - linux64-jdk
         build-fat-aar:
             - target.maven.zip
     include-coverage: true
     run:
+        clone-with: hg
         pre-gradlew:
             - ["cd", "mobile/android/android-components"]
         using: gradlew
@@ -40,7 +44,7 @@ task-defaults:
         platform: AC-android-all/opt
         tier: 1
         symbol: 'samples-browser(B)'
-    worker-type: b-linux-medium-gcp
+    worker-type: b-linux-medium
     worker:
         chain-of-trust: true
         docker-image: {in-tree: android-components}
@@ -51,6 +55,7 @@ task-defaults:
 tasks:
     gecko:
         run:
+            clone-with: hg
             gradlew:
                 - ':components:samples-browser:assembleGecko'
                 - ':components:samples-browser:testGeckoDebugUnitTest'
@@ -58,6 +63,7 @@ tasks:
 
     system:
         run:
+            clone-with: hg
             gradlew: [':components:samples-browser:assembleSystem']
         treeherder:
             symbol: 'samples-browser-system(B)'

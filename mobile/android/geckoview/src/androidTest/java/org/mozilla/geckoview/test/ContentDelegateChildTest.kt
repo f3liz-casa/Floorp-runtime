@@ -1,5 +1,4 @@
-/* -*- Mode: Java; c-basic-offset: 4; tab-width: 4; indent-tabs-mode: nil; -*-
- * Any copyright is dedicated to the Public Domain.
+/* Any copyright is dedicated to the Public Domain.
    http://creativecommons.org/publicdomain/zero/1.0/ */
 
 @file:Suppress("ktlint:standard:no-wildcard-imports")
@@ -21,7 +20,6 @@ import org.hamcrest.Matchers.endsWith
 import org.hamcrest.Matchers.equalTo
 import org.hamcrest.Matchers.startsWith
 import org.junit.Assert.assertNull
-import org.junit.Assume.assumeThat
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.mozilla.geckoview.GeckoSession
@@ -222,10 +220,6 @@ class ContentDelegateChildTest : BaseSessionTest() {
     @WithDisplay(width = 100, height = 100)
     @Test
     fun requestContextMenuOnBlobBuffered() {
-        // Bug 1981579
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-            assumeThat(sessionRule.env.isIsolatedProcess, equalTo(false))
-        }
         mainSession.loadTestPath(CONTEXT_MENU_BLOB_BUFFERED_HTML_PATH)
         mainSession.waitForPageStop()
         mainSession.waitForRoundTrip()
@@ -395,8 +389,8 @@ class ContentDelegateChildTest : BaseSessionTest() {
                         endsWith("hello.html"),
                     )
                     assertThat(
-                        "The element link text content should be the text content of the anchor.",
-                        element.textContent,
+                        "The element link text should be the link text of the anchor.",
+                        element.linkText,
                         equalTo("Hello World"),
                     )
                 }
@@ -406,7 +400,7 @@ class ContentDelegateChildTest : BaseSessionTest() {
 
     @WithDisplay(width = 100, height = 100)
     @Test
-    fun requestContextMenuOnLinkText() {
+    fun requestContextMenuOnLinkTextLimits() {
         mainSession.loadTestPath(CONTEXT_MENU_LINK_TEXT_HTML_PATH)
         mainSession.waitForPageStop()
         sendLongPress(50f, 50f)
@@ -431,8 +425,8 @@ class ContentDelegateChildTest : BaseSessionTest() {
                         equalTo(4096),
                     )
                     assertThat(
-                        "The element link text content should not exceed a maximum of 4096 chars.",
-                        element.textContent?.length,
+                        "The element link text should not exceed a maximum of 4096 chars.",
+                        element.linkText?.length,
                         equalTo(4096),
                     )
                 }
@@ -442,9 +436,49 @@ class ContentDelegateChildTest : BaseSessionTest() {
 
     @WithDisplay(width = 100, height = 100)
     @Test
+    fun requestContextMenuOnLinkText() {
+        mainSession.loadTestPath(CONTEXT_MENU_LINK_TEXT_HTML_NORMAL_LENGTH_PATH)
+        mainSession.waitForPageStop()
+        sendLongPress(50f, 50f)
+
+        mainSession.waitUntilCalled(
+            object : ContentDelegate {
+                @AssertCalled(count = 1)
+                override fun onContextMenu(
+                    session: GeckoSession,
+                    screenX: Int,
+                    screenY: Int,
+                    element: ContextElement,
+                ) {
+                    assertThat(
+                        "Type should be none.",
+                        element.type,
+                        equalTo(ContextElement.TYPE_NONE),
+                    )
+                    assertThat(
+                        "The element link title should be the title of the anchor.",
+                        element.title,
+                        equalTo("Lorem ipsum dolor sit amet cillum amet minim."),
+                    )
+                    assertThat(
+                        "The element link URI should be the href of the anchor.",
+                        element.linkUri,
+                        endsWith("hello.html"),
+                    )
+                    assertThat(
+                        "The element link text should be the link text of the " +
+                                "anchor without white spaces.",
+                        element.linkText,
+                        equalTo("Lorem ipsum dolor sit amet cillum amet minim."),
+                    )
+                }
+            },
+        )
+    }
+
+    @WithDisplay(width = 100, height = 100)
+    @Test
     fun requestContextMenuOnVideo() {
-        // Bug 1700243
-        assumeThat(sessionRule.env.isIsolatedProcess, equalTo(false))
         mainSession.loadTestPath(CONTEXT_MENU_VIDEO_HTML_PATH)
         mainSession.waitForPageStop()
         sendLongPress(50f, 50f)
@@ -525,8 +559,8 @@ class ContentDelegateChildTest : BaseSessionTest() {
                         endsWith("hello.html"),
                     )
                     assertThat(
-                        "The element link text content should be the text content of the anchor.",
-                        element.textContent,
+                        "The element link text should be the link text of the anchor.",
+                        element.linkText,
                         equalTo("Hello World"),
                     )
                 }
@@ -572,8 +606,8 @@ class ContentDelegateChildTest : BaseSessionTest() {
                         endsWith("hello.html"),
                     )
                     assertThat(
-                        "The element link text content should be the text content of the anchor.",
-                        element.textContent,
+                        "The element link text should be the link text of the anchor.",
+                        element.linkText,
                         equalTo("Hello World"),
                     )
                 }
@@ -801,5 +835,29 @@ class ContentDelegateChildTest : BaseSessionTest() {
         )
 
         contextmenuEventPromise.value
+    }
+
+    @WithDisplay(width = 100, height = 100)
+    @Test
+    fun contextMenuWithStopPropagation() {
+        mainSession.loadTestPath(CONTEXT_MENU_LINK_HTML_PATH)
+        mainSession.waitForPageStop()
+
+        val contextmenuEventPromise =
+            mainSession.evaluatePromiseJS(
+                """
+                new Promise(resolve => {
+                    document.documentElement.addEventListener('contextmenu', event => {
+                        event.stopPropagation();
+                        resolve(true);
+                    }, { once: true });
+                });
+                """.trimIndent(),
+            )
+
+        sendLongPress(50f, 50f)
+
+        assertThat("contextmenu", contextmenuEventPromise.value as Boolean, equalTo(true))
+        mainSession.waitUntilCalled(ContentDelegate::class, "onContextMenu")
     }
 }

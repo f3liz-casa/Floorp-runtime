@@ -13,10 +13,9 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment.Companion.Start
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
-import androidx.compose.ui.unit.dp
-import kotlinx.coroutines.Job
 import org.mozilla.focus.R
 import org.mozilla.focus.ui.theme.focusColors
+import org.mozilla.focus.ui.theme.focusDimensions
 import org.mozilla.focus.ui.theme.focusTypography
 
 /**
@@ -27,7 +26,7 @@ import org.mozilla.focus.ui.theme.focusTypography
  */
 @Composable
 fun ColumnScope.LearnMoreLink(
-    openLearnMore: () -> Job,
+    openLearnMore: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     Text(
@@ -35,7 +34,7 @@ fun ColumnScope.LearnMoreLink(
         color = focusColors.aboutPageLink,
         style = focusTypography.links,
         modifier = modifier
-            .padding(10.dp)
+            .padding(focusDimensions.paddingText)
             .fillMaxWidth()
             .align(Start)
             .clickable {

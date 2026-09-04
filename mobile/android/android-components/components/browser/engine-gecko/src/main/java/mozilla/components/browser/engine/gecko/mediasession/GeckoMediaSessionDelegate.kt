@@ -9,12 +9,21 @@ import kotlinx.coroutines.withTimeoutOrNull
 import mozilla.components.browser.engine.gecko.GeckoEngineSession
 import mozilla.components.browser.engine.gecko.await
 import mozilla.components.concept.engine.mediasession.MediaSession
+import org.mozilla.geckoview.GeckoResult
 import org.mozilla.geckoview.GeckoSession
-import org.mozilla.geckoview.Image.ImageProcessingException
 import org.mozilla.geckoview.MediaSession as GeckoViewMediaSession
 
 private const val ARTWORK_RETRIEVE_TIMEOUT = 1000L
 private const val ARTWORK_IMAGE_SIZE = 48
+
+private fun String.toAudioSessionType(): MediaSession.AudioSessionType = when (this) {
+    "playback" -> MediaSession.AudioSessionType.PLAYBACK
+    "transient" -> MediaSession.AudioSessionType.TRANSIENT
+    "transient-solo" -> MediaSession.AudioSessionType.TRANSIENT_SOLO
+    "ambient" -> MediaSession.AudioSessionType.AMBIENT
+    "play-and-record" -> MediaSession.AudioSessionType.PLAY_AND_RECORD
+    else -> MediaSession.AudioSessionType.AUTO
+}
 
 internal class GeckoMediaSessionDelegate(
     private val engineSession: GeckoEngineSession,
@@ -32,6 +41,16 @@ internal class GeckoMediaSessionDelegate(
         }
     }
 
+    override fun onAudioSessionTypeChanged(
+        session: GeckoSession,
+        mediaSession: GeckoViewMediaSession,
+        type: String,
+    ) {
+        engineSession.notifyObservers {
+            onMediaAudioSessionTypeChanged(type.toAudioSessionType())
+        }
+    }
+
     override fun onMetadata(
         session: GeckoSession,
         mediaSession: GeckoViewMediaSession,
@@ -39,12 +58,11 @@ internal class GeckoMediaSessionDelegate(
     ) {
         val getArtwork: (suspend () -> Bitmap?)? = metaData.artwork?.let {
             {
-                try {
-                    withTimeoutOrNull(ARTWORK_RETRIEVE_TIMEOUT) {
-                        it.getBitmap(ARTWORK_IMAGE_SIZE).await()
-                    }
-                } catch (e: ImageProcessingException) {
-                    null
+                withTimeoutOrNull(ARTWORK_RETRIEVE_TIMEOUT) {
+                    it.getBitmap(ARTWORK_IMAGE_SIZE).then(
+                        { GeckoResult.fromValue(it) },
+                        { GeckoResult.fromValue(null) },
+                    ).await()
                 }
             }
         }

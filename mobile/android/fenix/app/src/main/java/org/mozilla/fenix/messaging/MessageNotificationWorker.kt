@@ -18,6 +18,7 @@ import androidx.work.ExistingPeriodicWorkPolicy
 import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
 import androidx.work.WorkerParameters
+import androidx.work.await
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -51,7 +52,7 @@ const val DISMISSED_MESSAGE_ID = "dismissedMessageId"
  * or during the next scheduled sync interval.
  *
  * **Six seconds will cover 99% of users** based on Nimbus research.
- * @see `https://sql.telemetry.mozilla.org/queries/91863/source?p_days=30#227434`.
+ * @see https://sql.telemetry.mozilla.org/queries/91863/source?p_days=30#227434.
  */
 private const val NIMBUS_FETCH_OPERATION_TIMEOUT_MILLIS: Long = 6000
 
@@ -147,7 +148,7 @@ class MessageNotificationWorker(
             context,
             SharedIdsHelper.getNextIdForTag(context, NOTIFICATION_PENDING_INTENT_TAG),
             intent,
-            IntentUtils.defaultIntentPendingFlags,
+            IntentUtils.DEFAULT_PENDING_INTENT_FLAGS,
         )
     }
 
@@ -163,7 +164,7 @@ class MessageNotificationWorker(
             context,
             SharedIdsHelper.getNextIdForTag(context, NOTIFICATION_PENDING_INTENT_TAG),
             intent,
-            IntentUtils.defaultIntentPendingFlags,
+            IntentUtils.DEFAULT_PENDING_INTENT_FLAGS,
         )
     }
 
@@ -173,7 +174,7 @@ class MessageNotificationWorker(
         private const val MESSAGE_WORK_NAME = "org.mozilla.fenix.message.work"
 
         /**
-         * Initialize the [CoroutineWorker] to begin polling Nimbus.
+         * Initialize the message notification [CoroutineWorker] to begin polling Nimbus.
          */
         fun setMessageNotificationWorker(context: Context) {
             val messaging = FxNimbusMessaging.features.messaging
@@ -198,6 +199,34 @@ class MessageNotificationWorker(
                 },
                 messageWorkRequest,
             )
+            LOGGER.info("Registered the message notification worker for periodic experiment fetches.")
+        }
+
+        /**
+         * Cancel the message notification [CoroutineWorker] to stop polling Nimbus.
+         */
+        @Suppress("TooGenericExceptionCaught")
+        suspend fun cancelMessageNotificationWorker(context: Context) {
+            LOGGER.info("Canceling the message notification worker...")
+
+            try {
+                WorkManager.getInstance(context)
+                    .cancelUniqueWork(MESSAGE_WORK_NAME)
+                    .await()
+
+                LOGGER.info("Message notification worker cancellation completed.")
+            } catch (e: CancellationException) {
+                LOGGER.debug(
+                    "Stopped waiting for message notification worker cancellation because" +
+                        " the coroutine was cancelled.",
+                )
+
+                // Rethrow the exception so it propagates instead of being swallowed by the
+                // operation-failure branch below.
+                throw e
+            } catch (e: Exception) {
+                LOGGER.error("Failed to cancel the message notification worker.", e)
+            }
         }
 
         /**

@@ -4,7 +4,11 @@
 
 cargo_extra_outputs = {
     "bindgen": ["tests.rs", "host-target.txt"],
+    "cocoabind": ["cocoa_bindings.rs"],
+    "crash_helper_server": ["crash_annotations.rs"],
+    "crashreporter": ["crash_annotations.rs", "buildid_section.rs"],
     "cssparser": ["tokenizer.rs"],
+    "gtkbind": ["gtk_bindings.rs"],
     "gleam": ["gl_and_gles_bindings.rs", "gl_bindings.rs", "gles_bindings.rs"],
     "khronos_api": ["webgl_exts.rs"],
     "libloading": ["libglobal_static.a", "src/os/unix/global_static.o"],
@@ -12,7 +16,6 @@ cargo_extra_outputs = {
     "num-traits": ["rust_out.o"],
     "selectors": ["ascii_case_insensitive_html_attributes.rs"],
     "style": [
-        "gecko/atom_macro.rs",
         "gecko/pseudo_element_definition.rs",
         "gecko/structs.rs",
         "properties.rs",

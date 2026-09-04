@@ -170,6 +170,10 @@ class SystemEngineSession(
         return state.bundle?.let { webView.restoreState(it) } != null
     }
 
+    override fun flushSessionState() {
+        throw UnsupportedOperationException("Engine session state flush is not available in this engine")
+    }
+
     /**
      * See [EngineSession.updateTrackingProtection]
      */
@@ -426,6 +430,32 @@ class SystemEngineSession(
     }
 
     /**
+     * See [EngineSession.sendGleanBrokenSiteReport]
+     */
+    override fun sendGleanBrokenSiteReport(
+        details: JSONObject?,
+        description: String?,
+        reason: String,
+        url: String,
+        sendTabSpecificInfo: Boolean,
+        sendBlockedUrls: Boolean,
+        onResult: () -> Unit,
+        onException: (Throwable) -> Unit,
+    ) {
+        throw UnsupportedOperationException("Sending broken site report via Glean is not available in this engine")
+    }
+
+    /**
+     * See [EngineSession.getBrokenSiteReport]
+     */
+    override fun getBrokenSiteReport(
+        onResult: (JSONObject) -> Unit,
+        onException: (Throwable) -> Unit,
+    ) {
+        throw UnsupportedOperationException("Getting broken site report is not available in this engine")
+    }
+
+    /**
      * See [EngineSession.getWebCompatInfo]
      */
     override fun getWebCompatInfo(
@@ -485,18 +515,20 @@ class SystemEngineSession(
         throw UnsupportedOperationException("Setting the site's translate setting is not available in this engine")
     }
 
-    override fun hasCookieBannerRuleForSession(
-        onResult: (Boolean) -> Unit,
-        onException: (Throwable) -> Unit,
-    ) {
-        throw UnsupportedOperationException("Cookie Banner handling is not available in this engine")
-    }
-
     /**
      * See [EngineSession.exitFullScreenMode]
      */
     override fun exitFullScreenMode() {
         fullScreenCallback?.onCustomViewHidden()
+    }
+
+    /**
+     * See [EngineSession.processBackPressed]
+     */
+    override fun processBackPressed(
+        onResult: (Boolean) -> Unit,
+    ) {
+        onResult(false)
     }
 
     internal fun toggleDesktopUA(userAgent: String, requestDesktop: Boolean): String {

@@ -7,6 +7,7 @@ package mozilla.components.concept.awesomebar
 import android.graphics.Bitmap
 import android.graphics.drawable.Drawable
 import android.view.View
+import mozilla.components.concept.awesomebar.AwesomeBar.Suggestion.Flag
 import java.util.UUID
 
 /**
@@ -73,6 +74,16 @@ interface AwesomeBar {
     fun setOnEditSuggestionListener(listener: (String) -> Unit)
 
     /**
+     * Update what search suggestions should be hidden.
+     */
+    fun updateHiddenSuggestions(hiddenSuggestions: Set<GroupedSuggestion>)
+
+    /**
+     * Add a callback for when the user clicked on the remove button for a history suggestion.
+     */
+    fun setOnRemoveSuggestionButtonClicked(listener: (GroupedSuggestion) -> Unit)
+
+    /**
      * Information about the [Suggestion]s that are currently displayed by the [AwesomeBar].
      */
     data class VisibilityState(
@@ -80,8 +91,47 @@ interface AwesomeBar {
          * An ordered map of the currently visible [SuggestionProviderGroup]s, and the visible [Suggestion]s in each
          * group. The groups and their suggestions are ordered top to bottom.
          */
-        val visibleProviderGroups: Map<SuggestionProviderGroup, List<Suggestion>> = emptyMap(),
+        val visibleProviderGroups: Map<SuggestionProviderGroup, List<SuggestionItem>> = emptyMap(),
     )
+
+    /**
+     * Pair of a [Suggestion] and the [SuggestionProviderGroup] identified by its id in which the
+     * [Suggestion] should be shown.
+     */
+    data class GroupedSuggestion(
+        val suggestion: SuggestionItem,
+        val groupId: String,
+    )
+
+    /**
+     * Interface to be implemented by suggestion implementations.
+     */
+    interface SuggestionItem {
+        /**
+         * The provider this suggestion came from.
+         */
+        val provider: SuggestionProvider
+
+        /**
+         * A unique ID identifying this suggestion.
+         */
+        val id: String
+
+        /**
+         * A score used to rank suggestions of this provider against each other.
+         */
+        val score: Int
+
+        /**
+         * A callback to be executed when the suggestion was clicked by the user.
+         */
+        val onSuggestionClicked: (() -> Unit)?
+
+        /**
+         * A set of [Flag] values for this [Suggestion].
+         */
+        val flags: Set<Flag>
+    }
 
     /**
      * A [Suggestion] to be displayed by an [AwesomeBar] implementation.
@@ -93,6 +143,8 @@ interface AwesomeBar {
      * @property title A user-readable title for the [Suggestion].
      * @property description A user-readable description for the [Suggestion].
      * @property editSuggestion The string that will be set to the url bar when using the edit suggestion arrow.
+     * @property isRemovalAllowed Whether this suggestion can be removed by the user.
+     * If so an appropriate icon will be shown to the end of the row.
      * @property icon A lambda that can be invoked by the [AwesomeBar] implementation to receive an icon [Bitmap] for
      * this [Suggestion]. The [AwesomeBar] will pass in its desired width and height for the Bitmap.
      * @property indicatorIcon A drawable for indicating different types of [Suggestion].
@@ -106,20 +158,22 @@ interface AwesomeBar {
      * to pass additional information about this suggestion.
      */
     data class Suggestion(
-        val provider: SuggestionProvider,
-        val id: String = UUID.randomUUID().toString(),
+        override val provider: SuggestionProvider,
+        override val id: String = UUID.randomUUID().toString(),
         val title: String? = null,
         val description: String? = null,
         val editSuggestion: String? = null,
+        val isRemovalAllowed: Boolean = false,
         val icon: Bitmap? = null,
         val indicatorIcon: Drawable? = null,
         val chips: List<Chip> = emptyList(),
-        val flags: Set<Flag> = emptySet(),
-        val onSuggestionClicked: (() -> Unit)? = null,
+        override val flags: Set<Flag> = emptySet(),
+        override val onSuggestionClicked: (() -> Unit)? = null,
         val onChipClicked: ((Chip) -> Unit)? = null,
-        val score: Int = 0,
+        val onRemovalClicked: (() -> Unit)? = null,
+        override val score: Int = 0,
         val metadata: Map<String, Any>? = null,
-    ) {
+    ) : SuggestionItem {
         /**
          * Chips are compact actions that are shown as part of a suggestion. For example a [Suggestion] from a search
          * engine may offer multiple search suggestion chips for different search terms.
@@ -173,6 +227,11 @@ interface AwesomeBar {
         fun groupTitle(): String? = null
 
         /**
+         * Display the header title for grouping the suggestions.
+         **/
+        fun displayGroupTitle(): Boolean = true
+
+        /**
          * Fired when the user starts interacting with the awesome bar by entering text in the toolbar.
          *
          * The provider has the option to return an initial list of suggestions that will be displayed before the
@@ -193,7 +252,7 @@ interface AwesomeBar {
          * @param text The current user input in the toolbar.
          * @return A list of suggestions to be displayed by the [AwesomeBar].
          */
-        suspend fun onInputChanged(text: String): List<Suggestion>
+        suspend fun onInputChanged(text: String): List<SuggestionItem>
 
         /**
          * Fired when the user has cancelled their interaction with the awesome bar.
@@ -230,6 +289,7 @@ interface AwesomeBar {
      * in the AwesomeBar suggestions. Group having the highest integer value will have the highest priority.
      * @property title An optional title for this group. The title may be rendered by an AwesomeBar
      * implementation.
+     * @property displayTitle display the above title.
      * @property limit The maximum number of suggestions that will be shown in this group.
      * @property id A unique ID for this group (uses a generated UUID by default)
      */
@@ -237,6 +297,7 @@ interface AwesomeBar {
         val providers: List<SuggestionProvider>,
         var priority: Int = 0,
         val title: String? = null,
+        val displayTitle: Boolean = true,
         val limit: Int = Integer.MAX_VALUE,
         val id: String = UUID.randomUUID().toString(),
     )

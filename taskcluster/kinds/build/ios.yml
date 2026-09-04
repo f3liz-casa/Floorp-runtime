@@ -7,11 +7,13 @@ task-defaults:
         product: firefox
     treeherder:
         tier: 2
-    worker-type: b-linux-amd
+    worker-type: b-linux-docker-amd
     worker:
         max-run-time: 7200
     run-on-projects: ['trunk']
+    run-on-repo-type: [hg]
     run:
+        clone-with: hg
         using: mozharness
         actions: [get-secrets, build]
         secrets: true
@@ -48,6 +50,7 @@ ios/debug:
         platform: ios/debug
         symbol: B
     run:
+        clone-with: hg
         extra-config:
             mozconfig_platform: ios
         mozconfig-variant: debug
@@ -63,6 +66,7 @@ ios/opt:
         platform: ios/opt
         symbol: B
     run:
+        clone-with: hg
         extra-config:
             mozconfig_platform: ios
         mozconfig-variant: opt
@@ -77,16 +81,19 @@ ios-non-unified/plain:
     treeherder:
         platform: ios/plain
         symbol: Bp-nu
+    worker-type: b-linux-docker-large-amd
     worker:
         env:
             PERFHERDER_EXTRA_OPTIONS: non-unified
             MOZ_AUTOMATION_BUILD_SYMBOLS: '0'
     run:
+        clone-with: hg
         extra-config:
             mozconfig_platform: ios
             extra_mozconfig_content:
                 - ac_add_options --disable-unified-build
         mozconfig-variant: opt
+    run-on-projects: ['integration']
     fetches:
         toolchain:
             - ios-sdk
@@ -102,6 +109,7 @@ ios-sim/debug:
         env:
             PERFHERDER_EXTRA_OPTIONS: ios-sim
     run:
+        clone-with: hg
         extra-config:
             mozconfig_platform: ios-sim
         mozconfig-variant: debug
@@ -120,6 +128,7 @@ ios-sim/opt:
         env:
             PERFHERDER_EXTRA_OPTIONS: ios-sim
     run:
+        clone-with: hg
         extra-config:
             mozconfig_platform: ios-sim
         mozconfig-variant: opt

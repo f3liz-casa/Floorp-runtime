@@ -184,7 +184,7 @@ add_task(async function test_DownloadHistory() {
   // session downloads, and check that they are loaded in the correct order.
   let historyList = await DownloadHistory.getList();
   let view = new TestView(testDownloads);
-  await historyList.addView(view);
+  historyList.addView(view);
   await view.waitForExpected();
 
   // Remove a download from history and verify that the change is reflected.
@@ -221,7 +221,7 @@ add_task(async function test_DownloadHistory() {
   // we only have public downloads, the two lists should contain the same items.
   let allHistoryList = await DownloadHistory.getList({ type: Downloads.ALL });
   let allView = new TestView(view.expected);
-  await allHistoryList.addView(allView);
+  allHistoryList.addView(allView);
   await allView.waitForExpected();
 
   // Add a new private download and verify it appears only on the complete list.
@@ -244,7 +244,7 @@ add_task(async function test_DownloadHistory() {
   // Prepare the set of downloads to contain fewer history downloads by removing
   // the oldest ones.
   let allView2 = new TestView(allView.expected.slice(3));
-  await allHistoryList2.addView(allView2);
+  allHistoryList2.addView(allView2);
   await allView2.waitForExpected();
 
   // Create a dummy list and view like the previous limited one to just add and
@@ -254,8 +254,8 @@ add_task(async function test_DownloadHistory() {
     maxHistoryResults: 3,
   });
   let dummyView = new TestView([]);
-  await dummyList.addView(dummyView);
-  await dummyList.removeView(dummyView);
+  dummyList.addView(dummyView);
+  dummyList.removeView(dummyView);
 
   // Clear history and check that session downloads with partial data remain.
   // Private downloads are also not cleared when clearing history.
@@ -270,4 +270,52 @@ add_task(async function test_DownloadHistory() {
   // Check that the dummy view above did not prevent the limited from updating.
   allView2.expected = allView.expected;
   await allView2.waitForExpected();
+});
+
+/**
+ * Tests that a DownloadHistoryList slot is correctly cleaned up when a
+ * download's URL is stripped before the download is removed from the list,
+ * as happens with large data URI downloads.
+ */
+add_task(async function test_DownloadHistoryList_cleared_data_uri() {
+  let publicList = await promiseNewList();
+  DownloadHistory._listPromises = {};
+  let historyList = await DownloadHistory.getList();
+
+  let { promise: added, resolve: addedResolve } = Promise.withResolvers();
+  let { promise: removed, resolve: removedResolve } = Promise.withResolvers();
+  let view = {
+    onDownloadAdded: addedResolve,
+    onDownloadChanged() {},
+    onDownloadRemoved: removedResolve,
+  };
+  historyList.addView(view);
+
+  let download = await Downloads.createDownload({
+    source: { url: "data:text/plain,hello" },
+    target: { path: getTempFile(TEST_TARGET_FILE_NAME).path },
+  });
+  await publicList.add(download);
+  await added;
+
+  // Simulate URL body being stripped after a large data URI download completes.
+  download.source.url = "data:text/plain,";
+  download.source.isDataURICleared = true;
+
+  // Removing should correctly clean up the slot via its stored URL key,
+  // even though source.url has since been truncated.
+  await publicList.remove(download);
+  await removed;
+
+  Assert.ok(
+    !historyList._slotForDownload.has(download),
+    "The slot should be removed from the download map after removal"
+  );
+  Assert.equal(
+    historyList._slotsForUrl.size,
+    0,
+    "The URL slots map should be empty after removal"
+  );
+
+  historyList.removeView(view);
 });

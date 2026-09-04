@@ -18,6 +18,7 @@ import androidx.constraintlayout.widget.ConstraintSet.PARENT_ID
 import androidx.constraintlayout.widget.ConstraintSet.START
 import androidx.constraintlayout.widget.ConstraintSet.TOP
 import androidx.core.view.isVisible
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.MainScope
 import kotlinx.coroutines.cancel
@@ -32,6 +33,7 @@ import mozilla.components.concept.menu.candidate.DrawableMenuIcon
 import mozilla.components.concept.menu.candidate.LowPriorityHighlightEffect
 import mozilla.components.concept.menu.candidate.MenuIcon
 import mozilla.components.support.base.log.logger.Logger
+import mozilla.components.support.ktx.android.view.pixelSizeFor
 
 internal abstract class MenuIconWithDrawableViewHolder<T : MenuIcon>(
     parent: ConstraintLayout,
@@ -44,8 +46,7 @@ internal abstract class MenuIconWithDrawableViewHolder<T : MenuIcon>(
         updateConstraints {
             connect(R.id.icon, TOP, PARENT_ID, TOP)
             connect(R.id.icon, BOTTOM, PARENT_ID, BOTTOM)
-            val margin = parent.resources
-                .getDimensionPixelSize(R.dimen.mozac_browser_menu2_icon_padding_start)
+            val margin = parent.pixelSizeFor(R.dimen.mozac_browser_menu2_icon_padding_start)
             when (side) {
                 Side.START -> {
                     connect(imageView.id, START, PARENT_ID, START)
@@ -151,9 +152,9 @@ internal class AsyncDrawableMenuIconViewHolder(
     inflater: LayoutInflater,
     side: Side,
     private val logger: Logger = Logger("mozac-menu2-AsyncDrawableMenuIconViewHolder"),
-) : MenuIconWithDrawableViewHolder<AsyncDrawableMenuIcon>(parent, inflater) {
+    private val scope: CoroutineScope = MainScope(),
+    ) : MenuIconWithDrawableViewHolder<AsyncDrawableMenuIcon>(parent, inflater) {
 
-    private val scope = MainScope()
     override val imageView: ImageView = inflate(layoutResource).findViewById(R.id.icon)
     private var effectView: ImageView? = null
     private var iconJob: Job? = null

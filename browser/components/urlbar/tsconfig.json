@@ -1,16 +1,10 @@
 {
-  "include": ["**/*.sys.mjs", "types/*.ts"],
+  "include": ["**/*.mjs", "types/*.ts"],
   "exclude": [
-    "UrlbarController.sys.mjs",
-    "UrlbarEventBufferer.sys.mjs",
-    "UrlbarInput.sys.mjs",
+    "content/SmartbarInput.mjs",
+    "content/UrlbarInput.mjs",
+    "content/UrlbarView.mjs",
     "UrlbarProviderGlobalActions.sys.mjs",
-    "UrlbarProviderPlaces.sys.mjs",
-    "UrlbarProvidersManager.sys.mjs",
-    "UrlbarSearchOneOffs.sys.mjs",
-    "UrlbarValueFormatter.sys.mjs",
-    "UrlbarView.sys.mjs",
-    "private/MLSuggest.sys.mjs",
     "private/SuggestBackendRust.sys.mjs",
     "tests/UrlbarTestUtils.sys.mjs"
   ],
@@ -18,6 +12,9 @@
 
   "compilerOptions": {
     "checkJs": true,
+    "strict": true,
+    "noImplicitAny": false,
+    "strictNullChecks": false,
 
     "plugins": [
       {

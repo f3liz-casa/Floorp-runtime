@@ -8,6 +8,8 @@ import androidx.annotation.VisibleForTesting
 import mozilla.components.lib.crash.store.CrashAction
 import mozilla.components.lib.crash.store.crashReducer
 import org.mozilla.fenix.components.AppStore
+import org.mozilla.fenix.components.appstate.blockedtrackers.BlockedTrackersStateReducer
+import org.mozilla.fenix.components.appstate.lens.LensReducer
 import org.mozilla.fenix.components.appstate.privatebrowsinglock.PrivateBrowsingLockReducer
 import org.mozilla.fenix.components.appstate.qrScanner.QrScannerReducer
 import org.mozilla.fenix.components.appstate.readerview.ReaderViewStateReducer
@@ -31,12 +33,15 @@ import org.mozilla.fenix.share.ShareActionReducer
  * Reducer for [AppStore].
  */
 internal object AppStoreReducer {
-    @Suppress("LongMethod")
+    @Suppress("LongMethod", "CognitiveComplexMethod")
     fun reduce(state: AppState, action: AppAction): AppState = when (action) {
         is AppAction.UpdateInactiveExpanded ->
             state.copy(inactiveTabsExpanded = action.expanded)
         is AppAction.UpdateFirstFrameDrawn -> {
             state.copy(firstFrameDrawn = action.drawn)
+        }
+        is AppAction.UpdateShowFoxPeekAnimation -> {
+            state.copy(longfoxEntryPointReady = action.ready)
         }
         is AppAction.AddNonFatalCrash ->
             state.copy(nonFatalCrashes = state.nonFatalCrashes + action.crash)
@@ -71,9 +76,6 @@ internal object AppStoreReducer {
         is AppAction.BrowsingModeManagerModeChanged -> state.copy(mode = action.mode)
         is AppAction.OrientationChange -> state.copy(orientation = action.orientation)
         is AppAction.TopSitesChange -> state.copy(topSites = action.topSites)
-        is AppAction.RemoveCollectionsPlaceholder -> {
-            state.copy(showCollectionPlaceholder = false)
-        }
         is AppAction.RecentTabsChange -> {
             state.copy(
                 recentTabs = action.recentTabs,
@@ -173,13 +175,13 @@ internal object AppStoreReducer {
             snackbarState = SnackbarState.BookmarkDeleted(title = action.title),
         )
 
+        is AppAction.BookmarkAction.BookmarkOperationResultReported -> state.copy(
+            snackbarState = SnackbarState.BookmarkOperationResultReported(action.globalResultReport),
+        )
+
         is AppAction.DeleteAndQuitStarted -> {
             state.copy(snackbarState = SnackbarState.DeletingBrowserDataInProgress)
         }
-
-        is AppAction.SiteDataCleared -> state.copy(
-            snackbarState = SnackbarState.SiteDataCleared,
-        )
 
         is AppAction.CurrentTabClosed -> state.copy(
             snackbarState = SnackbarState.CurrentTabClosed(action.isPrivate),
@@ -196,6 +198,10 @@ internal object AppStoreReducer {
         is AppAction.OpenInFirefoxFinished -> {
             state.copy(openInFirefoxRequested = false)
         }
+
+        is AppAction.UpdateDefaultBrowserStatus -> state.copy(
+            isDefaultBrowser = action.isDefault,
+        )
 
         is AppAction.UserAccountAuthenticated -> state.copy(
             snackbarState = SnackbarState.UserAccountAuthenticated,
@@ -250,6 +256,7 @@ internal object AppStoreReducer {
             snackbarState = SnackbarState.DownloadCompleted(
                 action.downloadState,
             ),
+            supportedMenuNotifications = state.supportedMenuNotifications + SupportedMenuNotifications.Downloads,
         )
 
         is AppAction.DownloadAction.CannotOpenFile -> state.copy(
@@ -260,11 +267,25 @@ internal object AppStoreReducer {
 
         is AppAction.PrivateBrowsingLockAction -> PrivateBrowsingLockReducer.reduce(state, action)
 
+        is AppAction.LensAction -> LensReducer.reduce(state, action)
+
         is AppAction.QrScannerAction -> QrScannerReducer.reduce(state, action)
 
         is AppAction.ReviewPromptAction -> ReviewPromptReducer.reduce(state, action)
 
         is AppAction.SearchAction -> SearchStateReducer.reduce(state, action)
+
+        is AppAction.MenuNotification.AddMenuNotification -> state.copy(
+            supportedMenuNotifications = state.supportedMenuNotifications + action.notification,
+        )
+
+        is AppAction.MenuNotification.RemoveMenuNotification -> state.copy(
+            supportedMenuNotifications = state.supportedMenuNotifications - action.notification,
+        )
+
+        is AppAction.BlockedTrackersAction -> BlockedTrackersStateReducer.reduce(state, action)
+
+        is AppAction.UpdateTabsTrayVisibility -> state.copy(isTabsTrayVisible = action.visible)
     }
 }
 

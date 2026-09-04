@@ -1,17 +1,14 @@
-/* -*- Mode: Java; c-basic-offset: 4; tab-width: 4; indent-tabs-mode: nil; -*-
- * Any copyright is dedicated to the Public Domain.
+/* Any copyright is dedicated to the Public Domain.
    http://creativecommons.org/publicdomain/zero/1.0/ */
 
 package org.mozilla.geckoview.test
 
 import android.content.ClipDescription
-import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
 import android.text.InputType
 import android.text.SpannableString
-import android.text.SpannedString
 import android.view.KeyEvent
 import android.view.View
 import android.view.inputmethod.BaseInputConnection
@@ -20,23 +17,30 @@ import android.view.inputmethod.ExtractedTextRequest
 import android.view.inputmethod.InputConnection
 import android.view.inputmethod.InputContentInfo
 import androidx.core.net.toUri
+import androidx.test.ext.junit.rules.ActivityScenarioRule
 import androidx.test.filters.MediumTest
-import androidx.test.filters.SdkSuppress
 import androidx.test.platform.app.InstrumentationRegistry
 import org.hamcrest.Matchers.equalTo
 import org.hamcrest.Matchers.not
 import org.hamcrest.Matchers.notNullValue
 import org.junit.Assume.assumeThat
+import org.junit.Before
 import org.junit.Ignore
+import org.junit.Rule
 import org.junit.Test
+import org.junit.rules.RuleChain
 import org.junit.runner.RunWith
 import org.junit.runners.Parameterized
 import org.junit.runners.Parameterized.Parameter
+import org.mozilla.geckoview.Autofill
 import org.mozilla.geckoview.GeckoResult
 import org.mozilla.geckoview.GeckoSession
 import org.mozilla.geckoview.GeckoSession.TextInputDelegate
 import org.mozilla.geckoview.test.rule.GeckoSessionTestRule.AssertCalled
+import org.mozilla.geckoview.test.rule.GeckoSessionTestRule.NullDelegate
+import org.mozilla.geckoview.test.rule.GeckoSessionTestRule.TimeoutMillis
 import org.mozilla.geckoview.test.rule.GeckoSessionTestRule.WithDisplay
+import org.mozilla.geckoview.test.util.UiThreadUtils
 
 @MediumTest
 @RunWith(Parameterized::class)
@@ -56,6 +60,24 @@ class TextInputDelegateTest : BaseSessionTest() {
     @field:Parameter(0)
     @JvmField
     var id: String = ""
+
+    val activityRule = ActivityScenarioRule(GeckoViewTestActivity::class.java)
+
+    @get:Rule
+    override val rules: RuleChain = RuleChain.outerRule(activityRule).around(sessionRule)
+
+    @Before
+    fun setup() {
+        // Disable the DOM security feature that filters key events immediately
+        // after navigation. Our tests otherwise may lose events if they send
+        // too fast.
+        sessionRule.setPrefsUntilTestEnd(
+            mapOf(
+                "dom.input_events.security.minTimeElapsedInMS" to 0,
+                "dom.input_events.security.minNumTicks" to 0,
+            ),
+        )
+    }
 
     private var textContent: String
         get() = when (id) {
@@ -421,6 +443,7 @@ class TextInputDelegateTest : BaseSessionTest() {
         })
     }
 
+    @WithDisplay(width = 100, height = 100)
     @Test fun restartInput_disableEnable() {
         assumeThat("input only", id, equalTo("#input"))
 
@@ -462,6 +485,96 @@ class TextInputDelegateTest : BaseSessionTest() {
         promise.value
 
         assertThat("hideSoftInput isn't called", true, equalTo(true))
+    }
+
+    // When navigating away from a page with a focused input field, the keyboard should be dismissed.
+    @NullDelegate(Autofill.Delegate::class)
+    @Test
+    fun restartInput_dismissAfterNavigation() {
+        assumeThat("input only", id, equalTo("#input"))
+
+        activityRule.scenario.onActivity { activity ->
+            activity.view.setSession(mainSession)
+            mainSession.textInput.view = activity.view
+            activity.view.requestFocus()
+
+            mainSession.loadTestPath(RESUBMIT_CONFIRM)
+            mainSession.waitForPageStop()
+
+            mainSession.evaluateJS("document.querySelector('#text').focus()")
+
+            mainSession.waitUntilCalled(object : TextInputDelegate {
+                @AssertCalled(count = 1)
+                override fun restartInput(session: GeckoSession, reason: Int) {
+                    assertThat(
+                        "Reason should be correct",
+                        reason,
+                        equalTo(GeckoSession.TextInputDelegate.RESTART_REASON_FOCUS),
+                    )
+                }
+            })
+
+            val ic = mainSession.textInput.onCreateInputConnection(EditorInfo())!!
+            pressKeyNoWait(ic, KeyEvent.KEYCODE_ENTER)
+
+            mainSession.waitUntilCalled(object : TextInputDelegate, GeckoSession.ProgressDelegate {
+                @AssertCalled(count = 1)
+                override fun hideSoftInput(session: GeckoSession) {
+                }
+
+                @AssertCalled(count = 1)
+                override fun onPageStop(session: GeckoSession, success: Boolean) {
+                }
+            })
+
+            assertThat("hideSoftInput is called once", true, equalTo(true))
+        }
+    }
+
+    // For bug 2048921
+    @Test(expected = UiThreadUtils.TimeoutException::class)
+    @TimeoutMillis(2000)
+    @NullDelegate(Autofill.Delegate::class)
+    fun noDismissKeyboardAfterlostFocus() {
+        assumeThat("input only", id, equalTo("#input"))
+
+        activityRule.scenario.onActivity { activity ->
+            activity.view.setSession(mainSession)
+            mainSession.textInput.view = activity.view
+            activity.view.requestFocus()
+
+            mainSession.loadTestPath(INPUTS_PATH)
+            mainSession.waitForPageStop()
+
+            var dismissCount = 0
+            mainSession.delegateUntilTestEnd(object : TextInputDelegate {
+                override fun hideSoftInput(session: GeckoSession) {
+                    dismissCount++
+                }
+            })
+
+            mainSession.pressKey(KeyEvent.KEYCODE_CTRL_LEFT)
+            mainSession.evaluateJS("document.querySelector('#input').focus()")
+
+            mainSession.waitUntilCalled(object : TextInputDelegate {
+                @AssertCalled(count = 1)
+                override fun showSoftInput(session: GeckoSession) {
+                }
+            })
+
+            mainSession.evaluateJS("document.querySelector('#input').blur()")
+            activity.view.clearFocus()
+
+            UiThreadUtils.waitForCondition({
+                dismissCount != 0
+            }, sessionRule.timeoutMillis)
+
+            assertThat(
+                "The keyboard should not be dismissed after losing focus.",
+                dismissCount,
+                equalTo(0),
+            )
+        }
     }
 
     private fun getText(ic: InputConnection) =
@@ -546,12 +659,6 @@ class TextInputDelegateTest : BaseSessionTest() {
         assertTextAndSelection(message, ic, expected, value, value, checkGecko)
 
     private fun setupContent(content: String) {
-        sessionRule.setPrefsUntilTestEnd(
-            mapOf(
-                "dom.select_events.textcontrols.enabled" to true,
-            ),
-        )
-
         mainSession.textInput.view = View(InstrumentationRegistry.getInstrumentation().targetContext)
 
         mainSession.loadTestPath(INPUTS_PATH)
@@ -627,7 +734,7 @@ class TextInputDelegateTest : BaseSessionTest() {
             ic,
             "foobarfoo",
             5,
-            /* checkGecko */
+            // checkGecko
             false,
         )
     }
@@ -732,7 +839,7 @@ class TextInputDelegateTest : BaseSessionTest() {
             ic,
             "frabar",
             6,
-            /* checkGecko */
+            // checkGecko
             false,
         )
 
@@ -922,12 +1029,11 @@ class TextInputDelegateTest : BaseSessionTest() {
             "Can set large initial text",
             ic,
             content,
-            /* checkGecko */
+            // checkGecko
             false,
         )
     }
 
-    @SdkSuppress(minSdkVersion = Build.VERSION_CODES.N_MR1)
     @WithDisplay(width = 512, height = 512)
     // Child process updates require having a display.
     @Test
@@ -977,15 +1083,10 @@ class TextInputDelegateTest : BaseSessionTest() {
     }
 
     // Bug 1133802, duplication when setting the same composing text more than once.
-    @Ignore
-    // Disable for frequent failures.
     @WithDisplay(width = 512, height = 512)
     // Child process updates require having a display.
     @Test
     fun inputConnection_bug1133802() {
-        // TODO:
-        // Disable this test for frequent failures. We consider another way to
-        // wait/ignore event handling.
         setupContent("")
 
         val ic = mainSession.textInput.onCreateInputConnection(EditorInfo())!!
@@ -1189,12 +1290,14 @@ class TextInputDelegateTest : BaseSessionTest() {
                     "#input" ->
                         InputType.TYPE_CLASS_TEXT or
                             InputType.TYPE_TEXT_FLAG_AUTO_CORRECT or
-                            InputType.TYPE_TEXT_FLAG_IME_MULTI_LINE
+                            InputType.TYPE_TEXT_FLAG_IME_MULTI_LINE or
+                            InputType.TYPE_TEXT_VARIATION_WEB_EDIT_TEXT
                     else ->
                         InputType.TYPE_CLASS_TEXT or
                             InputType.TYPE_TEXT_FLAG_CAP_SENTENCES or
                             InputType.TYPE_TEXT_FLAG_AUTO_CORRECT or
-                            InputType.TYPE_TEXT_FLAG_IME_MULTI_LINE
+                            InputType.TYPE_TEXT_FLAG_IME_MULTI_LINE or
+                            InputType.TYPE_TEXT_VARIATION_WEB_EDIT_TEXT
                 },
             ),
         )
@@ -1253,7 +1356,8 @@ class TextInputDelegateTest : BaseSessionTest() {
                             InputType.TYPE_CLASS_TEXT or
                                 InputType.TYPE_TEXT_FLAG_AUTO_CORRECT or
                                 InputType.TYPE_TEXT_FLAG_IME_MULTI_LINE or
-                                InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
+                                InputType.TYPE_TEXT_FLAG_CAP_SENTENCES or
+                                InputType.TYPE_TEXT_VARIATION_WEB_EDIT_TEXT
                         "#tel1" -> InputType.TYPE_CLASS_PHONE
                         "#url1" ->
                             InputType.TYPE_CLASS_TEXT or
@@ -1519,7 +1623,7 @@ class TextInputDelegateTest : BaseSessionTest() {
             ic,
             0,
             0,
-            /* checkGecko */
+            // checkGecko
             false,
         )
 
@@ -1737,5 +1841,100 @@ class TextInputDelegateTest : BaseSessionTest() {
         processChildEvents()
         assertText("text isn't changed", ic, "[***]")
         assertSelection("selection isn't collapsed", ic, 1, 4)
+    }
+
+    // Bug 1563640 - SwiftKey commits empty text with setComposingRegion after enter key
+    @WithDisplay(width = 512, height = 512)
+    @Test
+    fun swiftKeyUsesSetComposingRegionAfterEnterKey() {
+        assumeThat("textarea only", id, equalTo("#textarea"))
+
+        setupContent("")
+        val ic = mainSession.textInput.onCreateInputConnection(EditorInfo())!!
+
+        pressKey(ic, KeyEvent.KEYCODE_B)
+        pressKey(ic, KeyEvent.KEYCODE_A)
+        pressKey(ic, KeyEvent.KEYCODE_R)
+        pressKey(ic, KeyEvent.KEYCODE_SPACE)
+        assertSelection("Can set selection to range", ic, 4, 4)
+
+        // After SwiftKey sends enter key, it calls setComposingRegion then finishComposingText to commit empty text.
+        val promise =
+            mainSession.evaluatePromiseJS(
+                """
+                new Promise(r => window.addEventListener('keyup', r, { once: true }))
+                """.trimIndent(),
+            )
+        ic.beginBatchEdit()
+        pressKeyNoWait(ic, KeyEvent.KEYCODE_ENTER)
+        ic.setComposingRegion(4, 4)
+        ic.finishComposingText()
+        ic.endBatchEdit()
+        promise.value
+
+        assertSelection("selection moves by enter key", ic, 5, 5)
+    }
+
+    // Bug 2038467 - Samsung Keyboard doesn't use batch mode when setting both composing range and composing text
+    // at once.
+    @WithDisplay(width = 512, height = 512)
+    @Test
+    fun inputConnection_samsungKeyboard_email() {
+        assumeThat("input only", id, equalTo("#input"))
+
+        setupContent("")
+        val ic = mainSession.textInput.onCreateInputConnection(EditorInfo())!!
+
+        // Emulate Samsung Keyboard's InputConnection API calls on <input type="email">
+        commitText(ic, "foo@", 1)
+        ic.setComposingRegion(0, 4)
+        ic.setComposingText("foo@1", 1)
+        ic.setComposingText("foo@12", 1)
+        finishComposingText(ic)
+        processChildEvents()
+
+        assertText("committed text is \"foo@12\"", ic, "foo@12")
+    }
+
+    @WithDisplay(width = 100, height = 100)
+    @Test
+    fun inputConnection_newWindow() {
+        sessionRule.setPrefsUntilTestEnd(mapOf("dom.disable_open_during_load" to false))
+
+        assumeThat("input only", id, equalTo("#input"))
+
+        mainSession.loadTestPath(HELLO_HTML_PATH)
+        mainSession.waitForPageStop()
+
+        // Switching to a new session by window.open.
+        val newSession = sessionRule.createClosedSession()
+        mainSession.delegateDuringNextWait(object : GeckoSession.NavigationDelegate {
+            override fun onNewSession(session: GeckoSession, uri: String): GeckoResult<GeckoSession>? {
+                return GeckoResult.fromValue(newSession)
+            }
+        })
+
+        // evaluatePromiseJS doesn't wait for executing window.open. We don't want to wait for this.
+        mainSession.evaluatePromiseJS("window.open('forms3.html', 'test')")
+        newSession.waitUntilCalled(GeckoSession.ProgressDelegate::class, "onPageStop")
+
+        newSession.textInput.view = View(InstrumentationRegistry.getInstrumentation().targetContext)
+
+        // Simulate a user action so we're allowed to show/hide the keyboard.
+        newSession.pressKey(KeyEvent.KEYCODE_CTRL_LEFT)
+        newSession.evaluateJS("document.querySelector('#user1').focus()")
+        newSession.waitUntilCalled(GeckoSession.TextInputDelegate::class, "restartInput")
+
+        val ic = newSession.textInput.onCreateInputConnection(EditorInfo())!!
+
+        val promise = newSession.evaluatePromiseJS(
+            """
+            new Promise(r => document.querySelector('#user1').addEventListener('input', r, { once: true }))
+            """.trimIndent(),
+        )
+        ic.commitText("foo", 1)
+        promise.value
+
+        assertThat("Can commit text", getText(ic), equalTo("foo"))
     }
 }

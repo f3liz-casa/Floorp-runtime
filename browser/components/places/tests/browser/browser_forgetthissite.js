@@ -12,7 +12,7 @@ const { sinon } = ChromeUtils.importESModule(
   "resource://testing-common/Sinon.sys.mjs"
 );
 const { ForgetAboutSite } = ChromeUtils.importESModule(
-  "resource://gre/modules/ForgetAboutSite.sys.mjs"
+  "moz-src:///toolkit/components/forgetaboutsite/ForgetAboutSite.sys.mjs"
 );
 
 const TEST_URIs = [
@@ -189,10 +189,10 @@ async function testForgetAboutThisSite(
   await teardown(organizer);
 }
 
-/*
- * Opens the history view in the PlacesOrganziner window
- * @returns {Promise}
- * @resolves The PlacesOrganizer
+/**
+ * Opens the history view in the Library window
+ *
+ * @returns {Promise<PlacesOrganizer>}
  */
 async function promiseHistoryView() {
   let organizer = await promiseLibrary();
@@ -209,9 +209,10 @@ async function promiseHistoryView() {
 
   return organizer;
 }
-/*
- * @returns {Promise}
- * @resolves once the popup is shown
+/**
+ * @param {XULElement} popup
+ * @returns {Promise<void>}
+ *   Resolves once the popup is shown
  */
 function promisePopupShown(popup) {
   return new Promise(resolve => {

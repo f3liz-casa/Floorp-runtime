@@ -9,10 +9,10 @@ import android.text.method.ScrollingMovementMethod
 import android.view.View
 import android.widget.TextView
 import android.widget.Toast
+import androidx.activity.enableEdgeToEdge
 import androidx.appcompat.app.AppCompatActivity
-import kotlinx.coroutines.CoroutineScope
+import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import mozilla.appservices.fxaclient.FxaServer
@@ -33,14 +33,15 @@ import mozilla.components.concept.sync.DeviceConfig
 import mozilla.components.concept.sync.DeviceConstellationObserver
 import mozilla.components.concept.sync.DeviceType
 import mozilla.components.concept.sync.OAuthAccount
+import mozilla.components.concept.sync.PeriodicSyncConfig
 import mozilla.components.concept.sync.Profile
+import mozilla.components.concept.sync.SyncConfig
+import mozilla.components.concept.sync.SyncEngine
+import mozilla.components.concept.sync.TabPrivacy
 import mozilla.components.lib.dataprotect.SecureAbove22Preferences
 import mozilla.components.lib.fetch.httpurlconnection.HttpURLConnectionClient
 import mozilla.components.service.fxa.FxaAuthData
-import mozilla.components.service.fxa.PeriodicSyncConfig
 import mozilla.components.service.fxa.ServerConfig
-import mozilla.components.service.fxa.SyncConfig
-import mozilla.components.service.fxa.SyncEngine
 import mozilla.components.service.fxa.manager.FxaAccountManager
 import mozilla.components.service.fxa.sync.GlobalSyncableStoreProvider
 import mozilla.components.service.fxa.sync.SyncReason
@@ -48,20 +49,24 @@ import mozilla.components.service.fxa.sync.SyncStatusObserver
 import mozilla.components.service.fxa.toAuthType
 import mozilla.components.service.sync.autofill.AutofillCreditCardsAddressesStorage
 import mozilla.components.service.sync.logins.SyncableLoginsStorage
+import mozilla.components.support.AppServicesInitializer
 import mozilla.components.support.base.log.Log
 import mozilla.components.support.base.log.logger.Logger
 import mozilla.components.support.base.log.sink.AndroidLogSink
+import mozilla.components.support.ktx.android.view.setupPersistentInsets
 import mozilla.components.support.rusthttp.RustHttpConfig
-import mozilla.components.support.rustlog.RustLog
 import org.mozilla.samples.sync.databinding.ActivityMainBinding
-import java.lang.Exception
-import kotlin.coroutines.CoroutineContext
 
+/**
+ * This is the main activity of the sample application. It demonstrates how to use the
+ * FxaAccountManager to authenticate with a Firefox Account, and how to use the
+ * FxA sync components to sync browsing data (history, bookmarks, passwords, credit cards,
+ * and addresses) with the Firefox Sync server.
+ */
 class MainActivity :
     AppCompatActivity(),
     LoginFragment.OnLoginCompleteListener,
-    DeviceFragment.OnDeviceListInteractionListener,
-    CoroutineScope {
+    DeviceFragment.OnDeviceListInteractionListener {
     private val historyStorage = lazy {
         PlacesHistoryStorage(this)
     }
@@ -83,6 +88,8 @@ class MainActivity :
     private val creditCardKeyProvider by lazy { creditCardsAddressesStorage.value.crypto }
     private val passwordsKeyProvider by lazy { passwordsStorage.value.crypto }
 
+    // Sample-only code with no injectable clock seam and no time-dependent behavior to test.
+    @Suppress("NoSystemCurrentTimeMillis")
     private val accountManager by lazy {
         FxaAccountManager(
             this,
@@ -106,10 +113,6 @@ class MainActivity :
         )
     }
 
-    private var job = Job()
-    override val coroutineContext: CoroutineContext
-        get() = Dispatchers.Main + job
-
     companion object {
         const val CLIENT_ID = "3c49430b43dfba77"
         const val REDIRECT_URL = "https://accounts.firefox.com/oauth/success/$CLIENT_ID"
@@ -122,30 +125,31 @@ class MainActivity :
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         binding = ActivityMainBinding.inflate(layoutInflater)
+        setContentView(binding.root)
+        enableEdgeToEdge()
+        window.setupPersistentInsets()
 
-        RustLog.enable()
+        AppServicesInitializer.init(AppServicesInitializer.Config(null))
         RustHttpConfig.setClient(lazy { HttpURLConnectionClient() })
 
         Log.addSink(AndroidLogSink())
 
-        setContentView(binding.root)
-
         findViewById<View>(R.id.buttonSignIn).setOnClickListener {
-            launch {
+            lifecycleScope.launch {
                 accountManager.beginAuthentication(entrypoint = SampleFxAEntryPoint.HomeMenu)?.let { openWebView(it) }
             }
         }
 
         findViewById<View>(R.id.buttonLogout).setOnClickListener {
-            launch { accountManager.logout() }
+            lifecycleScope.launch { accountManager.logout() }
         }
 
         findViewById<View>(R.id.refreshDevice).setOnClickListener {
-            launch { accountManager.authenticatedAccount()?.deviceConstellation()?.refreshDevices() }
+            lifecycleScope.launch { accountManager.authenticatedAccount()?.deviceConstellation()?.refreshDevices() }
         }
 
         findViewById<View>(R.id.sendTab).setOnClickListener {
-            launch {
+            lifecycleScope.launch {
                 accountManager.authenticatedAccount()?.deviceConstellation()?.let { constellation ->
                     // Ignore devices that can't receive tabs.
                     val targets = constellation.state()?.otherDevices?.filter {
@@ -155,7 +159,8 @@ class MainActivity :
                     targets?.forEach {
                         constellation.sendCommandToDevice(
                             it.id,
-                            DeviceCommandOutgoing.SendTab("Sample tab", "https://www.mozilla.org"),
+                            // NOTE: a real app would pass actual private browsing state.
+                            DeviceCommandOutgoing.SendTab("Sample tab", "https://www.mozilla.org", TabPrivacy.Normal),
                         )
                     }
 
@@ -189,13 +194,13 @@ class MainActivity :
         )
         GlobalSyncableStoreProvider.configureStore(SyncEngine.Addresses to creditCardsAddressesStorage)
 
-        launch {
+        lifecycleScope.launch {
             // Now that our account state observer is registered, we can kick off the account manager.
             accountManager.start()
         }
 
         findViewById<View>(R.id.buttonSync).setOnClickListener {
-            launch {
+            lifecycleScope.launch {
                 accountManager.syncNow(SyncReason.User)
                 accountManager.authenticatedAccount()?.deviceConstellation()?.pollForCommands()
             }
@@ -205,11 +210,10 @@ class MainActivity :
     override fun onDestroy() {
         super.onDestroy()
         accountManager.close()
-        job.cancel()
     }
 
     override fun onLoginComplete(code: String, state: String, action: String, fragment: LoginFragment) {
-        launch {
+        lifecycleScope.launch {
             supportFragmentManager.popBackStack()
             accountManager.finishAuthentication(
                 FxaAuthData(action.toAuthType(), code = code, state = state),
@@ -244,7 +248,7 @@ class MainActivity :
 
     private val deviceConstellationObserver = object : DeviceConstellationObserver {
         override fun onDevicesUpdate(constellation: ConstellationState) {
-            launch {
+            lifecycleScope.launch {
                 val currentDevice = constellation.currentDevice
 
                 val currentDeviceView: TextView = findViewById(R.id.currentDevice)
@@ -328,7 +332,7 @@ class MainActivity :
         override fun onLoggedOut() {
             logger.info("onLoggedOut")
 
-            launch {
+            lifecycleScope.launch {
                 val txtView: TextView = findViewById(R.id.fxaStatusView)
                 txtView.text = getString(R.string.logged_out)
 
@@ -355,7 +359,7 @@ class MainActivity :
         override fun onAuthenticationProblems() {
             logger.info("onAuthenticationProblems")
 
-            launch {
+            lifecycleScope.launch {
                 val txtView: TextView = findViewById(R.id.fxaStatusView)
                 txtView.text = getString(R.string.need_reauth)
 
@@ -366,7 +370,7 @@ class MainActivity :
         override fun onAuthenticated(account: OAuthAccount, authType: AuthType) {
             logger.info("onAuthenticated")
 
-            launch {
+            lifecycleScope.launch {
                 lastAuthType = authType
 
                 val txtView: TextView = findViewById(R.id.fxaStatusView)
@@ -389,7 +393,7 @@ class MainActivity :
         override fun onProfileUpdated(profile: Profile) {
             logger.info("onProfileUpdated")
 
-            launch {
+            lifecycleScope.launch {
                 val txtView: TextView = findViewById(R.id.fxaStatusView)
                 txtView.text = getString(
                     R.string.signed_in_with_profile,
@@ -400,7 +404,7 @@ class MainActivity :
         }
 
         override fun onFlowError(error: AuthFlowError) {
-            launch {
+            lifecycleScope.launch {
                 val txtView: TextView = findViewById(R.id.fxaStatusView)
                 txtView.text = getString(
                     R.string.account_error,
@@ -416,14 +420,14 @@ class MainActivity :
     private val syncObserver = object : SyncStatusObserver {
         override fun onStarted() {
             logger.info("onSyncStarted")
-            CoroutineScope(Dispatchers.Main).launch {
+            lifecycleScope.launch {
                 binding.syncStatus.text = getString(R.string.syncing)
             }
         }
 
         override fun onIdle() {
             logger.info("onSyncIdle")
-            CoroutineScope(Dispatchers.Main).launch {
+            lifecycleScope.launch {
                 binding.syncStatus.text = getString(R.string.sync_idle)
 
                 val historyResultTextView: TextView = findViewById(R.id.historySyncResult)
@@ -440,7 +444,7 @@ class MainActivity :
                 bookmarksResultTextView.setHorizontallyScrolling(true)
                 bookmarksResultTextView.movementMethod = ScrollingMovementMethod.getInstance()
                 bookmarksResultTextView.text = withContext(Dispatchers.IO) {
-                    val bookmarksRoot = bookmarksStorage.value.getTree("root________", recursive = true)
+                    val bookmarksRoot = bookmarksStorage.value.getTree("root________", recursive = true).getOrNull()
                     if (bookmarksRoot == null) {
                         getString(R.string.no_bookmarks_root)
                     } else {
@@ -461,7 +465,7 @@ class MainActivity :
 
         override fun onError(error: Exception?) {
             logger.error("onSyncError", error)
-            CoroutineScope(Dispatchers.Main).launch {
+            lifecycleScope.launch {
                 binding.syncStatus.text = getString(R.string.sync_error, error)
             }
         }

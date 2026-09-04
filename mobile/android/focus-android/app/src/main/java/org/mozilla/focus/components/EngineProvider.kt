@@ -6,10 +6,7 @@ package org.mozilla.focus.components
 
 import android.content.Context
 import androidx.annotation.VisibleForTesting
-import androidx.datastore.preferences.preferencesDataStore
 import mozilla.components.browser.engine.gecko.GeckoEngine
-import mozilla.components.browser.engine.gecko.cookiebanners.GeckoCookieBannersStorage
-import mozilla.components.browser.engine.gecko.cookiebanners.ReportSiteDomainsRepository
 import mozilla.components.browser.engine.gecko.fetch.GeckoViewFetchClient
 import mozilla.components.concept.engine.DefaultSettings
 import mozilla.components.concept.engine.Engine
@@ -18,6 +15,8 @@ import mozilla.components.concept.engine.EngineSession.TrackingProtectionPolicy.
 import mozilla.components.concept.fetch.Client
 import mozilla.components.lib.crash.handler.CrashHandlerService
 import org.mozilla.focus.R
+import org.mozilla.focus.components.EngineProvider.getCookiePolicy
+import org.mozilla.focus.components.EngineProvider.getOrCreateRuntime
 import org.mozilla.focus.ext.settings
 import org.mozilla.focus.utils.AppConstants
 import org.mozilla.focus.utils.Settings
@@ -31,7 +30,6 @@ import org.mozilla.geckoview.GeckoRuntimeSettings
  * This object handles:
  * - Initialization and caching of the shared [GeckoRuntime].
  * - Creation of [Engine] instances with customized settings.
- * - Management of [GeckoCookieBannersStorage].
  * - Creation of [Client] instances for network operations.
  * - Construction of [EngineSession.TrackingProtectionPolicy] based on user settings.
  * - Determination of [CookiePolicy] based on user preferences.
@@ -40,9 +38,6 @@ import org.mozilla.geckoview.GeckoRuntimeSettings
  */
 object EngineProvider {
     private var runtime: GeckoRuntime? = null
-    private val Context.dataStore by preferencesDataStore(
-        name = ReportSiteDomainsRepository.REPORT_SITE_DOMAINS_REPOSITORY_NAME,
-    )
 
     // Default value is block cross site cookies.
     const val DEFAULT_COOKIE_OPTION_INDEX = 3
@@ -59,12 +54,19 @@ object EngineProvider {
      * - The "about:config" page is enabled for development, nightly, and beta builds.
      *
      * @param context The Android Context to use for creating the GeckoRuntime.
+     * @param createRuntime A lambda function that creates a GeckoRuntime instance.
+     *
      * @return The existing or newly created GeckoRuntime instance.
      * @throws IllegalStateException If the runtime is null after attempting to create it.
      */
     @VisibleForTesting
     @Synchronized
-    internal fun getOrCreateRuntime(context: Context): GeckoRuntime {
+    internal fun getOrCreateRuntime(
+        context: Context,
+        createRuntime: (GeckoRuntimeSettings) -> GeckoRuntime = { geckoRuntimeSettings ->
+            GeckoRuntime.create(context, geckoRuntimeSettings)
+        },
+    ): GeckoRuntime {
         if (runtime == null) {
             val builder = GeckoRuntimeSettings.Builder()
 
@@ -73,7 +75,7 @@ object EngineProvider {
                 AppConstants.isDevOrNightlyBuild || AppConstants.isBetaBuild,
             )
 
-            runtime = GeckoRuntime.create(context, builder.build())
+            runtime = createRuntime(builder.build())
         }
 
         return runtime!!
@@ -101,28 +103,17 @@ object EngineProvider {
     }
 
     /**
-     * Creates and initializes a [GeckoCookieBannersStorage] instance.
-     *
-     * The [GeckoCookieBannersStorage] is used to store and manage data related to cookie banner handling.
-     * The [ReportSiteDomainsRepository] is used to store the domains for which cookie banner interaction is reported.
-     *
-     * @param context The application [Context] used to access shared preferences and other Android resources.
-     * @return A new [GeckoCookieBannersStorage] instance.
-     */
-    fun createCookieBannerStorage(context: Context): GeckoCookieBannersStorage {
-        val runtime = getOrCreateRuntime(context)
-
-        return GeckoCookieBannersStorage(runtime, ReportSiteDomainsRepository(context.dataStore))
-    }
-
-    /**
      * Creates a new [GeckoViewFetchClient] instance.
      *
      * @param context The application [Context] used to access shared preferences and other Android resources.
+     * @param runtime The [GeckoRuntime] to use for the client. If not provided, a shared runtime will be
+     *                obtained or created using [getOrCreateRuntime].
      * @return A new instance of GeckoViewFetchClient.
      */
-    fun createClient(context: Context): Client {
-        val runtime = getOrCreateRuntime(context)
+    fun createClient(
+        context: Context,
+        runtime: GeckoRuntime = getOrCreateRuntime(context),
+        ): Client {
         return GeckoViewFetchClient(context, runtime)
     }
 
@@ -134,6 +125,8 @@ object EngineProvider {
      * [EngineSession.TrackingProtectionPolicy] object representing the desired level of tracking protection.
      *
      * @param context The application context, used to access the application's settings.
+     * @param settings The application settings.
+     * @param newCookieValue The new value for the cookie blocking preference.
      * @return An [EngineSession.TrackingProtectionPolicy] object that defines the tracking protection rules.
      *
      * The tracking protection policy is built based on these settings:
@@ -149,8 +142,9 @@ object EngineProvider {
      */
     fun createTrackingProtectionPolicy(
         context: Context,
+        settings: Settings = context.settings,
+        newCookieValue: String? = null,
     ): EngineSession.TrackingProtectionPolicy {
-        val settings = context.settings
         val trackingCategories: MutableList<EngineSession.TrackingProtectionPolicy.TrackingCategory> =
             mutableListOf(EngineSession.TrackingProtectionPolicy.TrackingCategory.SCRIPTS_AND_SUB_RESOURCES)
 
@@ -167,7 +161,7 @@ object EngineProvider {
             trackingCategories.add(EngineSession.TrackingProtectionPolicy.TrackingCategory.CONTENT)
         }
 
-        val cookiePolicy = getCookiePolicy(context)
+        val cookiePolicy = getCookiePolicy(context, settings, newCookieValue)
 
         return EngineSession.TrackingProtectionPolicy.select(
             cookiePolicy = cookiePolicy,
@@ -201,6 +195,8 @@ object EngineProvider {
      *
      *
      * @param context The application context.
+     * @param settings The application settings, defaults to `context.settings`.
+     * @param newCookieValue The new value for the cookie blocking preference.
      * @return The [CookiePolicy] corresponding to the user's cookie blocking preference.
      *
      * @see CookiePolicy
@@ -208,9 +204,11 @@ object EngineProvider {
     @VisibleForTesting
     internal fun getCookiePolicy(
         context: Context,
+        settings: Settings = context.settings,
+        newCookieValue: String? = null,
     ): CookiePolicy {
-        val settings = context.settings
-        return when (context.settings.shouldBlockCookiesValue) {
+        val cookieValue = newCookieValue ?: settings.shouldBlockCookiesValue
+        return when (cookieValue) {
             context.getString(R.string.yes) -> CookiePolicy.ACCEPT_NONE
 
             context.getString(R.string.third_party_tracker) -> CookiePolicy.ACCEPT_NON_TRACKERS
@@ -237,7 +235,7 @@ object EngineProvider {
 
                 val cookieOptionIndex =
                     context.resources.getStringArray(R.array.cookies_options_entries)
-                        .asList().indexOf(settings.shouldBlockCookiesValue)
+                        .asList().indexOf(cookieValue)
 
                 val correspondingValue =
                     context.resources.getStringArray(R.array.cookies_options_entry_values).getOrNull(cookieOptionIndex)
@@ -258,9 +256,12 @@ object EngineProvider {
                     context.getString(R.string.cross_site) ->
                         CookiePolicy.ACCEPT_FIRST_PARTY_AND_ISOLATE_OTHERS
 
+                    context.getString(R.string.no) ->
+                        CookiePolicy.ACCEPT_ALL
+
                     else -> {
                         // Fallback to the default value.
-                        CookiePolicy.ACCEPT_ALL
+                        CookiePolicy.ACCEPT_FIRST_PARTY_AND_ISOLATE_OTHERS
                     }
                 }
             }

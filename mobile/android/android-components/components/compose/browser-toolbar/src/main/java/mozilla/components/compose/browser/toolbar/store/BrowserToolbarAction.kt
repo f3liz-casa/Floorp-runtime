@@ -5,8 +5,10 @@
 package mozilla.components.compose.browser.toolbar.store
 
 import androidx.annotation.StringRes
+import mozilla.components.compose.browser.toolbar.BrowserToolbarCFR
 import mozilla.components.compose.browser.toolbar.concept.PageOrigin
-import mozilla.components.concept.toolbar.AutocompleteProvider
+import mozilla.components.compose.browser.toolbar.ui.BrowserToolbarQuery
+import mozilla.components.concept.toolbar.AutocompleteResult
 import mozilla.components.lib.state.Action
 import mozilla.components.compose.browser.toolbar.concept.Action as ToolbarAction
 
@@ -15,11 +17,16 @@ import mozilla.components.compose.browser.toolbar.concept.Action as ToolbarActio
  */
 sealed interface BrowserToolbarAction : Action {
     /**
-     * Updates whether the toolbar is in "display" or "edit" mode.
+     * Allow typing a search term or URL.
      *
-     * @property editMode Whether or not the toolbar is in "edit" mode.
+     * @property isPrivate [Boolean] Indicates that the toolbar is used for private mode / incognito queries.
      */
-    data class ToggleEditMode(val editMode: Boolean) : BrowserToolbarAction
+    data class EnterEditMode(val isPrivate: Boolean) : BrowserToolbarAction
+
+    /**
+     * Show the current URL.
+     */
+    object ExitEditMode : BrowserToolbarAction
 
     /**
      * The toolbar was moved to a different position on screen.
@@ -109,6 +116,16 @@ sealed class BrowserDisplayToolbarAction : BrowserToolbarAction {
      * @property actions The new list of [ToolbarAction]s.
      */
     data class NavigationActionsUpdated(val actions: List<ToolbarAction>) : BrowserDisplayToolbarAction()
+
+    /**
+     * Action called when a toolbar CFR [cfr] is shown
+     */
+    data class ToolbarCFRShown(val cfr: BrowserToolbarCFR) : BrowserDisplayToolbarAction()
+
+    /**
+     * Action called when a toolbar CFR specified by [tag] is dismissed
+     */
+    data class ToolbarCFRDismissed(val tag: String) : BrowserDisplayToolbarAction()
 }
 
 /**
@@ -118,32 +135,21 @@ sealed class BrowserEditToolbarAction : BrowserToolbarAction {
     /**
      * Updates the text of the toolbar that is currently being edited (in "edit" mode).
      *
-     * @property query The text in the toolbar that is being edited.
-     * @property isQueryPrefilled Whether [query] is prefilled and not user entered.
+     * @property query Information about the text in the toolbar that is being edited.
+     * @property isQueryPrefilled Whether the new text in [query] is prefilled and not user entered.
      */
     data class SearchQueryUpdated(
-        val query: String,
+        val query: BrowserToolbarQuery,
         val isQueryPrefilled: Boolean = false,
     ) : BrowserEditToolbarAction()
 
     /**
-     * Indicates that the user has aborted editing the URL/text.
-     * This callback works only up until Android API 33.
-     */
-    data object SearchAborted : BrowserEditToolbarAction()
-
-    /**
-     * Indicates that a new url suggestion has been autocompleted in the search toolbar.
-     */
-    data class UrlSuggestionAutocompleted(val url: String) : BrowserEditToolbarAction()
-
-    /**
-     * Indicates that a new list of toolbar autocomplete providers is available.
+     * Indicates that a new autocomplete suggestion is available or that the previous one is not valid anymore.
      *
-     * @property autocompleteProviders The new list of [AutocompleteProvider]s.
+     * @property autocompletedSuggestion The new autocomplete suggestion. `null` if none is available.
      */
-    data class AutocompleteProvidersUpdated(
-        val autocompleteProviders: List<AutocompleteProvider>,
+    data class AutocompleteSuggestionUpdated(
+        val autocompletedSuggestion: AutocompleteResult?,
     ) : BrowserEditToolbarAction()
 
     /**
@@ -165,5 +171,7 @@ sealed class BrowserEditToolbarAction : BrowserToolbarAction {
     /**
      * Update the placeholder hint resource ID in edit mode.
      */
-    data class HintUpdated(@param:StringRes val hint: Int) : BrowserEditToolbarAction()
+    data class HintUpdated(
+        @param:StringRes val hint: Int,
+    ) : BrowserEditToolbarAction()
 }

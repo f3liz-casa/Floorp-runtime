@@ -33,7 +33,9 @@ data class IconRequest(
      *
      * We are trying to limit the supported sizes in order to optimize our caching strategy.
      */
-    enum class Size(@param:DimenRes val dimen: Int) {
+    enum class Size(
+        @param:DimenRes val dimen: Int,
+    ) {
         DEFAULT(R.dimen.mozac_browser_icons_size_default),
         LAUNCHER(R.dimen.mozac_browser_icons_size_launcher),
         LAUNCHER_ADAPTIVE(R.dimen.mozac_browser_icons_size_launcher_adaptive),
@@ -125,9 +127,11 @@ data class IconRequest(
             MICROSOFT_TILE,
 
             /**
-             * An icon found in Mozilla's "tippy top" list.
+             * An icon found in Mozilla's Merino Manifest list.
+             *
+             * https://merino.services.mozilla.com/api/v1/manifest
              */
-            TIPPY_TOP,
+            MERINO_MANIFEST,
 
             /**
              * A Web App Manifest image.

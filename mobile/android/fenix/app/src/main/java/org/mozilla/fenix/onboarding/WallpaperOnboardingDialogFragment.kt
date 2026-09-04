@@ -4,7 +4,6 @@
 
 package org.mozilla.fenix.onboarding
 
-import android.annotation.SuppressLint
 import android.app.Dialog
 import android.content.DialogInterface
 import android.content.pm.ActivityInfo
@@ -13,11 +12,11 @@ import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
 import androidx.compose.runtime.rememberCoroutineScope
-import androidx.compose.ui.platform.ComposeView
-import androidx.compose.ui.platform.ViewCompositionStrategy
+import androidx.fragment.compose.content
 import androidx.lifecycle.lifecycleScope
 import androidx.navigation.fragment.findNavController
 import com.google.android.material.bottomsheet.BottomSheetBehavior
+import com.google.android.material.bottomsheet.BottomSheetDialog
 import com.google.android.material.bottomsheet.BottomSheetDialogFragment
 import kotlinx.coroutines.launch
 import mozilla.components.lib.state.ext.observeAsComposableState
@@ -30,7 +29,6 @@ import org.mozilla.fenix.compose.snackbar.Snackbar
 import org.mozilla.fenix.compose.snackbar.SnackbarState
 import org.mozilla.fenix.ext.components
 import org.mozilla.fenix.ext.requireComponents
-import org.mozilla.fenix.ext.settings
 import org.mozilla.fenix.settings.wallpaper.getWallpapersForOnboarding
 import org.mozilla.fenix.theme.FirefoxTheme
 import org.mozilla.fenix.wallpapers.Wallpaper
@@ -49,16 +47,12 @@ class WallpaperOnboardingDialogFragment : BottomSheetDialogFragment() {
     }
 
     override fun onCreateDialog(savedInstanceState: Bundle?): Dialog =
-        super.onCreateDialog(savedInstanceState).apply {
+        (super.onCreateDialog(savedInstanceState) as BottomSheetDialog).apply {
             setOnShowListener {
-                val bottomSheet = findViewById<View?>(R.id.design_bottom_sheet)
-                BottomSheetBehavior.from(bottomSheet).apply {
-                    state = BottomSheetBehavior.STATE_EXPANDED
-                }
+                behavior.state = BottomSheetBehavior.STATE_EXPANDED
             }
         }
 
-    @SuppressLint("SourceLockedOrientationActivity")
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setStyle(STYLE_NO_TITLE, R.style.WallpaperOnboardingDialogStyle)
@@ -83,7 +77,7 @@ class WallpaperOnboardingDialogFragment : BottomSheetDialogFragment() {
 
     override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
         super.onViewCreated(view, savedInstanceState)
-        requireContext().settings().showWallpaperOnboarding = false
+        requireComponents.settings.showWallpaperOnboarding = false
         Wallpapers.onboardingOpened.record(NoExtras())
     }
 
@@ -91,18 +85,16 @@ class WallpaperOnboardingDialogFragment : BottomSheetDialogFragment() {
         inflater: LayoutInflater,
         container: ViewGroup?,
         savedInstanceState: Bundle?,
-    ): View = ComposeView(requireContext()).apply {
-        this@WallpaperOnboardingDialogFragment.dialog?.setCanceledOnTouchOutside(true)
-
-        setViewCompositionStrategy(ViewCompositionStrategy.DisposeOnViewTreeLifecycleDestroyed)
-        setContent {
+    ): View {
+        dialog?.setCanceledOnTouchOutside(true)
+        return content {
             FirefoxTheme {
                 val wallpapers = appStore.observeAsComposableState { state ->
                     state.wallpaperState.availableWallpapers.getWallpapersForOnboarding()
-                }.value ?: listOf()
+                }.value
                 val currentWallpaper = appStore.observeAsComposableState { state ->
                     state.wallpaperState.currentWallpaper
-                }.value ?: Wallpaper.Default
+                }.value
 
                 val coroutineScope = rememberCoroutineScope()
 
@@ -169,8 +161,5 @@ class WallpaperOnboardingDialogFragment : BottomSheetDialogFragment() {
 
         // The desired amount of seasonal wallpapers inside of the selector.
         const val SEASONAL_WALLPAPERS_COUNT = 3
-
-        // The desired amount of seasonal wallpapers inside of the selector.
-        const val CLASSIC_WALLPAPERS_COUNT = 2
     }
 }

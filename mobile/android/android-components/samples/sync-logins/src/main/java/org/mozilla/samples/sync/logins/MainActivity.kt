@@ -9,6 +9,7 @@ import android.view.View
 import android.widget.ArrayAdapter
 import android.widget.ListView
 import android.widget.Toast
+import androidx.activity.enableEdgeToEdge
 import androidx.appcompat.app.AppCompatActivity
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -21,30 +22,36 @@ import mozilla.components.concept.sync.AuthType
 import mozilla.components.concept.sync.DeviceConfig
 import mozilla.components.concept.sync.DeviceType
 import mozilla.components.concept.sync.OAuthAccount
+import mozilla.components.concept.sync.PeriodicSyncConfig
 import mozilla.components.concept.sync.Profile
+import mozilla.components.concept.sync.SyncConfig
+import mozilla.components.concept.sync.SyncEngine
 import mozilla.components.lib.dataprotect.SecureAbove22Preferences
 import mozilla.components.lib.fetch.httpurlconnection.HttpURLConnectionClient
 import mozilla.components.service.fxa.FirefoxAccount
 import mozilla.components.service.fxa.FxaAuthData
-import mozilla.components.service.fxa.PeriodicSyncConfig
-import mozilla.components.service.fxa.SyncConfig
-import mozilla.components.service.fxa.SyncEngine
 import mozilla.components.service.fxa.manager.FxaAccountManager
+import mozilla.components.service.fxa.manager.SCOPE_SYNC
 import mozilla.components.service.fxa.sync.GlobalSyncableStoreProvider
 import mozilla.components.service.fxa.sync.SyncReason
 import mozilla.components.service.fxa.sync.SyncStatusObserver
 import mozilla.components.service.fxa.toAuthType
 import mozilla.components.service.sync.logins.SyncableLoginsStorage
+import mozilla.components.support.AppServicesInitializer
 import mozilla.components.support.base.log.Log
 import mozilla.components.support.base.log.sink.AndroidLogSink
+import mozilla.components.support.ktx.android.view.setupPersistentInsets
 import mozilla.components.support.rusthttp.RustHttpConfig
-import mozilla.components.support.rustlog.RustLog
 import kotlin.coroutines.CoroutineContext
 
 const val CLIENT_ID = "3c49430b43dfba77"
 const val REDIRECT_URL = "https://accounts.firefox.com/oauth/success/$CLIENT_ID"
 
-class MainActivity : AppCompatActivity(), LoginFragment.OnLoginCompleteListener, CoroutineScope, SyncStatusObserver {
+class MainActivity :
+    AppCompatActivity(),
+    LoginFragment.OnLoginCompleteListener,
+    CoroutineScope,
+    SyncStatusObserver {
     private lateinit var keyStorage: SecureAbove22Preferences
 
     private val loginsStorage = lazy {
@@ -61,6 +68,9 @@ class MainActivity : AppCompatActivity(), LoginFragment.OnLoginCompleteListener,
             FxaConfig(FxaServer.Release, CLIENT_ID, REDIRECT_URL),
             DeviceConfig("A-C Logins Sync Sample", DeviceType.MOBILE, setOf()),
             SyncConfig(setOf(SyncEngine.Passwords), PeriodicSyncConfig()),
+            setOf(
+                SCOPE_SYNC,
+            ),
         )
     }
 
@@ -70,13 +80,15 @@ class MainActivity : AppCompatActivity(), LoginFragment.OnLoginCompleteListener,
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        setContentView(R.layout.activity_main)
+        enableEdgeToEdge()
+        window.setupPersistentInsets()
 
-        RustLog.enable()
+        AppServicesInitializer.init(AppServicesInitializer.Config(null))
         RustHttpConfig.setClient(lazy { HttpURLConnectionClient() })
 
         Log.addSink(AndroidLogSink())
 
-        setContentView(R.layout.activity_main)
         job = Job()
 
         // Observe sync state changes.
@@ -104,9 +116,11 @@ class MainActivity : AppCompatActivity(), LoginFragment.OnLoginCompleteListener,
 
         findViewById<View>(R.id.buttonWebView).setOnClickListener {
             launch {
-                val authUrl = accountManager.beginAuthentication(entrypoint = SampleFxAEntryPoint.HomeMenu)
+                val authUrl =
+                    accountManager.beginAuthentication(entrypoint = SampleFxAEntryPoint.HomeMenu)
                 if (authUrl == null) {
-                    Toast.makeText(this@MainActivity, "Account auth error", Toast.LENGTH_LONG).show()
+                    Toast.makeText(this@MainActivity, "Account auth error", Toast.LENGTH_LONG)
+                        .show()
                     return@launch
                 }
                 openWebView(authUrl)
@@ -117,14 +131,16 @@ class MainActivity : AppCompatActivity(), LoginFragment.OnLoginCompleteListener,
     private val accountObserver = object : AccountObserver {
 
         @Suppress("EmptyFunctionBlock")
-        override fun onLoggedOut() {}
+        override fun onLoggedOut() {
+        }
 
         override fun onAuthenticated(account: OAuthAccount, authType: AuthType) {
             launch { accountManager.syncNow(SyncReason.User) }
         }
 
         @Suppress("EmptyFunctionBlock")
-        override fun onProfileUpdated(profile: Profile) {}
+        override fun onProfileUpdated(profile: Profile) {
+        }
 
         override fun onAuthenticationProblems() {
             launch {
@@ -147,11 +163,15 @@ class MainActivity : AppCompatActivity(), LoginFragment.OnLoginCompleteListener,
         }
     }
 
-    override fun onLoginComplete(code: String, state: String, action: String, fragment: LoginFragment) {
+    override fun onLoginComplete(
+        code: String,
+        state: String,
+        action: String?,
+        fragment: LoginFragment,
+    ) {
         launch {
-            accountManager.finishAuthentication(
-                FxaAuthData(action.toAuthType(), code = code, state = state),
-            )
+            val authType = action?.toAuthType() ?: AuthType.Signin
+            accountManager.finishAuthentication(FxaAuthData(authType, code = code, state = state))
             supportFragmentManager.popBackStack()
         }
     }

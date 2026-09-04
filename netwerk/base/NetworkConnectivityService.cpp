@@ -2,22 +2,23 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#include "DNSUtils.h"
 #include "NetworkConnectivityService.h"
+
+#include "DNSUtils.h"
 #include "mozilla/AppShutdown.h"
 #include "mozilla/ClearOnShutdown.h"
-#include "mozilla/net/SocketProcessParent.h"
 #include "mozilla/Preferences.h"
 #include "mozilla/Services.h"
+#include "mozilla/StaticPrefs_network.h"
+#include "mozilla/net/SocketProcessParent.h"
 #include "nsCOMPtr.h"
-#include "nsIChannel.h"
-#include "nsIOService.h"
 #include "nsICancelable.h"
-#include "xpcpublic.h"
-#include "nsSocketTransport2.h"
+#include "nsIChannel.h"
 #include "nsIHttpChannelInternal.h"
 #include "nsINetworkLinkService.h"
-#include "mozilla/StaticPrefs_network.h"
+#include "nsIOService.h"
+#include "nsSocketTransport2.h"
+#include "xpcpublic.h"
 
 static mozilla::LazyLogModule gNCSLog("NetworkConnectivityService");
 #undef LOG
@@ -361,7 +362,7 @@ NetworkConnectivityService::RecheckDNS() {
   if (nsIOService::UseSocketProcess()) {
     RefPtr<SocketProcessParent> parent = SocketProcessParent::GetSingleton();
     if (parent) {
-      Unused << parent->SendRecheckDNS();
+      (void)parent->SendRecheckDNS();
     }
   }
 
@@ -532,7 +533,7 @@ NetworkConnectivityService::RecheckIPConnectivity() {
   if (nsIOService::UseSocketProcess()) {
     RefPtr<SocketProcessParent> parent = SocketProcessParent::GetSingleton();
     if (parent) {
-      Unused << parent->SendRecheckIPConnectivity();
+      (void)parent->SendRecheckIPConnectivity();
     }
   }
 
@@ -626,7 +627,7 @@ NetworkConnectivityService::OnDataAvailable(nsIRequest* aRequest,
     mCheckedNetworkId = true;
   }
 
-  Unused << NS_ReadInputStreamToString(aInputStream, data, aCount);
+  (void)NS_ReadInputStreamToString(aInputStream, data, aCount);
   return NS_OK;
 }
 

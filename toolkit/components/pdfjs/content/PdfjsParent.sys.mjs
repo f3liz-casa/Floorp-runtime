@@ -22,10 +22,10 @@ const lazy = {};
 ChromeUtils.defineESModuleGetters(lazy, {
   clearTimeout: "resource://gre/modules/Timer.sys.mjs",
   createEngine: "chrome://global/content/ml/EngineProcess.sys.mjs",
-  EngineProcess: "chrome://global/content/ml/EngineProcess.sys.mjs",
   IndexedDB: "resource://gre/modules/IndexedDB.sys.mjs",
-  ModelHub: "chrome://global/content/ml/ModelHub.sys.mjs",
+  MLUninstallService: "chrome://global/content/ml/Utils.sys.mjs",
   MultiProgressAggregator: "chrome://global/content/ml/Utils.sys.mjs",
+  PdfJsGuessAltTextFeature: "resource://pdf.js/PdfJsAIFeature.sys.mjs",
   Progress: "chrome://global/content/ml/Utils.sys.mjs",
   NimbusFeatures: "resource://nimbus/ExperimentAPI.sys.mjs",
   PrivateBrowsingUtils: "resource://gre/modules/PrivateBrowsingUtils.sys.mjs",
@@ -34,20 +34,11 @@ ChromeUtils.defineESModuleGetters(lazy, {
 });
 
 const IMAGE_TO_TEXT_TASK = "moz-image-to-text";
-const ML_ENGINE_ID = "pdfjs";
 const ML_ENGINE_MAX_TIMEOUT = 60000;
 const PDFJS_DB_NAME = "pdfjs";
 const PDFJS_DB_VERSION = 1;
 const PDFJS_STORE_NAME = "signatures";
 const PDFJS_SIGNATURE_STORAGE_CHANGED_TOPIC = "pdfjs:storedSignaturesChanged";
-
-var Svc = {};
-XPCOMUtils.defineLazyServiceGetter(
-  Svc,
-  "mime",
-  "@mozilla.org/mime;1",
-  "nsIMIMEService"
-);
 
 XPCOMUtils.defineLazyPreferenceGetter(
   lazy,
@@ -64,6 +55,68 @@ let gFindTypes = [
   "finddiacriticmatchingchange",
 ];
 
+// Defence-in-depth bounds for the signature-verification IPC handlers
+// below. Even though only our own viewer code is expected to call them,
+// the IPC boundary is privileged (chrome receives content-supplied
+// data) so we reject obviously malformed shapes before reaching NSS or
+// `about:certificate`. The validators below are exported so xpcshell
+// can exercise them without having to instantiate the JSWindowActor.
+const MAX_CERTS_PER_VIEW = 16;
+const MAX_DER_BASE64_LEN = 64 * 1024; // 64 KiB / cert is far above any real chain.
+const BASE64_RE = /^[A-Za-z0-9+/=]+$/;
+
+// `instanceof Uint8Array` is unreliable across realms (xpcshell exercises
+// these validators from another global); brand-check a byte view instead.
+const isBytes = x => ArrayBuffer.isView(x) && x.BYTES_PER_ELEMENT === 1;
+
+/**
+ * Validate the shape of a `verifyPdfSignature` IPC payload before
+ * forwarding bytes to `nsIX509CertDB.asyncVerifyPKCS7Object`.
+ *
+ * @param {*} data Content-supplied object.
+ * @returns {boolean} `true` if the payload is a `{pkcs7, data,
+ *   signatureType}` triple with non-empty `Uint8Array` `pkcs7`, a
+ *   non-empty `Uint8Array[]` `data`, and `signatureType ∈ {0, 1}`.
+ * Exported for unit tests.
+ * @internal
+ */
+export function validateVerifyPdfSignatureArgs(data) {
+  const { pkcs7, data: detached, signatureType } = data || {};
+  return (
+    isBytes(pkcs7) &&
+    Array.isArray(detached) &&
+    detached.length &&
+    detached.every(isBytes) &&
+    (signatureType === 0 || signatureType === 1)
+  );
+}
+
+/**
+ * Validate + filter the cert payload of a `viewPdfCertificate` IPC
+ * call before composing the `about:certificate` URL.
+ *
+ * @param {*} data Content-supplied object.
+ * @returns {?string[]} The filtered list of valid base64 cert
+ *   strings, or `null` when the input shape is bad or no cert
+ *   passes the base64 / length checks.
+ * Exported for unit tests.
+ * @internal
+ */
+export function filterCertsForView(data) {
+  const rawCerts = Array.isArray(data?.certs) ? data.certs : [];
+  if (!rawCerts.length || rawCerts.length > MAX_CERTS_PER_VIEW) {
+    return null;
+  }
+  const certs = rawCerts.filter(
+    d =>
+      typeof d === "string" &&
+      d.length &&
+      d.length <= MAX_DER_BASE64_LEN &&
+      BASE64_RE.test(d)
+  );
+  return certs.length ? certs : null;
+}
+
 export class PdfjsParent extends JSWindowActorParent {
   #signatureStorageChangedObserver = null;
 
@@ -73,13 +126,29 @@ export class PdfjsParent extends JSWindowActorParent {
     "enableNewAltTextWhenAddingImage",
   ]);
 
+  #nextTextRequestId = 0;
+
+  /**
+   * Holds the Promise resolves for getTextContent requests.
+   *
+   * @type {Map<number, (text: string) => void>}
+   */
+  #textRequests = new Map();
+
   constructor() {
     super();
     this._boundToFindbar = null;
     this._findFailedString = null;
     this._lastNotFoundStringLength = 0;
 
-    this.#checkPreferences();
+    if (
+      !Services.prefs.prefHasUserValue("pdfjs.enableAltText") &&
+      !Services.locale.appLocaleAsBCP47.startsWith("en") &&
+      Services.prefs.getBoolPref("pdfjs.enableAltText", true)
+    ) {
+      Services.prefs.setBoolPref("pdfjs.enableAltText", false);
+    }
+
     this._updatedPreference();
   }
 
@@ -104,6 +173,8 @@ export class PdfjsParent extends JSWindowActorParent {
         return this._addEventListener();
       case "PDFJS:Parent:saveURL":
         return this._saveURL(aMsg);
+      case "PDFJS:Parent:reportText":
+        return this._reportText(aMsg);
       case "PDFJS:Parent:recordExposure":
         return this._recordExposure();
       case "PDFJS:Parent:reportTelemetry":
@@ -120,8 +191,123 @@ export class PdfjsParent extends JSWindowActorParent {
         return this._updatedPreference(aMsg);
       case "PDFJS:Parent:handleSignature":
         return this._handleSignature(aMsg);
+      case "PDFJS:Parent:verifyPdfSignature":
+        return this._verifyPdfSignature(aMsg);
+      case "PDFJS:Parent:viewPdfCertificate":
+        return this._viewPdfCertificate(aMsg);
     }
     return undefined;
+  }
+
+  _viewPdfCertificate({ data }) {
+    if (
+      !Services.prefs.getBoolPref("pdfjs.enableSignatureVerification", true)
+    ) {
+      return false;
+    }
+    // Validate before the try — invalid input isn't an "exception", it
+    // should produce a clean rejection without going through catch.
+    const certs = filterCertsForView(data);
+    if (!certs) {
+      console.warn("viewPdfCertificate: bad cert payload");
+      return false;
+    }
+    try {
+      const params = certs.map(d => `cert=${encodeURIComponent(d)}`).join("&");
+      const url = `about:certificate?${params}`;
+      const browser = this.browser;
+      let win = browser?.ownerGlobal;
+      if (!win?.openTrustedLinkIn) {
+        win = Services.wm.getMostRecentBrowserWindow();
+      }
+      if (win?.openTrustedLinkIn) {
+        win.openTrustedLinkIn(url, "tab", { relatedToCurrent: true });
+        return true;
+      }
+      console.warn("viewPdfCertificate: no chrome window available");
+      return false;
+    } catch (ex) {
+      console.error("viewPdfCertificate failed:", ex?.name || "Error");
+      return false;
+    }
+  }
+
+  async _verifyPdfSignature({ data }) {
+    if (
+      !Services.prefs.getBoolPref("pdfjs.enableSignatureVerification", true)
+    ) {
+      return { error: "disabled" };
+    }
+    if (!validateVerifyPdfSignatureArgs(data)) {
+      return { error: "bad-args" };
+    }
+    const { pkcs7, data: detached, signatureType } = data;
+    try {
+      const certDB = Cc["@mozilla.org/security/x509certdb;1"].getService(
+        Ci.nsIX509CertDB
+      );
+      const results = await certDB.asyncVerifyPKCS7Object(
+        pkcs7,
+        detached,
+        signatureType
+      );
+      return Array.from(results, r => ({
+        signatureResult: this.#nsresultName(r.signatureResult),
+        certificateResult: this.#nsresultName(r.certificateResult),
+        certificate: this.#flattenCertificate(r.signerCertificate),
+      }));
+    } catch (ex) {
+      // Don't log `String(ex)` — `ex.message` can embed attacker-derived
+      // strings from the PKCS#7 bytes. Log only the error class / NSS
+      // result code.
+      console.error(
+        "verifyPdfSignature failed:",
+        ex?.name || "Error",
+        ex?.result ?? ""
+      );
+      return { error: ex?.name || "verify-failed" };
+    }
+  }
+
+  #nsresultName(code) {
+    if (code === Cr.NS_OK) {
+      return "NS_OK";
+    }
+    try {
+      const errSvc = Cc["@mozilla.org/nss_errors_service;1"].getService(
+        Ci.nsINSSErrorsService
+      );
+      return errSvc.getErrorName?.(code) || `0x${(code >>> 0).toString(16)}`;
+    } catch {
+      return `0x${(code >>> 0).toString(16)}`;
+    }
+  }
+
+  #flattenCertificate(cert) {
+    if (!cert) {
+      return null;
+    }
+    const validity = cert.validity;
+    // PRTime is microseconds since epoch.
+    const notBefore = validity?.notBefore
+      ? new Date(Number(validity.notBefore) / 1000).toISOString()
+      : null;
+    const notAfter = validity?.notAfter
+      ? new Date(Number(validity.notAfter) / 1000).toISOString()
+      : null;
+    let derBase64 = "";
+    try {
+      derBase64 = cert.getBase64DERString?.() || "";
+    } catch {}
+    return {
+      subjectCN: cert.commonName || cert.subjectName || "",
+      issuerCN: cert.issuerCommonName || cert.issuerName || "",
+      notBefore,
+      notAfter,
+      serialNumber: cert.serialNumber || "",
+      fingerprintSha256: cert.sha256Fingerprint || "",
+      derBase64,
+    };
   }
 
   /*
@@ -130,6 +316,22 @@ export class PdfjsParent extends JSWindowActorParent {
 
   get browser() {
     return this.browsingContext.top.embedderElement;
+  }
+
+  /**
+   * Extracts the text content from a PDF.
+   *
+   * @returns {Promise<string>}
+   */
+  getTextContent() {
+    const { promise, resolve } = Promise.withResolvers();
+    const requestId = this.#nextTextRequestId++;
+    this.#textRequests.set(requestId, resolve);
+    this.sendAsyncMessage("PDFJS:Child:handleEvent", {
+      type: "requestTextContent",
+      detail: { requestId },
+    });
+    return promise;
   }
 
   async #openDatabase() {
@@ -238,22 +440,6 @@ export class PdfjsParent extends JSWindowActorParent {
     }
   }
 
-  #checkPreferences() {
-    if (Services.prefs.getBoolPref("pdfjs.enableAltTextForEnglish", true)) {
-      return;
-    }
-    Services.prefs.setBoolPref("pdfjs.enableAltTextForEnglish", true);
-    if (Services.locale.appLocaleAsBCP47.substring(0, 2) !== "en") {
-      return;
-    }
-    if (!Services.prefs.prefHasUserValue("browser.ml.enable")) {
-      Services.prefs.setBoolPref("browser.ml.enable", true);
-    }
-    if (!Services.prefs.prefHasUserValue("pdfjs.enableAltText")) {
-      Services.prefs.setBoolPref("pdfjs.enableAltText", true);
-    }
-  }
-
   _updatedPreference() {
     PdfJsTelemetry.report({
       type: "editing",
@@ -322,7 +508,7 @@ export class PdfjsParent extends JSWindowActorParent {
       return null;
     }
     try {
-      const now = Cu.now();
+      const now = ChromeUtils.now();
 
       let response;
       if (Cu.isInAutomation) {
@@ -332,7 +518,7 @@ export class PdfjsParent extends JSWindowActorParent {
         response = await engine.run(request);
       }
 
-      const time = Cu.now() - now;
+      const time = ChromeUtils.now() - now;
       const length = response?.output.length ?? 0;
       PdfJsTelemetry.report({
         type: "editing",
@@ -479,16 +665,10 @@ export class PdfjsParent extends JSWindowActorParent {
       return null;
     }
     try {
-      // TODO: Temporary workaround to delete the model from the cache.
-      //       See bug 1908941.
-      await lazy.EngineProcess.destroyMLEngine();
-
-      // Deleting all models linked to IMAGE_TO_TEXT_TASK is safe because this is a
-      // Mozilla specific task name.
-      const hub = new lazy.ModelHub();
-      await hub.deleteModels({
-        taskName: service,
-        deletedBy: "pdfjs",
+      await lazy.MLUninstallService.uninstall({
+        engineIds: [lazy.PdfJsGuessAltTextFeature.engineId],
+        // Used only for attribution/telemetry; the specific value is not significant.
+        actor: "pdfjs",
       });
     } catch (e) {
       console.error("Failed to delete AI model", e);
@@ -500,7 +680,12 @@ export class PdfjsParent extends JSWindowActorParent {
   async #createAIEngine(taskName, aggregator) {
     try {
       return await lazy.createEngine(
-        { engineId: ML_ENGINE_ID, taskName, backend: "onnx-native" },
+        {
+          engineId: lazy.PdfJsGuessAltTextFeature.engineId,
+          featureId: lazy.PdfJsGuessAltTextFeature.id,
+          taskName,
+          backend: "onnx-native",
+        },
         aggregator?.aggregateCallback.bind(aggregator) || null
       );
     } catch (e) {
@@ -511,7 +696,7 @@ export class PdfjsParent extends JSWindowActorParent {
 
   _saveURL(aMsg) {
     const { blobUrl, originalUrl, filename } = aMsg.data;
-    this.browser.ownerGlobal.saveURL(
+    this.browser.documentGlobal.saveURL(
       blobUrl /* aURL */,
       originalUrl /* aOriginalURL */,
       filename /* aFileName */,
@@ -582,6 +767,25 @@ export class PdfjsParent extends JSWindowActorParent {
       const matchesCount = this._requestMatchesCount(data.matchesCount);
       fb.onMatchesCountResult(matchesCount);
     });
+  }
+
+  /**
+   * Handle the response for extracting text.
+   *
+   * @param {{ data: { text: string, requestId: number } }}
+   */
+  _reportText({ data }) {
+    const resolve = this.#textRequests.get(data.requestId);
+    this.#textRequests.delete(data.requestId);
+    if (!resolve) {
+      console.error(
+        "Unable to find the text content request",
+        data.requestId,
+        this.#textRequests
+      );
+      return;
+    }
+    resolve(data.text);
   }
 
   _updateMatchesCount(aMsg) {

@@ -1,4 +1,3 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -8,14 +7,11 @@
 #include "IMEData.h"
 #include "PuppetWidget.h"
 #include "TextEvents.h"
-
-#include "mozilla/Preferences.h"
 #include "mozilla/StaticPrefs_dom.h"
+#include "mozilla/Utf16.h"
 #include "nsCharTraits.h"
 #include "nsIFrame.h"
 #include "nsIWidget.h"
-#include "nsPIDOMWindow.h"
-#include "nsView.h"
 
 namespace mozilla {
 namespace widget {
@@ -252,9 +248,8 @@ Maybe<WritingMode> TextEventDispatcher::MaybeQueryWritingModeAtSelection()
 
   WidgetQueryContentEvent querySelectedTextEvent(true, eQuerySelectedText,
                                                  mWidget);
-  nsEventStatus status = nsEventStatus_eIgnore;
-  const_cast<TextEventDispatcher*>(this)->DispatchEvent(
-      mWidget, querySelectedTextEvent, status);
+  const_cast<TextEventDispatcher*>(this)->DispatchEvent(mWidget,
+                                                        querySelectedTextEvent);
   if (!querySelectedTextEvent.FoundSelection()) {
     return Nothing();
   }
@@ -262,22 +257,20 @@ Maybe<WritingMode> TextEventDispatcher::MaybeQueryWritingModeAtSelection()
   return Some(querySelectedTextEvent.mReply->mWritingMode);
 }
 
-nsresult TextEventDispatcher::DispatchEvent(nsIWidget* aWidget,
-                                            WidgetGUIEvent& aEvent,
-                                            nsEventStatus& aStatus) {
+nsEventStatus TextEventDispatcher::DispatchEvent(nsIWidget* aWidget,
+                                                 WidgetGUIEvent& aEvent) {
   MOZ_ASSERT(!aEvent.AsInputEvent(), "Use DispatchInputEvent()");
 
   RefPtr<TextEventDispatcher> kungFuDeathGrip(this);
   nsCOMPtr<nsIWidget> widget(aWidget);
   mDispatchingEvent++;
-  nsresult rv = widget->DispatchEvent(&aEvent, aStatus);
+  auto status = widget->DispatchEvent(&aEvent);
   mDispatchingEvent--;
-  return rv;
+  return status;
 }
 
-nsresult TextEventDispatcher::DispatchInputEvent(nsIWidget* aWidget,
-                                                 WidgetInputEvent& aEvent,
-                                                 nsEventStatus& aStatus) {
+nsEventStatus TextEventDispatcher::DispatchInputEvent(
+    nsIWidget* aWidget, WidgetInputEvent& aEvent) {
   RefPtr<TextEventDispatcher> kungFuDeathGrip(this);
   nsCOMPtr<nsIWidget> widget(aWidget);
   mDispatchingEvent++;
@@ -286,15 +279,13 @@ nsresult TextEventDispatcher::DispatchInputEvent(nsIWidget* aWidget,
   // sends the event to the parent process first since APZ needs to handle it
   // first.  However, some callers (e.g., keyboard apps on B2G and tests
   // expecting synchronous dispatch) don't want this to do that.
-  nsresult rv = NS_OK;
-  if (ShouldSendInputEventToAPZ()) {
-    aStatus = widget->DispatchInputEvent(&aEvent).mContentStatus;
-  } else {
-    rv = widget->DispatchEvent(&aEvent, aStatus);
-  }
+  nsEventStatus status =
+      ShouldSendInputEventToAPZ()
+          ? widget->DispatchInputEvent(&aEvent).mContentStatus
+          : widget->DispatchEvent(&aEvent);
 
   mDispatchingEvent--;
-  return rv;
+  return status;
 }
 
 nsresult TextEventDispatcher::StartComposition(
@@ -319,11 +310,7 @@ nsresult TextEventDispatcher::StartComposition(
   if (aEventTime) {
     compositionStartEvent.AssignEventTime(*aEventTime);
   }
-  rv = DispatchEvent(mWidget, compositionStartEvent, aStatus);
-  if (NS_WARN_IF(NS_FAILED(rv))) {
-    return rv;
-  }
-
+  DispatchEvent(mWidget, compositionStartEvent);
   return NS_OK;
 }
 
@@ -409,11 +396,7 @@ nsresult TextEventDispatcher::CommitComposition(
     compositionCommitEvent.mData.ReplaceSubstring(u"\r\n"_ns, u"\n"_ns);
     compositionCommitEvent.mData.ReplaceSubstring(u"\r"_ns, u"\n"_ns);
   }
-  rv = DispatchEvent(widget, compositionCommitEvent, aStatus);
-  if (NS_WARN_IF(NS_FAILED(rv))) {
-    return rv;
-  }
-
+  aStatus = DispatchEvent(widget, compositionCommitEvent);
   return NS_OK;
 }
 
@@ -527,7 +510,7 @@ void TextEventDispatcher::UpdateNotificationRequests() {
     nsCOMPtr<TextEventDispatcherListener> nativeListener =
         mWidget->GetNativeTextEventDispatcherListener();
     if (nativeListener) {
-      mIMENotificationRequests |= nativeListener->GetIMENotificationRequests();
+      mIMENotificationRequests += nativeListener->GetIMENotificationRequests();
     }
   }
 }
@@ -561,21 +544,11 @@ bool TextEventDispatcher::DispatchKeyboardEventInternal(
     return false;
   }
 
-  // Basically, key events shouldn't be dispatched during composition.
-  // Note that plugin process has different IME context.  Therefore, we don't
-  // need to check our composition state when the key event is fired on a
-  // plugin.
-  if (IsComposing()) {
-    // However, if we need to behave like other browsers, we need the keydown
-    // and keyup events.  Note that this behavior is also allowed by D3E spec.
-    // FYI: keypress events must not be fired during composition.
-    if (!StaticPrefs::dom_keyboardevent_dispatch_during_composition() ||
-        aMessage == eKeyPress) {
-      return false;
-    }
-    // XXX If there was mOnlyContentDispatch for this case, it might be useful
-    //     because our chrome doesn't assume that key events are fired during
-    //     composition.
+  // While we have an IME composition, `keydown` and `keyup` events should be
+  // fired as "Process" key events. However, `keypress` events should not be
+  // fired. https://w3c.github.io/uievents/#events-composition-key-events
+  if (IsComposing() && aMessage == eKeyPress) {
+    return false;
   }
 
   WidgetKeyboardEvent keyEvent(true, aMessage, mWidget);
@@ -586,23 +559,23 @@ bool TextEventDispatcher::DispatchKeyboardEventInternal(
   // emulates real text input or synthesizing keyboard events for tests,
   // the arrays may be initialized all commands already.  If so, we need to
   // duplicate the arrays here, but we should do this only when we're
-  // dispatching eKeyPress events because BrowserParent::SendRealKeyEvent()
-  // does this only for eKeyPress event.  Note that this is not required if
-  // we're in the main process because in the parent process, the edit commands
-  // will be initialized by `ExecuteEditCommands()` (when the event is handled
-  // by editor event listener) or `InitAllEditCommands()` (when the event is
-  // set to a content process).  We should test whether these pathes work or
-  // not too.
+  // dispatching eKeyPress and eKeyDown events because
+  // BrowserParent::SendRealKeyEvent() does this only for eKeyPress and eKeyDown
+  // event.  Note that this is not required if we're in the main process because
+  // in the parent process, the edit commands will be initialized by
+  // `ExecuteEditCommands()` (when the event is handled by editor event
+  // listener) or `InitAllEditCommands()` (when the event is set to a content
+  // process).  We should test whether these pathes work or not too.
   if (XRE_IsContentProcess() && keyEvent.mIsSynthesizedByTIP) {
-    if (aMessage == eKeyPress) {
+    if (aMessage == eKeyPress || aMessage == eKeyDown) {
       keyEvent.AssignCommands(aKeyboardEvent);
     } else {
       // Prevent retriving native edit commands if we're in a content process
-      // because only `eKeyPress` events coming from the main process have
-      // edit commands (See `BrowserParent::SendRealKeyEvent`).  And also
-      // retriving edit commands from a content process requires synchonous
-      // IPC and that makes running tests slower.  Therefore, we should mark
-      // the `eKeyPress` event does not need to retrieve edit commands anymore.
+      // because only `eKeyPress` and `eKeyDown` events coming from the main
+      // process have edit commands (See `BrowserParent::SendRealKeyEvent`). And
+      // also retriving edit commands from a content process requires synchonous
+      // IPC and that makes running tests slower.  Therefore, we should mark the
+      // other events as no longer needing to retrieve edit commands.
       keyEvent.PreventNativeKeyBindings();
     }
   }
@@ -650,17 +623,17 @@ bool TextEventDispatcher::DispatchKeyboardEventInternal(
       // eKeyPress events are dispatched for every character.
       // So, each key value of eKeyPress events should be a character.
       if (ch) {
-        if (!IS_SURROGATE(ch)) {
+        if (!IsSurrogate(ch)) {
           keyEvent.mKeyValue.Assign(ch);
         } else {
           const bool isHighSurrogateFollowedByLowSurrogate =
               aIndexOfKeypress + 1 < keyEvent.mKeyValue.Length() &&
-              NS_IS_HIGH_SURROGATE(ch) &&
-              NS_IS_LOW_SURROGATE(keyEvent.mKeyValue[aIndexOfKeypress + 1]);
+              IsHighSurrogate(ch) &&
+              IsLowSurrogate(keyEvent.mKeyValue[aIndexOfKeypress + 1]);
           const bool isLowSurrogateFollowingHighSurrogate =
               !isHighSurrogateFollowedByLowSurrogate && aIndexOfKeypress > 0 &&
-              NS_IS_LOW_SURROGATE(ch) &&
-              NS_IS_HIGH_SURROGATE(keyEvent.mKeyValue[aIndexOfKeypress - 1]);
+              IsLowSurrogate(ch) &&
+              IsHighSurrogate(keyEvent.mKeyValue[aIndexOfKeypress - 1]);
           NS_WARNING_ASSERTION(isHighSurrogateFollowedByLowSurrogate ||
                                    isLowSurrogateFollowingHighSurrogate,
                                "Lone surrogate input should not happen");
@@ -669,8 +642,7 @@ bool TextEventDispatcher::DispatchKeyboardEventInternal(
             if (isHighSurrogateFollowedByLowSurrogate) {
               keyEvent.mKeyValue.Assign(
                   keyEvent.mKeyValue.BeginReading() + aIndexOfKeypress, 2);
-              keyEvent.SetCharCode(
-                  SURROGATE_TO_UCS4(ch, keyEvent.mKeyValue[1]));
+              keyEvent.SetCharCode(SurrogateToUCS4(ch, keyEvent.mKeyValue[1]));
             } else if (isLowSurrogateFollowingHighSurrogate) {
               // Although not dispatching eKeyPress event (because it's already
               // dispatched for the low surrogate above), the caller should
@@ -778,7 +750,7 @@ bool TextEventDispatcher::DispatchKeyboardEventInternal(
     keyEvent.InitAllEditCommands(mWritingMode);
   }
 
-  DispatchInputEvent(mWidget, keyEvent, aStatus);
+  aStatus = DispatchInputEvent(mWidget, keyEvent);
   return true;
 }
 
@@ -1043,11 +1015,7 @@ nsresult TextEventDispatcher::PendingComposition::Flush(
   if (aStatus == nsEventStatus_eConsumeNoDefault) {
     return NS_OK;
   }
-  rv = aDispatcher->DispatchEvent(widget, compChangeEvent, aStatus);
-  if (NS_WARN_IF(NS_FAILED(rv))) {
-    return rv;
-  }
-
+  aStatus = aDispatcher->DispatchEvent(widget, compChangeEvent);
   return NS_OK;
 }
 

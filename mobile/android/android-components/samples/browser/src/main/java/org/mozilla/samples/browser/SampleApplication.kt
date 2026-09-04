@@ -21,6 +21,7 @@ import mozilla.components.support.base.log.logger.Logger
 import mozilla.components.support.base.log.sink.AndroidLogSink
 import mozilla.components.support.ktx.android.content.isMainProcess
 import mozilla.components.support.ktx.android.content.runOnlyInMainProcess
+import mozilla.components.support.rusthttp.RustHttpConfig
 import mozilla.components.support.rustlog.RustLog
 import mozilla.components.support.webextensions.WebExtensionSupport
 import mozilla.telemetry.glean.BuildInfo
@@ -48,10 +49,13 @@ class SampleApplication : Application() {
 
     val components by lazy { Components(this) }
 
+    // Sample-only code with no injectable clock seam and no time-dependent behavior to test.
+    @Suppress("NoSystemCurrentTimeMillis")
     @OptIn(DelicateCoroutinesApi::class) // Usage of GlobalScope
     override fun onCreate() {
         super.onCreate()
 
+        RustHttpConfig.setClient(lazy { components.client })
         RustLog.enable()
 
         Log.addSink(AndroidLogSink())
@@ -92,8 +96,14 @@ class SampleApplication : Application() {
             WebExtensionSupport.initialize(
                 components.engine,
                 components.store,
-                onNewTabOverride = { _, engineSession, url ->
-                    components.tabsUseCases.addTab(url, selectTab = true, engineSession = engineSession)
+                isInPrivateBrowsingMode = { false },
+                onNewTabOverride = { _, engineSession, url, selected, isPrivate ->
+                    components.tabsUseCases.addTab(
+                        url,
+                        selectTab = selected,
+                        engineSession = engineSession,
+                        private = isPrivate,
+                    )
                 },
                 onCloseTabOverride = { _, sessionId ->
                     components.tabsUseCases.removeTab(sessionId)

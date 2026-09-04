@@ -19,11 +19,13 @@ import androidx.fragment.compose.content
 import com.google.android.material.bottomsheet.BottomSheetBehavior
 import com.google.android.material.bottomsheet.BottomSheetDialog
 import mozilla.components.concept.storage.Login
+import mozilla.components.concept.storage.LoginHint
 import mozilla.components.feature.prompts.R
 import mozilla.components.feature.prompts.dialog.KEY_PROMPT_UID
 import mozilla.components.feature.prompts.dialog.KEY_SESSION_ID
 import mozilla.components.feature.prompts.dialog.PromptDialogFragment
 import mozilla.components.feature.prompts.dialog.emitGeneratedPasswordFilledFact
+import com.google.android.material.R as materialR
 
 private const val GENERATED_PASSWORD = "GENERATED_PASSWORD"
 private const val URL = "URL"
@@ -51,10 +53,9 @@ internal class PasswordGeneratorDialogFragment : PromptDialogFragment() {
         return BottomSheetDialog(requireContext(), R.style.MozDialogStyle).apply {
             setCancelable(true)
             setOnShowListener {
-                val bottomSheet =
-                    findViewById<View>(com.google.android.material.R.id.design_bottom_sheet) as FrameLayout
+                val bottomSheet = findViewById<View>(materialR.id.design_bottom_sheet) as FrameLayout
                 val behavior = BottomSheetBehavior.from(bottomSheet)
-                behavior.peekHeight = resources.displayMetrics.heightPixels
+                behavior.peekHeight = context.resources.displayMetrics.heightPixels
                 behavior.state = BottomSheetBehavior.STATE_EXPANDED
             }
         }
@@ -95,6 +96,7 @@ internal class PasswordGeneratorDialogFragment : PromptDialogFragment() {
             httpRealm = currentUrl,
             username = "",
             password = generatedPassword,
+            hint = LoginHint.GENERATED,
         )
         feature?.onConfirm(sessionId, promptRequestUID, login)
         emitGeneratedPasswordFilledFact()

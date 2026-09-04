@@ -6,7 +6,6 @@ import androidx.test.filters.MediumTest
 import org.hamcrest.Matchers.endsWith
 import org.hamcrest.Matchers.equalTo
 import org.hamcrest.Matchers.not
-import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Assume.assumeThat
 import org.junit.Before
@@ -18,6 +17,7 @@ import org.mozilla.geckoview.GeckoSession.PermissionDelegate
 import org.mozilla.geckoview.WebNotification
 import org.mozilla.geckoview.WebNotificationDelegate
 import org.mozilla.geckoview.test.rule.GeckoSessionTestRule
+import kotlin.test.assertNotNull
 
 const val VERY_LONG_IMAGE_URL = "https://example.com/this/is/a/very/long/address/that/is/meant/to/be/longer/than/is/one/hundred/and/fifth/characters/long/for/testing/imageurl/length.ico"
 
@@ -59,6 +59,7 @@ class WebNotificationTest : BaseSessionTest() {
                 assertThat("Vibrate should match", notification.vibrate, equalTo(intArrayOf()))
                 assertThat("Source should match", notification.source, equalTo(createTestUrl(HELLO_HTML_PATH)))
                 assertThat("Origin should match", notification.origin, equalTo(GeckoSessionTestRule.TEST_ENDPOINT))
+                notification.show()
                 notificationResult.complete(null)
             }
         })
@@ -113,6 +114,7 @@ class WebNotificationTest : BaseSessionTest() {
             override fun onShowNotification(notification: WebNotification) {
                 assertNotificationData(notification, requireInteraction)
                 assertThat("privateBrowsing should match", notification.privateBrowsing, equalTo(true))
+                notification.show()
                 notificationResult.complete(null)
             }
         })
@@ -211,6 +213,7 @@ class WebNotificationTest : BaseSessionTest() {
         sessionRule.delegateDuringNextWait(object : WebNotificationDelegate {
             @GeckoSessionTestRule.AssertCalled
             override fun onShowNotification(notification: WebNotification) {
+                notification.show()
                 notificationResult.complete(notification)
             }
         })
@@ -269,6 +272,7 @@ class WebNotificationTest : BaseSessionTest() {
         sessionRule.delegateDuringNextWait(object : WebNotificationDelegate {
             @GeckoSessionTestRule.AssertCalled
             override fun onShowNotification(notification: WebNotification) {
+                notification.show()
                 notificationResult.complete(notification)
             }
         })
@@ -318,6 +322,7 @@ class WebNotificationTest : BaseSessionTest() {
             @GeckoSessionTestRule.AssertCalled
             override fun onShowNotification(notification: WebNotification) {
                 notificationShown = notification
+                notification.show()
                 notificationResult.complete(null)
             }
         })
@@ -347,6 +352,7 @@ class WebNotificationTest : BaseSessionTest() {
             @GeckoSessionTestRule.AssertCalled
             override fun onShowNotification(notification: WebNotification) {
                 notificationShown = notification
+                notification.show()
                 notificationResult.complete(null)
             }
         })
@@ -374,6 +380,7 @@ class WebNotificationTest : BaseSessionTest() {
         sessionRule.delegateDuringNextWait(object : WebNotificationDelegate {
             @GeckoSessionTestRule.AssertCalled
             override fun onShowNotification(notification: WebNotification) {
+                notification.show()
                 notificationResult.complete(notification)
             }
         })
@@ -399,7 +406,7 @@ class WebNotificationTest : BaseSessionTest() {
         val parcel = Parcel.obtain()
         notification.writeToParcel(
             parcel,
-            /* ignored */
+            // ignored
             -1,
         )
 
@@ -412,6 +419,7 @@ class WebNotificationTest : BaseSessionTest() {
         sessionRule.delegateDuringNextWait(object : WebNotificationDelegate {
             @GeckoSessionTestRule.AssertCalled
             override fun onShowNotification(notification: WebNotification) {
+                notification.show()
                 notificationResult.complete(notification)
             }
         })
@@ -442,7 +450,7 @@ class WebNotificationTest : BaseSessionTest() {
         val parcel = Parcel.obtain()
         notification.writeToParcel(
             parcel,
-            /* ignored */
+            // ignored
             -1,
         )
         parcel.setDataPosition(0)

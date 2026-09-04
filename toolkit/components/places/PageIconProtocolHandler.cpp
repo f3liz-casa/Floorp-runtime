@@ -8,6 +8,7 @@
 #include "mozilla/ScopeExit.h"
 #include "mozilla/Components.h"
 #include "mozilla/Try.h"
+#include "nsContentUtils.h"
 #include "nsFaviconService.h"
 #include "nsStringStream.h"
 #include "nsStreamUtils.h"
@@ -66,7 +67,7 @@ static nsresult GetFaviconMetadata(
 
   favicon->GetWidth(&aMetadata.mWidth);
   favicon->GetMimeType(aMetadata.mContentType);
-  aMetadata.mStream = stream;
+  aMetadata.mStream = std::move(stream);
   aMetadata.mContentLength = rawData.Length();
 
   return NS_OK;
@@ -183,6 +184,10 @@ NS_IMETHODIMP PageIconProtocolHandler::AllowPort(int32_t, const char*,
 NS_IMETHODIMP PageIconProtocolHandler::NewChannel(nsIURI* aURI,
                                                   nsILoadInfo* aLoadInfo,
                                                   nsIChannel** aOutChannel) {
+  if (!nsContentUtils::IsImageType(aLoadInfo->GetExternalContentPolicyType())) {
+    return NS_ERROR_CONTENT_BLOCKED;
+  }
+
   // Load the URI remotely if accessed from a child.
   if (IsNeckoChild()) {
     MOZ_TRY(SubstituteRemoteChannel(aURI, aLoadInfo, aOutChannel));
@@ -255,7 +260,7 @@ nsresult PageIconProtocolHandler::NewChannelInternal(nsIURI* aURI,
           // favicon before giving up.
           channel->SetContentType(nsLiteralCString(FAVICON_DEFAULT_MIMETYPE));
           channel->SetContentLength(-1);
-          Unused << StreamDefaultFavicon(uri, loadInfo, pipeOut);
+          (void)StreamDefaultFavicon(uri, loadInfo, pipeOut);
         }
       });
 
@@ -309,6 +314,11 @@ RefPtr<RemoteStreamPromise> PageIconProtocolHandler::NewStream(
                                                 __func__);
   }
 
+  if (!nsContentUtils::IsImageType(aLoadInfo->GetExternalContentPolicyType())) {
+    return RemoteStreamPromise::CreateAndReject(NS_ERROR_CONTENT_BLOCKED,
+                                                __func__);
+  }
+
   // For errors after this point, we want to propagate the error to
   // the child, but we don't force the child process to be terminated.
   *aTerminateSender = false;
@@ -336,7 +346,7 @@ RefPtr<RemoteStreamPromise> PageIconProtocolHandler::NewStream(
 
           RemoteStreamInfo info(pipeIn,
                                 nsLiteralCString(FAVICON_DEFAULT_MIMETYPE), -1);
-          Unused << StreamDefaultFavicon(uri, loadInfo, pipeOut);
+          (void)StreamDefaultFavicon(uri, loadInfo, pipeOut);
           outerPromise->Resolve(std::move(info), __func__);
         }
       });

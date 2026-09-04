@@ -13,6 +13,7 @@ ChromeUtils.defineESModuleGetters(lazy, {
   AppInfo: "chrome://remote/content/shared/AppInfo.sys.mjs",
   assert: "chrome://remote/content/shared/webdriver/Assert.sys.mjs",
   AsyncQueue: "chrome://remote/content/shared/AsyncQueue.sys.mjs",
+  dom: "chrome://remote/content/shared/DOM.sys.mjs",
   error: "chrome://remote/content/shared/webdriver/Errors.sys.mjs",
   event: "chrome://remote/content/shared/webdriver/Event.sys.mjs",
   keyData: "chrome://remote/content/shared/webdriver/KeyData.sys.mjs",
@@ -48,6 +49,22 @@ const MODIFIER_NAME_LOOKUP = {
   Control: "ctrl",
   Meta: "meta",
 };
+
+// Flag, that indicates if an async widget event should be used when dispatching a mouse event.
+XPCOMUtils.defineLazyPreferenceGetter(
+  actions,
+  "useAsyncMouseEvents",
+  "remote.events.async.mouse.enabled",
+  false
+);
+
+// Flag, that indicates if an async widget event should be used when dispatching a touch event.
+XPCOMUtils.defineLazyPreferenceGetter(
+  actions,
+  "useAsyncTouchEvents",
+  "remote.events.async.touch.enabled",
+  false
+);
 
 // Flag, that indicates if an async widget event should be used when dispatching a wheel scroll event.
 XPCOMUtils.defineLazyPreferenceGetter(
@@ -507,6 +524,10 @@ class KeyInputSource extends InputSource {
  * Input state associated with a pointer-type device.
  */
 class PointerInputSource extends InputSource {
+  #initialized;
+  #x;
+  #y;
+
   static type = "pointer";
 
   /**
@@ -521,9 +542,23 @@ class PointerInputSource extends InputSource {
     super(id);
 
     this.pointer = pointer;
-    this.x = 0;
-    this.y = 0;
     this.pressed = new Set();
+
+    this.#initialized = false;
+    this.#x = 0;
+    this.#y = 0;
+  }
+
+  get initialized() {
+    return this.#initialized;
+  }
+
+  get x() {
+    return this.#x;
+  }
+
+  get y() {
+    return this.#y;
   }
 
   /**
@@ -542,6 +577,12 @@ class PointerInputSource extends InputSource {
     );
 
     return this.pressed.has(button);
+  }
+
+  moveTo(x, y) {
+    this.#initialized = true;
+    this.#x = x;
+    this.#y = y;
   }
 
   /**
@@ -788,7 +829,14 @@ class ElementOrigin extends Origin {
       );
     }
 
-    return getInViewCentrePoint(clientRects[0], context);
+    /*
+     * Note: This diverges from the Webdriver spec. See more information in
+     * https://github.com/w3c/webdriver/issues/1961
+     * */
+    return getInViewCentrePoint(
+      lazy.dom.getFirstNonZeroRect(clientRects),
+      context
+    );
   }
 }
 
@@ -1284,7 +1332,7 @@ class PointerAction extends Action {
       lazy.assert.numberInRange(
         altitudeAngle,
         [0, Math.PI / 2],
-        'Expected "altitudeAngle" to be in range 0 to ${Math.PI / 2}, ' +
+        'Expected "altitudeAngle" to be in range 0 to π/2, ' +
           lazy.pprint`got ${altitudeAngle}`
       );
     }
@@ -1292,7 +1340,7 @@ class PointerAction extends Action {
       lazy.assert.numberInRange(
         azimuthAngle,
         [0, 2 * Math.PI],
-        'Expected "azimuthAngle" to be in range 0 to ${2 * Math.PI}, ' +
+        'Expected "azimuthAngle" to be in range 0 to 2*π, ' +
           lazy.pprint`got ${azimuthAngle}`
       );
     }
@@ -1368,13 +1416,14 @@ class PointerDownAction extends PointerAction {
    *     Promise that is resolved once the action is complete.
    */
   async dispatch(state, inputSource, tickDuration, options) {
-    lazy.logger.trace(
-      `Dispatch ${this.constructor.name} ${inputSource.pointer.type} with id: ${this.id} button: ${this.button}`
-    );
-
     if (inputSource.isPressed(this.button)) {
       return;
     }
+
+    lazy.logger.trace(
+      `Dispatch ${this.constructor.name} ${inputSource.pointer.type} with id: ${this.id} ` +
+        `button: ${this.button} async: ${actions.useAsyncMouseEvents}`
+    );
 
     inputSource.press(this.button);
 
@@ -1402,13 +1451,13 @@ class PointerDownAction extends PointerAction {
    */
   static fromJSON(id, actionItem) {
     const { button } = actionItem;
-    const props = PointerAction.validateCommon(actionItem);
 
     lazy.assert.positiveInteger(
       button,
       lazy.pprint`Expected "button" to be a positive integer, got ${button}`
     );
 
+    const props = PointerAction.validateCommon(actionItem);
     props.button = button;
 
     return new this(id, props);
@@ -1472,13 +1521,14 @@ class PointerUpAction extends PointerAction {
    *     Promise that is resolved once the action is complete.
    */
   async dispatch(state, inputSource, tickDuration, options) {
-    lazy.logger.trace(
-      `Dispatch ${this.constructor.name} ${inputSource.pointer.type} with id: ${this.id} button: ${this.button}`
-    );
-
     if (!inputSource.isPressed(this.button)) {
       return;
     }
+
+    lazy.logger.trace(
+      `Dispatch ${this.constructor.name} ${inputSource.pointer.type} with id: ${this.id} ` +
+        `button: ${this.button} async: ${actions.useAsyncMouseEvents}`
+    );
 
     inputSource.release(this.button);
 
@@ -1503,13 +1553,13 @@ class PointerUpAction extends PointerAction {
    */
   static fromJSON(id, actionItem) {
     const { button } = actionItem;
-    const props = PointerAction.validateCommon(actionItem);
 
     lazy.assert.positiveInteger(
       button,
       lazy.pprint`Expected "button" to be a positive integer, got ${button}`
     );
 
+    const props = PointerAction.validateCommon(actionItem);
     props.button = button;
 
     return new this(id, props);
@@ -1581,23 +1631,38 @@ class PointerMoveAction extends PointerAction {
    *     Promise that is resolved once the action is complete.
    */
   async dispatch(state, inputSource, tickDuration, options) {
-    const { assertInViewPort, context } = options;
+    const { assertInViewPort, context, toBrowserWindowCoordinates } = options;
 
-    lazy.logger.trace(
-      `Dispatch ${this.constructor.name} ${inputSource.pointer.type} with id: ${this.id} x: ${this.x} y: ${this.y}`
-    );
-
-    const target = await this.origin.getTargetCoordinates(
+    let moveCoordinates = await this.origin.getTargetCoordinates(
       inputSource,
       [this.x, this.y],
       options
     );
 
-    await assertInViewPort(target, context);
+    await assertInViewPort(moveCoordinates, context);
+
+    lazy.logger.trace(
+      `Dispatch ${this.constructor.name} ${inputSource.pointer.type} with id: ${this.id} ` +
+        `x: ${moveCoordinates[0]} y: ${moveCoordinates[1]} ` +
+        `async: ${actions.useAsyncMouseEvents}`
+    );
+
+    // Only convert coordinates if these are for a content process, and are not
+    // relative to an already initialized pointer source.
+    if (
+      !(this.origin instanceof PointerOrigin && inputSource.initialized) &&
+      context.isContent &&
+      actions.useAsyncMouseEvents
+    ) {
+      moveCoordinates = await toBrowserWindowCoordinates(
+        moveCoordinates,
+        context
+      );
+    }
 
     return moveOverTime(
       [[inputSource.x, inputSource.y]],
-      [target],
+      [moveCoordinates],
       this.duration ?? tickDuration,
       async _target =>
         await this.performPointerMoveStep(state, inputSource, _target, options)
@@ -1626,12 +1691,13 @@ class PointerMoveAction extends PointerAction {
     }
 
     const target = targets[0];
-    lazy.logger.trace(
-      `PointerMoveAction.performPointerMoveStep ${JSON.stringify(target)}`
-    );
     if (target[0] == inputSource.x && target[1] == inputSource.y) {
       return;
     }
+
+    lazy.logger.trace(
+      `PointerMoveAction.performPointerMoveStep ${JSON.stringify(target)}`
+    );
 
     await inputSource.pointer.pointerMove(
       state,
@@ -1642,8 +1708,7 @@ class PointerMoveAction extends PointerAction {
       options
     );
 
-    inputSource.x = target[0];
-    inputSource.y = target[1];
+    inputSource.moveTo(target[0], target[1]);
   }
 
   /**
@@ -1827,20 +1892,38 @@ class WheelScrollAction extends WheelAction {
 
     await assertInViewPort(scrollCoordinates, context);
 
-    lazy.logger.trace(
-      `Dispatch ${this.constructor.name} with id: ${this.id} ` +
-        `pageX: ${scrollCoordinates[0]} pageY: ${scrollCoordinates[1]} ` +
-        `deltaX: ${this.deltaX} deltaY: ${this.deltaY} ` +
-        `async: ${actions.useAsyncWheelEvents}`
-    );
-
     // Only convert coordinates if those are for a content process
     if (context.isContent && actions.useAsyncWheelEvents) {
-      scrollCoordinates = await toBrowserWindowCoordinates(
+      const origin = await toBrowserWindowCoordinates(
         scrollCoordinates,
         context
       );
+
+      // The deltas are specified in CSS pixels by the WebDriver specification,
+      // but the synthesized wheel event is dispatched in the top-level widget's
+      // coordinate space, which has the visual viewport scale (resolution)
+      // applied. Convert the deltas through the same transform as the origin,
+      // so that a non-unit resolution doesn't make the resulting scroll offset
+      // wrong by that factor. The translation cancels in the difference, leaving
+      // only the scale.
+      const target = await toBrowserWindowCoordinates(
+        [
+          scrollCoordinates[0] + this.deltaX,
+          scrollCoordinates[1] + this.deltaY,
+        ],
+        context
+      );
+      this.deltaX = target[0] - origin[0];
+      this.deltaY = target[1] - origin[1];
+
+      scrollCoordinates = origin;
     }
+
+    lazy.logger.trace(
+      `Dispatch ${this.constructor.name} with id: ${this.id} ` +
+        `pageX: ${scrollCoordinates[0]} pageY: ${scrollCoordinates[1]} ` +
+        `deltaX: ${this.deltaX} deltaY: ${this.deltaY} async: ${actions.useAsyncWheelEvents}`
+    );
 
     const startX = 0;
     const startY = 0;
@@ -1981,6 +2064,45 @@ class TouchActionGroup {
 }
 
 /**
+ * Calculate and convert coordinates for a touch action.
+ *
+ * @param {PointerAction} action
+ *     The action containing x, y, and origin properties.
+ * @param {InputSource} actionInputSource
+ *     The input source for this action.
+ * @param {ActionsOptions} options
+ *     Configuration of actions dispatch.
+ *
+ * @returns {Promise<Array<number>>}
+ *     Array of [x, y] coordinates, converted if necessary.
+ */
+async function getTouchCoordinates(action, actionInputSource, options) {
+  const { assertInViewPort, context, toBrowserWindowCoordinates } = options;
+
+  let target = await action.origin.getTargetCoordinates(
+    actionInputSource,
+    [action.x, action.y],
+    options
+  );
+
+  await assertInViewPort(target, context);
+
+  // Only convert coordinates if these are for a content process, and are not
+  // relative to an already initialized pointer source.
+  if (
+    !(
+      action.origin instanceof PointerOrigin && actionInputSource.initialized
+    ) &&
+    context.isContent &&
+    actions.useAsyncTouchEvents
+  ) {
+    target = await toBrowserWindowCoordinates(target, context);
+  }
+
+  return target;
+}
+
+/**
  * Group of actions representing behavior of all touch pointers
  * depressed during a single tick.
  */
@@ -2003,13 +2125,7 @@ class PointerDownTouchActionGroup extends TouchActionGroup {
    *     Promise that is resolved once the action is complete.
    */
   async dispatch(state, inputSource, tickDuration, options) {
-    const { context, dispatchEvent } = options;
-
-    lazy.logger.trace(
-      `Dispatch ${this.constructor.name} with ${Array.from(
-        this.actions.values()
-      ).map(x => x[1].id)}`
-    );
+    const { context, dispatchEvent, toBrowserWindowCoordinates } = options;
 
     if (inputSource !== null) {
       throw new Error(
@@ -2023,10 +2139,29 @@ class PointerDownTouchActionGroup extends TouchActionGroup {
         !actionInputSource.isPressed(action.button)
     );
 
+    lazy.logger.trace(
+      `Dispatch ${this.constructor.name} with ${filteredActions.map(x => x[1].id)} async: ${actions.useAsyncTouchEvents}`
+    );
+
     if (filteredActions.length) {
-      const eventData = new MultiTouchEventData("touchstart");
+      const eventData = new TouchEventData("touchstart");
 
       for (const [actionInputSource, action] of filteredActions) {
+        // If the pointer hasn't been moved yet, its initial (0, 0) viewport
+        // coordinates need to be converted to browser window space for async
+        // touch dispatch in a content process.
+        if (
+          !actionInputSource.initialized &&
+          context.isContent &&
+          actions.useAsyncTouchEvents
+        ) {
+          const target = await toBrowserWindowCoordinates(
+            [actionInputSource.x, actionInputSource.y],
+            context
+          );
+          actionInputSource.moveTo(target[0], target[1]);
+        }
+
         eventData.addPointerEventData(actionInputSource, action);
         actionInputSource.press(action.button);
         eventData.update(state, actionInputSource);
@@ -2046,68 +2181,12 @@ class PointerDownTouchActionGroup extends TouchActionGroup {
         }
       }
 
-      await dispatchEvent("synthesizeMultiTouch", context, { eventData });
+      await dispatchEvent("synthesizeTouchAtPoint", context, { eventData });
 
       for (const [, action] of filteredActions) {
         // Append a copy of |action| with pointerUp subtype if event dispatched
         state.inputsToCancel.push(new PointerUpAction(action.id, action));
       }
-    }
-  }
-}
-
-/**
- * Group of actions representing behavior of all touch pointers
- * released during a single tick.
- */
-class PointerUpTouchActionGroup extends TouchActionGroup {
-  static type = "pointerUp";
-
-  /**
-   * Dispatch a pointerup touch action.
-   *
-   * @param {State} state
-   *     The {@link State} of the action.
-   * @param {InputSource} inputSource
-   *     Current input device.
-   * @param {number} tickDuration
-   *     [unused] Length of the current tick, in ms.
-   * @param {ActionsOptions} options
-   *     Configuration of actions dispatch.
-   *
-   * @returns {Promise}
-   *     Promise that is resolved once the action is complete.
-   */
-  async dispatch(state, inputSource, tickDuration, options) {
-    const { context, dispatchEvent } = options;
-
-    lazy.logger.trace(
-      `Dispatch ${this.constructor.name} with ${Array.from(
-        this.actions.values()
-      ).map(x => x[1].id)}`
-    );
-
-    if (inputSource !== null) {
-      throw new Error(
-        "Expected null inputSource for PointerUpTouchActionGroup.dispatch"
-      );
-    }
-
-    // Only include pointers that are not already depressed
-    const filteredActions = Array.from(this.actions.values()).filter(
-      ([actionInputSource, action]) =>
-        actionInputSource.isPressed(action.button)
-    );
-
-    if (filteredActions.length) {
-      const eventData = new MultiTouchEventData("touchend");
-      for (const [actionInputSource, action] of filteredActions) {
-        eventData.addPointerEventData(actionInputSource, action);
-        actionInputSource.release(action.button);
-        eventData.update(state, actionInputSource);
-      }
-
-      await dispatchEvent("synthesizeMultiTouch", context, { eventData });
     }
   }
 }
@@ -2135,30 +2214,29 @@ class PointerMoveTouchActionGroup extends TouchActionGroup {
    *     Promise that is resolved once the action is complete.
    */
   async dispatch(state, inputSource, tickDuration, options) {
-    const { assertInViewPort, context } = options;
-
-    lazy.logger.trace(
-      `Dispatch ${this.constructor.name} with ${Array.from(this.actions).map(
-        x => x[1].id
-      )}`
-    );
     if (inputSource !== null) {
       throw new Error(
         "Expected null inputSource for PointerMoveTouchActionGroup.dispatch"
       );
     }
 
+    const moveActions = Array.from(this.actions.values());
+
+    lazy.logger.trace(
+      `Dispatch ${this.constructor.name} with ${moveActions.map(
+        x => x[1].id
+      )} async: ${actions.useAsyncTouchEvents}`
+    );
+
     let startCoords = [];
     let targetCoords = [];
 
-    for (const [actionInputSource, action] of this.actions.values()) {
-      const target = await action.origin.getTargetCoordinates(
+    for (const [actionInputSource, action] of moveActions) {
+      const target = await getTouchCoordinates(
+        action,
         actionInputSource,
-        [action.x, action.y],
         options
       );
-
-      await assertInViewPort(target, context);
 
       startCoords.push([actionInputSource.x, actionInputSource.y]);
       targetCoords.push(target);
@@ -2236,10 +2314,9 @@ class PointerMoveTouchActionGroup extends TouchActionGroup {
       return;
     }
 
-    const eventData = new MultiTouchEventData("touchmove");
+    const eventData = new TouchEventData("touchmove");
     for (const [inputSource, action, target] of perPointerData) {
-      inputSource.x = target[0];
-      inputSource.y = target[1];
+      inputSource.moveTo(target[0], target[1]);
       eventData.addPointerEventData(inputSource, action);
       eventData.update(state, inputSource);
     }
@@ -2249,7 +2326,61 @@ class PointerMoveTouchActionGroup extends TouchActionGroup {
       eventData.update(state, inputSource);
     }
 
-    await dispatchEvent("synthesizeMultiTouch", context, { eventData });
+    await dispatchEvent("synthesizeTouchAtPoint", context, { eventData });
+  }
+}
+
+/**
+ * Group of actions representing behavior of all touch pointers
+ * released during a single tick.
+ */
+class PointerUpTouchActionGroup extends TouchActionGroup {
+  static type = "pointerUp";
+
+  /**
+   * Dispatch a pointerup touch action.
+   *
+   * @param {State} state
+   *     The {@link State} of the action.
+   * @param {InputSource} inputSource
+   *     Current input device.
+   * @param {number} tickDuration
+   *     [unused] Length of the current tick, in ms.
+   * @param {ActionsOptions} options
+   *     Configuration of actions dispatch.
+   *
+   * @returns {Promise}
+   *     Promise that is resolved once the action is complete.
+   */
+  async dispatch(state, inputSource, tickDuration, options) {
+    const { context, dispatchEvent } = options;
+
+    if (inputSource !== null) {
+      throw new Error(
+        "Expected null inputSource for PointerUpTouchActionGroup.dispatch"
+      );
+    }
+
+    // Only include pointers that are not already depressed
+    const filteredActions = Array.from(this.actions.values()).filter(
+      ([actionInputSource, action]) =>
+        actionInputSource.isPressed(action.button)
+    );
+
+    lazy.logger.trace(
+      `Dispatch ${this.constructor.name} with ${filteredActions.map(x => x[1].id)} async: ${actions.useAsyncTouchEvents}`
+    );
+
+    if (filteredActions.length) {
+      const eventData = new TouchEventData("touchend");
+      for (const [actionInputSource, action] of filteredActions) {
+        eventData.addPointerEventData(actionInputSource, action);
+        actionInputSource.release(action.button);
+        eventData.update(state, actionInputSource);
+      }
+
+      await dispatchEvent("synthesizeTouchAtPoint", context, { eventData });
+    }
   }
 }
 
@@ -2473,11 +2604,9 @@ class MousePointer extends Pointer {
     });
     mouseEvent.update(state, inputSource);
 
-    if (mouseEvent.ctrlKey) {
-      if (lazy.AppInfo.isMac) {
-        mouseEvent.button = 2;
-        state.clickTracker.reset();
-      }
+    if (mouseEvent.ctrlKey && lazy.AppInfo.isMac) {
+      mouseEvent.button = 2;
+      state.clickTracker.reset();
     } else {
       mouseEvent.clickCount = state.clickTracker.count + 1;
     }
@@ -3017,13 +3146,13 @@ class WheelEventData extends InputEventData {
 }
 
 /**
- * Representation of a multi touch event.
+ * Representation of one or more touch events.
  */
-class MultiTouchEventData extends PointerEventData {
+class TouchEventData extends PointerEventData {
   #setGlobalState;
 
   /**
-   * Creates a new {@link MultiTouchEventData} instance.
+   * Creates a new {@link TouchEventData} instance.
    *
    * @param {string} type
    *     The event type.
@@ -3041,6 +3170,9 @@ class MultiTouchEventData extends PointerEventData {
     this.tiltx = [];
     this.tilty = [];
     this.twist = [];
+    this.altitudeAngle = [];
+    this.azimuthAngle = [];
+
     this.#setGlobalState = false;
   }
 
@@ -3056,13 +3188,15 @@ class MultiTouchEventData extends PointerEventData {
     this.x.push(inputSource.x);
     this.y.push(inputSource.y);
     this.id.push(inputSource.pointer.id);
-    this.rx.push(action.width || 1);
-    this.ry.push(action.height || 1);
+    this.rx.push(action.width);
+    this.ry.push(action.height);
     this.angle.push(0);
-    this.force.push(action.pressure || (this.type === "touchend" ? 0 : 1));
-    this.tiltx.push(action.tiltX || 0);
-    this.tilty.push(action.tiltY || 0);
-    this.twist.push(action.twist || 0);
+    this.force.push(action.pressure);
+    this.tiltx.push(action.tiltX);
+    this.tilty.push(action.tiltY);
+    this.twist.push(action.twist);
+    this.altitudeAngle.push(action.altitudeAngle);
+    this.azimuthAngle.push(action.azimuthAngle);
   }
 
   update(state, inputSource) {

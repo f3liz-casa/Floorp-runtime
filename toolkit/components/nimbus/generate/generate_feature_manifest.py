@@ -29,6 +29,7 @@ ALLOWED_ISEARLYSTARTUP_FEATURE_IDS = {
     "aboutwelcome",
     "bounceTrackingProtection",
     "newtab",
+    "opaqueResponseBlocking",  # Requires C++ API for exposure events
     "pocketNewtab",
     "preonboarding",
     "testFeature",
@@ -56,6 +57,9 @@ DISALLOWED_PREFS = {
     # used by code to check if we are in a test.
     "security.turn_off_all_security_so_that_viruses_can_take_over_this_computer": (
         "this pref is automation-only and is unsafe to enable outside tests"
+    ),
+    "security.sandbox.content.level": (
+        "changing this value can lower the security of clients"
     ),
 }
 
@@ -224,20 +228,18 @@ def generate_platform_feature_manifest(fd, input_file):
     write_fm_headers(fd)
 
     def file_structure(data):
-        return "\n".join(
-            [
-                "#ifndef mozilla_NimbusFeaturesManifest_h",
-                "#define mozilla_NimbusFeaturesManifest_h",
-                "#include <utility>",
-                '#include "mozilla/Maybe.h"',
-                '#include "nsStringFwd.h"',
-                "namespace mozilla {",
-                platform_feature_manifest_array(data),
-                '#include "./lib/NimbusFeatureManifest.inc.h"',
-                "}  // namespace mozilla",
-                "#endif  // mozilla_NimbusFeaturesManifest_h",
-            ]
-        )
+        return "\n".join([
+            "#ifndef mozilla_NimbusFeaturesManifest_h",
+            "#define mozilla_NimbusFeaturesManifest_h",
+            "#include <utility>",
+            '#include "mozilla/Maybe.h"',
+            '#include "nsStringFwd.h"',
+            "namespace mozilla {",
+            platform_feature_manifest_array(data),
+            '#include "./lib/NimbusFeatureManifest.inc.h"',
+            "}  // namespace mozilla",
+            "#endif  // mozilla_NimbusFeaturesManifest_h",
+        ])
 
     try:
         with open(input_file, encoding="utf-8") as yaml_input:

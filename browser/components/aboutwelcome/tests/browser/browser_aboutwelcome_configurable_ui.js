@@ -85,6 +85,12 @@ async function testAboutWelcomeLogoFor(logo = {}) {
   browser.closeBrowser();
 }
 
+add_setup(async function () {
+  registerCleanupFunction(function () {
+    Services.prefs.clearUserPref("browser.aboutwelcome.didSeeFinalScreen");
+  });
+});
+
 /**
  * Test rendering a screen in about welcome with decorative noodles
  */
@@ -319,6 +325,11 @@ add_task(async function test_aboutwelcome_dismiss_button() {
  * Test rendering a screen with the "split" position
  */
 add_task(async function test_aboutwelcome_split_position() {
+  // Forcing light-mode prevents the test from failing locally if your OS is in dark-mode
+  await SpecialPowers.pushPrefEnv({
+    set: [["ui.systemUsesDarkTheme", 0]],
+  });
+
   const TEST_SPLIT_STEP = makeTestContent("TEST_SPLIT_STEP", {
     position: "split",
     hero_text: "hero test",
@@ -346,16 +357,20 @@ add_task(async function test_aboutwelcome_split_position() {
   );
 
   // Ensure secondary action has button styling
+  const novaEnabled = Services.prefs.getBoolPref("browser.nova.enabled", false);
   await test_element_styles(
     browser,
     ".action-buttons .secondary-cta .secondary",
     // Expected styles:
     {
       // Override default text-link styles
-      "background-color": "color(srgb 0.0823529 0.0784314 0.101961 / 0.07)",
-      color: "rgb(21, 20, 26)",
+      "background-color": novaEnabled
+        ? "rgba(0, 0, 0, 0)"
+        : "color(srgb 0.0823529 0.0784314 0.101961 / 0.07)",
+      color: novaEnabled ? "rgb(22, 20, 35)" : "rgb(21, 20, 26)",
     }
   );
+  await SpecialPowers.popPrefEnv();
   browser.closeBrowser();
 });
 
@@ -457,12 +472,13 @@ add_task(async function test_aboutwelcome_with_text_color_override() {
   );
 
   // Ensure title inherits light text color
+  const novaEnabled = Services.prefs.getBoolPref("browser.nova.enabled", false);
   await test_element_styles(
     browser,
     "#mainContentHeader",
     // Expected styles:
     {
-      color: "rgb(21, 20, 26)",
+      color: novaEnabled ? "rgb(24, 14, 48)" : "rgb(21, 20, 26)",
     }
   );
 
@@ -472,7 +488,7 @@ add_task(async function test_aboutwelcome_with_text_color_override() {
     ".indicator:not(.current)",
     // Expected styles:
     {
-      color: "rgb(251, 251, 254)",
+      color: novaEnabled ? "rgb(242, 240, 248)" : "rgb(251, 251, 254)",
     }
   );
 
@@ -489,6 +505,7 @@ add_task(async function test_aboutwelcome_with_progress_bar() {
     set: [
       ["ui.systemUsesDarkTheme", 0],
       ["ui.prefersReducedMotion", 0],
+      ["ui.useAccessibilityTheme", 0],
     ],
   });
   let screens = [];
@@ -517,7 +534,8 @@ add_task(async function test_aboutwelcome_with_progress_bar() {
   });
   let browser = await openAboutWelcome(JSON.stringify(screens));
 
-  await SpecialPowers.spawn(browser, [], async () => {
+  const novaEnabled = Services.prefs.getBoolPref("browser.nova.enabled", false);
+  await SpecialPowers.spawn(browser, [novaEnabled], async isNova => {
     const progressBar = await ContentTaskUtils.waitForCondition(() =>
       content.document.querySelector(".progress-bar")
     );
@@ -527,7 +545,9 @@ add_task(async function test_aboutwelcome_with_progress_bar() {
     // Progress bar should have a gray background.
     is(
       content.window.getComputedStyle(progressBar)["background-color"],
-      "color(srgb 0.0823529 0.0784314 0.101961 / 0.25)",
+      isNova
+        ? "color(srgb 0.0862745 0.0784314 0.137255 / 0.25)"
+        : "color(srgb 0.0823529 0.0784314 0.101961 / 0.25)",
       "Correct progress bar background"
     );
 
@@ -535,7 +555,7 @@ add_task(async function test_aboutwelcome_with_progress_bar() {
     for (let [key, val] of Object.entries({
       // The filled "completed" element should have
       // `background-color: var(--button-background-color-primary);`
-      "background-color": "oklch(0.55 0.24 260)",
+      "background-color": isNova ? "rgb(118, 78, 221)" : "oklch(0.55 0.24 260)",
       // Base progress bar step styles.
       height: "6px",
       "margin-inline": "-1px",
@@ -949,6 +969,159 @@ add_task(async function test_aboutwelcome_single_select_icon_styles() {
       height: "100px",
       "margin-inline": "10px",
       "border-radius": "5px",
+    }
+  );
+
+  await doExperimentCleanup();
+  browser.closeBrowser();
+});
+
+/**
+ * Test configurability of secondary_button_top
+ */
+add_task(async function test_secondary_button_top_configuration() {
+  const secondaryTopContent = makeTestContent(`TEST_SECONDARY_TOP_CONTENT`, {
+    secondary_button_top: [
+      {
+        label: {
+          raw: "test button 1",
+        },
+        action: {
+          navigate: true,
+        },
+      },
+      {
+        label: {
+          raw: "test button 2",
+        },
+        action: {
+          navigate: true,
+        },
+      },
+    ],
+  });
+
+  let screens = [secondaryTopContent];
+
+  let doExperimentCleanup = await NimbusTestUtils.enrollWithFeatureConfig({
+    featureId: "aboutwelcome",
+    value: { enabled: true, screens },
+  });
+
+  let browser = await openAboutWelcome();
+
+  await test_screen_content(
+    browser,
+    "render the secondary top buttons in a container",
+    // Expected selectors:
+    [
+      ".secondary-buttons-top-container",
+      "#secondary_button_0",
+      "#secondary_button_1",
+    ]
+  );
+
+  // Ensure container has appropriate styles
+  await test_element_styles(
+    browser,
+    ".secondary-buttons-top-container",
+    // Expected styles:
+    {
+      display: "flex",
+      "flex-direction": "row",
+      position: "fixed",
+      top: "10px",
+    }
+  );
+
+  await doExperimentCleanup();
+  browser.closeBrowser();
+});
+
+/**
+ * Test rendering a fullscreen split screen that supports lengthy content
+ */
+add_task(async function test_aboutwelcome_fullscreen_split_layout_styles() {
+  let screens = [
+    makeTestContent("TEST_FULLSCREEN_SPLIT", {
+      fullscreen: true,
+      position: "split",
+      background:
+        "var(--mr-secondary-position) var(--mr-screen-background-color)",
+      secondary_button_top: [
+        {
+          label: {
+            raw: "Sign in",
+          },
+          action: {
+            navigate: true,
+          },
+        },
+      ],
+    }),
+  ];
+
+  let doExperimentCleanup = await NimbusTestUtils.enrollWithFeatureConfig({
+    featureId: "aboutwelcome",
+    value: { enabled: true, screens },
+  });
+
+  let browser = await openAboutWelcome();
+
+  await test_screen_content(
+    browser,
+    "render fullscreen split screen",
+    // Expected selectors:
+    ["main.TEST_FULLSCREEN_SPLIT[pos='split'][fullscreen]"]
+  );
+
+  await test_element_styles(
+    browser,
+    ".onboardingContainer",
+    // Expected styles:
+    {
+      display: "flex",
+      flexDirection: "column",
+    }
+  );
+
+  await test_element_styles(
+    browser,
+    ".section-main",
+    // Expected styles:
+    {
+      margin: "0px",
+      display: "flex",
+    }
+  );
+
+  await test_element_styles(
+    browser,
+    ".section-main .main-content",
+    // Expected styles:
+    {
+      flex: "1 1 0%",
+      borderRadius: "0px",
+      padding: "0px",
+    }
+  );
+
+  await test_element_styles(
+    browser,
+    ".section-main .main-content .main-content-inner",
+    // Expected styles:
+    {
+      paddingTop: "40px",
+      paddingBottom: "40px",
+    }
+  );
+
+  await test_element_styles(
+    browser,
+    ".secondary-buttons-top-container",
+    // Expected styles:
+    {
+      zIndex: "2",
     }
   );
 

@@ -8,35 +8,29 @@ import android.os.Bundle
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
-import androidx.compose.ui.platform.ComposeView
-import androidx.compose.ui.platform.ViewCompositionStrategy
-import androidx.core.content.getSystemService
 import androidx.fragment.app.Fragment
+import androidx.fragment.compose.content
+import androidx.lifecycle.lifecycleScope
 import androidx.navigation.NavHostController
 import androidx.navigation.fragment.findNavController
 import androidx.navigation.fragment.navArgs
-import mozilla.components.compose.browser.toolbar.store.BrowserToolbarState
-import mozilla.components.compose.browser.toolbar.store.BrowserToolbarStore
-import mozilla.components.compose.browser.toolbar.store.Mode
-import mozilla.components.concept.engine.EngineSession
-import org.mozilla.fenix.BrowserDirection
-import org.mozilla.fenix.HomeActivity
+import kotlinx.coroutines.flow.emptyFlow
+import mozilla.components.lib.state.helpers.StoreProvider.Companion.fragmentStore
 import org.mozilla.fenix.R
-import org.mozilla.fenix.components.StoreProvider
 import org.mozilla.fenix.components.accounts.FenixFxAEntryPoint
+import org.mozilla.fenix.components.appstate.AppAction
+import org.mozilla.fenix.components.share.ShareSheetChooserAction
+import org.mozilla.fenix.components.share.ShareSource
+import org.mozilla.fenix.e2e.SystemInsetsPaddedFragment
 import org.mozilla.fenix.ext.bookmarkStorage
 import org.mozilla.fenix.ext.nav
 import org.mozilla.fenix.ext.requireComponents
-import org.mozilla.fenix.ext.settings
-import org.mozilla.fenix.search.SearchFragmentState
-import org.mozilla.fenix.search.SearchFragmentStore
 import org.mozilla.fenix.theme.FirefoxTheme
-import org.mozilla.fenix.utils.lastSavedFolderCache
 
 /**
  * Menu to edit the name, URL, and location of a bookmark item.
  */
-class EditBookmarkFragment : Fragment(R.layout.fragment_edit_bookmark) {
+class EditBookmarkFragment : Fragment(), SystemInsetsPaddedFragment {
 
     private val args by navArgs<EditBookmarkFragmentArgs>()
 
@@ -45,101 +39,104 @@ class EditBookmarkFragment : Fragment(R.layout.fragment_edit_bookmark) {
         inflater: LayoutInflater,
         container: ViewGroup?,
         savedInstanceState: Bundle?,
-    ): View? {
-        return ComposeView(requireContext()).apply {
-                setViewCompositionStrategy(ViewCompositionStrategy.DisposeOnViewTreeLifecycleDestroyed)
-                val buildStore = { navController: NavHostController ->
-                    val isSignedIntoSync = requireComponents
-                        .backgroundServices.accountManager.authenticatedAccount() != null
+    ): View {
+        val context = requireContext()
+        val buildStore = { composeNavController: NavHostController ->
+            val appStore = requireComponents.appStore
+            val navController = findNavController()
+            val isSignedIntoSync = requireComponents
+                .backgroundServices.accountManager.authenticatedAccount() != null
 
-                    val store = StoreProvider.get(this@EditBookmarkFragment) {
-                        val lifecycleHolder = LifecycleHolder(
-                            context = requireContext(),
-                            navController = this@EditBookmarkFragment.findNavController(),
-                            composeNavController = navController,
-                            homeActivity = (requireActivity() as HomeActivity),
-                        )
-
-                        BookmarksStore(
-                            initialState = BookmarksState.default.copy(
-                                isSignedIntoSync = isSignedIntoSync,
-                            ),
-                            middleware = listOf(
-                                BookmarksMiddleware(
-                                    bookmarksStorage = requireContext().bookmarkStorage,
-                                    clipboardManager = requireContext().getSystemService(),
-                                    addNewTabUseCase = requireComponents.useCases.tabsUseCases.addTab,
-                                    navigateToSignIntoSync = {
-                                        lifecycleHolder.navController
-                                            .navigate(
-                                                BookmarkFragmentDirections.actionGlobalTurnOnSync(
-                                                    entrypoint = FenixFxAEntryPoint.BookmarkView,
-                                                ),
-                                            )
+            val store by fragmentStore(
+                BookmarksState.default.copy(
+                    isSignedIntoSync = isSignedIntoSync,
+                ),
+            ) {
+                BookmarksStore(
+                    initialState = it,
+                    middleware = listOf(
+                        BookmarksMiddleware(
+                            bookmarksStorage = context.bookmarkStorage,
+                            addNewTabUseCase = requireComponents.useCases.tabsUseCases.addTab,
+                            fenixBrowserUseCases = requireComponents.useCases.fenixBrowserUseCases,
+                            openBookmarksInNewTab = if (requireComponents.settings.enableHomepageAsNewTab) {
+                                false
+                            } else {
+                                appStore.state.mode.isPrivate
+                            },
+                            getNavController = { composeNavController },
+                            exitBookmarks = { navController.popBackStack() },
+                            navigateToBrowser = {
+                                navController.navigate(R.id.browserFragment)
+                            },
+                            navigateToSignIntoSync = {
+                                navController
+                                    .navigate(
+                                        BookmarkFragmentDirections.actionGlobalTurnOnSync(
+                                            entrypoint = FenixFxAEntryPoint.BookmarkView,
+                                        ),
+                                    )
+                            },
+                            navigateToImportDialog = {},
+                            shareBookmarks = { bookmarks ->
+                                val shareItems = bookmarks.asShareDataArray().toList()
+                                requireComponents.useCases.shareUseCases.shareItems(
+                                    items = shareItems,
+                                    source = ShareSource.BOOKMARKS,
+                                    chooserActions = if (shareItems.size == 1) {
+                                        listOf(
+                                            ShareSheetChooserAction.SEND_TO_DEVICES,
+                                            ShareSheetChooserAction.QR_CODE,
+                                        )
+                                    } else {
+                                        listOf(ShareSheetChooserAction.SEND_TO_DEVICES)
                                     },
-                                    getNavController = { lifecycleHolder.composeNavController },
-                                    exitBookmarks = { lifecycleHolder.navController.popBackStack() },
-                                    wasPreviousAppDestinationHome = { false },
-                                    useNewSearchUX = settings().shouldUseComposableToolbar,
-                                    navigateToSearch = { },
-                                    shareBookmarks = { bookmarks ->
-                                        lifecycleHolder.navController.nav(
+                                    navigateToShareFragment = {
+                                        navController.nav(
                                             R.id.bookmarkFragment,
                                             BookmarkFragmentDirections.actionGlobalShareFragment(
                                                 data = bookmarks.asShareDataArray(),
                                             ),
                                         )
                                     },
-                                    showTabsTray = { },
-                                    resolveFolderTitle = {
-                                        friendlyRootTitle(
-                                            context = lifecycleHolder.context,
-                                            node = it,
-                                            rootTitles = composeRootTitles(lifecycleHolder.context),
-                                        ) ?: ""
-                                    },
-                                    getBrowsingMode = {
-                                        lifecycleHolder.homeActivity.browsingModeManager.mode
-                                    },
-                                    openTab = { url, openInNewTab ->
-                                        lifecycleHolder.homeActivity.openToBrowserAndLoad(
-                                            searchTermOrURL = url,
-                                            newTab = openInNewTab,
-                                            from = BrowserDirection.FromBookmarks,
-                                            flags = EngineSession.LoadUrlFlags.select(
-                                                EngineSession.LoadUrlFlags.ALLOW_JAVASCRIPT_URL,
-                                            ),
-                                        )
-                                    },
-                                    lastSavedFolderCache = context.settings().lastSavedFolderCache,
-                                    saveBookmarkSortOrder = {},
-                                ),
-                            ),
-                            lifecycleHolder = lifecycleHolder,
-                            bookmarkToLoad = args.guidToEdit,
-                        )
-                    }
-                    store.lifecycleHolder?.apply {
-                        this.navController = this@EditBookmarkFragment.findNavController()
-                        this.composeNavController = navController
-                        this.homeActivity = (requireActivity() as HomeActivity)
-                        this.context = requireContext()
-                    }
-
-                    store
-                }
-                setContent {
-                    FirefoxTheme {
-                        BookmarksScreen(
-                            buildStore = buildStore,
-                            startDestination = BookmarksDestinations.EDIT_BOOKMARK,
-                            toolbarStore = BrowserToolbarStore(BrowserToolbarState(mode = Mode.EDIT)),
-                            searchStore = SearchFragmentStore(SearchFragmentState.EMPTY),
-                            bookmarksSearchEngine = null,
-                        )
-                    }
-                }
+                                )
+                            },
+                            showTabsTray = { },
+                            resolveFolderTitle = {
+                                friendlyRootTitle(
+                                    context = context,
+                                    node = it,
+                                    rootTitles = composeRootTitles(context),
+                                ) ?: ""
+                            },
+                            getBrowsingMode = {
+                                appStore.state.mode
+                            },
+                            editBookmarkUseCase = requireComponents.useCases.bookmarksUseCases.editBookmark,
+                            saveBookmarkSortOrder = {},
+                            reportResultGlobally = {
+                                requireComponents.appStore.dispatch(
+                                    AppAction.BookmarkAction.BookmarkOperationResultReported(it),
+                                )
+                            },
+                            importEvents = { emptyFlow() },
+                            lifecycleScope = lifecycleScope,
+                        ),
+                    ),
+                )
             }
+
+            store
+        }
+        return content {
+            FirefoxTheme {
+                BookmarksScreen(
+                    buildStore = buildStore,
+                    startDestination = BookmarksDestinations.EDIT_BOOKMARK,
+                    bookmarkToLoad = args.guidToEdit,
+                )
+            }
+        }
     }
 
     override fun onDestroyView() {

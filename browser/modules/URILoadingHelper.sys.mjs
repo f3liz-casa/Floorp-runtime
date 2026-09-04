@@ -11,7 +11,6 @@ const lazy = {};
 ChromeUtils.defineESModuleGetters(lazy, {
   AboutNewTab: "resource:///modules/AboutNewTab.sys.mjs",
   BrowserWindowTracker: "resource:///modules/BrowserWindowTracker.sys.mjs",
-  UrlbarPrefs: "resource:///modules/UrlbarPrefs.sys.mjs",
 });
 
 ChromeUtils.defineLazyGetter(lazy, "ReferrerInfo", () =>
@@ -75,8 +74,12 @@ function openInWindow(url, params, sourceWindow) {
     policyContainer,
     resolveOnContentBrowserCreated,
     chromeless,
+    width,
+    height,
   } = params;
-  const CHROMELESS_FEATURES = `resizable,minimizable,titlebar,close`;
+  const chromelessDimensions =
+    chromeless && width && height ? `,width=${width},height=${height}` : "";
+  const CHROMELESS_FEATURES = `resizable,minimizable,titlebar,close${chromelessDimensions}`;
   let features = `chrome,dialog=no,${chromeless ? CHROMELESS_FEATURES : "all"}`;
   if (params.private) {
     features += ",private";
@@ -146,6 +149,9 @@ function openInWindow(url, params, sourceWindow) {
   }
   if (params.schemelessInput !== undefined) {
     extraOptions.setPropertyAsUint32("schemelessInput", params.schemelessInput);
+  }
+  if (params.aiWindow) {
+    extraOptions.setPropertyAsBool("ai-window", true);
   }
 
   var allowThirdPartyFixupSupports = Cc[
@@ -345,11 +351,12 @@ function _createNullPrincipalFromTabUserContextId(tab = null) {
 }
 
 export const URILoadingHelper = {
-  /* openLinkIn opens a URL in a place specified by the parameter |where|.
+  /**
+   * openLinkIn opens a URL in a place specified by the parameter |where|.
    *
    * The params object is the same as for `openLinkIn` and documented below.
    *
-   * @param {String}  where
+   * @param {string}  where
    *   |where| can be:
    *    "current"     current tab            (if there aren't any browser windows, then in a new window instead)
    *    "tab"         new tab                (if there aren't any browser windows, then in a new window instead)
@@ -358,7 +365,7 @@ export const URILoadingHelper = {
    *    "chromeless"  new minimal window     (no browser navigation UI)
    *    "save"        save to disk (with no filename hint!)
    *
-   * @param {Object}  params
+   * @param {object}  params
    *
    * Options relating to what tab/window to use and how to open it:
    *
@@ -414,6 +421,7 @@ export const URILoadingHelper = {
    *                  Force allow a data URI to load as a toplevel load.
    * @param {number}  params.userContextId
    *                  The userContextId (container identifier) to use for the load.
+   *                  If where is "current" and the specified userContextId differs, a new tab is opened instead.
    * @param {boolean} params.allowInheritPrincipal
    *                  Allow the load to inherit the triggering principal.
    * @param {boolean} params.forceAboutBlankViewerInCurrent
@@ -442,9 +450,9 @@ export const URILoadingHelper = {
    *                   This callback will be called when a new tab is created.
    * @param {function} params.resolveOnContentBrowserCreated
    *                   This callback will be called with the content browser once it's created.
-   * @param {Object}   params.globalHistoryOptions
+   * @param {object}   params.globalHistoryOptions
    *                   Used by places to keep track of search related metadata for loads.
-   * @param {Number}   params.frameID
+   * @param {number}   params.frameID
    *                   Used by webextensions for their loads.
    *
    * Options used for where="save" only:
@@ -529,12 +537,11 @@ export const URILoadingHelper = {
     w.focus();
 
     let targetBrowser;
-    let loadInBackground;
     let uriObj;
+    let loadInBackground = BrowserUtils.willLoadInBackground(where, params);
 
     if (where == "current") {
       targetBrowser = params.targetBrowser || w.gBrowser.selectedBrowser;
-      loadInBackground = false;
       uriObj = URL.parse(url)?.URI;
 
       // In certain tabs, we restrict what if anything may replace the loaded
@@ -542,6 +549,13 @@ export const URILoadingHelper = {
       // we'll open a new tab instead.
       let tab = w.gBrowser.getTabForBrowser(targetBrowser);
       if (tab == w.FirefoxViewHandler.tab) {
+        where = "tab";
+        targetBrowser = null;
+      } else if (
+        params.userContextId != null &&
+        params.userContextId !==
+          targetBrowser.browsingContext.originAttributes.userContextId
+      ) {
         where = "tab";
         targetBrowser = null;
       } else if (
@@ -564,14 +578,6 @@ export const URILoadingHelper = {
           targetBrowser = null;
         }
       }
-    } else {
-      // `where` is "tab" or "tabshifted", so we'll load the link in a new tab.
-      loadInBackground = params.inBackground;
-      if (loadInBackground == null) {
-        loadInBackground = params.forceForeground
-          ? false
-          : Services.prefs.getBoolPref("browser.tabs.loadInBackground");
-      }
     }
 
     let focusUrlBar = false;
@@ -586,10 +592,8 @@ export const URILoadingHelper = {
           w.document.activeElement == w.gURLBar.inputField &&
           w.isBlankPageURL(url);
         break;
-      case "tabshifted":
-        loadInBackground = !loadInBackground;
-      // fall through
-      case "tab": {
+      case "tab":
+      case "tabshifted": {
         focusUrlBar =
           !loadInBackground &&
           w.isBlankPageURL(url) &&
@@ -666,12 +670,12 @@ export const URILoadingHelper = {
       targetBrowser.focus();
     }
   },
-  /*
+  /**
    * Resolve the initial browser window to use for a load, based on `where`.
    *
    * @param {string} where
    *        The target location for the load (e.g. "current", "tab", "window").
-   * @param {Object} params
+   * @param {object} params
    *        The full params object passed to openLinkIn.
    * @param {Window} win
    *        The reference window used as a fallback for getTargetWindow.
@@ -682,7 +686,7 @@ export const URILoadingHelper = {
    */
   _resolveInitialTargetWindow(where, params, win, forceNonPrivate) {
     if (where === "current" && params.targetBrowser) {
-      return params.targetBrowser.ownerGlobal;
+      return params.targetBrowser.documentGlobal;
     }
 
     if (where === "tab" || where === "tabshifted") {
@@ -705,7 +709,7 @@ export const URILoadingHelper = {
    * matches will be returned.
    *
    * @param {Window} window - The current window.
-   * @param {Object} params - Parameters for selecting the window.
+   * @param {object} params - Parameters for selecting the window.
    * @param {boolean} params.skipPopups - Require a non-popup window.
    * @param {boolean} params.skipTaskbarTabs - Require a non-taskbartab window.
    * @param {boolean} params.forceNonPrivate - Require a non-private window.
@@ -741,15 +745,15 @@ export const URILoadingHelper = {
    * openUILink handles clicks on UI elements that cause URLs to load.
    *
    * @param {string} url
-   * @param {Event | Object} event Event or JSON object representing an Event
-   * @param {Boolean | Object} aIgnoreButton
+   * @param {Event | object} event Event or JSON object representing an Event
+   * @param {boolean | object} aIgnoreButton
    *                           Boolean or object with the same properties as
    *                           accepted by openLinkIn, plus "ignoreButton"
    *                           and "ignoreAlt".
-   * @param {Boolean} aIgnoreAlt
-   * @param {Boolean} aAllowThirdPartyFixup
-   * @param {Object} aPostData
-   * @param {Object} aReferrerInfo
+   * @param {boolean} aIgnoreAlt
+   * @param {boolean} aAllowThirdPartyFixup
+   * @param {object} aPostData
+   * @param {object} aReferrerInfo
    */
   openUILink(
     window,
@@ -903,6 +907,8 @@ export const URILoadingHelper = {
    * @param aUserContextId
    *        If not null, will switch to the first found tab having the provided
    *        userContextId.
+   * @param aSplitView
+   *        If not null, will move the tab to the active split view instead of switching to tab
    * @return True if an existing tab was found, false otherwise
    */
   switchToTabHavingURI(
@@ -910,7 +916,8 @@ export const URILoadingHelper = {
     aURI,
     aOpenNew,
     aOpenParams = {},
-    aUserContextId = null
+    aUserContextId = null,
+    aSplitView = null
   ) {
     // Certain URLs can be switched to irrespective of the source or destination
     // window being in private browsing mode:
@@ -1017,7 +1024,18 @@ export const URILoadingHelper = {
           }
 
           if (!doAdopt) {
-            aWindow.gBrowser.tabContainer.selectedIndex = i;
+            if (aSplitView) {
+              let tabToMove = aWindow.gBrowser.tabs[i];
+              if (aSplitView.tabs.includes(tabToMove)) {
+                aWindow.gBrowser.selectedTab = tabToMove;
+              } else {
+                let tabToReplace = aSplitView.tabs.find(tab => tab.selected);
+                aSplitView.replaceTab(tabToReplace, tabToMove);
+              }
+              aSplitView.documentGlobal.focus();
+            } else {
+              aWindow.gBrowser.tabContainer.selectedIndex = i;
+            }
           }
 
           return true;
@@ -1049,10 +1067,7 @@ export const URILoadingHelper = {
 
     // No opened tab has that url.
     if (aOpenNew) {
-      if (
-        lazy.UrlbarPrefs.get("switchTabs.searchAllContainers") &&
-        aUserContextId != null
-      ) {
+      if (aUserContextId != null) {
         aOpenParams.userContextId = aUserContextId;
       }
       if (isBrowserWindow && window.gBrowser.selectedTab.isEmpty) {

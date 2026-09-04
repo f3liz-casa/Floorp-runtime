@@ -6,21 +6,21 @@
 //!
 //! [page]: https://drafts.csswg.org/css2/page.html#page-box
 
+use crate::derives::*;
 use crate::parser::{Parse, ParserContext};
 use crate::properties::PropertyDeclarationBlock;
 use crate::shared_lock::{
     DeepCloneWithLock, Locked, SharedRwLock, SharedRwLockReadGuard, ToCssWithGuard,
 };
-use crate::str::CssStringWriter;
 use crate::stylesheets::{style_or_page_rule_to_css, CssRules};
 use crate::values::{AtomIdent, CustomIdent};
-use cssparser::{Parser, SourceLocation, Token};
+use cssparser::{match_ignore_ascii_case, Parser, SourceLocation, Token};
 #[cfg(feature = "gecko")]
 use malloc_size_of::{MallocSizeOf, MallocSizeOfOps, MallocUnconditionalShallowSizeOf};
 use servo_arc::Arc;
 use smallvec::SmallVec;
 use std::fmt::{self, Write};
-use style_traits::{CssWriter, ParseError, ToCss};
+use style_traits::{CssStringWriter, CssWriter, ParseError, ToCss};
 
 macro_rules! page_pseudo_classes {
     ($($(#[$($meta:tt)+])* $id:ident => $val:literal,)+) => {
@@ -306,11 +306,11 @@ impl PageRule {
     #[cfg(feature = "gecko")]
     pub fn size_of(&self, guard: &SharedRwLockReadGuard, ops: &mut MallocSizeOfOps) -> usize {
         // Measurement of other fields may be added later.
-        self.rules.unconditional_shallow_size_of(ops) +
-            self.rules.read_with(guard).size_of(guard, ops) +
-            self.block.unconditional_shallow_size_of(ops) +
-            self.block.read_with(guard).size_of(ops) +
-            self.selectors.size_of(ops)
+        self.rules.unconditional_shallow_size_of(ops)
+            + self.rules.read_with(guard).size_of(guard, ops)
+            + self.block.unconditional_shallow_size_of(ops)
+            + self.block.read_with(guard).size_of(ops)
+            + self.selectors.size_of(ops)
     }
     /// Computes the specificity of this page rule when matched with flags.
     ///

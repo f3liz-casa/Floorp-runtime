@@ -1,42 +1,55 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "mozilla/Components.h"
+#include "mozilla/HelperMacros.h"
 #include "mozilla/Maybe.h"
 #include "mozilla/PageloadEvent.h"
+#include "mozilla/Preferences.h"
 #include "mozilla/RandomNum.h"
 #include "mozilla/ScopeExit.h"
 #include "mozilla/glean/DomMetrics.h"
+#include "mozilla/glean/GleanPings.h"
 
 #include "nsIChannel.h"
 #include "nsIEffectiveTLDService.h"
 #include "nsITransportSecurityInfo.h"
 #include "nsIURI.h"
 #include "nsIX509Cert.h"
+#include "nsThreadUtils.h"
 
 #include "ScopedNSSTypes.h"
 #include "cert.h"
 #include "portreg.h"
 
+#include <string_view>
+
 namespace mozilla::performance::pageload_event {
+
+/* static */
+uint32_t PageloadEventData::sPageLoadEventCounter = 0;
 
 // We don't want to record an event for every page load, so instead we
 // randomly sample the events based on the channel.
 //
-// For nightly, 10% of page loads will be sent as page_load_domain pings, and
-// all other page loads will be sent using the default page_load ping.
+// For nightly and beta, 100% of page loads will be sent using the default
+// page_load ping, and 10% will be sent as page_load_domain pings.
 //
-// For release and beta, only 0.1% of page loads will be sent as
-// page_load_domain pings, and 10% of the other page loads will be sent using
-// the default ping.
+// For release, 10% of page loads will be sent using the default ping,
+// and 0.1% will be sent as page_load_domain pings.
+
+// Normal sampling
+#ifdef EARLY_BETA_OR_EARLIER
+static constexpr uint64_t kNormalSamplingInterval = 1;  // Every pageload.
+#else
+static constexpr uint64_t kNormalSamplingInterval = 3;  // Every 3 pageloads.
+#endif
+
+// Domain sampling
 #ifdef NIGHTLY_BUILD
-static constexpr uint64_t kNormalSamplingInterval = 1;   // Every pageload.
 static constexpr uint64_t kDomainSamplingInterval = 10;  // Every 10 pageloads.
 #else
-static constexpr uint64_t kNormalSamplingInterval = 10;  // Every 10 pageloads.
 static constexpr uint64_t kDomainSamplingInterval =
     1000;  // Every 1000 pageloads.
 #endif
@@ -127,6 +140,27 @@ static bool DomainMatchesWildcard(char* cn, const char* hn,
   return false;
 }
 
+// A small set of well-known public domains for which we record the full
+// hostname instead of just the eTLD+1. These are high-traffic sites where
+// the subdomain identifies a distinct product surface (e.g. mail vs. docs)
+// rather than an individual user.
+static bool IsAllowedFullHostname(const nsACString& aHost) {
+  static constexpr std::string_view kFullHostnameAllowlist[] = {
+      "docs.google.com",    "mail.google.com",   "news.google.com",
+      "drive.google.com",   "meet.google.com",   "calendar.google.com",
+      "www.google.com",     "m.facebook.com",    "support.microsoft.com",
+      "scholar.google.com", "ads.google.com",    "play.google.com",
+      "mail.yahoo.com",     "search.yahoo.com",  "search.yahoo.co.jp",
+      "photos.google.com",  "gemini.google.com",
+  };
+  for (const auto& allowed : kFullHostnameAllowlist) {
+    if (aHost.EqualsASCII(allowed.data(), allowed.size())) {
+      return true;
+    }
+  }
+  return false;
+}
+
 // There are several conditions before we can assign an etld+1 domain:
 // 1.  The server's IP address must be a public IP.
 // 2.  The suffix must be on the PSL (Public Suffix List).
@@ -168,6 +202,15 @@ bool PageloadEventData::MaybeSetPublicRegistrableDomain(nsCOMPtr<nsIURI> aURI,
   rv = tldService->HasKnownPublicSuffix(aURI, &hasKnownPublicSuffix);
   if (NS_FAILED(rv) || !hasKnownPublicSuffix) {
     return false;
+  }
+
+  // For a small set of allowlisted domains, record the full hostname rather
+  // than reducing it to the eTLD+1.
+  nsAutoCString host;
+  rv = aURI->GetAsciiHost(host);
+  if (NS_SUCCEEDED(rv) && IsAllowedFullHostname(host)) {
+    mDomain = mozilla::Some(host);
+    return true;
   }
 
   // Get cert for wildcard matching.
@@ -247,13 +290,24 @@ bool PageloadEventData::MaybeSetPublicRegistrableDomain(nsCOMPtr<nsIURI> aURI,
   return true;
 }
 
-mozilla::glean::perf::PageLoadExtra PageloadEventData::ToPageLoadExtra() const {
-  mozilla::glean::perf::PageLoadExtra out;
+void PageloadEventData::SendAsPageLoadEvent() {
+  mozilla::glean::perf::PageLoadExtra extra;
 
-#define COPY_METRIC(name, type) out.name = this->name;
+#define COPY_METRIC(name, type) extra.name = this->name;
   FOR_EACH_PAGELOAD_METRIC(COPY_METRIC)
 #undef COPY_METRIC
-  return out;
+
+  mozilla::glean::perf::page_load.Record(mozilla::Some(extra));
+
+  // Send the PageLoadPing after every 10 page loads, or on startup.
+  if (++sPageLoadEventCounter >= 10) {
+    NS_SUCCEEDED(NS_DispatchToMainThreadQueue(
+        NS_NewRunnableFunction(
+            "PageLoadPingIdleTask",
+            [] { mozilla::glean_pings::Pageload.Submit("threshold"_ns); }),
+        EventQueuePriority::Idle));
+    sPageLoadEventCounter = 0;
+  }
 }
 
 static mozilla::Maybe<uint32_t> AddMultiplicativeNoise(
@@ -275,19 +329,69 @@ static mozilla::Maybe<uint32_t> AddMultiplicativeNoise(
   return mozilla::Some(output);
 }
 
-mozilla::glean::perf::PageLoadDomainExtra
-PageloadEventData::ToPageLoadDomainExtra() const {
-  mozilla::glean::perf::PageLoadDomainExtra out;
-  out.domain = this->mDomain;
-  out.httpVer = this->httpVer;
-  out.sameOriginNav = this->sameOriginNav;
-  out.documentFeatures = this->documentFeatures;
-  out.loadType = this->loadType;
+void PageloadEventData::SendAsPageLoadDomainEvent() {
+  MOZ_ASSERT(HasDomain());
+
+  mozilla::glean::perf::PageLoadDomainExtra extra;
+  extra.domain = this->mDomain;
+  extra.isFirstDailyLoad = mozilla::Some(this->mIsFirstDailyLoad);
+  extra.httpVer = this->httpVer;
+  extra.sameOriginNav = this->sameOriginNav;
+  extra.documentFeatures = this->documentFeatures;
+  extra.loadType = this->loadType;
 
   // Add some noise to any numerical metrics.
-  out.lcpTime = AddMultiplicativeNoise(this->lcpTime);
+  extra.lcpTime = AddMultiplicativeNoise(this->lcpTime);
 
-  return out;
+#ifdef NIGHTLY_BUILD
+  extra.channel = mozilla::Some("nightly"_ns);
+#else
+  extra.channel = mozilla::Some("release"_ns);
+#endif
+
+  // Get the major version number.
+  nsCString version(MOZ_STRINGIFY(MOZ_APP_VERSION_DISPLAY));
+  int32_t dotIndex = version.FindChar('.');
+  if (dotIndex != kNotFound) {
+    version.SetLength(dotIndex);
+  }
+  nsresult rv;
+  int32_t majorVersion = version.ToInteger(&rv);
+  if (NS_SUCCEEDED(rv)) {
+    extra.appVersionMajor = mozilla::Some(static_cast<uint32_t>(majorVersion));
+  }
+
+  if constexpr (std::string_view(MOZ_STRINGIFY(MOZ_UPDATE_CHANNEL)) ==
+                "release") {
+    nsAutoCString country;
+    if (NS_SUCCEEDED(mozilla::Preferences::GetCString("browser.search.region",
+                                                      country)) &&
+        !country.IsEmpty()) {
+      static constexpr std::string_view kAllowedCountries[] = {
+          "US", "DE", "FR", "GB", "CA", "PL", "JP",
+          "IN", "BR", "ID", "MX", "IT", "ES", "NL",
+      };
+      for (const auto& allowed : kAllowedCountries) {
+        if (country.EqualsASCII(allowed.data(), allowed.size())) {
+          extra.country = mozilla::Some(country);
+          break;
+        }
+      }
+    }
+  }
+
+  // If the event is a page_load_domain event, then immediately send it.
+  mozilla::glean::perf::page_load_domain.Record(mozilla::Some(extra));
+
+  // The etld events must be sent by themselves for privacy preserving
+  // reasons.
+  NS_SUCCEEDED(NS_DispatchToMainThreadQueue(
+      NS_NewRunnableFunction("PageloadBaseDomainPingIdleTask",
+                             [] {
+                               mozilla::glean_pings::PageloadBaseDomain.Submit(
+                                   "pageload"_ns);
+                             }),
+      EventQueuePriority::Idle));
 }
 
 }  // namespace mozilla::performance::pageload_event

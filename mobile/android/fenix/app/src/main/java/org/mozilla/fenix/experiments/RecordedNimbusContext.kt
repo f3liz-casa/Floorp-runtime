@@ -7,7 +7,14 @@ package org.mozilla.fenix.experiments
 import android.content.Context
 import android.os.Build
 import androidx.annotation.VisibleForTesting
-import mozilla.components.support.utils.ext.getPackageInfoCompat
+import androidx.core.app.NotificationManagerCompat
+import kotlinx.coroutines.flow.first
+import mozilla.components.support.base.ext.areNotificationsEnabledSafe
+import mozilla.components.support.base.ext.isNotificationChannelEnabled
+import mozilla.components.support.locale.LocaleManager
+import mozilla.components.support.locale.LocaleManager.getSystemDefault
+import mozilla.components.support.utils.ext.packageManagerCompatHelper
+import org.json.JSONArray
 import org.json.JSONObject
 import org.mozilla.experiments.nimbus.NIMBUS_DATA_DIR
 import org.mozilla.experiments.nimbus.NimbusDeviceInfo
@@ -15,8 +22,12 @@ import org.mozilla.experiments.nimbus.internal.JsonObject
 import org.mozilla.experiments.nimbus.internal.RecordedContext
 import org.mozilla.experiments.nimbus.internal.getCalculatedAttributes
 import org.mozilla.fenix.GleanMetrics.NimbusSystem
-import org.mozilla.fenix.GleanMetrics.Pings
-import org.mozilla.fenix.ext.settings
+import org.mozilla.fenix.ext.components
+import org.mozilla.fenix.home.pocket.ContentRecommendationsFeatureHelper
+import org.mozilla.fenix.onboarding.MARKETING_CHANNEL_ID
+import org.mozilla.fenix.perf.runBlockingIncrement
+import org.mozilla.fenix.termsofuse.experimentation.TermsOfUseAdvancedTargetingHelper
+import org.mozilla.fenix.termsofuse.experimentation.utils.DefaultTermsOfUseDataProvider
 import org.mozilla.fenix.utils.Settings
 import java.io.File
 
@@ -60,7 +71,12 @@ class RecordedNimbusContext(
     val deviceManufacturer: String = Build.MANUFACTURER,
     val deviceModel: String = Build.MODEL,
     val userAcceptedTou: Boolean,
-    val noShortcutsStoriesMkt: Boolean,
+    val noShortcutsOrStoriesOptOuts: Boolean,
+    val addonIds: List<String>,
+    val touPoints: Int?,
+    val userDisabledAi: Boolean,
+    val areNotificationsEnabled: Boolean,
+    val areMarketingNotificationsEnabled: Boolean,
 ) : RecordedContext {
     /**
      * [getEventQueries] is called by the Nimbus SDK Rust code to retrieve the map of event
@@ -100,10 +116,14 @@ class RecordedNimbusContext(
                 deviceManufacturer = deviceManufacturer,
                 deviceModel = deviceModel,
                 userAcceptedTou = userAcceptedTou,
-                noShortcutsStoriesMkt = noShortcutsStoriesMkt,
+                noShortcutsOrStoriesOptOuts = noShortcutsOrStoriesOptOuts,
+                addonIds = NimbusSystem.RecordedNimbusContextObjectAddonIds(addonIds.toMutableList()),
+                touPoints = touPoints,
+                userDisabledAi = userDisabledAi,
+                areNotificationsEnabled = areNotificationsEnabled,
+                areMarketingNotificationsEnabled = areMarketingNotificationsEnabled,
             ),
         )
-        Pings.nimbus.submit()
     }
 
     /**
@@ -145,7 +165,12 @@ class RecordedNimbusContext(
                 "device_manufacturer" to deviceManufacturer,
                 "device_model" to deviceModel,
                 "user_accepted_tou" to userAcceptedTou,
-                "no_shortcuts_stories_mkt" to noShortcutsStoriesMkt,
+                "no_shortcuts_or_stories_opt_outs" to noShortcutsOrStoriesOptOuts,
+                "addon_ids" to JSONArray(addonIds),
+                "tou_points" to touPoints,
+                "user_disabled_ai" to userDisabledAi,
+                "are_notifications_enabled" to areNotificationsEnabled,
+                "are_marketing_notifications_enabled" to areMarketingNotificationsEnabled,
             ),
         )
         return obj
@@ -166,9 +191,16 @@ class RecordedNimbusContext(
             context: Context,
             isFirstRun: Boolean,
         ): RecordedNimbusContext {
-            val settings = context.settings()
+            val settings = context.components.settings
+            val langTag = LocaleManager.getCurrentLocale(context)
+                ?.toLanguageTag() ?: getSystemDefault().toLanguageTag()
+            val termsOfUseAdvancedTargetingHelper = TermsOfUseAdvancedTargetingHelper(
+                DefaultTermsOfUseDataProvider(settings),
+                langTag,
+            )
 
-            val packageInfo = context.packageManager.getPackageInfoCompat(context.packageName, 0)
+            val packageInfo =
+                context.packageManagerCompatHelper.getPackageInfoCompat(context.packageName, 0)
             val deviceInfo = NimbusDeviceInfo.default()
             val db = File(context.applicationInfo.dataDir, NIMBUS_DATA_DIR)
             val calculatedAttributes = getCalculatedAttributes(
@@ -176,6 +208,9 @@ class RecordedNimbusContext(
                 db.path,
                 deviceInfo.localeTag,
             )
+
+            val isAiBlocked = runBlockingIncrement { context.components.aiFeatureBlockStorage.isBlocked.first() }
+            val notificationManager = NotificationManagerCompat.from(context)
 
             return RecordedNimbusContext(
                 isFirstRun = isFirstRun,
@@ -192,21 +227,44 @@ class RecordedNimbusContext(
                 language = calculatedAttributes.language,
                 region = calculatedAttributes.region,
                 userAcceptedTou = settings.hasAcceptedTermsOfService,
-                noShortcutsStoriesMkt = settings.noShortcutsStoriesMkt,
+                noShortcutsOrStoriesOptOuts = settings.noShortcutsOrStoriesOptOuts(context),
+                addonIds = getFormattedAddons(settings),
+                touPoints = termsOfUseAdvancedTargetingHelper.getTouPoints(),
+                userDisabledAi = isAiBlocked,
+                areNotificationsEnabled = notificationManager.areNotificationsEnabledSafe(),
+                areMarketingNotificationsEnabled = notificationManager
+                    .isNotificationChannelEnabled(MARKETING_CHANNEL_ID),
             )
         }
 
-        private val Settings.noShortcutsStoriesMkt: Boolean
-            get() = hasMarketing && hasSponsoredHomepageShortcuts && hasStoriesOnHomepage
+        @VisibleForTesting
+        internal fun getFormattedAddons(settings: Settings): List<String> =
+            settings.installedAddonsList.split(",").map { it.trim() }
 
-        private val Settings.hasMarketing: Boolean
-            get() = isMarketingTelemetryEnabled || shouldShowMarketingOnboarding
+        /**
+         * Checks whether an eligible user has opted out of any sponsored top sites or stories.
+         *
+         *  @return `true` if the user has opted out of any sponsored top sites or stories,
+         * `false` otherwise.
+         */
+        private fun Settings.noShortcutsOrStoriesOptOuts(context: Context) =
+            !optedOutOfSponsoredTopSites() && !optedOutOfSponsoredStories(context)
 
-        private val Settings.hasSponsoredHomepageShortcuts: Boolean
-            get() = showTopSitesFeature || showContileFeature
+        /**
+         * Checks whether an eligible user has opted out of the sponsored top sites feature.
+         *
+         * This is not entirely self evident from the API descriptions, please note:
+         * [Settings.showContileFeature] indicates whether the sponsored shortcuts are shown.
+         * [Settings.showTopSitesFeature] indicates whether the feature should be shown at all.
+         */
+        private fun Settings.optedOutOfSponsoredTopSites() =
+            !showContileFeature || !showTopSitesFeature
 
-        private val Settings.hasStoriesOnHomepage: Boolean
-            get() = showPocketRecommendationsFeature || showPocketSponsoredStories
+        private fun Settings.optedOutOfSponsoredStories(context: Context) =
+            isEligibleForStories(context) && (!showPocketSponsoredStories || !showPocketRecommendationsFeature)
+
+        private fun isEligibleForStories(context: Context): Boolean =
+            ContentRecommendationsFeatureHelper.isContentRecommendationsFeatureEnabled(context)
 
         /**
          * Creates a RecordedNimbusContext instance for test purposes
@@ -218,6 +276,7 @@ class RecordedNimbusContext(
             isFirstRun: Boolean = false,
             eventQueries: Map<String, String> = EVENT_QUERIES,
             eventQueryValues: Map<String, Double> = mapOf(),
+            addonIds: List<String> = emptyList(),
         ): RecordedNimbusContext {
             return RecordedNimbusContext(
                 isFirstRun = isFirstRun,
@@ -235,7 +294,12 @@ class RecordedNimbusContext(
                 language = "en",
                 region = "US",
                 userAcceptedTou = true,
-                noShortcutsStoriesMkt = true,
+                noShortcutsOrStoriesOptOuts = true,
+                addonIds = addonIds,
+                touPoints = 3,
+                userDisabledAi = true,
+                areNotificationsEnabled = false,
+                areMarketingNotificationsEnabled = false,
             )
         }
     }

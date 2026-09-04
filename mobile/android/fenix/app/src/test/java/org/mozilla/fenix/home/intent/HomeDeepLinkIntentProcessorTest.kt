@@ -6,19 +6,21 @@ package org.mozilla.fenix.home.intent
 
 import android.app.Activity
 import android.content.Intent
-import android.content.pm.PackageInfo
-import android.content.pm.PackageManager
-import android.os.Build.VERSION_CODES.M
 import androidx.core.net.toUri
 import androidx.navigation.NavController
 import io.mockk.Called
+import io.mockk.Runs
 import io.mockk.every
+import io.mockk.just
 import io.mockk.mockk
+import io.mockk.slot
 import io.mockk.verify
 import mozilla.appservices.places.BookmarkRoot
 import mozilla.components.concept.engine.EngineSession
 import mozilla.components.concept.engine.prompt.ShareData
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -29,10 +31,13 @@ import org.mozilla.fenix.HomeActivity
 import org.mozilla.fenix.NavGraphDirections
 import org.mozilla.fenix.browser.browsingmode.BrowsingMode
 import org.mozilla.fenix.components.accounts.FenixFxAEntryPoint
-import org.mozilla.fenix.settings.SupportUtils
+import org.mozilla.fenix.components.share.ShareSource
+import org.mozilla.fenix.components.usecases.ShareUseCases
+import org.mozilla.fenix.onboarding.MARKETING_CHANNEL_ID
+import org.mozilla.fenix.trackingprotection.ProtectionsDashboardFragment
 import org.mozilla.fenix.utils.Settings
 import org.robolectric.RobolectricTestRunner
-import org.robolectric.annotation.Config
+import android.provider.Settings as AndroidSettings
 
 @RunWith(RobolectricTestRunner::class)
 class HomeDeepLinkIntentProcessorTest {
@@ -40,16 +45,19 @@ class HomeDeepLinkIntentProcessorTest {
     private lateinit var navController: NavController
     private lateinit var out: Intent
     private lateinit var processorHome: HomeDeepLinkIntentProcessor
-    private val settings: Settings = mockk {
-        every { shouldUseComposableToolbar } returns false
-    }
+    private val settings: Settings = mockk(relaxed = true)
+    private val shareUseCases: ShareUseCases = mockk(relaxed = true)
 
     @Before
     fun setup() {
         activity = mockk(relaxed = true)
         navController = mockk(relaxed = true)
         out = mockk()
-        processorHome = HomeDeepLinkIntentProcessor(activity, ::showAddSearchWidgetPrompt)
+        processorHome = HomeDeepLinkIntentProcessor(
+            activity = activity,
+            showAddSearchWidgetPrompt = ::showAddSearchWidgetPrompt,
+            shareUseCases = shareUseCases,
+        )
     }
 
     @Test
@@ -221,6 +229,7 @@ class HomeDeepLinkIntentProcessorTest {
         assertTrue(processorHome.process(testIntent("open?url=https%3A%2F%2Fwww.example.org%2F"), navController, out, settings))
 
         verify {
+            @Suppress("DEPRECATION")
             activity.openToBrowserAndLoad(
                 "https://www.example.org/",
                 newTab = true,
@@ -236,15 +245,45 @@ class HomeDeepLinkIntentProcessorTest {
     fun `process share_sheet deep link`() {
         assertTrue(processorHome.process(testIntent("share_sheet"), navController, out, settings))
 
+        verify { shareUseCases wasNot Called }
         verify { navController wasNot Called }
         verify { out wasNot Called }
 
         assertTrue(processorHome.process(testIntent("share_sheet?url=test"), navController, out, settings))
 
+        verify { shareUseCases wasNot Called }
         verify { navController wasNot Called }
         verify { out wasNot Called }
 
+        val fallbackLambda = slot<() -> Unit>()
+        every {
+            shareUseCases.shareUrl(
+                id = null,
+                url = "https://example.com",
+                title = "TestTitle",
+                source = ShareSource.DEEP_LINK,
+                text = "TestText",
+                subject = "TestSubject",
+                navigateToShareFragment = capture(fallbackLambda),
+            )
+        } just Runs
+
         assertTrue(processorHome.process(testIntent("share_sheet?url=https%3A%2F%2Fexample.com&title=TestTitle&text=TestText&subject=TestSubject"), navController, out, settings))
+
+        verify {
+            shareUseCases.shareUrl(
+                id = null,
+                url = "https://example.com",
+                title = "TestTitle",
+                source = ShareSource.DEEP_LINK,
+                text = "TestText",
+                subject = "TestSubject",
+                navigateToShareFragment = any(),
+            )
+        }
+        verify { navController wasNot Called }
+
+        fallbackLambda.captured.invoke()
 
         verify {
             navController.navigate(
@@ -263,7 +302,7 @@ class HomeDeepLinkIntentProcessorTest {
 
     @Test
     fun `process invalid open deep link`() {
-        val invalidProcessor = HomeDeepLinkIntentProcessor(activity)
+        val invalidProcessor = HomeDeepLinkIntentProcessor(activity, shareUseCases)
 
         assertTrue(invalidProcessor.process(testIntent("open"), navController, out, settings))
 
@@ -279,44 +318,29 @@ class HomeDeepLinkIntentProcessorTest {
     }
 
     @Test
-    @Config(maxSdk = M)
-    fun `process make_default_browser deep link for API 23 and below`() {
-        val packageManager: PackageManager = mockk()
-        val packageInfo = PackageInfo()
-
-        every { activity.packageName } returns "org.mozilla.fenix"
-        every { activity.packageManager } returns packageManager
-        @Suppress("DEPRECATION")
-        every { packageManager.getPackageInfo("org.mozilla.fenix", 0) } returns packageInfo
-        packageInfo.versionName = "versionName"
-
-        assertTrue(processorHome.process(testIntent("make_default_browser"), navController, out, settings))
-
-        val searchTermOrURL =
-            SupportUtils.getGenericSumoURLForTopic(
-                topic = SupportUtils.SumoTopic.SET_AS_DEFAULT_BROWSER,
-            )
-
-        verify {
-            activity.openToBrowserAndLoad(
-                searchTermOrURL = searchTermOrURL,
-                newTab = true,
-                from = BrowserDirection.FromGlobal,
-                flags = EngineSession.LoadUrlFlags.external(),
-            )
-        }
-
-        verify { navController wasNot Called }
-        verify { out wasNot Called }
-    }
-
-    @Test
     fun `process settings_notifications deep link`() {
+        val captured = slot<Intent>()
+        every { activity.startActivity(capture(captured)) } just Runs
+
         assertTrue(processorHome.process(testIntent("settings_notifications"), navController, out, settings))
 
         verify { navController wasNot Called }
         verify { out wasNot Called }
-        verify { activity.startActivity(any()) }
+        assertEquals(AndroidSettings.ACTION_APP_NOTIFICATION_SETTINGS, captured.captured.action)
+        assertNull(captured.captured.getStringExtra(AndroidSettings.EXTRA_CHANNEL_ID))
+    }
+
+    @Test
+    fun `process settings_marketing_notifications deep link`() {
+        val captured = slot<Intent>()
+        every { activity.startActivity(capture(captured)) } just Runs
+
+        assertTrue(processorHome.process(testIntent("settings_marketing_notifications"), navController, out, settings))
+
+        verify { navController wasNot Called }
+        verify { out wasNot Called }
+        assertEquals(AndroidSettings.ACTION_CHANNEL_NOTIFICATION_SETTINGS, captured.captured.action)
+        assertEquals(MARKETING_CHANNEL_ID, captured.captured.getStringExtra(AndroidSettings.EXTRA_CHANNEL_ID))
     }
 
     @Test
@@ -341,6 +365,55 @@ class HomeDeepLinkIntentProcessorTest {
         assertTrue(processorHome.process(testIntent("settings_private_browsing"), navController, out, settings))
 
         verify { navController.navigate(NavGraphDirections.actionGlobalPrivateBrowsingFragment()) }
+        verify { out wasNot Called }
+    }
+
+    @Test
+    fun `process settings_app_icon deep link`() {
+        assertTrue(processorHome.process(testIntent("settings_app_icon"), navController, out, settings))
+
+        verify { navController.navigate(NavGraphDirections.actionGlobalAppIconSelectionFragment()) }
+        verify { out wasNot Called }
+    }
+
+    @Test
+    fun `process settings_ai_controls deep link`() {
+        assertTrue(processorHome.process(testIntent("settings_ai_controls"), navController, out, settings))
+
+        verify { activity wasNot Called }
+        verify { navController.navigate(NavGraphDirections.actionGlobalAiControlsFragment()) }
+        verify { out wasNot Called }
+    }
+
+    @Test
+    fun `process protections_dashboard deep link`() {
+        assertTrue(processorHome.process(testIntent("protections_dashboard"), navController, out, settings))
+
+        verify { activity wasNot Called }
+        verify {
+            navController.navigate(
+                NavGraphDirections.actionGlobalProtectionsDashboard(
+                    customTabSessionId = null,
+                    source = ProtectionsDashboardFragment.SOURCE_DEEPLINK,
+                ),
+            )
+        }
+        verify { out wasNot Called }
+    }
+
+    @Test
+    fun `process settings_ip_protection deep link`() {
+        assertTrue(processorHome.process(testIntent("settings_ip_protection"), navController, out, settings))
+
+        verify { activity wasNot Called }
+        verify {
+            navController.navigate(
+                NavGraphDirections.actionGlobalIpProtectionFragment(
+                    entrypoint = FenixFxAEntryPoint.DeepLink,
+                    startAuthFlow = false,
+                ),
+            )
+        }
         verify { out wasNot Called }
     }
 

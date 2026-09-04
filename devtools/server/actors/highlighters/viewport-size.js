@@ -4,7 +4,6 @@
 
 "use strict";
 
-const EventEmitter = require("resource://devtools/shared/event-emitter.js");
 const {
   setIgnoreLayoutChanges,
 } = require("resource://devtools/shared/layout/utils.js");
@@ -23,11 +22,11 @@ class ViewportSizeHighlighter {
    *
    * @param {HighlighterEnvironment} highlighterEnv
    * @param {InspectorActor} parent
-   * @param {Object} options
-   * @param {Number} options.hideTimeout: An optional number. When passed, the viewport
+   * @param {object} options
+   * @param {number} options.hideTimeout: An optional number. When passed, the viewport
    *        information will automatically hide after {hideTimeout} ms.
-   * @param {String} options.extraCls: An extra class to add to the infobar container.
-   * @param {Boolean} options.waitForDocumentToLoad: Option that will be passed to
+   * @param {string} options.extraCls: An extra class to add to the infobar container.
+   * @param {boolean} options.waitForDocumentToLoad: Option that will be passed to
    *        CanvasFrameAnonymousContentHelper. Defaults to true
    */
   constructor(highlighterEnv, parent, options = {}) {
@@ -139,8 +138,6 @@ class ViewportSizeHighlighter {
     this.parent = null;
     this.markup = null;
     this.isReady = null;
-
-    EventEmitter.emit(this, "destroy");
   }
 
   show() {

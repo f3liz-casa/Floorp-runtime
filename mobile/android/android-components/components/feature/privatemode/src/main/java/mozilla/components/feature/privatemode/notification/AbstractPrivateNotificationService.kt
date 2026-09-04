@@ -4,6 +4,7 @@
 
 package mozilla.components.feature.privatemode.notification
 
+import android.app.ForegroundServiceStartNotAllowedException
 import android.app.Notification
 import android.app.PendingIntent
 import android.app.PendingIntent.FLAG_ONE_SHOT
@@ -17,6 +18,7 @@ import androidx.annotation.VisibleForTesting
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationCompat.VISIBILITY_SECRET
 import androidx.core.app.NotificationManagerCompat.IMPORTANCE_LOW
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.cancel
@@ -28,13 +30,13 @@ import kotlinx.coroutines.withContext
 import mozilla.components.browser.state.action.TabListAction
 import mozilla.components.browser.state.selector.privateTabs
 import mozilla.components.browser.state.store.BrowserStore
+import mozilla.components.concept.base.crash.CrashReporting
 import mozilla.components.feature.privatemode.R
 import mozilla.components.lib.state.ext.flowScoped
 import mozilla.components.support.base.android.NotificationsDelegate
 import mozilla.components.support.base.ids.SharedIdsHelper
 import mozilla.components.support.ktx.android.notification.ChannelData
 import mozilla.components.support.ktx.android.notification.ensureNotificationChannelExists
-import mozilla.components.support.utils.PendingIntentUtils
 import mozilla.components.support.utils.ext.stopForegroundCompat
 import java.util.Locale
 
@@ -51,6 +53,7 @@ import java.util.Locale
  */
 @Suppress("TooManyFunctions")
 abstract class AbstractPrivateNotificationService(
+    private val mainDispatcher: CoroutineDispatcher = Dispatchers.Main,
     private val notificationScope: CoroutineScope = CoroutineScope(Dispatchers.IO),
 ) : Service() {
     private var privateTabsScope: CoroutineScope? = null
@@ -58,6 +61,8 @@ abstract class AbstractPrivateNotificationService(
 
     abstract val store: BrowserStore
     abstract val notificationsDelegate: NotificationsDelegate
+
+    protected open val crashReporter: CrashReporting? = null
 
     /**
      * Customizes the private browsing notification.
@@ -92,11 +97,9 @@ abstract class AbstractPrivateNotificationService(
             this,
             NOTIFICATION_CHANNEL,
             onSetupChannel = {
-                if (SDK_INT >= Build.VERSION_CODES.O) {
-                    enableLights(false)
-                    enableVibration(false)
-                    setShowBadge(false)
-                }
+                enableLights(false)
+                enableVibration(false)
+                setShowBadge(false)
             },
         )
     }
@@ -110,7 +113,7 @@ abstract class AbstractPrivateNotificationService(
             val channelId = getChannelId()
 
             val notification = createNotification(channelId)
-            withContext(Dispatchers.Main) {
+            withContext(mainDispatcher) {
                 notificationsDelegate.notify(notificationId = notificationId, notification = notification)
             }
         }
@@ -134,12 +137,12 @@ abstract class AbstractPrivateNotificationService(
                 )
             }
 
-            withContext(Dispatchers.Main) {
-                startForeground(notificationId, notification)
+            withContext(mainDispatcher) {
+                tryStartForeground(notificationId, notification)
             }
         }
 
-        privateTabsScope = store.flowScoped { flow ->
+        privateTabsScope = store.flowScoped(dispatcher = mainDispatcher) { flow ->
             flow.map { state -> state.privateTabs.isEmpty() }
                 .distinctUntilChanged()
                 .collect { noPrivateTabs ->
@@ -147,12 +150,29 @@ abstract class AbstractPrivateNotificationService(
                 }
         }
 
-        localeScope = store.flowScoped { flow ->
+        localeScope = store.flowScoped(dispatcher = mainDispatcher) { flow ->
             flow.mapNotNull { state -> state.locale }
                 .distinctUntilChanged()
                 .collect {
                     notifyLocaleChanged()
                 }
+        }
+    }
+
+    @Suppress("TooGenericExceptionCaught")
+    private fun tryStartForeground(notificationId: Int, notification: Notification) {
+        try {
+            startForeground(notificationId, notification)
+        } catch (e: Exception) {
+            if (SDK_INT >= Build.VERSION_CODES.S && e is ForegroundServiceStartNotAllowedException) {
+                // similar to https://bugzilla.mozilla.org/show_bug.cgi?id=1802620 we prefer to catch this.
+                // see https://bugzilla.mozilla.org/show_bug.cgi?id=2065344#c7 and linked conversations for more
+                // details.
+                crashReporter?.submitCaughtException(e)
+                return
+            } else {
+                throw e
+            }
         }
     }
 
@@ -168,7 +188,7 @@ abstract class AbstractPrivateNotificationService(
                 this,
                 0,
                 intent,
-                PendingIntentUtils.defaultFlags or FLAG_ONE_SHOT,
+                PendingIntent.FLAG_IMMUTABLE or FLAG_ONE_SHOT,
             )
         }
 

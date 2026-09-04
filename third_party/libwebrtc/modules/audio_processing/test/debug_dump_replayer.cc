@@ -10,14 +10,21 @@
 
 #include "modules/audio_processing/test/debug_dump_replayer.h"
 
+#include <cstddef>
+#include <cstdio>
+#include <cstring>
+#include <memory>
+#include <optional>
 #include <string>
 
 #include "absl/strings/string_view.h"
+#include "api/audio/audio_processing.h"
 #include "api/audio/builtin_audio_processing_builder.h"
-#include "api/environment/environment_factory.h"
+#include "common_audio/channel_buffer.h"
 #include "modules/audio_processing/test/protobuf_utils.h"
 #include "modules/audio_processing/test/runtime_setting_util.h"
 #include "rtc_base/checks.h"
+#include "test/create_test_environment.h"
 
 namespace webrtc {
 namespace test {
@@ -27,7 +34,7 @@ namespace {
 void MaybeResetBuffer(std::unique_ptr<ChannelBuffer<float>>* buffer,
                       const StreamConfig& config) {
   auto& buffer_ref = *buffer;
-  if (!buffer_ref.get() || buffer_ref->num_frames() != config.num_frames() ||
+  if (!buffer_ref || buffer_ref->num_frames() != config.num_frames() ||
       buffer_ref->num_channels() != config.num_channels()) {
     buffer_ref.reset(
         new ChannelBuffer<float>(config.num_frames(), config.num_channels()));
@@ -190,18 +197,16 @@ void DebugDumpReplayer::MaybeRecreateApm(const audioproc::Config& msg) {
   // We only create APM once, since changes on these fields should not
   // happen in current implementation.
   if (apm_ == nullptr) {
-    apm_ = BuiltinAudioProcessingBuilder().Build(CreateEnvironment());
+    apm_ = BuiltinAudioProcessingBuilder().Build(CreateTestEnvironment());
   }
 }
 
 void DebugDumpReplayer::ConfigureApm(const audioproc::Config& msg) {
   AudioProcessing::Config apm_config;
 
-  // AEC2/AECM configs.
+  // AEC2 configs.
   RTC_CHECK(msg.has_aec_enabled());
-  RTC_CHECK(msg.has_aecm_enabled());
-  apm_config.echo_canceller.enabled = msg.aec_enabled() || msg.aecm_enabled();
-  apm_config.echo_canceller.mobile_mode = msg.aecm_enabled();
+  apm_config.echo_canceller.enabled = msg.aec_enabled();
 
   // HPF configs.
   RTC_CHECK(msg.has_hpf_enabled());

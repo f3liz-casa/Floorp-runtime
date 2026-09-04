@@ -6,10 +6,10 @@ task-defaults:
     worker-type: win11-64-24h2-hw-ref
     fetches:
         build:
-            - artifact: target.condprof.tests.tar.gz
-            - artifact: target.common.tests.tar.gz
-            - artifact: target.mochitest.tests.tar.gz
-            - artifact: target.perftests.tests.tar.gz
+            - artifact: target.condprof.tests.tar.zst
+            - artifact: target.common.tests.tar.zst
+            - artifact: target.mochitest.tests.tar.zst
+            - artifact: target.perftests.tests.tar.zst
             - artifact: target.zip
         toolchain:
             - win64-node
@@ -35,6 +35,7 @@ ml-perf:
         cron: false
     run-on-projects: [autoland, mozilla-central]
     run:
+        clone-with: hg
         command: >-
             mkdir -p $MOZ_FETCHES_DIR/../artifacts &&
             cd $MOZ_FETCHES_DIR &&
@@ -52,6 +53,8 @@ ml-summarizer-perf:
             - qwen2.5-0.5-instruct
             - distilbart-cnn-12-6
     description: Run ML Models Perf Tests
+    worker:
+        max-run-time: 3000
     treeherder:
         symbol: perftest(ml-sum-perf)
         tier: 2
@@ -60,6 +63,7 @@ ml-summarizer-perf:
         cron: false
     run-on-projects: [autoland, mozilla-central]
     run:
+        clone-with: hg
         command: >-
             mkdir -p $MOZ_FETCHES_DIR/../artifacts &&
             cd $MOZ_FETCHES_DIR &&
@@ -73,17 +77,18 @@ ml-summarizer-perf:
 ml-llama-summarizer-perf:
     fetches:
         fetch:
-            - wllama.wasm
             - smollm2-360-instruct-gguf
-    description: Run ML Summarizer Model Using Wllama
+            - Qwen3-0.6B-GGUF
+    description: Run ML Summarizer Model Using llama.cpp
     treeherder:
         symbol: perftest(ref-ml-llama-sum-perf)
         tier: 2
     attributes:
         batch: false
         cron: false
-    run-on-projects: []
+    run-on-projects: [autoland, mozilla-central]
     run:
+        clone-with: hg
         command: >-
             mkdir -p $MOZ_FETCHES_DIR/../artifacts &&
             cd $MOZ_FETCHES_DIR &&
@@ -93,6 +98,31 @@ ml-llama-summarizer-perf:
             --output $MOZ_FETCHES_DIR/../artifacts
             --hooks toolkit/components/ml/tests/tools/hooks_local_hub.py
             toolkit/components/ml/tests/browser/browser_ml_llama_summarizer_perf.js
+
+ml-security-perf:
+    fetches:
+        fetch:
+            - smollm2-360-instruct-gguf
+    description: Run ML Security Performance Tests
+    treeherder:
+        symbol: perftest(ml-security-perf)
+        tier: 2
+    attributes:
+        batch: false
+        cron: false
+    run-on-projects: [autoland, mozilla-central]
+    run:
+        clone-with: hg
+        command: >-
+            mkdir -p $MOZ_FETCHES_DIR/../artifacts &&
+            cd $MOZ_FETCHES_DIR &&
+            python3 python/mozperftest/mozperftest/runner.py
+            --mochitest-binary ${MOZ_FETCHES_DIR}/firefox/firefox.exe
+            --flavor mochitest
+            --mochitest-name-change
+            --output $MOZ_FETCHES_DIR/../artifacts
+            --hooks toolkit/components/ml/tests/tools/hooks_local_hub.py
+            toolkit/components/ml/tests/browser/browser_ml_security_perf.js
 
 ml-multi-perf:
     fetches:
@@ -110,6 +140,7 @@ ml-multi-perf:
         cron: false
     run-on-projects: [autoland, mozilla-central]
     run:
+        clone-with: hg
         command: >-
             mkdir -p $MOZ_FETCHES_DIR/../artifacts &&
             cd $MOZ_FETCHES_DIR &&
@@ -131,6 +162,7 @@ ml-perf-semantic-ft:
         tier: 2
     run-on-projects: [autoland, mozilla-central]
     run:
+        clone-with: hg
         command: >-
             mkdir -p $MOZ_FETCHES_DIR/../artifacts &&
             cd $MOZ_FETCHES_DIR &&
@@ -158,6 +190,7 @@ ml-perf-suggest-ft:
         cron: false
     run-on-projects: [autoland, mozilla-central]
     run:
+        clone-with: hg
         command: >-
             mkdir -p $MOZ_FETCHES_DIR/../artifacts &&
             cd $MOZ_FETCHES_DIR &&
@@ -183,6 +216,7 @@ ml-perf-suggest-inf:
         cron: false
     run-on-projects: []
     run:
+        clone-with: hg
         command: >-
             mkdir -p $MOZ_FETCHES_DIR/../artifacts &&
             cd $MOZ_FETCHES_DIR &&
@@ -198,6 +232,8 @@ ml-perf-autofill:
         fetch:
             - ort.jsep.wasm
             - mozilla-autofill
+            - mozilla-autofill-embed
+            - mozilla-autofill-head
     description: Run ML Autofill Model
     treeherder:
         symbol: perftest(ml-perf-autofill)
@@ -207,6 +243,7 @@ ml-perf-autofill:
         cron: false
     run-on-projects: [autoland, mozilla-central]
     run:
+        clone-with: hg
         command: >-
             mkdir -p $MOZ_FETCHES_DIR/../artifacts &&
             cd $MOZ_FETCHES_DIR &&
@@ -232,6 +269,7 @@ ml-perf-smart-tab:
         cron: false
     run-on-projects: [autoland, mozilla-central]
     run:
+        clone-with: hg
         command: >-
             mkdir -p $MOZ_FETCHES_DIR/../artifacts &&
             cd $MOZ_FETCHES_DIR &&
@@ -259,6 +297,7 @@ ml-perf-smart-tab-cluster:
         cron: false
     run-on-projects: [autoland, mozilla-central]
     run:
+        clone-with: hg
         command: >-
             mkdir -p $MOZ_FETCHES_DIR/../artifacts &&
             cd $MOZ_FETCHES_DIR &&
@@ -288,6 +327,7 @@ ml-perf-speecht5-tts:
         cron: false
     run-on-projects: [autoland, mozilla-central]
     run:
+        clone-with: hg
         command: >-
             mkdir -p $MOZ_FETCHES_DIR/../artifacts &&
             cd $MOZ_FETCHES_DIR &&
@@ -310,10 +350,16 @@ perftest-accessibility:
         cron: false
     run-on-projects: [autoland, mozilla-central]
     run:
+        clone-with: hg
         command: >-
             mkdir -p $MOZ_FETCHES_DIR/../artifacts &&
             cd $MOZ_FETCHES_DIR &&
             python3 python/mozperftest/mozperftest/runner.py
+            --mochitest-binary ${MOZ_FETCHES_DIR}/firefox/firefox.exe
+            --flavor mochitest
+            --output $MOZ_FETCHES_DIR/../artifacts
+            accessible/tests/browser/performance/browser_addManyIds.js
+            && python3 python/mozperftest/mozperftest/runner.py
             --mochitest-binary ${MOZ_FETCHES_DIR}/firefox/firefox.exe
             --flavor mochitest
             --output $MOZ_FETCHES_DIR/../artifacts
@@ -328,3 +374,18 @@ perftest-accessibility:
             --flavor mochitest
             --output $MOZ_FETCHES_DIR/../artifacts
             accessible/tests/browser/performance/browser_removeManySpellingErrors.js
+            && python3 python/mozperftest/mozperftest/runner.py
+            --mochitest-binary ${MOZ_FETCHES_DIR}/firefox/firefox.exe
+            --flavor mochitest
+            --output $MOZ_FETCHES_DIR/../artifacts
+            accessible/tests/browser/performance/browser_implicitRoleARIAExpanded.js
+            && python3 python/mozperftest/mozperftest/runner.py
+            --mochitest-binary ${MOZ_FETCHES_DIR}/firefox/firefox.exe
+            --flavor mochitest
+            --output $MOZ_FETCHES_DIR/../artifacts
+            accessible/tests/browser/performance/browser_bounds.js
+            && python3 python/mozperftest/mozperftest/runner.py
+            --mochitest-binary ${MOZ_FETCHES_DIR}/firefox/firefox.exe
+            --flavor mochitest
+            --output $MOZ_FETCHES_DIR/../artifacts
+            accessible/tests/browser/performance/browser_displayContentsBounds.js

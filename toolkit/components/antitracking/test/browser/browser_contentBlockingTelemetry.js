@@ -22,11 +22,7 @@ function clearTelemetry() {
 }
 
 async function cleanup() {
-  await new Promise(resolve => {
-    Services.clearData.deleteData(Ci.nsIClearDataService.CLEAR_ALL, () =>
-      resolve()
-    );
-  });
+  await clearSiteTestData();
 }
 
 function getExpectedExpiredDaysFromPref(pref) {
@@ -64,7 +60,7 @@ async function testTelemetry(
   let storageAccessGrantedHistogram;
 
   // Wait until the telemetry probe appears.
-  await BrowserTestUtils.waitForCondition(() => {
+  await TestUtils.waitForCondition(() => {
     let histograms;
     if (aProbeInParent) {
       histograms = Services.telemetry.getSnapshotForHistograms(
@@ -220,8 +216,8 @@ add_task(async function testTelemetryForStorageAccessAPI() {
           ok(false, "Unknown message");
         });
 
-        content.document.body.appendChild(ifr);
         ifr.src = obj.page;
+        content.document.body.appendChild(ifr);
       });
     }
   );
@@ -306,8 +302,8 @@ add_task(async function testTelemetryForWindowOpenHeuristic() {
           ok(false, "Unknown message");
         });
 
-        content.document.body.appendChild(ifr);
         ifr.src = obj.page;
+        content.document.body.appendChild(ifr);
       });
     }
   );
@@ -372,11 +368,9 @@ add_task(async function testTelemetryForUserInteractionHeuristic() {
       }).toString();
 
       let ifr = content.document.createElement("iframe");
-      let loading = new content.Promise(resolve => {
-        ifr.onload = resolve;
-      });
-      content.document.body.appendChild(ifr);
+      const loading = ContentTaskUtils.waitForEvent(ifr, "load");
       ifr.src = obj.page;
+      content.document.body.appendChild(ifr);
       await loading;
 
       info("Opening a window from the iframe.");

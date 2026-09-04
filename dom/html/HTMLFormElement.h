@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -38,8 +36,7 @@ class HTMLFormElement final : public nsGenericHTMLElement {
  public:
   NS_IMPL_FROMNODE_HTML_WITH_TAG(HTMLFormElement, form)
 
-  explicit HTMLFormElement(
-      already_AddRefed<mozilla::dom::NodeInfo>&& aNodeInfo);
+  explicit HTMLFormElement(already_AddRefed<mozilla::dom::NodeInfo> aNodeInfo);
 
   enum { FORM_CONTROL_LIST_HASHTABLE_LENGTH = 8 };
 
@@ -68,7 +65,8 @@ class HTMLFormElement final : public nsGenericHTMLElement {
                       nsAttrValue& aResult) override;
   void GetEventTargetParent(EventChainPreVisitor& aVisitor) override;
   void WillHandleEvent(EventChainPostVisitor& aVisitor) override;
-  nsresult PostHandleEvent(EventChainPostVisitor& aVisitor) override;
+  MOZ_CAN_RUN_SCRIPT nsresult
+  PostHandleEvent(EventChainPostVisitor& aVisitor) override;
 
   nsresult BindToTree(BindContext&, nsINode& aParent) override;
   void UnbindFromTree(UnbindContext&) override;
@@ -335,14 +333,6 @@ class HTMLFormElement final : public nsGenericHTMLElement {
 
   void GetSupportedNames(nsTArray<nsString>& aRetval);
 
-#ifdef DEBUG
-  static void AssertDocumentOrder(
-      const nsTArray<nsGenericHTMLFormElement*>& aControls, nsIContent* aForm);
-  static void AssertDocumentOrder(
-      const nsTArray<RefPtr<nsGenericHTMLFormElement>>& aControls,
-      nsIContent* aForm);
-#endif
-
   JS::ExpandoAndGeneration mExpandoAndGeneration;
 
  protected:
@@ -366,7 +356,7 @@ class HTMLFormElement final : public nsGenericHTMLElement {
     RefPtr<HTMLFormElement> mForm;
   };
 
-  nsresult DoReset();
+  MOZ_CAN_RUN_SCRIPT nsresult DoReset();
 
   // Async callback to handle removal of our default submit
   void HandleDefaultSubmitRemoval();

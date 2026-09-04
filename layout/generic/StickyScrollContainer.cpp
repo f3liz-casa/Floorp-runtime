@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -23,8 +21,6 @@ namespace mozilla {
 StickyScrollContainer::StickyScrollContainer(
     ScrollContainerFrame* aScrollContainerFrame)
     : mScrollContainerFrame(aScrollContainerFrame) {}
-
-StickyScrollContainer::~StickyScrollContainer() = default;
 
 // static
 StickyScrollContainer* StickyScrollContainer::GetOrCreateForFrame(
@@ -56,6 +52,15 @@ static nscoord ComputeStickySideOffset(Side aSide,
                                                 side->AsLengthPercentage());
 }
 
+static nsSize GetScrollContainerSize(
+    const ScrollContainerFrame* aScrollContainer) {
+  if (aScrollContainer->IsRootScrollFrameOfDocument() &&
+      aScrollContainer->PresContext()->IsRootContentDocumentCrossProcess()) {
+    return aScrollContainer->PresShell()->GetFixedViewportSize();
+  }
+  return aScrollContainer->GetScrolledFrameSize();
+}
+
 // static
 void StickyScrollContainer::ComputeStickyOffsets(nsIFrame* aFrame) {
   ScrollContainerFrame* scrollContainerFrame =
@@ -68,9 +73,7 @@ void StickyScrollContainer::ComputeStickyOffsets(nsIFrame* aFrame) {
     return;
   }
 
-  nsSize scrollContainerSize =
-      scrollContainerFrame->GetScrolledFrameSizeAccountingForDynamicToolbar();
-
+  nsSize scrollContainerSize = GetScrollContainerSize(scrollContainerFrame);
   nsMargin computedOffsets;
   const nsStylePosition* position = aFrame->StylePosition();
 
@@ -171,42 +174,60 @@ void StickyScrollContainer::ComputeStickyLimits(nsIFrame* aFrame,
 
   nsMargin sfPadding = scrolledFrame->GetUsedPadding();
   nsPoint sfOffset = aFrame->GetParent()->GetOffsetTo(scrolledFrame);
+  nsSize sfSize = GetScrollContainerSize(mScrollContainerFrame);
+  StyleDirection direction = cbFrame->StyleVisibility()->mDirection;
+  nsMargin effectiveOffsets = *computedOffsets;
+
+  if (computedOffsets->top != NS_AUTOOFFSET &&
+      computedOffsets->bottom != NS_AUTOOFFSET) {
+    // Decrease the effective end-edge inset of the sticky view rectangle
+    // when its height is less than the height of the border-box of the sticky
+    // box.
+    nscoord stickyViewHeight = sfSize.height - computedOffsets->TopBottom();
+    if (rect.height > stickyViewHeight) {
+      nscoord delta = rect.height - stickyViewHeight;
+      effectiveOffsets.bottom -= delta;
+    }
+  }
+
+  if (computedOffsets->left != NS_AUTOOFFSET &&
+      computedOffsets->right != NS_AUTOOFFSET) {
+    // Decrease the effective end-edge inset of the sticky view rectangle
+    // when its width is less than the width of the border-box of the sticky
+    // box.
+    nscoord stickyViewWidth = sfSize.width - computedOffsets->LeftRight();
+    if (rect.width > stickyViewWidth) {
+      nscoord delta = rect.width - stickyViewWidth;
+      if (direction == StyleDirection::Ltr) {
+        effectiveOffsets.right -= delta;
+      } else {
+        effectiveOffsets.left -= delta;
+      }
+    }
+  }
 
   // Top
   if (computedOffsets->top != NS_AUTOOFFSET) {
     aStick->SetTopEdge(mScrollPosition.y + sfPadding.top +
-                       computedOffsets->top - sfOffset.y);
+                       effectiveOffsets.top - sfOffset.y);
   }
-
-  nsSize sfSize =
-      mScrollContainerFrame->GetScrolledFrameSizeAccountingForDynamicToolbar();
 
   // Bottom
-  if (computedOffsets->bottom != NS_AUTOOFFSET &&
-      (computedOffsets->top == NS_AUTOOFFSET ||
-       rect.height <= sfSize.height - computedOffsets->TopBottom())) {
+  if (computedOffsets->bottom != NS_AUTOOFFSET) {
     aStick->SetBottomEdge(mScrollPosition.y + sfPadding.top + sfSize.height -
-                          computedOffsets->bottom - rect.height - sfOffset.y);
+                          effectiveOffsets.bottom - rect.height - sfOffset.y);
   }
 
-  StyleDirection direction = cbFrame->StyleVisibility()->mDirection;
-
   // Left
-  if (computedOffsets->left != NS_AUTOOFFSET &&
-      (computedOffsets->right == NS_AUTOOFFSET ||
-       direction == StyleDirection::Ltr ||
-       rect.width <= sfSize.width - computedOffsets->LeftRight())) {
+  if (computedOffsets->left != NS_AUTOOFFSET) {
     aStick->SetLeftEdge(mScrollPosition.x + sfPadding.left +
-                        computedOffsets->left - sfOffset.x);
+                        effectiveOffsets.left - sfOffset.x);
   }
 
   // Right
-  if (computedOffsets->right != NS_AUTOOFFSET &&
-      (computedOffsets->left == NS_AUTOOFFSET ||
-       direction == StyleDirection::Rtl ||
-       rect.width <= sfSize.width - computedOffsets->LeftRight())) {
+  if (computedOffsets->right != NS_AUTOOFFSET) {
     aStick->SetRightEdge(mScrollPosition.x + sfPadding.left + sfSize.width -
-                         computedOffsets->right - rect.width - sfOffset.x);
+                         effectiveOffsets.right - rect.width - sfOffset.x);
   }
 
   // These limits are for the bounding box of aFrame's continuations. Convert
@@ -336,15 +357,15 @@ void StickyScrollContainer::UpdatePositions(nsPoint aScrollPosition,
 
   OverflowChangedTracker oct;
   oct.SetSubtreeRoot(aSubtreeRoot);
-  // We need to position ancestors before children, so iter from shallowest. We
-  // don't use mFrames.IterFromShallowest() because we want to handle removal of
-  // non-first continuations while we iterate.
-  for (size_t i = mFrames.Length(); i--;) {
-    nsIFrame* f = mFrames.ElementAt(i);
+  // We need to position ancestors before children, so iter from shallowest.
+  // Collect a list of frames to be removed, so that we don't invalidate the
+  // iterator while we're using it.
+  AutoTArray<nsIFrame*, 8> framesToRemove;
+  for (nsIFrame* f : mFrames.IterFromShallowest()) {
     if (!nsLayoutUtils::IsFirstContinuationOrIBSplitSibling(f)) {
       // This frame was added in nsIFrame::DidSetComputedStyle before we knew it
       // wasn't the first ib-split-sibling.
-      mFrames.RemoveElementAt(i);
+      framesToRemove.AppendElement(f);
       continue;
     }
     if (aSubtreeRoot) {
@@ -362,6 +383,9 @@ void StickyScrollContainer::UpdatePositions(nsPoint aScrollPosition,
         oct.AddFrame(cont, OverflowChangedTracker::CHILDREN_CHANGED);
       }
     }
+  }
+  for (nsIFrame* f : framesToRemove) {
+    mFrames.Remove(f);
   }
   oct.Flush();
 }

@@ -4,13 +4,10 @@
 
 package mozilla.components.feature.autofill.handler
 
-import android.annotation.SuppressLint
 import android.app.assist.AssistStructure
 import android.content.Context
-import android.os.Build
 import android.service.autofill.FillRequest
 import android.service.autofill.FillResponse
-import androidx.annotation.RequiresApi
 import mozilla.components.feature.autofill.AutofillConfiguration
 import mozilla.components.feature.autofill.facts.emitAutofillRequestFact
 import mozilla.components.feature.autofill.response.dataset.DatasetBuilder
@@ -32,7 +29,6 @@ internal const val MAX_LOGINS = 10
 /**
  * Class responsible for handling [FillRequest]s and returning [FillResponse]s.
  */
-@RequiresApi(Build.VERSION_CODES.O)
 internal class FillRequestHandler(
     private val context: Context,
     private val configuration: AutofillConfiguration,
@@ -41,7 +37,6 @@ internal class FillRequestHandler(
      * Handles a fill request for the given [AssistStructure] and returns a matching [FillResponse]
      * or `null` if the request could not be handled or the passed in [AssistStructure] is `null`.
      */
-    @SuppressLint("InlinedApi")
     @Suppress("ReturnCount")
     suspend fun handle(
         structure: RawStructure?,

@@ -4,7 +4,6 @@
 
 package mozilla.components.feature.prompts.dialog
 
-import android.annotation.SuppressLint
 import android.app.Dialog
 import android.content.DialogInterface
 import android.os.Bundle
@@ -16,8 +15,9 @@ import android.view.View.GONE
 import androidx.annotation.StringRes
 import androidx.annotation.VisibleForTesting
 import androidx.annotation.VisibleForTesting.Companion.PRIVATE
-import androidx.appcompat.app.AlertDialog
+import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import mozilla.components.feature.prompts.R
+import mozilla.components.feature.prompts.ext.Truncation
 import mozilla.components.ui.widgets.withCenterAlignedButtons
 
 private const val KEY_USERNAME_EDIT_TEXT = "KEY_USERNAME_EDIT_TEXT"
@@ -53,9 +53,9 @@ internal class AuthenticationDialogFragment : PromptDialogFragment() {
         }
 
     override fun onCreateDialog(savedInstanceState: Bundle?): Dialog {
-        val builder = AlertDialog.Builder(requireContext())
+        val builder = MaterialAlertDialogBuilder(requireContext())
             .setupTitle()
-            .setMessage(message)
+            .setMessage(truncateMessage(message))
             .setCancelable(true)
             .setNegativeButton(R.string.mozac_feature_prompts_cancel) { _, _ ->
                 feature?.onCancel(sessionId, promptRequestUID)
@@ -64,6 +64,17 @@ internal class AuthenticationDialogFragment : PromptDialogFragment() {
                 onPositiveClickAction()
             }
         return addLayout(builder).create().withCenterAlignedButtons()
+    }
+
+    /**
+     * Truncates the message to prevent ANR during text measurement.
+     */
+    private fun truncateMessage(text: String): String {
+        return if (text.length > Truncation.MAX_MESSAGE_LENGTH) {
+            text.substring(0, Truncation.MAX_MESSAGE_LENGTH) + "…"
+        } else {
+            text
+        }
     }
 
     override fun onCancel(dialog: DialogInterface) {
@@ -75,8 +86,7 @@ internal class AuthenticationDialogFragment : PromptDialogFragment() {
         feature?.onConfirm(sessionId, promptRequestUID, username to password)
     }
 
-    @SuppressLint("InflateParams")
-    private fun addLayout(builder: AlertDialog.Builder): AlertDialog.Builder {
+    private fun addLayout(builder: MaterialAlertDialogBuilder): MaterialAlertDialogBuilder {
         val inflater = LayoutInflater.from(requireContext())
         val view = inflater.inflate(R.layout.mozac_feature_prompt_auth_prompt, null)
 
@@ -179,7 +189,7 @@ internal class AuthenticationDialogFragment : PromptDialogFragment() {
     }
 
     @VisibleForTesting(otherwise = PRIVATE)
-    internal fun AlertDialog.Builder.setupTitle(): AlertDialog.Builder {
+    internal fun MaterialAlertDialogBuilder.setupTitle(): MaterialAlertDialogBuilder {
         return if (title.isEmpty()) {
             setTitle(DEFAULT_TITLE)
         } else {

@@ -51,12 +51,17 @@ let allFieldNames = [
   "tel",
 ];
 
-function makeAddressComment({ primary, secondary, status, profile }) {
+function getExpectedAddressImage() {
+  return "chrome://browser/skin/fxa/avatar-empty.svg";
+}
+
+function makeAddressComment({ primary, secondary, profile }) {
   return JSON.stringify({
     primary,
     secondary,
-    status,
-    ariaLabel: primary + " " + secondary + " " + status,
+    ariaLabel: primary + " " + secondary,
+    image: getExpectedAddressImage(),
+    type: "address",
     fillMessageName: "FormAutofill:FillForm",
     fillMessageData: { profile },
   });
@@ -74,6 +79,7 @@ function makeCreditCardComment({
     secondary,
     ariaLabel,
     image,
+    type: "payment",
     fillMessageName: "FormAutofill:FillForm",
     fillMessageData: { profile },
   });
@@ -84,10 +90,6 @@ let addressTestCases = [
     description: "Focus on an `organization` field",
     options: {},
     matchingProfiles,
-    filledCategories: [
-      ["address", "name", "tel"],
-      ["address", "name", "tel"],
-    ],
     allFieldNames,
     searchString: "",
     fieldDetail: { fieldName: "organization" },
@@ -102,10 +104,9 @@ let addressTestCases = [
           comment: makeAddressComment({
             primary: "Sesame Street",
             secondary: "123 Sesame Street.",
-            status: "Also autofills address, name, phone",
             profile: matchingProfiles[0],
           }),
-          image: "",
+          image: getExpectedAddressImage(),
         },
         {
           value: "",
@@ -114,10 +115,9 @@ let addressTestCases = [
           comment: makeAddressComment({
             primary: "Mozilla",
             secondary: "331 E. Evelyn Avenue",
-            status: "Also autofills address, name, phone",
             profile: matchingProfiles[1],
           }),
-          image: "",
+          image: getExpectedAddressImage(),
         },
       ],
     },
@@ -145,10 +145,9 @@ let addressTestCases = [
           comment: makeAddressComment({
             primary: "1-345-345-3456.",
             secondary: "123 Sesame Street.",
-            status: "Also autofills address, name, organization",
             profile: matchingProfiles[0],
           }),
-          image: "",
+          image: getExpectedAddressImage(),
         },
         {
           value: "",
@@ -157,10 +156,9 @@ let addressTestCases = [
           comment: makeAddressComment({
             primary: "1-650-903-0800",
             secondary: "331 E. Evelyn Avenue",
-            status: "Also autofills address, name, organization",
             profile: matchingProfiles[1],
           }),
-          image: "",
+          image: getExpectedAddressImage(),
         },
         {
           value: "",
@@ -169,10 +167,9 @@ let addressTestCases = [
           comment: makeAddressComment({
             primary: "1-000-000-0000",
             secondary: "321, No Name St. 2nd line 3rd line",
-            status: "Also autofills address",
             profile: matchingProfiles[2],
           }),
-          image: "",
+          image: getExpectedAddressImage(),
         },
       ],
     },
@@ -200,10 +197,9 @@ let addressTestCases = [
           comment: makeAddressComment({
             primary: "123 Sesame Street.",
             secondary: "Timothy Berners-Lee",
-            status: "Also autofills name, organization, phone",
             profile: matchingProfiles[0],
           }),
-          image: "",
+          image: getExpectedAddressImage(),
         },
         {
           value: "",
@@ -212,10 +208,9 @@ let addressTestCases = [
           comment: makeAddressComment({
             primary: "331 E. Evelyn Avenue",
             secondary: "John Doe",
-            status: "Also autofills name, organization, phone",
             profile: matchingProfiles[1],
           }),
-          image: "",
+          image: getExpectedAddressImage(),
         },
         {
           value: "",
@@ -224,10 +219,9 @@ let addressTestCases = [
           comment: makeAddressComment({
             primary: "321, No Name St. 2nd line 3rd line",
             secondary: "1-000-000-0000",
-            status: "Also autofills phone",
             profile: matchingProfiles[2],
           }),
-          image: "",
+          image: getExpectedAddressImage(),
         },
       ],
     },
@@ -255,10 +249,9 @@ let addressTestCases = [
           comment: makeAddressComment({
             primary: "123 Sesame Street.",
             secondary: "Timothy Berners-Lee",
-            status: "Also autofills name, organization, phone",
             profile: matchingProfiles[0],
           }),
-          image: "",
+          image: getExpectedAddressImage(),
         },
         {
           value: "",
@@ -267,10 +260,9 @@ let addressTestCases = [
           comment: makeAddressComment({
             primary: "331 E. Evelyn Avenue",
             secondary: "John Doe",
-            status: "Also autofills name, organization, phone",
             profile: matchingProfiles[1],
           }),
-          image: "",
+          image: getExpectedAddressImage(),
         },
         {
           value: "",
@@ -279,10 +271,9 @@ let addressTestCases = [
           comment: makeAddressComment({
             primary: "321, No Name St.",
             secondary: "1-000-000-0000",
-            status: "Also autofills phone",
             profile: matchingProfiles[2],
           }),
-          image: "",
+          image: getExpectedAddressImage(),
         },
       ],
     },
@@ -361,7 +352,7 @@ let creditCardTestCases = [
           comment: makeCreditCardComment({
             primary: "Timothy Berners-Lee",
             secondary: "••••6785",
-            ariaLabel: "Visa Timothy Berners-Lee ****6785",
+            ariaLabel: "Visa Timothy Berners-Lee ••••6785",
             image: "chrome://formautofill/content/third-party/cc-logo-visa.svg",
             profile: matchingProfiles[0],
           }),
@@ -374,7 +365,7 @@ let creditCardTestCases = [
           comment: makeCreditCardComment({
             primary: "John Doe",
             secondary: "••••1234",
-            ariaLabel: "American Express John Doe ****1234",
+            ariaLabel: "American Express John Doe ••••1234",
             image: "chrome://formautofill/content/third-party/cc-logo-amex.png",
             profile: matchingProfiles[1],
           }),
@@ -484,7 +475,6 @@ add_task(async function test_all_patterns() {
         testCase.fieldDetail,
         testCase.allFieldNames,
         testCase.matchingProfiles,
-        testCase.filledCategories,
         testCase.options
       );
       let expectedValue = testCase.expected;
@@ -492,13 +482,6 @@ add_task(async function test_all_patterns() {
       // If the last item shows up as a footer, we expect one more item
       // than expected.
       if (actual.getStyleAt(actual.matchCount - 1) == "action") {
-        expectedItemLength++;
-      }
-      // Add one row for the status.
-      if (
-        actual.matchCount > 2 &&
-        actual.getStyleAt(actual.matchCount - 2) == "status"
-      ) {
         expectedItemLength++;
       }
 

@@ -10,7 +10,6 @@ import {
   StatusMessage,
   SponsorLabel,
 } from "content-src/components/DiscoveryStreamComponents/DSContextFooter/DSContextFooter";
-import { DSThumbsUpDownButtons } from "content-src/components/DiscoveryStreamComponents/DSThumbsUpDownButtons/DSThumbsUpDownButtons";
 import { actionCreators as ac } from "common/Actions.mjs";
 import { DSLinkMenu } from "content-src/components/DiscoveryStreamComponents/DSLinkMenu/DSLinkMenu";
 import { DSImage } from "content-src/components/DiscoveryStreamComponents/DSImage/DSImage";
@@ -23,7 +22,7 @@ import { Provider } from "react-redux";
 import { combineReducers, createStore } from "redux";
 
 const DEFAULT_PROPS = {
-  url: "about:robots",
+  url: "https://example.com",
   title: "title",
   raw_image_src: "https://picsum.photos/200",
   icon_src: "https://picsum.photos/200",
@@ -32,8 +31,6 @@ const DEFAULT_PROPS = {
   },
   DiscoveryStream: INITIAL_STATE.DiscoveryStream,
   Prefs: INITIAL_STATE.Prefs,
-  fetchTimestamp: new Date("March 20, 2024 10:30:44").getTime(),
-  firstVisibleTimestamp: new Date("March 21, 2024 10:11:12").getTime(),
 };
 
 describe("<DSCard>", () => {
@@ -110,70 +107,6 @@ describe("<DSCard>", () => {
 
     const contextFooter = wrapper.find(DSContextFooter);
     assert.lengthOf(contextFooter.find(StatusMessage), 1);
-  });
-
-  it("should render thumbs up/down UI when not a spoc element ", () => {
-    const store = createStore(combineReducers(reducers), INITIAL_STATE);
-    wrapper = mount(
-      <Provider store={store}>
-        <DSCard mayHaveThumbsUpDown={true} {...DEFAULT_PROPS} />
-      </Provider>
-    );
-
-    const dsCardInstance = wrapper.find(DSCard).instance();
-    dsCardInstance.setState({ isSeen: true });
-    wrapper.update();
-
-    const thumbs_up_down_buttons_component = wrapper.find(
-      DSThumbsUpDownButtons
-    );
-    assert.ok(thumbs_up_down_buttons_component.exists());
-  });
-
-  it("thumbs up button should have active class when isThumbsUpActive is true", () => {
-    const store = createStore(combineReducers(reducers), INITIAL_STATE);
-    wrapper = mount(
-      <Provider store={store}>
-        <DSCard mayHaveThumbsUpDown={true} {...DEFAULT_PROPS} />
-      </Provider>
-    );
-
-    const dsCardInstance = wrapper.find(DSCard).instance();
-    dsCardInstance.setState({ isSeen: true, isThumbsUpActive: true });
-    wrapper.update();
-
-    const thumbs_up_down_buttons_component = wrapper.find(
-      DSThumbsUpDownButtons
-    );
-    const thumbs_up_active_button = thumbs_up_down_buttons_component.find(
-      ".icon-thumbs-up.is-active"
-    );
-    assert.ok(thumbs_up_active_button.exists());
-  });
-
-  it("should NOT render thumbs up/down UI when a spoc element ", () => {
-    const store = createStore(combineReducers(reducers), INITIAL_STATE);
-
-    wrapper = mount(
-      <Provider store={store}>
-        <DSCard
-          mayHaveThumbsUpDown={true}
-          sponsor="Mozilla"
-          {...DEFAULT_PROPS}
-        />
-      </Provider>
-    );
-    const dsCardInstance = wrapper.find(DSCard).instance();
-    dsCardInstance.setState({ isSeen: true });
-    wrapper.update();
-    // Note: The wrapper is still rendered for DSCard height but the contents is not
-    const thumbs_up_down_buttons_component = wrapper.find(
-      DSThumbsUpDownButtons
-    );
-    const thumbs_up_down_buttons = thumbs_up_down_buttons_component.find(
-      ".card-stp-thumbs-buttons"
-    );
-    assert.ok(!thumbs_up_down_buttons.exists());
   });
 
   it("should render Sponsored Context for a spoc element", () => {
@@ -319,8 +252,6 @@ describe("<DSCard>", () => {
             card_type: "organic",
             recommendation_id: undefined,
             tile_id: "fooidx",
-            fetchTimestamp: DEFAULT_PROPS.fetchTimestamp,
-            firstVisibleTimestamp: DEFAULT_PROPS.firstVisibleTimestamp,
             scheduled_corpus_item_id: undefined,
             corpus_item_id: undefined,
             recommended_at: undefined,
@@ -329,7 +260,7 @@ describe("<DSCard>", () => {
             features: undefined,
             matches_selected_topic: undefined,
             selected_topics: undefined,
-            is_list_card: undefined,
+            attribution: undefined,
             format: "medium-card",
           },
         })
@@ -347,7 +278,6 @@ describe("<DSCard>", () => {
               recommendation_id: undefined,
               topic: undefined,
               selected_topics: undefined,
-              is_list_card: undefined,
               format: "medium-card",
             },
           ],
@@ -382,8 +312,6 @@ describe("<DSCard>", () => {
             card_type: "spoc",
             recommendation_id: undefined,
             tile_id: "fooidx",
-            fetchTimestamp: DEFAULT_PROPS.fetchTimestamp,
-            firstVisibleTimestamp: DEFAULT_PROPS.firstVisibleTimestamp,
             scheduled_corpus_item_id: undefined,
             corpus_item_id: undefined,
             recommended_at: undefined,
@@ -392,7 +320,7 @@ describe("<DSCard>", () => {
             features: undefined,
             matches_selected_topic: undefined,
             selected_topics: undefined,
-            is_list_card: undefined,
+            attribution: undefined,
             format: "spoc",
           },
         })
@@ -410,7 +338,6 @@ describe("<DSCard>", () => {
               recommendation_id: undefined,
               topic: undefined,
               selected_topics: undefined,
-              is_list_card: undefined,
               format: "spoc",
             },
           ],
@@ -448,8 +375,6 @@ describe("<DSCard>", () => {
             recommendation_id: undefined,
             tile_id: "fooidx",
             shim: "click shim",
-            fetchTimestamp: DEFAULT_PROPS.fetchTimestamp,
-            firstVisibleTimestamp: DEFAULT_PROPS.firstVisibleTimestamp,
             scheduled_corpus_item_id: undefined,
             corpus_item_id: undefined,
             recommended_at: undefined,
@@ -458,7 +383,7 @@ describe("<DSCard>", () => {
             features: undefined,
             matches_selected_topic: undefined,
             selected_topics: undefined,
-            is_list_card: undefined,
+            attribution: undefined,
             format: "medium-card",
           },
         })
@@ -477,39 +402,11 @@ describe("<DSCard>", () => {
               recommendation_id: undefined,
               topic: undefined,
               selected_topics: undefined,
-              is_list_card: undefined,
               format: "medium-card",
             },
           ],
           window_inner_width: 1000,
           window_inner_height: 900,
-        })
-      );
-    });
-
-    it("fakespot onLinkClick should dispatch with the correct events", () => {
-      wrapper.setProps({
-        id: "fooidx",
-        pos: 1,
-        type: "foo",
-        isFakespot: true,
-        category: "fakespot",
-      });
-
-      sandbox
-        .stub(wrapper.instance(), "doesLinkTopicMatchSelectedTopic")
-        .returns(undefined);
-
-      wrapper.instance().onLinkClick();
-
-      assert.calledWith(
-        dispatch,
-        ac.DiscoveryStreamUserEvent({
-          event: "FAKESPOT_CLICK",
-          value: {
-            product_id: "fooidx",
-            category: "fakespot",
-          },
         })
       );
     });
@@ -624,100 +521,6 @@ describe("<DSCard>", () => {
     });
   });
 
-  describe("DSCard onThumbsUpClick", () => {
-    it("should update state.onThumbsUpClick for onThumbsUpClick", () => {
-      wrapper.setState({ isThumbsUpActive: false });
-      wrapper.instance().onThumbsUpClick({
-        stopPropagation: () => {},
-        preventDefault: () => {},
-      });
-      assert.isTrue(wrapper.instance().state.isThumbsUpActive);
-    });
-
-    it("should not fire telemetry for onThumbsUpClick is clicked twice", () => {
-      wrapper.setState({ isThumbsUpActive: true });
-      wrapper.instance().onThumbsUpClick({
-        stopPropagation: () => {},
-        preventDefault: () => {},
-      });
-
-      // state.isThumbsUpActive remains in active state
-      assert.isTrue(wrapper.instance().state.isThumbsUpActive);
-      assert.notCalled(dispatch);
-    });
-
-    it("should fire telemetry for onThumbsUpClick", () => {
-      wrapper.instance().onThumbsUpClick({
-        stopPropagation: () => {},
-        preventDefault: () => {},
-      });
-
-      assert.calledTwice(dispatch);
-
-      let [action] = dispatch.firstCall.args;
-
-      assert.equal(action.type, "DISCOVERY_STREAM_USER_EVENT");
-      assert.equal(action.data.event, "POCKET_THUMBS_UP");
-      assert.equal(action.data.source, "THUMBS_UI");
-      assert.deepEqual(action.data.value.thumbs_up, true);
-      assert.deepEqual(action.data.value.thumbs_down, false);
-
-      [action] = dispatch.secondCall.args;
-
-      assert.equal(action.type, "SHOW_TOAST_MESSAGE");
-      assert.deepEqual(action.data.showNotifications, true);
-      assert.deepEqual(action.data.toastId, "thumbsUpToast");
-    });
-  });
-
-  describe("DSCard onThumbsDownClick", () => {
-    it("should fire telemetry for onThumbsDownClick", () => {
-      wrapper.setProps({
-        id: "fooidx",
-        pos: 1,
-        type: "foo",
-        fetchTimestamp: undefined,
-        url: "about:robots",
-        dispatch,
-      });
-
-      wrapper.instance().onThumbsDownClick({
-        stopPropagation: () => {},
-        preventDefault: () => {},
-      });
-
-      assert.calledThrice(dispatch);
-
-      let [action] = dispatch.firstCall.args;
-
-      assert.equal(action.type, "TELEMETRY_IMPRESSION_STATS");
-      assert.equal(action.data.source, "FOO");
-
-      [action] = dispatch.secondCall.args;
-
-      assert.equal(action.type, "DISCOVERY_STREAM_USER_EVENT");
-      assert.equal(action.data.event, "POCKET_THUMBS_DOWN");
-      assert.equal(action.data.source, "THUMBS_UI");
-      assert.deepEqual(action.data.value.thumbs_up, false);
-      assert.deepEqual(action.data.value.thumbs_down, true);
-
-      [action] = dispatch.thirdCall.args;
-
-      assert.equal(action.type, "SHOW_TOAST_MESSAGE");
-      assert.deepEqual(action.data.showNotifications, true);
-      assert.deepEqual(action.data.toastId, "thumbsDownToast");
-    });
-
-    it("should update state.onThumbsDownClick for onThumbsDownClick", () => {
-      wrapper.setState({ isThumbsDownActive: false });
-      wrapper.instance().onThumbsDownClick({
-        stopPropagation: () => {},
-        preventDefault: () => {},
-      });
-      assert.isTrue(wrapper.instance().state.isThumbsDownActive);
-    });
-  });
-
   describe("DSCard menu open states", () => {
     let cardNode;
     let fakeDocument;
@@ -799,7 +602,7 @@ describe("<DSCard>", () => {
       const standardImageSize = {
         mediaMatcher: "default",
         width: 296,
-        height: 148,
+        height: 160,
       };
       const image = wrapper.find(DSImage);
       assert.deepEqual(image.props().sizes[0], standardImageSize);
@@ -968,7 +771,7 @@ describe("<DSCard>", () => {
         },
         medium: {
           width: 300,
-          height: 150,
+          height: 160,
         },
         large: {
           width: 190,
@@ -1031,6 +834,26 @@ describe("<DSCard>", () => {
       assert.equal(image.at(3).props().sizes[0].width, cardSizes.large.width);
     });
   });
+
+  it("should render topic label when isDailyBrief is true", () => {
+    const store = createStore(combineReducers(reducers), INITIAL_STATE);
+    wrapper = mount(
+      <Provider store={store}>
+        <DSCard {...DEFAULT_PROPS} isDailyBrief={true} topic="technology" />
+      </Provider>
+    );
+
+    const dsCardInstance = wrapper.find(DSCard).instance();
+    dsCardInstance.setState({ isSeen: true });
+    wrapper.update();
+
+    const topicLabel = wrapper.find(".ds-card-daily-brief-topic");
+    assert.lengthOf(topicLabel, 1);
+    assert.equal(
+      topicLabel.prop("data-l10n-id"),
+      "newtab-topic-label-technology"
+    );
+  });
 });
 
 describe("<PlaceholderDSCard> component", () => {
@@ -1059,68 +882,6 @@ describe("<PlaceholderDSCard> component", () => {
     wrapper.setState({ isSeen: true });
     const linkMenu = wrapper.find(DSLinkMenu);
     assert.lengthOf(linkMenu, 0);
-  });
-});
-
-describe("Listfeed <DSCard />", () => {
-  let wrapper;
-  let sandbox;
-  let dispatch;
-
-  beforeEach(() => {
-    sandbox = sinon.createSandbox();
-    dispatch = sandbox.stub();
-    wrapper = shallow(
-      <DSCard dispatch={dispatch} {...DEFAULT_PROPS} isListFeed={true} />
-    );
-    wrapper.setState({ isSeen: true });
-  });
-
-  afterEach(() => {
-    sandbox.restore();
-  });
-
-  it("should not render thumbs up/down UI", () => {
-    wrapper.setState({ mayHaveThumbsUpDown: true });
-    const thumbs_up_down_buttons_component = wrapper.find(
-      DSThumbsUpDownButtons
-    );
-    const thumbs_up_down_buttons = thumbs_up_down_buttons_component.find(
-      ".card-stp-thumbs-buttons"
-    );
-    assert.ok(!thumbs_up_down_buttons.exists());
-  });
-
-  it("should not render the excerpt UI", () => {
-    const excerpt_element = wrapper.find(".excerpt");
-
-    assert.ok(!excerpt_element.exists());
-  });
-});
-
-describe("ListFeed fakespot <DSCard />", () => {
-  let wrapper;
-  let sandbox;
-  let dispatch;
-
-  beforeEach(() => {
-    sandbox = sinon.createSandbox();
-    dispatch = sandbox.stub();
-    wrapper = shallow(
-      <DSCard
-        dispatch={dispatch}
-        {...DEFAULT_PROPS}
-        isListFeed={true}
-        isFakespot={true}
-      />
-    );
-    wrapper.setState({ isSeen: true });
-  });
-
-  it("should not render source element", () => {
-    const source_element = wrapper.find(".source");
-
-    assert.ok(!source_element.exists());
   });
 });
 

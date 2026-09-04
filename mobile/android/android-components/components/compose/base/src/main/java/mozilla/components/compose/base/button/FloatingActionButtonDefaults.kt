@@ -8,8 +8,6 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.ReadOnlyComposable
 import androidx.compose.ui.graphics.Color
-import mozilla.components.compose.base.theme.onPrimaryFixed
-import mozilla.components.compose.base.theme.primaryFixed
 
 /**
  * Contains the default values used by Acorn FloatingActionButtons.
@@ -22,21 +20,8 @@ object FloatingActionButtonDefaults {
     @Composable
     @ReadOnlyComposable
     fun colorsPrimary(
-        containerColor: Color = MaterialTheme.colorScheme.primaryFixed,
-        contentColor: Color = MaterialTheme.colorScheme.onPrimaryFixed,
-    ) = FloatingActionButtonColors(
-        containerColor = containerColor,
-        contentColor = contentColor,
-    )
-
-    /**
-     * Returns the colors for a Surface FAB.
-     */
-    @Composable
-    @ReadOnlyComposable
-    fun colorsSurface(
-        containerColor: Color = MaterialTheme.colorScheme.surfaceContainerHigh,
-        contentColor: Color = MaterialTheme.colorScheme.inverseSurface,
+        containerColor: Color = MaterialTheme.colorScheme.primaryContainer,
+        contentColor: Color = MaterialTheme.colorScheme.onPrimaryContainer,
     ) = FloatingActionButtonColors(
         containerColor = containerColor,
         contentColor = contentColor,

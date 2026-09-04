@@ -6,9 +6,10 @@ http://creativecommons.org/publicdomain/zero/1.0/ */
 const BASE_URL = "https://example.com/";
 
 // Use a different origin so HTTP doesn't upgrade to HTTPS.
-// eslint-disable-next-line @microsoft/sdl/no-insecure-url
+// eslint-disable-next-line sdl/no-insecure-url
 const BASE_URL_HTTP = "http://mochi.test:8888/";
 const HIDDEN_URI = "about:about";
+const FILE_URI = "file:///";
 
 ChromeUtils.defineESModuleGetters(this, {
   BrowserWindowTracker: "resource:///modules/BrowserWindowTracker.sys.mjs",
@@ -92,7 +93,7 @@ async function taskbarTabsPageAction(win, destWin) {
   let tab = (await tabOpenPromise).target;
 
   is(
-    tab.ownerGlobal,
+    tab.documentGlobal,
     destWin,
     "Shoud've reverted back to secondWin, as it is most recently focused"
   );
@@ -179,7 +180,7 @@ add_task(async function testRightClick() {
   });
 
   const uri = Services.io.newURI(BASE_URL);
-  const taskbarTab = await TaskbarTabs.findOrCreateTaskbarTab(uri, 0);
+  const taskbarTab = await createTaskbarTab(TaskbarTabs, uri, 0);
   is(
     await TaskbarTabs.getCountForId(taskbarTab.id),
     0,
@@ -231,7 +232,7 @@ add_task(async function revertToMostRecent() {
   ]);
 
   await BrowserTestUtils.closeWindow(firstWin);
-  secondWin.focus();
+  await SimpleTest.promiseFocus(secondWin);
 
   // Revert back to regular window
   await taskbarTabsPageAction(taskbarTabWindow, secondWin);
@@ -249,6 +250,8 @@ add_task(async function testVariousVisibilityChanges() {
     [BASE_URL, BASE_URL_HTTP, true, true],
     [HIDDEN_URI, BASE_URL, false, true],
     [HIDDEN_URI, BASE_URL_HTTP, false, true],
+    [FILE_URI, BASE_URL, false, true],
+    [BASE_URL, FILE_URI, true, false],
   ];
 
   for (const args of argsList) {
@@ -271,7 +274,7 @@ async function testVisibilityChange(aFrom, aTo, aFirstVisible, aSecondVisible) {
   is(
     element.hidden,
     !aFirstVisible,
-    `Page action is ${aFirstVisible ? "" : "not "}hidden on ${getURIScheme(aFrom)} new tab`
+    `Page action is ${aFirstVisible ? "not " : ""}hidden on ${getURIScheme(aFrom)} new tab`
   );
 
   locationChange = BrowserTestUtils.waitForLocationChange(gBrowser, aTo);
@@ -281,7 +284,7 @@ async function testVisibilityChange(aFrom, aTo, aFirstVisible, aSecondVisible) {
   is(
     element.hidden,
     !aSecondVisible,
-    `Page action is ${aSecondVisible ? "" : "not "}hidden on ${getURIScheme(aTo)} reused tab`
+    `Page action is ${aSecondVisible ? "not " : ""}hidden on ${getURIScheme(aTo)} reused tab`
   );
 
   BrowserTestUtils.removeTab(tab);
@@ -333,10 +336,12 @@ add_task(async function testPrefIsMonitored() {
 });
 
 add_task(async function test_moveTabIntoTaskbarTabCreation() {
-  // Ensure example.com does not have a Taskbar Tab.
   const uri = Services.io.newURI(BASE_URL);
-  const tt = await TaskbarTabs.findOrCreateTaskbarTab(uri, 0);
-  await TaskbarTabs.removeTaskbarTab(tt.id);
+  Assert.equal(
+    await TaskbarTabs.findTaskbarTab(uri, 0),
+    null,
+    "example.com does not already have a taskbar tab"
+  );
 
   await BrowserTestUtils.withNewTab("https://example.com/", async browser => {
     const tab = window.gBrowser.getTabForBrowser(browser);
@@ -345,13 +350,14 @@ add_task(async function test_moveTabIntoTaskbarTabCreation() {
     const found = TaskbarTabsUtils.getTaskbarTabIdFromWindow(move.window);
     is(found, move.taskbarTab.id, "Returned Taskbar Tab matches window");
     await BrowserTestUtils.closeWindow(move.window);
+    await TaskbarTabs.removeTaskbarTab(found);
   });
 });
 
 add_task(async function test_moveTabIntoTaskbarTabReuse() {
   // Ensure example.com has a Taskbar Tab.
   const uri = Services.io.newURI(BASE_URL);
-  const tt = await TaskbarTabs.findOrCreateTaskbarTab(uri, 0);
+  const tt = await createTaskbarTab(TaskbarTabs, uri, 0);
 
   await BrowserTestUtils.withNewTab("https://example.com/", async browser => {
     const tab = window.gBrowser.getTabForBrowser(browser);
@@ -361,5 +367,33 @@ add_task(async function test_moveTabIntoTaskbarTabReuse() {
     is(found, move.taskbarTab.id, "Returned Taskbar Tab matches window");
     is(tt.id, move.taskbarTab.id, "Returned Taskbar Tab existed before");
     await BrowserTestUtils.closeWindow(move.window);
+    await TaskbarTabs.removeTaskbarTab(tt.id);
+  });
+});
+
+add_task(async function test_page_action_uses_manifest() {
+  const pageAction = window.document.getElementById("taskbar-tabs-button");
+  const url = "https://example.com/";
+  await BrowserTestUtils.withNewTab(url, async browser => {
+    await SpecialPowers.spawn(browser, [], async () => {
+      content.document.body.innerHTML =
+        '<link rel="manifest" href="/manifest.webapp">';
+    });
+
+    const newWinPromise = BrowserTestUtils.waitForNewWindow();
+    pageAction.dispatchEvent(new PointerEvent("click"));
+    const win = await newWinPromise;
+
+    const uri = Services.io.newURI(url);
+    const tt = await TaskbarTabs.findTaskbarTab(uri, 0);
+    is(
+      await TaskbarTabsUtils.getTaskbarTabIdFromWindow(win),
+      tt.id,
+      "Page action created a Taskbar Tab"
+    );
+    is(tt.name, "Mochitest", "Manifest name was used");
+
+    await BrowserTestUtils.closeWindow(win);
+    await TaskbarTabs.removeTaskbarTab(tt.id);
   });
 });

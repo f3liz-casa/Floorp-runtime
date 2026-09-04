@@ -1,6 +1,4 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- * vim: set ts=8 sts=2 et sw=2 tw=80:
- * This Source Code Form is subject to the terms of the Mozilla Public
+/* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
@@ -8,13 +6,17 @@
 
 #include "mozilla/DebugOnly.h"
 
+#include "gc/Zone.h"
 #include "jit/BaselineCacheIRCompiler.h"
 #include "jit/BaselineFrame.h"
 #include "jit/BaselineIC.h"
+#include "jit/BytecodeAnalysis.h"
 #include "jit/CacheIRCloner.h"
 #include "jit/CacheIRHealth.h"
 #include "jit/CacheIRWriter.h"
+#include "jit/InlineScriptTree.h"
 #include "jit/Ion.h"  // TooManyFormalArguments
+#include "jit/StubFolding.h"
 
 #include "vm/BytecodeLocation-inl.h"
 
@@ -63,12 +65,21 @@ bool DoTrialInlining(JSContext* cx, BaselineFrame* frame) {
     return true;
   }
 
-  // Baseline shouldn't attempt trial inlining in scripts that are too large.
-  MOZ_ASSERT_IF(JitOptions.limitScriptSize,
-                script->length() <= JitOptions.ionMaxScriptSize);
+  // Don't do trial inlining in scripts that are too large.
+  if (JitOptions.limitScriptSize &&
+      script->length() > JitOptions.ionMaxScriptSize) {
+    // Baseline should elide trial inlining calls if the script is big.
+    MOZ_ASSERT(frame->runningInInterpreter());
+    return true;
+  }
 
-  const uint32_t MAX_INLINING_DEPTH = 4;
-  if (icScript->depth() > MAX_INLINING_DEPTH) {
+  // Maximum trial inlining depth for ICScripts. This is smaller than
+  // InlineScriptTree::MaxDepth because we can reach the bigger number if we are
+  // doing monomorphic inlining using shared IC data.
+  const uint32_t MaxICScriptDepth = 4;
+  static_assert(MaxICScriptDepth <= InlineScriptTree::MaxDepth,
+                "Trial inlining depth must not exceed max inlining depth");
+  if (icScript->depth() > MaxICScriptDepth) {
     return true;
   }
 
@@ -103,6 +114,13 @@ bool DoTrialInlining(JSContext* cx, BaselineFrame* frame) {
   return inliner.tryInlining();
 }
 
+TrialInliner::TrialInliner(JSContext* cx, HandleScript script,
+                           ICScript* icScript)
+    : cx_(cx),
+      script_(script),
+      icScript_(icScript),
+      lock_(cx->zone(), icScript->markingLock()) {}
+
 void TrialInliner::cloneSharedPrefix(ICCacheIRStub* stub,
                                      const uint8_t* endOfPrefix,
                                      CacheIRWriter& writer) {
@@ -117,12 +135,13 @@ void TrialInliner::cloneSharedPrefix(ICCacheIRStub* stub,
 bool TrialInliner::replaceICStub(ICEntry& entry, ICFallbackStub* fallback,
                                  CacheIRWriter& writer, CacheKind kind) {
   MOZ_ASSERT(fallback->trialInliningState() == TrialInliningState::Candidate);
+  writer.setTrialInliningState(TrialInliningState::Inlined);
 
-  fallback->discardStubs(cx()->zone(), &entry);
+  fallback->discardStubs(cx()->zone(), &entry, lock_);
 
   // Note: AttachBaselineCacheIRStub never throws an exception.
-  ICAttachResult result = AttachBaselineCacheIRStub(
-      cx(), writer, kind, script_, icScript_, fallback, "TrialInline");
+  ICAttachResult result = AttachBaselineCacheIRStubLocked(
+      cx(), writer, kind, script_, icScript_, fallback, "TrialInline", lock_);
   if (result == ICAttachResult::Attached) {
     MOZ_ASSERT(fallback->trialInliningState() == TrialInliningState::Inlined);
     return true;
@@ -277,9 +296,7 @@ Maybe<InlinableCallData> FindInlinableCallData(ICCacheIRStub* stub) {
         if (!opInfo.transpile) {
           return mozilla::Nothing();
         }
-        if (data.isSome()) {
-          MOZ_ASSERT(op == CacheOp::ReturnFromIC);
-        }
+        MOZ_ASSERT(data.isNothing());
         reader.skip(argLength);
         break;
     }
@@ -374,9 +391,7 @@ Maybe<InlinableGetterData> FindInlinableGetterData(ICCacheIRStub* stub) {
         if (!opInfo.transpile) {
           return mozilla::Nothing();
         }
-        if (data.isSome()) {
-          MOZ_ASSERT(op == CacheOp::ReturnFromIC);
-        }
+        MOZ_ASSERT(data.isNothing());
         reader.skip(argLength);
         break;
     }
@@ -463,9 +478,7 @@ Maybe<InlinableSetterData> FindInlinableSetterData(ICCacheIRStub* stub) {
         if (!opInfo.transpile) {
           return mozilla::Nothing();
         }
-        if (data.isSome()) {
-          MOZ_ASSERT(op == CacheOp::ReturnFromIC);
-        }
+        MOZ_ASSERT(data.isNothing());
         reader.skip(argLength);
         break;
     }
@@ -528,18 +541,18 @@ bool TrialInliner::IsValidInliningOp(JSOp op) {
 }
 
 /*static*/
-bool TrialInliner::canInline(JSScript* script, HandleScript caller,
-                             BytecodeLocation loc) {
+bool TrialInliner::canInline(JSContext* cx, JSScript* script,
+                             HandleScript caller, BytecodeLocation loc) {
   if (!script->hasJitScript()) {
     JitSpew(JitSpew_WarpTrialInlining, "SKIP: no JIT script");
     return false;
   }
-  if (!script->jitScript()->hasBaselineScript()) {
-    JitSpew(JitSpew_WarpTrialInlining, "SKIP: no BaselineScript");
-    return false;
-  }
   if (script->uninlineable()) {
     JitSpew(JitSpew_WarpTrialInlining, "SKIP: uninlineable flag");
+    return false;
+  }
+  if (script->isGenerator() || script->isAsync()) {
+    JitSpew(JitSpew_WarpTrialInlining, "SKIP: generator or async function");
     return false;
   }
   if (!script->canIonCompile()) {
@@ -593,6 +606,33 @@ bool TrialInliner::canInline(JSScript* script, HandleScript caller,
     JitSpew(JitSpew_WarpTrialInlining, "SKIP: argc too large: %u",
             unsigned(loc.getCallArgc()));
     return false;
+  }
+
+  if (!script->hasBaselineScript() &&
+      !script->jitScript()->ranBytecodeAnalysis()) {
+    // If we don't have a baseline script, then we maybe haven't done
+    // bytecode analysis yet. It's possible that the script is
+    // uninlineable or can't be Ion compiled. Do bytecode analysis now.
+    TempAllocator temp(&cx->tempLifoAlloc());
+    BytecodeAnalysis analysis(temp, script);
+    if (!analysis.init(temp)) {
+      JitSpew(JitSpew_WarpTrialInlining, "SKIP: OOM in bytecode analysis");
+      cx->recoverFromOutOfMemory();
+      return false;
+    }
+    bool result = true;
+    if (analysis.isInliningDisabled()) {
+      JitSpew(JitSpew_WarpTrialInlining, "SKIP: uninlineable flag");
+      script->setUninlineable();
+      result = false;
+    }
+    if (analysis.isIonDisabled()) {
+      JitSpew(JitSpew_WarpTrialInlining, "SKIP: can't ion-compile");
+      script->disableIon();
+      result = false;
+    }
+    script->jitScript()->setRanBytecodeAnalysis();
+    return result;
   }
 
   return true;
@@ -661,7 +701,7 @@ TrialInliningDecision TrialInliner::getInliningDecision(JSScript* targetScript,
   }
 #endif
 
-  if (!canInline(targetScript, script_, loc)) {
+  if (!canInline(cx(), targetScript, script_, loc)) {
     return TrialInliningDecision::NoInline;
   }
 
@@ -758,7 +798,7 @@ ICScript* TrialInliner::createInlinedICScript(JSScript* targetScript,
   MOZ_ASSERT(result->numICEntries() == targetScript->numICEntries());
 
   if (targetScript->needsFunctionEnvironmentObjects()) {
-    result->ensureEnvAllocSite(root->owningScript());
+    result->ensureEnvAllocSite(root->owningScript(), lock_);
   }
 
   root->addToTotalBytecodeSize(targetScript->length());
@@ -820,7 +860,6 @@ bool TrialInliner::maybeInlineCall(ICEntry& entry, ICFallbackStub* fallback,
   writer.callInlinedFunction(data->calleeOperand, argcId, newICScript,
                              data->callFlags,
                              ClampFixedArgc(loc.getCallArgc()));
-  writer.returnFromIC();
 
   return replaceICStub(entry, fallback, writer, CacheKind::Call);
 }
@@ -868,7 +907,6 @@ bool TrialInliner::maybeInlineGetter(ICEntry& entry, ICFallbackStub* fallback,
   writer.callInlinedGetterResult(data->receiverOperand, data->calleeOperand,
                                  data->target->function(), newICScript,
                                  data->sameRealm);
-  writer.returnFromIC();
 
   return replaceICStub(entry, fallback, writer, kind);
 }
@@ -913,7 +951,6 @@ bool TrialInliner::maybeInlineSetter(ICEntry& entry, ICFallbackStub* fallback,
   writer.callInlinedSetter(data->receiverOperand, data->calleeOperand,
                            data->target->function(), data->rhsOperand,
                            newICScript, data->sameRealm);
-  writer.returnFromIC();
 
   return replaceICStub(entry, fallback, writer, kind);
 }
@@ -926,7 +963,7 @@ bool TrialInliner::tryInlining() {
     ICEntry& entry = icScript_->icEntry(icIndex);
     ICFallbackStub* fallback = icScript_->fallbackStub(icIndex);
 
-    if (!TryFoldingStubs(cx(), fallback, script_, icScript_)) {
+    if (!TryFoldingStubsLocked(cx(), fallback, script_, icScript_, lock_)) {
       return false;
     }
 

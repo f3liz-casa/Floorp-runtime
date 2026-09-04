@@ -2,10 +2,9 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef _PEER_CONNECTION_IMPL_H_
-#define _PEER_CONNECTION_IMPL_H_
+#ifndef PEER_CONNECTION_IMPL_H_
+#define PEER_CONNECTION_IMPL_H_
 
-#include <cmath>
 #include <map>
 #include <string>
 #include <vector>
@@ -92,11 +91,7 @@ typedef NS_ConvertUTF8toUTF16 PCObserverString;
 }  // namespace dom
 }  // namespace mozilla
 
-#if defined(__cplusplus) && __cplusplus >= 201103L
 typedef struct Timecard Timecard;
-#else
-#  include "common/time_profiling/timecard.h"
-#endif
 
 // To preserve blame, convert nsresult to ErrorResult with wrappers. These
 // macros help declare wrappers w/function being wrapped when there are no
@@ -125,8 +120,8 @@ class RemoteSourceStreamInfo;
 class PCUuidGenerator : public JsepUuidGenerator {
  public:
   virtual bool Generate(std::string* idp) override;
-  virtual JsepUuidGenerator* Clone() const override {
-    return new PCUuidGenerator(*this);
+  virtual UniquePtr<JsepUuidGenerator> Clone() const override {
+    return MakeUnique<PCUuidGenerator>(*this);
   }
 
  private:
@@ -174,7 +169,7 @@ class PeerConnectionImpl final
  public:
   explicit PeerConnectionImpl(const dom::GlobalObject* aGlobal = nullptr);
 
-  NS_DECL_CYCLE_COLLECTING_ISUPPORTS
+  NS_DECL_CYCLE_COLLECTING_ISUPPORTS_FINAL
   NS_DECL_CYCLE_COLLECTION_WRAPPERCACHE_CLASS(PeerConnectionImpl)
 
   struct RtpExtensionHeader {
@@ -209,7 +204,7 @@ class PeerConnectionImpl final
 
   void NotifyDataChannelClosed(DataChannel*) override;
 
-  void NotifySctpConnected() override;
+  void NotifySctpConnected(Maybe<uint16_t> aMaxChannels) override;
 
   void NotifySctpClosed() override;
 
@@ -222,12 +217,14 @@ class PeerConnectionImpl final
   virtual const std::string& GetName();
 
   // ICE events
-  void IceConnectionStateChange(const std::string& aTransportId,
-                                dom::RTCIceTransportState state);
+  void IceConnectionStateChange(
+      const std::string& aTransportId, dom::RTCIceTransportState state,
+      const Maybe<dom::IceCandidateAttributePair>& aSelectedPair);
   void IceGatheringStateChange(const std::string& aTransportId,
                                dom::RTCIceGathererState state);
   void OnCandidateFound(const std::string& aTransportId,
                         const CandidateInfo& aCandidateInfo);
+  void OnCandidateError(const IceCandidateErrorInfo& aErrorInfo);
   void UpdateDefaultCandidate(const std::string& defaultAddr,
                               uint16_t defaultPort,
                               const std::string& defaultRtcpAddr,
@@ -406,10 +403,9 @@ class PeerConnectionImpl final
   MOZ_CAN_RUN_SCRIPT_BOUNDARY bool PluginCrash(uint32_t aPluginID,
                                                const nsAString& aPluginName);
 
-  NS_IMETHODIMP_TO_ERRORRESULT(SetConfiguration, ErrorResult& rv,
-                               const RTCConfiguration& aConfiguration) {
-    rv = SetConfiguration(aConfiguration);
-  }
+  NS_IMETHODIMP SetConfiguration(const RTCConfiguration& aConfiguration);
+  void SetConfiguration(const RTCConfiguration& aConfiguration,
+                        ErrorResult& rv);
 
   dom::RTCSctpTransport* GetSctp() const;
 
@@ -507,7 +503,12 @@ class PeerConnectionImpl final
   nsresult OnAlpnNegotiated(const std::string& aAlpn, bool aPrivacyRequested);
 
   void OnDtlsStateChange(const std::string& aTransportId,
-                         TransportLayer::State aState);
+                         TransportLayer::State aState,
+                         const nsTArray<nsTArray<uint8_t>>& aRemoteCerts,
+                         Maybe<dom::RTCErrorParams> aError);
+  void OnRtcpStateChange(const std::string& aTransportId,
+                         TransportLayer::State aState,
+                         Maybe<dom::RTCErrorParams> aError);
   dom::RTCPeerConnectionState GetNewConnectionState() const;
   // Returns whether we need to fire a state change event
   bool UpdateConnectionState();
@@ -602,12 +603,14 @@ class PeerConnectionImpl final
       nsTHashMap<nsCStringHashKey, RefPtr<dom::RTCDtlsTransport>>;
 
  private:
+  void ParseIceServers(const nsTArray<dom::RTCIceServer>& aIceServers,
+                       ErrorResult& aRv);
+
   virtual ~PeerConnectionImpl();
   PeerConnectionImpl(const PeerConnectionImpl& rhs);
   PeerConnectionImpl& operator=(PeerConnectionImpl);
 
   RefPtr<dom::RTCStatsPromise> GetDataChannelStats(
-      const RefPtr<DataChannelConnection>& aDataChannelConnection,
       const DOMHighResTimeStamp aTimestamp);
   nsresult CalculateFingerprint(const nsACString& algorithm,
                                 std::vector<uint8_t>* fingerprint) const;
@@ -673,6 +676,7 @@ class PeerConnectionImpl final
   RefPtr<PeerConnectionObserver> mPCObserver;
 
   nsCOMPtr<nsPIDOMWindowInner> mWindow;
+  nsString mOrigin;
 
   // The SDP sent in from JS
   std::string mLocalRequestedSDP;
@@ -721,6 +725,7 @@ class PeerConnectionImpl final
   unsigned int mDataChannelsClosed = 0;
 
   bool mForceIceTcp;
+  Maybe<dom::RTCRtcpMuxPolicy> mRtcpMuxPolicy;
   RefPtr<MediaTransportHandler> mTransportHandler;
 
   // The JSEP negotiation session.
@@ -794,7 +799,7 @@ class PeerConnectionImpl final
     // This class is not cycle-collected, so we must avoid grabbing a strong
     // reference.
     const std::string mPcHandle;
-    virtual ~StunAddrsHandler() {}
+    virtual ~StunAddrsHandler() = default;
   };
 
   // Manage ICE transports.
@@ -817,6 +822,11 @@ class PeerConnectionImpl final
   void EnsureTransports(const JsepSession& aSession);
 
   void UpdateRTCDtlsTransports();
+  // Creates/updates mSctpTransport based on whether a data section has
+  // appeared in an SDP. May run in have-remote-offer, where the
+  // RTCSctpTransport has a null transport until UpdateRTCDtlsTransports fills
+  // it in.
+  void UpdateRTCSctpTransport();
   void SaveStateForRollback();
   void RestoreStateForRollback();
   std::set<RefPtr<dom::RTCDtlsTransport>> GetActiveTransports() const;
@@ -874,6 +884,8 @@ class PeerConnectionImpl final
   std::set<std::pair<std::string, std::string>> mLocalIceCredentialsToReplace;
 
   nsTArray<RefPtr<dom::RTCRtpTransceiver>> mTransceivers;
+  // The lifecycle of worker datachannels is managed in RTCDataChannel
+  nsTArray<RefPtr<dom::RTCDataChannel>> mMainthreadDatachannels;
   RTCDtlsTransportMap mTransportIdToRTCDtlsTransport;
   RefPtr<dom::RTCSctpTransport> mSctpTransport;
   // This is similar to [[LastStableStateSender/ReceiverTransport]], but for
@@ -930,6 +942,7 @@ class PeerConnectionImpl final
   MediaEventListener mGatheringStateChangeListener;
   MediaEventListener mConnectionStateChangeListener;
   MediaEventListener mCandidateListener;
+  MediaEventListener mCandidateErrorListener;
   MediaEventListener mAlpnNegotiatedListener;
   MediaEventListener mStateChangeListener;
   MediaEventListener mRtcpStateChangeListener;
@@ -962,4 +975,4 @@ class PeerConnectionWrapper {
 
 #undef NS_IMETHODIMP_TO_ERRORRESULT
 #undef NS_IMETHODIMP_TO_ERRORRESULT_RETREF
-#endif  // _PEER_CONNECTION_IMPL_H_
+#endif  // PEER_CONNECTION_IMPL_H_

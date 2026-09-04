@@ -5,17 +5,21 @@
 const lazy = {};
 
 ChromeUtils.defineESModuleGetters(lazy, {
+  AutofillDataTypes: "resource://gre/modules/shared/AutofillDataTypes.sys.mjs",
   CreditCard: "resource://gre/modules/CreditCard.sys.mjs",
-  FormAutofillUtils: "resource://gre/modules/shared/FormAutofillUtils.sys.mjs",
 });
 
 ChromeUtils.defineLazyGetter(
   lazy,
   "l10n",
-  () => new Localization(["toolkit/formautofill/formAutofill.ftl"], true)
+  () =>
+    new Localization(
+      ["branding/brand.ftl", "toolkit/formautofill/formAutofill.ftl"],
+      true
+    )
 );
 
-class ProfileAutoCompleteResult {
+export class ProfileAutoCompleteResult {
   externalEntries = [];
 
   constructor(
@@ -23,7 +27,6 @@ class ProfileAutoCompleteResult {
     focusedFieldDetail,
     allFieldNames,
     matchingProfiles,
-    fillCategories,
     { resultCode = null, isSecure = true, isInputAutofilled = false }
   ) {
     // nsISupports
@@ -56,8 +59,6 @@ class ProfileAutoCompleteResult {
       }, new Set()),
     ].filter(field => allFieldNames.includes(field));
 
-    this._fillCategories = fillCategories;
-
     // Force return success code if the focused field is auto-filled in order
     // to show clear form button popup.
     if (isInputAutofilled) {
@@ -76,8 +77,7 @@ class ProfileAutoCompleteResult {
     this._popupLabels = this._generateLabels(
       this._focusedFieldName,
       this._allFieldNames,
-      this._matchingProfiles,
-      this._fillCategories
+      this._matchingProfiles
     );
   }
 
@@ -115,12 +115,7 @@ class ProfileAutoCompleteResult {
     return "";
   }
 
-  _generateLabels(
-    _focusedFieldName,
-    _allFieldNames,
-    _profiles,
-    _fillCategories
-  ) {}
+  _generateLabels(_focusedFieldName, _allFieldNames, _profiles) {}
 
   /**
    * Get the value of the result at the given index.
@@ -166,7 +161,7 @@ class ProfileAutoCompleteResult {
         data.fillMessageName = "FormAutofill:ClearForm";
         break;
       case "manage":
-        data.fillMessageName = "FormAutofill:OpenPreferences";
+        data.fillMessageName = this.openPreferenceMessage;
         break;
       case "insecure":
         data.noLearnMore = true;
@@ -265,9 +260,30 @@ class ProfileAutoCompleteResult {
 
     return "item";
   }
+
+  /**
+   * Build the autocomplete result for a data type. The result classes live
+   * here, so this factory owns the type-id -> class mapping.
+   *
+   * @param {string} typeId An AutofillDataTypes id.
+   * @param {...any} args Forwarded to the result constructor.
+   * @returns {ProfileAutoCompleteResult}
+   */
+  static createResult(typeId, ...args) {
+    switch (typeId) {
+      case lazy.AutofillDataTypes.CREDIT_CARD:
+        return new CreditCardResult(...args);
+      default:
+        return new AddressResult(...args);
+    }
+  }
 }
 
 export class AddressResult extends ProfileAutoCompleteResult {
+  get openPreferenceMessage() {
+    return `FormAutofill:OpenAddressPreferences`;
+  }
+
   _getSecondaryLabel(focusedFieldName, allFieldNames, profile) {
     // We group similar fields into the same field name so we won't pick another
     // field in the same group as the secondary label.
@@ -336,7 +352,7 @@ export class AddressResult extends ProfileAutoCompleteResult {
     return ""; // Nothing matched.
   }
 
-  _generateLabels(focusedFieldName, allFieldNames, profiles, fillCategories) {
+  _generateLabels(focusedFieldName, allFieldNames, profiles) {
     const manageLabel = lazy.l10n.formatValueSync(
       "autofill-manage-addresses-label"
     );
@@ -358,9 +374,6 @@ export class AddressResult extends ProfileAutoCompleteResult {
       return labels;
     }
 
-    const focusedCategory =
-      lazy.FormAutofillUtils.getCategoryFromFieldName(focusedFieldName);
-
     const labels = [];
     for (let idx = 0; idx < profiles.length; idx++) {
       const profile = profiles[idx];
@@ -378,86 +391,35 @@ export class AddressResult extends ProfileAutoCompleteResult {
         primary = profile["-moz-street-address-one-line"];
       }
 
-      const status = this.getStatusNote(fillCategories[idx], focusedCategory);
       const secondary = this._getSecondaryLabel(
         focusedFieldName,
         allFieldNames,
         profile
       );
       // Exclude empty chunks.
-      const ariaLabel = [primary, secondary, status]
-        .filter(chunk => !!chunk)
-        .join(" ");
+      const ariaLabel = [primary, secondary].filter(chunk => !!chunk).join(" ");
 
       labels.push({
         primary,
         secondary,
-        status,
         ariaLabel,
+        // eslint-disable-next-line mozilla/no-browser-refs-in-toolkit
+        image: "chrome://browser/skin/fxa/avatar-empty.svg",
+        type: "address",
       });
-    }
-
-    const allCategories =
-      lazy.FormAutofillUtils.getCategoriesFromFieldNames(allFieldNames);
-
-    if (allCategories?.length) {
-      const statusItem = {
-        primary: "",
-        secondary: "",
-        status: this.getStatusNote(allCategories, focusedCategory),
-        style: "status",
-      };
-      labels.push(statusItem);
     }
 
     labels.push(footerItem);
 
     return labels;
   }
-
-  getStatusNote(categories, focusedCategory) {
-    if (!categories || !categories.length) {
-      return "";
-    }
-
-    // If the length of categories is 1, that means all the fillable fields are in the same
-    // category. We will change the way to inform user according to this flag. When the value
-    // is true, we show "Also autofills ...", otherwise, show "Autofills ..." only.
-    let hasExtraCategories = categories.length > 1;
-    // Show the categories in certain order to conform with the spec.
-    let orderedCategoryList = [
-      "address",
-      "name",
-      "organization",
-      "tel",
-      "email",
-    ];
-    let showCategories = hasExtraCategories
-      ? orderedCategoryList.filter(
-          category =>
-            categories.includes(category) && category != focusedCategory
-        )
-      : [orderedCategoryList.find(category => category == focusedCategory)];
-
-    let formatter = new Intl.ListFormat(undefined, {
-      style: "narrow",
-    });
-
-    let categoriesText = showCategories.map(category =>
-      lazy.l10n.formatValueSync("autofill-category-" + category)
-    );
-    categoriesText = formatter.format(categoriesText);
-
-    let statusTextTmplKey = hasExtraCategories
-      ? "autofill-phishing-warningmessage-extracategory"
-      : "autofill-phishing-warningmessage";
-    return lazy.l10n.formatValueSync(statusTextTmplKey, {
-      categories: categoriesText,
-    });
-  }
 }
 
 export class CreditCardResult extends ProfileAutoCompleteResult {
+  get openPreferenceMessage() {
+    return `FormAutofill:OpenPaymentPreferences`;
+  }
+
   _getSecondaryLabel(focusedFieldName, allFieldNames, profile) {
     const GROUP_FIELDS = {
       "cc-name": [
@@ -504,7 +466,7 @@ export class CreditCardResult extends ProfileAutoCompleteResult {
     return ""; // Nothing matched.
   }
 
-  _generateLabels(focusedFieldName, allFieldNames, profiles, _fillCategories) {
+  _generateLabels(focusedFieldName, allFieldNames, profiles) {
     if (!this._isSecure) {
       return [
         lazy.l10n.formatValueSync(
@@ -560,7 +522,7 @@ export class CreditCardResult extends ProfileAutoCompleteResult {
           : (ccType ?? ""); // Unknown card type
         const ariaLabel = [
           ccTypeName,
-          primary.toString().replaceAll("*", ""),
+          primary.toString().replaceAll("•", ""),
           secondary,
         ]
           .filter(chunk => !!chunk) // Exclude empty chunks.
@@ -570,6 +532,7 @@ export class CreditCardResult extends ProfileAutoCompleteResult {
           secondary: secondary.toString().replaceAll("*", "•"),
           ariaLabel,
           image,
+          type: "payment",
         };
       });
 

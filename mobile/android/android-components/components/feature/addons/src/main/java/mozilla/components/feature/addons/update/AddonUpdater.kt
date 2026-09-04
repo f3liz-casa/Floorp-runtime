@@ -32,9 +32,12 @@ import androidx.work.PeriodicWorkRequest
 import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
 import androidx.work.WorkerParameters
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import mozilla.components.concept.engine.webextension.WebExtension
 import mozilla.components.concept.engine.webextension.isUnsupported
@@ -49,12 +52,10 @@ import mozilla.components.support.base.log.logger.Logger
 import mozilla.components.support.base.worker.Frequency
 import mozilla.components.support.ktx.android.notification.ChannelData
 import mozilla.components.support.ktx.android.notification.ensureNotificationChannelExists
-import mozilla.components.support.utils.PendingIntentUtils
 import mozilla.components.support.webextensions.WebExtensionSupport
 import java.util.Date
 import java.util.concurrent.TimeUnit
 import kotlin.coroutines.resume
-import kotlin.coroutines.suspendCoroutine
 import mozilla.components.ui.icons.R as iconsR
 
 /**
@@ -148,21 +149,27 @@ interface AddonUpdater {
 }
 
 /**
- * An implementation of [AddonUpdater] that uses the work manager api for scheduling new updates.
+ * An implementation of [AddonUpdater] that uses [WorkManager] for scheduling add-on updates.
+ *
+ * This class handles both periodic checks for updates and immediate update requests.
+ *
+ * When an update requires new permissions, it presents a system notification to the user.
+ * The update flow is then paused until the user either grants or denies the new permissions via the notification.
+ *
  * @property applicationContext The application context.
- * @param frequency (Optional) indicates how often updates should be performed, defaults
- * to one day.
+ * @param frequency How often periodic updates should be checked for. Defaults to once a day.
+ * @param notificationsDelegate The delegate responsible for posting system notifications.
  */
 @Suppress("LargeClass")
 class DefaultAddonUpdater(
     private val applicationContext: Context,
     private val frequency: Frequency = Frequency(1, TimeUnit.DAYS),
     private val notificationsDelegate: NotificationsDelegate,
+    ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
 ) : AddonUpdater {
     private val logger = Logger("DefaultAddonUpdater")
 
-    @VisibleForTesting
-    internal var scope = CoroutineScope(Dispatchers.IO)
+    private val scope = CoroutineScope(ioDispatcher + SupervisorJob())
 
     @VisibleForTesting
     internal val updateStatusStorage = UpdateStatusStorage()
@@ -413,7 +420,7 @@ class DefaultAddonUpdater(
             applicationContext,
             requestCode,
             allowIntent,
-            PendingIntentUtils.defaultFlags,
+            PendingIntent.FLAG_IMMUTABLE,
         )
 
         val allowText =
@@ -433,7 +440,7 @@ class DefaultAddonUpdater(
             applicationContext,
             requestCode,
             denyIntent,
-            PendingIntentUtils.defaultFlags,
+            PendingIntent.FLAG_IMMUTABLE,
         )
 
         val denyText = applicationContext.getString(R.string.mozac_feature_addons_updater_notification_cancel_button)
@@ -642,9 +649,10 @@ class DefaultAddonUpdater(
 /**
  * A implementation which uses WorkManager APIs to perform addon updates.
  */
-internal class AddonUpdaterWorker(
+internal class AddonUpdaterWorker @JvmOverloads constructor(
     context: Context,
     private val params: WorkerParameters,
+    private val mainDispatcher: CoroutineDispatcher = Dispatchers.Main,
 ) : CoroutineWorker(context, params) {
     private val logger = Logger("AddonUpdaterWorker")
     internal var updateAttemptStorage = DefaultAddonUpdater.UpdateAttemptStorage(applicationContext)
@@ -653,14 +661,19 @@ internal class AddonUpdaterWorker(
     internal var attemptScope = CoroutineScope(Dispatchers.IO)
 
     @Suppress("TooGenericExceptionCaught")
-    override suspend fun doWork(): Result = withContext(Dispatchers.Main) {
+    override suspend fun doWork(): Result = withContext(mainDispatcher) {
         val extensionId = params.inputData.getString(KEY_DATA_EXTENSIONS_ID) ?: ""
         logger.info("Trying to update extension $extensionId")
         // We need to guarantee that we are not trying to update without
         // all the required state being initialized first.
         WebExtensionSupport.awaitInitialization()
 
-        return@withContext suspendCoroutine { continuation ->
+        return@withContext suspendCancellableCoroutine { continuation ->
+            continuation.invokeOnCancellation {
+                logger.info("Add-on update for $extensionId was cancelled.")
+                // cancel the in-progress addon update when the AddonManager exposes a cancellation API
+            }
+
             try {
                 val manager = GlobalAddonDependencyProvider.requireAddonManager()
 

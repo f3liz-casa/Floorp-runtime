@@ -10,14 +10,16 @@ task-defaults:
             default: true
     worker-type:
         by-platform:
-            linux2404-64.*: t-linux-docker
+            linux2404-64.*: t-linux-docker-amd
             macosx1470-64.*: t-osx-1400-r8
-            windows11-64.*: win11-64-24h2-source
+            windows11-64.*: win11-64-25h2-source
     worker:
         by-platform:
             linux2404-64.*:
                 docker-image: {in-tree: "lint"}
                 max-run-time: 3600
+                env:
+                    TASKGRAPH_SERIAL: "1"
             macosx.*:
                 max-run-time: 3600
                 env:
@@ -25,13 +27,17 @@ task-defaults:
                     # ensure we don't use internal pypi for these tasks
                     PIP_INDEX_URL: https://pypi.python.org/simple/
                     PIP_NO_INDEX: "0"
+                    TASKGRAPH_SERIAL: "1"
             default:
                 max-run-time: 3600
+                env:
+                    TASKGRAPH_SERIAL: "1"
     use-python: default
     treeherder:
         kind: test
         tier: 1
     run:
+        clone-with: hg
         using: mach
         use-caches: [checkout, pip, uv]
     when:
@@ -42,10 +48,10 @@ task-defaults:
 firefox-ci:
     description: taskcluster/gecko_taskgraph unit tests
     always-target: false
-    python-version: [3]
     treeherder:
         symbol: ci
     run:
+        clone-with: hg
         using: python-test
         subsuite: ci
     when:
@@ -53,7 +59,7 @@ firefox-ci:
             - '.taskcluster.yml'
             - 'taskcluster/kinds/**'
             - 'taskcluster/**/*.py'
-            - 'third_party/python/taskcluster_taskgraph/**/*.py'
+            - 'taskcluster/requirements.txt'
             - 'tools/tryselect/selectors/auto.py'
 
 fog:
@@ -62,10 +68,10 @@ fog:
         - linux2404-64/opt
         - macosx1470-64/opt
         - windows11-64/opt
-    python-version: [3]
     treeherder:
         symbol: fp
     run:
+        clone-with: hg
         using: python-test
         subsuite: fog
     when:
@@ -79,10 +85,10 @@ mach:
         - linux2404-64/opt
         - macosx1470-64/opt
         - windows11-64/opt
-    python-version: [3]
     treeherder:
         symbol: mach
     run:
+        clone-with: hg
         using: python-test
         subsuite: mach
     when:
@@ -95,14 +101,15 @@ marionette-harness:
     platform:
         - linux2404-64/opt
         - windows11-64/opt
-    python-version: [3]
     treeherder:
         symbol: mnh
     run:
+        clone-with: hg
         using: python-test
         subsuite: marionette-harness
     when:
         files-changed:
+            - 'testing/marionette/client/**'
             - 'testing/marionette/harness/**'
             - 'testing/mozbase/mozlog/mozlog/**'
             - 'testing/mozbase/mozlog/setup.py'
@@ -132,6 +139,7 @@ mochitest-harness:
                 docker-image: {in-tree: "ubuntu2404-test"}
                 max-run-time: 3600
     run:
+        clone-with: hg
         using: run-task
         cwd: '{checkout}'
         command: >
@@ -143,9 +151,9 @@ mochitest-harness:
     fetches:
         build:
             - target.tar.xz
-            - artifact: target.common.tests.tar.gz
+            - artifact: target.common.tests.tar.zst
               dest: tests
-            - artifact: target.mochitest.tests.tar.gz
+            - artifact: target.mochitest.tests.tar.zst
               dest: tests
         toolchain:
             - linux64-fix-stacks
@@ -166,10 +174,10 @@ mozbase:
         - linux2404-64/opt
         - macosx1470-64/opt
         - windows11-64/opt
-    python-version: [3]
     treeherder:
         symbol: mb
     run:
+        clone-with: hg
         using: python-test
         subsuite: mozbase
     when:
@@ -178,10 +186,10 @@ mozbase:
 
 mozharness:
     description: mozharness integration tests
-    python-version: [3]
     treeherder:
         symbol: mh
     run:
+        clone-with: hg
         using: python-test
         subsuite: mozharness
     when:
@@ -198,6 +206,7 @@ mozlint:
         symbol: mozlint
         tier: 2
     run:
+        clone-with: hg
         using: python-test
         subsuite: mozlint
         prepend-env:
@@ -214,12 +223,15 @@ mozlint:
                 linux2404-64/opt:
                     - linux64-node
                     - linux64-rust
+                    - linux64-mozcheck
                 macosx1470-64/opt:
                     - macosx64-node
                     - macosx64-rust
+                    - macosx64-mozcheck
                 windows11-64/opt:
                     - win64-node
                     - win64-rust
+                    - win64-mozcheck
         clang-tidy:
             - artifact: clang-tidy.tar.zst
               dest: clang-tools
@@ -230,10 +242,10 @@ mozlint:
 
 mozrelease:
     description: python/mozrelease unit tests
-    python-version: [3]
     treeherder:
         symbol: release
     run:
+        clone-with: hg
         using: python-test
         subsuite: mozrelease
     when:
@@ -245,10 +257,10 @@ mozterm:
     platform:
         - linux2404-64/opt
         - windows11-64/opt
-    python-version: [3]
     treeherder:
         symbol: term
     run:
+        clone-with: hg
         using: python-test
         subsuite: mozterm
     when:
@@ -261,10 +273,10 @@ mozversioncontrol:
         - linux2404-64/opt
         - macosx1470-64/opt
         - windows11-64/opt
-    python-version: [3]
     treeherder:
         symbol: vcs
     run:
+        clone-with: hg
         using: python-test
         subsuite: mozversioncontrol
     fetches:
@@ -286,10 +298,10 @@ raptor:
         - linux2404-64/opt
         - macosx1470-64/opt
         - windows11-64/opt
-    python-version: [3]
     treeherder:
         symbol: rap
     run:
+        clone-with: hg
         using: python-test
         subsuite: raptor
     when:
@@ -321,6 +333,7 @@ reftest-harness:
                 docker-image: {in-tree: "ubuntu2404-test"}
                 max-run-time: 3600
     run:
+        clone-with: hg
         using: run-task
         cwd: '{checkout}'
         command: >
@@ -332,9 +345,9 @@ reftest-harness:
     fetches:
         build:
             - target.tar.xz
-            - artifact: target.common.tests.tar.gz
+            - artifact: target.common.tests.tar.zst
               dest: tests
-            - artifact: target.reftest.tests.tar.gz
+            - artifact: target.reftest.tests.tar.zst
               dest: tests
         toolchain:
             - linux64-fix-stacks
@@ -349,27 +362,27 @@ reftest-harness:
 
 taskgraph-tests:
     description: taskcluster/gecko_taskgraph unit tests
-    python-version: [3]
     treeherder:
         symbol: tg
     run:
+        clone-with: hg
         using: python-test
         subsuite: taskgraph
     when:
         files-changed:
             - 'python/mach/**/*.py'
             - 'taskcluster/**/*.py'
-            - 'third_party/python/taskcluster_taskgraph/**/*.py'
+            - 'taskcluster/requirements.txt'
 
 tryselect:
     description: tools/tryselect unit tests
     platform:
         - linux2404-64/opt
         - windows11-64/opt
-    python-version: [3]
     treeherder:
         symbol: try
     run:
+        clone-with: hg
         using: python-test
         subsuite: try
     when:
@@ -377,19 +390,36 @@ tryselect:
             - 'taskcluster/config.yml'
             - 'taskcluster/kinds/test/**'
             - 'taskcluster/gecko_taskgraph/transforms/**'
-            - 'third_party/python/taskcluster_taskgraph/**/*.py'
+            - 'taskcluster/requirements.txt'
             - 'tools/tryselect/**'
 
+update-packaging:
+    description: tools/update-packaging unit tests
+    platform:
+        - linux2404-64/opt
+    treeherder:
+        symbol: update-packaging
+    run:
+        clone-with: hg
+        using: python-test
+        subsuite: update-packaging
+    when:
+        files-changed:
+            - 'tools/update-packaging/**'
+
 mozbuild:
-    description: mozbuild unit tests
+    matrix:
+        python: ['3.9', '3.11']
+    description: mozbuild unit tests (python{matrix[python]})
     platform:
         - linux2404-64/opt
         - macosx1470-64/opt
         - windows11-64/opt
-    python-version: [3]
     treeherder:
-        symbol: mbu
+        symbol: mbu{matrix[python]}
+    use-python: "{matrix[python]}"
     run:
+        clone-with: hg
         using: python-test
         subsuite: mozbuild
     fetches:
@@ -397,11 +427,14 @@ mozbuild:
             by-platform:
                 linux2404-64/opt:
                     - linux64-node
+                    - terser
                 macosx1470-64/opt:
                     - macosx64-node
+                    - terser
                 windows11-64/opt:
                     - win64-node
                     - win64-mozmake
+                    - terser
     when:
         files-changed:
             - '**/moz.configure'
@@ -418,6 +451,23 @@ mozbuild:
             - 'testing/mozbase/**'
             - 'testing/xpcshell/xpcshellcommandline.py'
 
+coverage:
+    description: code coverage unit tests
+    treeherder:
+        symbol: cov
+        tier: 2
+    run:
+        clone-with: hg
+        using: python-test
+        subsuite: coverage
+    fetches:
+        toolchain:
+            - linux64-grcov
+    when:
+        files-changed:
+            - 'python/mach/mach/command_util.py'
+            - 'tools/code-coverage/**'
+
 mozperftest:
     description: mozperftest unit tests
     platform:
@@ -427,6 +477,7 @@ mozperftest:
     treeherder:
         symbol: mpu
     run:
+        clone-with: hg
         mach: perftest-test
     fetches:
         toolchain:
@@ -442,8 +493,12 @@ mozperftest:
                     - browsertime
     when:
         files-changed:
-            - 'testing/**'
-            - 'python/**'
+            - 'testing/raptor/**'
+            - 'testing/talos/**'
+            - 'testing/awsy/**'
+            - 'testing/mochitest/**'
+            - 'testing/xpcshell/**'
+            - 'python/mozperftest/**'
 
 nimbus:
     description: >
@@ -461,13 +516,14 @@ nimbus:
     fetches:
         build:
             - artifact: target.tar.xz
-            - artifact: target.common.tests.tar.gz
+            - artifact: target.common.tests.tar.zst
     worker:
         by-platform:
             linux2404-64.*:
                 docker-image: {in-tree: "ubuntu2404-test"}
                 max-run-time: 3600
     run:
+        clone-with: hg
         using: run-task
         cwd: '{checkout}'
         command: >
@@ -502,13 +558,14 @@ fxms-schemas:
     fetches:
         build:
             - artifact: target.tar.xz
-            - artifact: target.common.tests.tar.gz
+            - artifact: target.common.tests.tar.zst
     worker:
         by-platform:
             linux2404-64.*:
                 docker-image: {in-tree: "ubuntu2404-test"}
                 max-run-time: 3600
     run:
+        clone-with: hg
         using: run-task
         cwd: '{checkout}'
         command: >
@@ -534,10 +591,10 @@ condprof:
         - linux2404-64/opt
         - macosx1470-64/opt
         - windows11-64/opt
-    python-version: [3]
     treeherder:
         symbol: condprof
     run:
+        clone-with: hg
         using: python-test
         subsuite: condprof
     when:
@@ -545,71 +602,32 @@ condprof:
             - 'testing/condprofile/condprof**'
             - 'testing/condprofile/setup.py'
 
-skip-fails:
-    description: testing/skip-fails unit tests
+manifest:
+    description: testing/manifest unit tests
     always-target: false
     use-python: "3.11"
     treeherder:
-        symbol: sf
+        symbol: mf
     run:
+        clone-with: hg
         using: python-test
-        subsuite: skip-fails
+        subsuite: manifest
     when:
         files-changed:
-            - 'testing/skipfails.py'
-            - 'testing/test/**'
+            - 'testing/manifest/**'
 
 talos:
     description: testing/talos unit tests
     platform: windows11-64/opt
-    python-version: [3]
     treeherder:
         symbol: tal
     run:
+        clone-with: hg
         using: python-test
         subsuite: talos
     when:
         files-changed:
             - 'testing/talos/**'
-
-telemetry-integration-tests:
-    description: pytest-based integration tests for Telemetry
-    always-target: false
-    platform:
-        - linux2404-64/opt
-    worker:
-        by-platform:
-            linux2404-64.*:
-                docker-image: {in-tree: "ubuntu2404-test"}
-                max-run-time: 3600
-    require-build:
-        by-project:
-            try:
-                linux2404-64/opt: build-linux64/opt
-            default:
-                linux2404-64/opt: build-linux64-shippable/opt
-    treeherder:
-        symbol: tt(i)
-        tier: 3
-    run-on-projects: []
-    run:
-        using: run-task
-        cwd: '{checkout}'
-        command: >
-            source /builds/worker/scripts/xvfb.sh &&
-            start_xvfb '1600x1200x24' 0 &&
-            export GECKO_BINARY_PATH=$MOZ_FETCHES_DIR/firefox/firefox &&
-            ./mach python-test --subsuite telemetry-integration-tests
-    fetches:
-        build:
-            - target.tar.bz2
-            - artifact: target.common.tests.tar.gz
-              dest: tests
-            - artifact: target.reftest.tests.tar.gz
-              dest: tests
-    when:
-        files-changed:
-            - 'toolkit/components/telemetry/**'
 
 telemetry-python:
     description: Python unit tests for Telemetry
@@ -617,10 +635,10 @@ telemetry-python:
         - linux2404-64/opt
         - macosx1470-64/opt
         - windows11-64/opt
-    python-version: [3]
     treeherder:
         symbol: tp
     run:
+        clone-with: hg
         using: python-test
         subsuite: telemetry-python
     fetches:
@@ -635,16 +653,34 @@ telemetry-python:
     when:
         files-changed:
             - 'toolkit/components/telemetry/**'
+            - '**/*metrics.yaml'
+            - '**/pings.yaml'
+
+verify-decision:
+    description: verifications on Decision task output
+    run-on-projects: ["autoland"]
+    treeherder:
+        platform: gecko-decision/opt
+        symbol: verify
+    run:
+        clone-with: hg
+        using: python-test
+        subsuite: decision
+    when:
+        files-changed:
+            - .cron.yml
+            - .taskcluster.yml
+            - 'taskcluster/**'
 
 webext:
     description: WebExtensions python utilities unit tests
     platform:
         - linux2404-64/opt
-    python-version: [3]
     treeherder:
         symbol: webext-py
         tier: 2
     run:
+        clone-with: hg
         using: python-test
         subsuite: webext-python
     when:
@@ -658,10 +694,10 @@ xpcom:
     description: xpcom unit tests
     platform:
         - linux2404-64/opt
-    python-version: [3]
     treeherder:
         symbol: xpcom
     run:
+        clone-with: hg
         using: python-test
         subsuite: xpcom
     when:

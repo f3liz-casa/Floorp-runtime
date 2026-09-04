@@ -4,7 +4,6 @@
 
 package mozilla.components.concept.storage
 
-import android.annotation.SuppressLint
 import android.os.Parcelable
 import androidx.annotation.VisibleForTesting
 import kotlinx.parcelize.Parcelize
@@ -19,7 +18,7 @@ import java.util.Locale
 /**
  * An interface which defines read/write methods for credit card and address data.
  */
-interface CreditCardsAddressesStorage {
+interface CreditCardsAddressesStorage : Storage, StorageMaintenanceRegistry {
 
     /**
      * Inserts the provided credit card into the database, and returns
@@ -52,6 +51,13 @@ interface CreditCardsAddressesStorage {
      * @return A list of all [CreditCard].
      */
     suspend fun getAllCreditCards(): List<CreditCard>
+
+    /**
+     * Counts all of the credit cards.
+     *
+     * @return A count of all [CreditCard].
+     */
+    suspend fun countAllCreditCards(): Long
 
     /**
      * Deletes the credit card with the given [guid].
@@ -93,6 +99,13 @@ interface CreditCardsAddressesStorage {
     suspend fun getAllAddresses(): List<Address>
 
     /**
+     * Counts all of the addresses.
+     *
+     * @return A count of all [Address].
+     */
+    suspend fun countAllAddresses(): Long
+
+    /**
      * Updates the fields in the provided address.
      *
      * @param guid Unique identifier for the desired address.
@@ -126,6 +139,22 @@ interface CreditCardsAddressesStorage {
      * Removes any encrypted data from this storage. Useful after encountering key loss.
      */
     suspend fun scrubEncryptedData()
+
+    override suspend fun runMaintenance(dbSizeLimit: UInt) {
+        // Implemented by concrete implementation of `CreditCardsAddressesStorage`
+    }
+
+    override suspend fun warmUp() {
+        // Implemented by concrete implementation of `CreditCardsAddressesStorage`
+    }
+
+    override fun registerStorageMaintenanceWorker() {
+        // Implemented by concrete implementation of `CreditCardsAddressesStorage`
+    }
+
+    override fun unregisterStorageMaintenanceWorker(uniqueWorkName: String) {
+        // Implemented by concrete implementation of `CreditCardsAddressesStorage`
+    }
 }
 
 /**
@@ -169,7 +198,6 @@ sealed class CreditCardNumber(val number: String) {
     /**
      * An encrypted credit card number.
      */
-    @SuppressLint("ParcelCreator")
     @Parcelize
     data class Encrypted(private val data: String) : CreditCardNumber(data), Parcelable
 
@@ -194,7 +222,6 @@ sealed class CreditCardNumber(val number: String) {
  * @property timeLastModified Time of last modified in milliseconds from the unix epoch.
  * @property timesUsed Number of times the credit card was used.
  */
-@SuppressLint("ParcelCreator")
 @Parcelize
 data class CreditCard(
     val guid: String,
@@ -347,7 +374,6 @@ data class UpdatableCreditCardFields(
  * @property timeLastModified Time of last modified in milliseconds from the unix epoch.
  * @property timesUsed Number of times the address was used.
  */
-@SuppressLint("ParcelCreator")
 @Parcelize
 data class Address(
     val guid: String,
@@ -374,6 +400,7 @@ data class Address(
      */
     val addressLabel: String
         get() = listOf(
+            name,
             streetAddress.toOneLineAddress(),
             addressLevel3,
             addressLevel2,

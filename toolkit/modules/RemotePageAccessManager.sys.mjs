@@ -49,6 +49,13 @@ export let RemotePageAccessManager = {
         "security.enterprise_roots.auto-enabled",
         "security.certerror.hideAddException",
         "security.certerrors.felt-privacy-v1",
+        "browser.ipProtection.userEnabled",
+        "network.sslkeylog_warning",
+        // net-error-card.mjs is shared with about:neterror and reads this at
+        // module scope, so it must be allowed here too even though the search
+        // CTA itself only ever renders on about:neterror. A denied read throws,
+        // which would leave every cert error page blank.
+        "browser.netError.searchCTA.enabled",
       ],
       RPMGetIntPref: [
         "security.dialog_enable_delay",
@@ -56,12 +63,15 @@ export let RemotePageAccessManager = {
         "services.settings.last_update_seconds",
       ],
       RPMGetAppBuildID: ["*"],
-      RPMGetInnerMostURI: ["*"],
+      RPMGetHostForDisplay: ["*"],
+      RPMGetInnermostAsciiHost: ["*"],
       RPMIsWindowPrivate: ["*"],
+      RPMIsSSLKeyLoggingEnabled: ["*"],
     },
     "about:home": {
       RPMSendAsyncMessage: ["ActivityStream:ContentToMain"],
       RPMAddMessageListener: ["ActivityStream:MainToContent"],
+      RPMGetFormatURLPref: ["app.support.baseURL"],
     },
     "about:httpsonlyerror": {
       RPMGetFormatURLPref: ["app.support.baseURL"],
@@ -73,6 +83,27 @@ export let RemotePageAccessManager = {
     },
     "about:certificate": {
       RPMSendQuery: ["getCertificates"],
+    },
+    "about:pdf": {
+      RPMCanSetDefaultPDFHandler: ["*"],
+      RPMGetBoolPref: ["browser.aboutpdf.promo.dismissed"],
+      RPMPickPDFFile: ["*"],
+      RPMSetDefaultPDFHandler: ["*"],
+      RPMSetPref: ["browser.aboutpdf.promo.dismissed"],
+    },
+    "about:keyboard": {
+      RPMAddMessageListener: ["CustomKeys:CapturedKey"],
+      RPMGetFormatURLPref: ["app.support.baseURL"],
+      RPMSendAsyncMessage: ["CustomKeys:CaptureKey"],
+      RPMSendQuery: [
+        "CustomKeys:ChangeKey",
+        "CustomKeys:ClearKey",
+        "CustomKeys:Confirm",
+        "CustomKeys:GetDefaultKey",
+        "CustomKeys:GetKeys",
+        "CustomKeys:ResetAll",
+        "CustomKeys:ResetKey",
+      ],
     },
     "about:neterror": {
       RPMSendAsyncMessage: [
@@ -87,7 +118,12 @@ export let RemotePageAccessManager = {
         "OpenTRRPreferences",
       ],
       RPMCheckAlternateHostAvailable: ["*"],
-      RPMRecordGleanEvent: ["securityDohNeterror", "securityUiTlserror"],
+      RPMRecordGleanEvent: [
+        "securityDohNeterror",
+        "securityUiTlserror",
+        "securityUiCerterror",
+        "securityUiNeterror",
+      ],
       RPMAddMessageListener: ["*"],
       RPMRemoveMessageListener: ["*"],
       RPMGetFormatURLPref: [
@@ -95,10 +131,17 @@ export let RemotePageAccessManager = {
         "network.trr_ui.skip_reason_learn_more_url",
       ],
       RPMGetBoolPref: [
+        "security.certerrors.mitm.priming.enabled",
+        "security.certerrors.permanentOverride",
+        "security.enterprise_roots.auto-enabled",
         "security.certerror.hideAddException",
         "security.certerrors.felt-privacy-v1",
+        "browser.ipProtection.userEnabled",
+        "network.sslkeylog_warning",
+        "browser.netError.searchCTA.enabled",
       ],
-      RPMGetInnerMostURI: ["*"],
+      RPMGetHostForDisplay: ["*"],
+      RPMGetInnermostAsciiHost: ["*"],
       RPMGetHttpResponseHeader: ["*"],
       RPMIsTRROnlyFailure: ["*"],
       RPMIsFirefox: ["*"],
@@ -108,12 +151,14 @@ export let RemotePageAccessManager = {
       RPMIsSiteSpecificTRRError: ["*"],
       RPMSetTRRDisabledLoadFlags: ["*"],
       RPMShowOSXLocalNetworkPermissionWarning: ["*"],
+      RPMIsSSLKeyLoggingEnabled: ["*"],
       RPMSendQuery: ["Browser:AddTRRExcludedDomain"],
-      RPMGetIntPref: ["network.trr.mode"],
+      RPMGetIntPref: ["network.trr.mode", "security.dialog_enable_delay"],
     },
     "about:newtab": {
       RPMSendAsyncMessage: ["ActivityStream:ContentToMain"],
       RPMAddMessageListener: ["ActivityStream:MainToContent"],
+      RPMGetFormatURLPref: ["app.support.baseURL"],
     },
     "about:privatebrowsing": {
       RPMSendAsyncMessage: [
@@ -130,12 +175,9 @@ export let RemotePageAccessManager = {
       ],
       RPMAddMessageListener: ["*"],
       RPMRemoveMessageListener: ["*"],
-      RPMGetFormatURLPref: [
-        "app.support.baseURL",
-        "browser.privatebrowsing.vpnpromourl",
-      ],
+      RPMGetFormatURLPref: ["app.support.baseURL"],
       RPMIsWindowPrivate: ["*"],
-      RPMGetBoolPref: ["browser.privatebrowsing.felt-privacy-v1"],
+      RPMGetBoolPref: ["browser.nova.enabled"],
     },
     "about:deleteprofile": {
       RPMSendQuery: ["Profiles:GetDeleteProfileContent"],
@@ -146,6 +188,7 @@ export let RemotePageAccessManager = {
         "Profiles:GetEditProfileContent",
         "Profiles:UpdateProfileTheme",
         "Profiles:UpdateProfileAvatar",
+        "Profiles:SetDesktopShortcut",
       ],
       RPMSendAsyncMessage: [
         "Profiles:UpdateProfileName",
@@ -184,10 +227,10 @@ export let RemotePageAccessManager = {
         "FetchMonitorData",
         "FetchContentBlockingEvents",
         "FetchMobileDeviceConnected",
-        "GetShowProxyCard",
         "FetchEntryPoint",
         "FetchVPNSubStatus",
         "FetchShowVPNCard",
+        "FetchPrivacyMetrics",
       ],
       RPMAddMessageListener: ["*"],
       RPMRemoveMessageListener: ["*"],
@@ -200,9 +243,10 @@ export let RemotePageAccessManager = {
         "browser.contentblocking.report.monitor.enabled",
         "privacy.fingerprintingProtection",
         "privacy.socialtracking.block_cookies.enabled",
-        "browser.contentblocking.report.proxy.enabled",
+        "browser.contentblocking.report.privacy_metrics.enabled",
         "privacy.trackingprotection.cryptomining.enabled",
         "privacy.trackingprotection.fingerprinting.enabled",
+        "privacy.trackingprotection.harmfuladdon.enabled",
         "privacy.trackingprotection.enabled",
         "privacy.trackingprotection.socialtracking.enabled",
         "browser.contentblocking.report.show_mobile_app",
@@ -214,7 +258,6 @@ export let RemotePageAccessManager = {
         "browser.contentblocking.report.monitor.url",
         "browser.contentblocking.report.monitor.sign_in_url",
         "browser.contentblocking.report.manage_devices.url",
-        "browser.contentblocking.report.proxy_extension.url",
         "browser.contentblocking.report.lockwise.mobile-android.url",
         "browser.contentblocking.report.lockwise.mobile-ios.url",
         "browser.contentblocking.report.mobile-ios.url",
@@ -237,6 +280,10 @@ export let RemotePageAccessManager = {
         "browser.contentblocking.report.cryptominer.url",
       ],
       RPMRecordGleanEvent: ["securityUiProtections"],
+    },
+    "about:restricted": {
+      RPMSendAsyncMessage: ["goBack"],
+      RPMGetBoolPref: ["security.restrict_to_adults.always"],
     },
     "about:tabcrashed": {
       RPMSendAsyncMessage: ["Load", "closeTab", "restoreTab", "restoreAll"],

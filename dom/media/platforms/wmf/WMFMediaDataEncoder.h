@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim:set ts=2 sw=2 sts=2 et cindent: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -26,9 +24,13 @@ class WMFMediaDataEncoder final : public MediaDataEncoder {
 
   RefPtr<InitPromise> Init() override;
   RefPtr<EncodePromise> Encode(const MediaData* aSample) override;
+  RefPtr<EncodePromise> Encode(nsTArray<RefPtr<MediaData>>&& aSamples) override;
   RefPtr<EncodePromise> Drain() override;
   RefPtr<ShutdownPromise> Shutdown() override;
   RefPtr<GenericPromise> SetBitrate(uint32_t aBitsPerSec) override;
+  bool IsHardwareAccelerated(nsACString& aFailureReason) const override {
+    return mIsHardwareAccelerated;
+  }
 
   RefPtr<ReconfigurationPromise> Reconfigure(
       const RefPtr<const EncoderConfigurationChangeList>& aConfigurationChanges)
@@ -71,6 +73,8 @@ class WMFMediaDataEncoder final : public MediaDataEncoder {
   void SetConfigData(const nsTArray<UINT8>& aHeader);
 
   RefPtr<EncodePromise> ProcessEncode(RefPtr<const VideoData>&& aSample);
+  RefPtr<EncodePromise> ProcessEncodeBatch(
+      nsTArray<RefPtr<const VideoData>>&& aSamples);
   RefPtr<EncodePromise> ProcessDrain();
 
   already_AddRefed<IMFSample> ConvertToNV12InputSample(
@@ -95,6 +99,11 @@ class WMFMediaDataEncoder final : public MediaDataEncoder {
   // SPS/PPS NALUs when encoding in AnnexB usage, avcC otherwise.
   RefPtr<MediaByteBuffer> mConfigData;
 
+  // Can be accessed on any thread, but only written on during init.
+  Atomic<bool> mIsHardwareAccelerated;
+
+  // Both Encode and EncodeBatch share mEncodePromise and mEncodeRequest, as
+  // concurrent calls are not allowed.
   MozPromiseHolder<EncodePromise> mEncodePromise;
   MozPromiseRequestHolder<MFTEncoder::EncodePromise> mEncodeRequest;
 

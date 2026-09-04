@@ -4,12 +4,16 @@
 
 package org.mozilla.fenix.components.appstate.snackbar
 
+import com.google.android.material.snackbar.BaseTransientBottomBar.LENGTH_SHORT
 import mozilla.components.browser.state.state.content.DownloadState
 import mozilla.components.concept.storage.BookmarkNode
 import mozilla.components.concept.sync.TabData
+import org.mozilla.fenix.bookmarks.BookmarksGlobalResultReport
 
 /**
  * The state of the snackbar to display.
+ *
+ * 📝Note: If you don't need a specific snackbar type, consider re-using [ShowSnackbar] or updating the API accordingly.
  */
 sealed class SnackbarState {
     /**
@@ -19,6 +23,17 @@ sealed class SnackbarState {
      */
     data class None(
         val previous: SnackbarState? = null,
+    ) : SnackbarState()
+
+    /**
+     * Display a generic snackbar with a custom title.
+     *
+     * @property title The title to display in the snackbar.
+     * @property duration The length of time for the snackbar to show.
+     */
+    data class ShowSnackbar(
+        val title: String,
+        val duration: Int = LENGTH_SHORT,
     ) : SnackbarState()
 
     /**
@@ -34,11 +49,6 @@ sealed class SnackbarState {
      * Display a snackbar of the newly added shortcut.
      */
     data object ShortcutAdded : SnackbarState()
-
-    /**
-     * Display a snackbar of the removed shortcut.
-     */
-    data object ShortcutRemoved : SnackbarState()
 
     /**
      * Display a snackbar when deleting browsing data before quitting.
@@ -62,6 +72,12 @@ sealed class SnackbarState {
      * @property title The title of the bookmark that was deleted.
      */
     data class BookmarkDeleted(val title: String?) : SnackbarState()
+
+    /**
+     * Display a snackbar informing of the result of an operation in the bookmarks
+     * feature that must be reported globally.
+     */
+    data class BookmarkOperationResultReported(val result: BookmarksGlobalResultReport) : SnackbarState()
 
     /**
      * There is a translation in progression for the given [sessionId].
@@ -128,11 +144,6 @@ sealed class SnackbarState {
     data object WebCompatReportSent : SnackbarState()
 
     /**
-     * Display a snackbar when the current site's data has been deleted.
-     */
-    data object SiteDataCleared : SnackbarState()
-
-    /**
      * Display a snackbar when the current tab has been closed.
      *
      * @property isPrivate Whether closed tab was private or not.
@@ -168,4 +179,19 @@ sealed class SnackbarState {
      * @property downloadState The state object containing information about the failed download.
      */
     data class CannotOpenFileError(val downloadState: DownloadState) : SnackbarState()
+
+    /**
+     * Display a snackbar when there is a connection error.
+     *
+     * @property title The title to display in the snackbar.
+     */
+    data class IPProtectionConnectionError(val title: String) : SnackbarState()
+
+    /**
+     * Display a snackbar when the IP protection monthly data limit has been reached, offering an
+     * action to navigate to the VPN settings screen.
+     *
+     * @property title The title to display in the snackbar.
+     */
+    data class IPProtectionDataLimitReached(val title: String) : SnackbarState()
 }

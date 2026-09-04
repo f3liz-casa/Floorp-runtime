@@ -15,6 +15,7 @@ class EmptyParser(BaseTryParser):
         "chemspill-prio",
         "disable-pgo",
         "env",
+        "extensions",
         "gecko-profile",
         "pernosco",
         "routes",
@@ -24,6 +25,7 @@ class EmptyParser(BaseTryParser):
 
 
 def run(
+    metrics,
     message="{msg}",
     try_config_params=None,
     stage_changes=False,
@@ -38,6 +40,7 @@ def run(
     return push_to_try(
         "empty",
         message.format(msg=msg),
+        metrics,
         try_task_config=generate_try_task_config("empty", [], params=try_config_params),
         stage_changes=stage_changes,
         dry_run=dry_run,

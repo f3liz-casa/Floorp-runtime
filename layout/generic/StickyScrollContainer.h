@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -70,7 +68,7 @@ class StickyScrollContainer final {
 
   void ScrollPositionDidChange(const nsPoint&);
 
-  ~StickyScrollContainer();
+  ~StickyScrollContainer() = default;
 
   const DepthOrderedFrameList& GetFrames() const { return mFrames; }
 
@@ -84,6 +82,11 @@ class StickyScrollContainer final {
    * Calls FrameNeedsReflow on all sticky position children.
    */
   void MarkFramesForReflow();
+
+  void SetShouldFlatten(bool aShouldFlatten) {
+    mShouldFlatten = aShouldFlatten;
+  }
+  bool ShouldFlattenAway() const { return mShouldFlatten; }
 
   explicit StickyScrollContainer(ScrollContainerFrame* aScrollContainerFrame);
 
@@ -100,6 +103,7 @@ class StickyScrollContainer final {
   ScrollContainerFrame* const mScrollContainerFrame;
   DepthOrderedFrameList mFrames;
   nsPoint mScrollPosition;
+  bool mShouldFlatten = false;
 };
 
 }  // namespace mozilla

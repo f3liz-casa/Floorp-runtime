@@ -76,7 +76,11 @@ class _TabState {
 
     tabData.hidden = tab.hidden;
 
-    if (browser.audioMuted) {
+    // Collect tab.muted, the muted attribute that only muting through the tab
+    // sets, rather than browser.audioMuted, which is a live read of the media
+    // controller and so also covers internal mutes, such as the one a closing
+    // tab gets, that must not outlive the tab.
+    if (tab.muted) {
       tabData.muted = true;
       tabData.muteReason = tab.muteReason;
     }
@@ -85,7 +89,24 @@ class _TabState {
       tabData.groupId = tab.group.id;
     }
 
-    tabData.searchMode = tab.ownerGlobal.gURLBar.getSearchMode(browser, true);
+    if (tab.splitview) {
+      tabData.splitViewId = tab.splitview.splitViewId;
+    }
+
+    if (tab.canonicalUrl) {
+      let canonicalUrl = tab.canonicalUrl;
+      if (!options.includePrivateData) {
+        canonicalUrl = lazy.PrivacyFilter.filterCanonicalUrl(canonicalUrl);
+      }
+      if (canonicalUrl) {
+        tabData.canonicalUrl = canonicalUrl;
+      }
+    }
+
+    tabData.searchMode = tab.documentGlobal.gURLBar.getSearchMode(
+      browser,
+      true
+    );
 
     tabData.userContextId = tab.userContextId || 0;
 
@@ -107,7 +128,7 @@ class _TabState {
 
     // Store the tab icon.
     if (!("image" in tabData)) {
-      let tabbrowser = tab.ownerGlobal.gBrowser;
+      let tabbrowser = tab.documentGlobal.gBrowser;
       tabData.image = tabbrowser.getIcon(tab);
     }
 

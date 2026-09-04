@@ -4,13 +4,15 @@
 
 package mozilla.components.feature.syncedtabs.controller
 
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import mozilla.components.concept.sync.SyncEngine
 import mozilla.components.feature.syncedtabs.storage.SyncedTabsProvider
 import mozilla.components.feature.syncedtabs.view.SyncedTabsView
 import mozilla.components.feature.syncedtabs.view.SyncedTabsView.ErrorType
-import mozilla.components.service.fxa.SyncEngine
 import mozilla.components.service.fxa.manager.FxaAccountManager
 import mozilla.components.service.fxa.manager.ext.withConstellationIfExists
 import mozilla.components.service.fxa.sync.SyncReason
@@ -21,6 +23,7 @@ internal class DefaultController(
     override val accountManager: FxaAccountManager,
     override val view: SyncedTabsView,
     coroutineContext: CoroutineContext,
+    private val mainDispatcher: CoroutineDispatcher = Dispatchers.Main,
 ) : SyncedTabsController {
 
     private val scope = CoroutineScope(coroutineContext)
@@ -34,7 +37,7 @@ internal class DefaultController(
                 val syncedDeviceTabs = provider.getSyncedDeviceTabs()
                 val otherDevices = state()?.otherDevices
 
-                scope.launch(Dispatchers.Main) {
+                withContext(mainDispatcher) {
                     if (syncedDeviceTabs.isEmpty() && otherDevices?.isEmpty() == true) {
                         view.onError(ErrorType.MULTIPLE_DEVICES_UNAVAILABLE)
                     } else if (syncedDeviceTabs.all { it.tabs.isEmpty() }) {
@@ -45,7 +48,7 @@ internal class DefaultController(
                 }
             }
 
-            scope.launch(Dispatchers.Main) {
+            withContext(mainDispatcher) {
                 view.stopLoading()
             }
         }

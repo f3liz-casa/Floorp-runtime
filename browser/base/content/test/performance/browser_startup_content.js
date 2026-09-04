@@ -71,9 +71,11 @@ const intermittently_loaded_scripts = {
     // Session store.
     "resource://gre/modules/sessionstore/SessionHistory.sys.mjs",
 
-    // Cookie banner handling.
-    "resource://gre/actors/CookieBannerChild.sys.mjs",
     "resource://gre/modules/PrivateBrowsingUtils.sys.mjs",
+
+    // Canonical URL detection behind pref `browser.tabs.notes.enabled`
+    "resource:///actors/CanonicalURLChild.sys.mjs",
+    "moz-src:///browser/components/tabnotes/CanonicalURL.sys.mjs",
 
     // Test related
     "chrome://remote/content/marionette/actors/MarionetteEventsChild.sys.mjs",
@@ -117,7 +119,6 @@ add_task(async function () {
   mm.loadFrameScript(
     "data:text/javascript,(" +
       function () {
-        /* eslint-env mozilla/frame-script */
         const Cm = Components.manager;
         Cm.QueryInterface(Ci.nsIServiceManager);
         const { AppConstants } = ChromeUtils.importESModule(

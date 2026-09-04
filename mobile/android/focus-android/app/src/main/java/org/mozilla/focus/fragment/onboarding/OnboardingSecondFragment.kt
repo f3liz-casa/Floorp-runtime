@@ -24,6 +24,9 @@ import org.mozilla.focus.R
 import org.mozilla.focus.ext.requireComponents
 import org.mozilla.focus.ui.theme.FocusTheme
 
+/**
+ * The second fragment of the onboarding flow.
+ */
 class OnboardingSecondFragment : Fragment() {
     private lateinit var onboardingInteractor: OnboardingInteractor
 
@@ -79,12 +82,18 @@ class OnboardingSecondFragment : Fragment() {
 
     override fun onResume() {
         super.onResume()
-        // check if the default browser was changed from OS settings for devices with Android 7,8 and 9.
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N &&
-            Build.VERSION.SDK_INT < Build.VERSION_CODES.Q &&
-            Browsers.all(requireContext()).isDefaultBrowser
+        // check if the default browser was changed from OS settings for devices with Android 8 & 9.
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q &&
+            Browsers.isDefaultBrowser(requireContext())
         ) {
             onboardingInteractor.onFinishOnBoarding()
         }
+    }
+
+    /**
+     * Companion object for [OnboardingSecondFragment].
+     */
+    companion object {
+        const val FRAGMENT_TAG = "onboarding-second-fragment"
     }
 }

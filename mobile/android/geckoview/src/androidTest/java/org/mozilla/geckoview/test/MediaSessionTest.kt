@@ -1,5 +1,4 @@
-/* -*- Mode: Java; c-basic-offset: 4; tab-width: 4; indent-tabs-mode: nil; -*-
- * Any copyright is dedicated to the Public Domain.
+/* Any copyright is dedicated to the Public Domain.
    http://creativecommons.org/publicdomain/zero/1.0/ */
 
 package org.mozilla.geckoview.test
@@ -14,6 +13,7 @@ import org.hamcrest.Matchers.notNullValue
 import org.junit.After
 import org.junit.Assume.assumeThat
 import org.junit.Before
+import org.junit.Ignore
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.mozilla.geckoview.GeckoResult
@@ -80,6 +80,62 @@ class MediaSessionTest : BaseSessionTest() {
     fun teardown() {
     }
 
+    // Bug 2047296: a tab playing a given kind of audio reports the matching W3C
+    // audio-session type to the embedder via onAudioSessionTypeChanged, so the
+    // embedder can request the right platform audio focus. The first reported
+    // type for a single-source page is the source's type.
+    private fun checkAudioSessionType(path: String, expectedType: String) {
+        sessionRule.setPrefsUntilTestEnd(
+            mapOf(
+                "dom.audio_session.enabled" to true,
+                "media.geckoview.audio_session_type.enabled" to true,
+                "media.autoplay.default" to 0,
+                "media.webspeech.synth.enabled" to true,
+                "media.webspeech.synth.test" to true,
+            ),
+        )
+
+        val session = sessionRule.createOpenSession()
+        val typeResult = GeckoResult<String>()
+        var reported = false
+        session.delegateUntilTestEnd(object : MediaSession.Delegate {
+            override fun onAudioSessionTypeChanged(
+                session: GeckoSession,
+                mediaSession: MediaSession,
+                type: String,
+            ) {
+                if (!reported) {
+                    reported = true
+                    typeResult.complete(type)
+                }
+            }
+        })
+
+        session.loadTestPath(path)
+
+        assertThat(
+            "Audio-session type forwarded to the embedder",
+            sessionRule.waitForResult(typeResult),
+            equalTo(expectedType),
+        )
+    }
+
+    @Test
+    fun audioSessionTypeMediaElementIsPlayback() {
+        checkAudioSessionType(MEDIA_SESSION_DEFAULT1_PATH, "playback")
+    }
+
+    @Test
+    fun audioSessionTypeWebAudioIsAmbient() {
+        checkAudioSessionType(AUDIO_SESSION_TYPE_WEBAUDIO_PATH, "ambient")
+    }
+
+    @Test
+    fun audioSessionTypeWebSpeechIsTransient() {
+        checkAudioSessionType(AUDIO_SESSION_TYPE_WEBSPEECH_PATH, "transient")
+    }
+
+    @Ignore("https://bugzilla.mozilla.org/show_bug.cgi?id=1988041")
     @Test
     fun domMetadataPlayback() {
         val onActivatedCalled = arrayOf(GeckoResult<Void>())
@@ -244,6 +300,13 @@ class MediaSessionTest : BaseSessionTest() {
                 mediaSession: MediaSession,
                 meta: MediaSession.Metadata,
             ) {
+                if (sessionRule.currentCall.counter == 7) {
+                    // Occasionally, a 7th call occurs from onStop with blank metadata.
+                    onMetadataCalled[sessionRule.currentCall.counter - 1]
+                        .complete(null)
+                    return
+                }
+
                 assertThat(
                     "Title should match",
                     meta.title,
@@ -349,36 +412,37 @@ class MediaSessionTest : BaseSessionTest() {
         mediaSession1!!.pause()
 
         sessionRule.waitForResult(completedStep3)
-        mediaSession1!!.play()
+        mediaSession1.play()
 
         sessionRule.waitForResult(completedStep4)
         sessionRule.waitForResult(completedStep5)
-        mediaSession1!!.pause()
-        mediaSession1!!.nextTrack()
-        mediaSession1!!.play()
+        mediaSession1.pause()
+        mediaSession1.nextTrack()
+        mediaSession1.play()
 
         sessionRule.waitForResult(completedStep6)
-        mediaSession1!!.pause()
-        mediaSession1!!.nextTrack()
-        mediaSession1!!.play()
+        mediaSession1.pause()
+        mediaSession1.nextTrack()
+        mediaSession1.play()
 
         sessionRule.waitForResult(completedStep7)
-        mediaSession1!!.pause()
+        mediaSession1.pause()
 
         sessionRule.waitForResult(completedStep8a)
-        mediaSession1!!.previousTrack()
-        mediaSession1!!.play()
+        mediaSession1.previousTrack()
+        mediaSession1.play()
 
         sessionRule.waitForResult(completedStep8b)
         sessionRule.waitForResult(completedStep9)
-        mediaSession1!!.play()
+        mediaSession1.play()
 
         sessionRule.waitForResult(completedStep10)
-        mediaSession1!!.stop()
+        mediaSession1.stop()
 
         sessionRule.waitForResult(completedStep11)
     }
 
+    @Ignore("https://bugzilla.mozilla.org/show_bug.cgi?id=1679779")
     @Test
     fun defaultMetadataPlayback() {
         val onActivatedCalled = arrayOf(GeckoResult<Void>())
@@ -467,12 +531,13 @@ class MediaSessionTest : BaseSessionTest() {
         mediaSession1!!.pause()
 
         sessionRule.waitForResult(completedStep3)
-        mediaSession1!!.play()
+        mediaSession1.play()
 
         sessionRule.waitForResult(completedStep4)
         sessionRule.waitForResult(completedStep5)
     }
 
+    @Ignore("https://bugzilla.mozilla.org/show_bug.cgi?id=1988041")
     @Test
     fun domMultiSessions() {
         val onActivatedCalled = arrayOf(
@@ -597,7 +662,7 @@ class MediaSessionTest : BaseSessionTest() {
 
                 assertThat(
                     "Should be active",
-                    mediaSession1?.isActive,
+                    mediaSession1.isActive,
                     equalTo(true),
                 )
             }
@@ -731,7 +796,7 @@ class MediaSessionTest : BaseSessionTest() {
                 )
                 assertThat(
                     "Should be active",
-                    mediaSession2!!.isActive,
+                    mediaSession2.isActive,
                     equalTo(true),
                 )
             }
@@ -808,13 +873,14 @@ class MediaSessionTest : BaseSessionTest() {
         mediaSession2!!.pause()
         sessionRule.waitForResult(completedStep6)
 
-        mediaSession1!!.pause()
-        mediaSession1!!.nextTrack()
-        mediaSession1!!.play()
+        mediaSession1.pause()
+        mediaSession1.nextTrack()
+        mediaSession1.play()
         sessionRule.waitForResult(completedStep7)
         sessionRule.waitForResult(completedStep8)
     }
 
+    @Ignore("https://bugzilla.mozilla.org/show_bug.cgi?id=1988041")
     @Test
     fun fullscreenVideoElementMetadata() {
         // Bug 1981579
@@ -984,10 +1050,6 @@ class MediaSessionTest : BaseSessionTest() {
 
     @Test
     fun fullscreenVideoWithActivated() {
-        // Bug 1981579
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-            assumeThat(sessionRule.env.isIsolatedProcess, equalTo(false))
-        }
         sessionRule.setPrefsUntilTestEnd(
             mapOf(
                 "media.autoplay.default" to 0,
@@ -1026,6 +1088,7 @@ class MediaSessionTest : BaseSessionTest() {
         sessionRule.waitForResult(resultFullscreen)
     }
 
+    @Ignore("https://bugzilla.mozilla.org/show_bug.cgi?id=1988041")
     @Test
     fun switchingProcess() {
         // Bug 1981579

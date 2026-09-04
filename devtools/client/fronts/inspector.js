@@ -26,6 +26,7 @@ ChromeUtils.defineESModuleGetters(lazy, {
 
 const SHOW_ALL_ANONYMOUS_CONTENT_PREF =
   "devtools.inspector.showAllAnonymousContent";
+const SHOW_COMMENTS_PREF = "devtools.markup.showComments";
 
 /**
  * Client side of the inspector actor, which is used to create
@@ -63,6 +64,20 @@ class InspectorFront extends FrontClassWithSpec(inspectorSpec) {
       onAvailable: this.noopStylesheetListener,
     });
 
+    // @backward-compat { version 154 } Firefox 154 started supporting toggling
+    // global highlighters via Target Actor Configuration. We no longer need to watch
+    // for will-navigate to clear frontend highlighters and can remove this code.
+    const { configuration } =
+      this.targetFront.commands.targetConfigurationCommand;
+    if ("enabledHighlighters" in configuration) {
+      await resourceCommand.watchResources(
+        [resourceCommand.TYPES.DOCUMENT_EVENT],
+        {
+          onAvailable: this.#documentEventListener,
+        }
+      );
+    }
+
     // Bail out if the inspector is closed while watchResources was pending
     if (this.isDestroyed()) {
       return null;
@@ -82,8 +97,10 @@ class InspectorFront extends FrontClassWithSpec(inspectorSpec) {
     const showAllAnonymousContent = Services.prefs.getBoolPref(
       SHOW_ALL_ANONYMOUS_CONTENT_PREF
     );
+    const showComments = Services.prefs.getBoolPref(SHOW_COMMENTS_PREF);
     this.walker = await this.getWalker({
       showAllAnonymousContent,
+      showComments,
     });
 
     // We need to reparent the RootNode of remote iframe Walkers
@@ -91,6 +108,22 @@ class InspectorFront extends FrontClassWithSpec(inspectorSpec) {
     // element, coming from another process/target/WalkerFront.
     await this.walker.reparentRemoteFrame();
   }
+
+  // @backward-compat { version 154 } Firefox 154 started supporting toggling
+  // global highlighters via Target Actor Configuration. We no longer need to watch
+  // for will-navigate to clear frontend highlighters and can remove this code.
+  #documentEventListener = resources => {
+    const willNavigate = resources.some(
+      resource =>
+        resource.name == "will-navigate" && resource.targetFront.isTopLevel
+    );
+    if (!willNavigate) {
+      return;
+    }
+    // Manually clear the highlighters on the frontend, to replicate what happens
+    // on the backend and avoid keeping defunct enabled highlighters
+    this._highlighters.clear();
+  };
 
   hasHighlighter(type) {
     return this._highlighters.has(type);
@@ -125,33 +158,50 @@ class InspectorFront extends FrontClassWithSpec(inspectorSpec) {
     resourceCommand.unwatchResources([resourceCommand.TYPES.STYLESHEET], {
       onAvailable: this.noopStylesheetListener,
     });
+    resourceCommand.unwatchResources([resourceCommand.TYPES.DOCUMENT_EVENT], {
+      onAvailable: this.#documentEventListener,
+    });
     this.resourceCommand = null;
 
     this.walker = null;
 
     // CustomHighlighter fronts are managed by InspectorFront and so will be
     // automatically destroyed. But we have to clear the `_highlighters`
-    // Map as well as explicitly call `finalize` request on all of them.
+    // Map as well as explicitly call `destroy` request on all of them.
     this.destroyHighlighters();
     super.destroy();
   }
 
   destroyHighlighters() {
     for (const type of this._highlighters.keys()) {
-      if (this._highlighters.has(type)) {
-        const highlighter = this._highlighters.get(type);
-        if (!highlighter.isDestroyed()) {
-          highlighter.finalize();
-        }
-        this._highlighters.delete(type);
-      }
+      this.destroyHighlighterByType(type);
     }
   }
 
-  async getHighlighterByType(typeName) {
+  destroyHighlighterByType(type) {
+    if (!this._highlighters.has(type)) {
+      return;
+    }
+
+    const highlighter = this._highlighters.get(type);
+    highlighter.destroy();
+    this._highlighters.delete(type);
+  }
+
+  /**
+   * Retrieve the HighlighterFront for a given highlighter type.
+   *
+   * @param {string} typeName
+   *        Highlighter type coming from devtools/shared/highlighters.mjs
+   * @param {boolean} forceNew
+   *        In case you are always expecting to instantiate a new Front instance,
+   *        set this argument to true.
+   * @return {HighlighterFront}
+   */
+  async getHighlighterByType(typeName, forceNew = false) {
     let highlighter = null;
     try {
-      highlighter = await super.getHighlighterByType(typeName);
+      highlighter = await super.getHighlighterByType(typeName, forceNew);
     } catch (_) {
       throw new Error(
         "The target doesn't support " +
@@ -173,7 +223,7 @@ class InspectorFront extends FrontClassWithSpec(inspectorSpec) {
    * comes in before that promise is resolved, wait for it to resolve and return the
    * highlighter instance it resolved with instead of creating a new request.
    *
-   * @param  {String} type
+   * @param  {string} type
    *         Highlighter type
    * @return {Promise}
    *         Promise which resolves with a highlighter instance of the given type
@@ -182,7 +232,7 @@ class InspectorFront extends FrontClassWithSpec(inspectorSpec) {
     let front = this._highlighters.get(type);
     let pendingGetHighlighter = this._pendingGetHighlighterMap.get(type);
 
-    if (!front && !pendingGetHighlighter) {
+    if ((!front || front.isDestroyed()) && !pendingGetHighlighter) {
       pendingGetHighlighter = (async () => {
         const highlighter = await this.getHighlighterByType(type);
         this._highlighters.set(type, highlighter);
@@ -243,7 +293,7 @@ class InspectorFront extends FrontClassWithSpec(inspectorSpec) {
   /**
    * Given a node grip, return a NodeFront on the right context.
    *
-   * @param {Object} grip: The node grip.
+   * @param {object} grip: The node grip.
    * @returns {Promise<NodeFront|null>} A promise that resolves with  a NodeFront or null
    *                                    if the NodeFront couldn't be created/retrieved.
    */
@@ -286,5 +336,4 @@ class InspectorFront extends FrontClassWithSpec(inspectorSpec) {
   }
 }
 
-exports.InspectorFront = InspectorFront;
 registerFront(InspectorFront);

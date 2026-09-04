@@ -13,9 +13,9 @@
 #include <algorithm>
 #include <cstdint>
 #include <memory>
+#include <span>
 #include <vector>
 
-#include "api/array_view.h"
 #include "api/test/mock_transformable_audio_frame.h"
 #include "api/test/mock_transformable_video_frame.h"
 #include "api/video/video_frame_metadata.h"
@@ -29,13 +29,12 @@ using testing::Each;
 using testing::ElementsAreArray;
 using testing::NiceMock;
 using testing::Return;
-using testing::ReturnRef;
 
 TEST(FrameTransformerFactory, CloneAudioFrame) {
   NiceMock<MockTransformableAudioFrame> original_frame;
   uint8_t data[10];
   std::fill_n(data, 10, 5);
-  ArrayView<uint8_t> data_view(data);
+  std::span<uint8_t> data_view(data);
   ON_CALL(original_frame, GetData()).WillByDefault(Return(data_view));
   auto cloned_frame = CloneAudioFrame(&original_frame);
 
@@ -46,9 +45,9 @@ TEST(FrameTransformerFactory, CloneVideoFrame) {
   NiceMock<MockTransformableVideoFrame> original_frame;
   uint8_t data[10];
   std::fill_n(data, 10, 5);
-  ArrayView<uint8_t> data_view(data);
+  std::span<uint8_t> data_view(data);
   EXPECT_CALL(original_frame, GetData()).WillRepeatedly(Return(data_view));
-  webrtc::VideoFrameMetadata metadata;
+  VideoFrameMetadata metadata;
   std::vector<uint32_t> csrcs{123, 321};
   // Copy csrcs rather than moving so we can compare in an EXPECT_EQ later.
   metadata.SetCsrcs(csrcs);

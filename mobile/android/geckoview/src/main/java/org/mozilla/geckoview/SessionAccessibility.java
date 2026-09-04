@@ -1,5 +1,4 @@
-/* -*- Mode: Java; c-basic-offset: 4; tab-width: 20; indent-tabs-mode: nil; -*-
- * This Source Code Form is subject to the terms of the Mozilla Public
+/* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
@@ -8,7 +7,6 @@ package org.mozilla.geckoview;
 import android.content.Context;
 import android.graphics.Matrix;
 import android.graphics.Rect;
-import android.os.Build;
 import android.os.Bundle;
 import android.text.InputType;
 import android.text.TextUtils;
@@ -24,6 +22,7 @@ import android.view.accessibility.AccessibilityNodeInfo.CollectionInfo;
 import android.view.accessibility.AccessibilityNodeInfo.CollectionItemInfo;
 import android.view.accessibility.AccessibilityNodeInfo.RangeInfo;
 import android.view.accessibility.AccessibilityNodeProvider;
+import androidx.annotation.AnyThread;
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 import androidx.annotation.UiThread;
@@ -34,6 +33,7 @@ import org.mozilla.gecko.mozglue.JNIObject;
 import org.mozilla.gecko.util.GeckoBundle;
 import org.mozilla.gecko.util.ThreadUtils;
 
+/** Accessibility support for GeckoSession. */
 @UiThread
 public class SessionAccessibility {
   private static final String LOGTAG = "GeckoAccessibility";
@@ -394,6 +394,7 @@ public class SessionAccessibility {
     Settings.updateAccessibilitySettings();
   }
 
+  @AnyThread
   /* package */ static void setForceEnabled(final boolean forceEnabled) {
     Settings.setForceEnabled(forceEnabled);
   }
@@ -568,7 +569,7 @@ public class SessionAccessibility {
 
     if (mViewFocusRequested && className == CLASSNAME_WEBVIEW) {
       // If the view was focused from an accessiblity action or
-      // explore-by-touch, we supress this focus event to avoid noise.
+      // explore-by-touch, we suppress this focus event to avoid noise.
       mViewFocusRequested = false;
       return;
     }
@@ -818,9 +819,7 @@ public class SessionAccessibility {
       final Bundle bundle = node.getExtras();
       if (hint != null) {
         bundle.putCharSequence("AccessibilityNodeInfo.hint", hint);
-        if (Build.VERSION.SDK_INT >= 26) {
-          node.setHintText(hint);
-        }
+        node.setHintText(hint);
       }
       if (geckoRole != null) {
         bundle.putCharSequence("AccessibilityNodeInfo.geckoRole", geckoRole);
@@ -849,10 +848,7 @@ public class SessionAccessibility {
         }
       }
 
-      // SDK 23 and above
-      if (Build.VERSION.SDK_INT >= 23) {
-        node.setContextClickable((flags & FLAG_CONTEXT_CLICKABLE) != 0);
-      }
+      node.setContextClickable((flags & FLAG_CONTEXT_CLICKABLE) != 0);
     }
 
     @WrapForJNI

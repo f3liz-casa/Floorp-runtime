@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -29,6 +27,7 @@
 #include "mozilla/StaticPrefs_image.h"
 #include "mozilla/StaticPrefs_svg.h"
 #include "mozilla/dom/BindContext.h"
+#include "mozilla/dom/ContentList.h"
 #include "mozilla/dom/Document.h"
 #include "mozilla/dom/Element.h"
 #include "mozilla/dom/FetchPriority.h"
@@ -42,9 +41,8 @@
 #include "mozilla/dom/ScriptSettings.h"
 #include "mozilla/intl/Locale.h"
 #include "mozilla/intl/LocaleService.h"
-#include "mozilla/net/UrlClassifierFeatureFactory.h"
+#include "mozilla/net/ChannelClassifierUtils.h"
 #include "mozilla/widget/TextRecognition.h"
-#include "nsContentList.h"
 #include "nsContentPolicyUtils.h"
 #include "nsContentUtils.h"
 #include "nsError.h"
@@ -111,7 +109,7 @@ class ImageLoadTask : public MicroTaskRunnable {
   }
 
   bool Suppressed() override {
-    nsIGlobalObject* global = mElement->AsContent()->GetOwnerGlobal();
+    nsIGlobalObject* global = mElement->AsContent()->GetRelevantGlobal();
     return global && global->IsInSyncOperation();
   }
 
@@ -128,17 +126,7 @@ class ImageLoadTask : public MicroTaskRunnable {
   const bool mUseUrgentStartForChannel;
 };
 
-nsImageLoadingContent::nsImageLoadingContent()
-    : mObserverList(nullptr),
-      mOutstandingDecodePromises(0),
-      mRequestGeneration(0),
-      mLoadingEnabled(true),
-      mUseUrgentStartForChannel(false),
-      mLazyLoading(false),
-      mSyncDecodingHint(false),
-      mInDocResponsiveContent(false),
-      mCurrentRequestRegistered(false),
-      mPendingRequestRegistered(false) {
+nsImageLoadingContent::nsImageLoadingContent() : mObserverList(nullptr) {
   if (!nsContentUtils::GetImgLoaderForChannel(nullptr, nullptr)) {
     mLoadingEnabled = false;
   }
@@ -296,7 +284,7 @@ void nsImageLoadingContent::Notify(imgIRequest* aRequest, int32_t aType,
        * We make a note of this image node by including it in a dedicated
        * array of blocked tracking nodes under its parent document.
        */
-      if (net::UrlClassifierFeatureFactory::IsClassifierBlockingErrorCode(
+      if (net::ChannelClassifierUtils::IsClassifierBlockingErrorCode(
               errorCode)) {
         Document* doc = GetOurOwnerDoc();
         doc->AddBlockedNodeByClassifier(AsContent());
@@ -319,6 +307,10 @@ void nsImageLoadingContent::Notify(imgIRequest* aRequest, int32_t aType,
     }
     UpdateImageState(true);
   }
+}
+
+bool nsImageLoadingContent::HasPendingAlwaysLoadImageTask() const {
+  return mPendingImageLoadTask && mPendingImageLoadTask->AlwaysLoad();
 }
 
 void nsImageLoadingContent::OnLoadComplete(imgIRequest* aRequest,
@@ -435,6 +427,7 @@ nsresult nsImageLoadingContent::GetSyncDecodingHint(bool* aHint) {
 
 already_AddRefed<Promise> nsImageLoadingContent::QueueDecodeAsync(
     ErrorResult& aRv) {
+  // XXX probably should use our global.
   Document* doc = GetOurOwnerDoc();
   RefPtr<Promise> promise = Promise::Create(doc->GetScopeObject(), aRv);
   if (aRv.Failed()) {
@@ -449,11 +442,12 @@ already_AddRefed<Promise> nsImageLoadingContent::QueueDecodeAsync(
           mPromise(aPromise),
           mRequestGeneration(aRequestGeneration) {}
 
-    virtual void Run(AutoSlowOperation& aAso) override {
+    void Run(AutoSlowOperation& aAso) override {
       mOwner->DecodeAsync(std::move(mPromise), mRequestGeneration);
     }
 
-    virtual bool Suppressed() override {
+    bool Suppressed() override {
+      // XXX Probably should use mOwner->GetRelevantGlobal()
       nsIGlobalObject* global = mOwner->GetOurOwnerDoc()->GetScopeObject();
       return global && global->IsInSyncOperation();
     }
@@ -864,7 +858,7 @@ void nsImageLoadingContent::CloneScriptedRequests(imgRequestProxy* aRequest) {
 
     nsresult rv =
         aRequest->Clone(observer->mObserver, nullptr, getter_AddRefs(req));
-    Unused << NS_WARN_IF(NS_FAILED(rv));
+    (void)NS_WARN_IF(NS_FAILED(rv));
   } while (i > 0);
 }
 
@@ -1107,7 +1101,7 @@ nsresult nsImageLoadingContent::LoadImage(const nsAString& aNewURI, bool aForce,
   // Parse the URI string to get image URI
   nsCOMPtr<nsIURI> imageURI;
   if (!aNewURI.IsEmpty()) {
-    Unused << StringToURI(aNewURI, doc, getter_AddRefs(imageURI));
+    (void)StringToURI(aNewURI, doc, getter_AddRefs(imageURI));
   }
 
   return LoadImage(imageURI, aForce, aNotify, aImageLoadType, LoadFlags(), doc,
@@ -1292,6 +1286,7 @@ already_AddRefed<Promise> nsImageLoadingContent::RecognizeCurrentImageText(
     return nullptr;
   }
 
+  // XXX Probably should use this->GetRelevantGlobal()
   RefPtr<Promise> domPromise =
       Promise::Create(GetOurOwnerDoc()->GetScopeObject(), aRv);
   if (aRv.Failed()) {
@@ -1358,20 +1353,11 @@ already_AddRefed<Promise> nsImageLoadingContent::RecognizeCurrentImageText(
             auto& textRecognitionResult = aValue.ResolveValue();
             Element* el = ilc->AsContent()->AsElement();
 
-            // When enabled, this feature will place the recognized text as
-            // spans inside of the shadow dom of the img element. These are then
-            // positioned so that the user can select the text.
-            if (Preferences::GetBool("dom.text-recognition.shadow-dom-enabled",
-                                     false)) {
-              el->AttachAndSetUAShadowRoot(Element::NotifyUAWidgetSetup::Yes);
-              TextRecognition::FillShadow(*el->GetShadowRoot(),
-                                          textRecognitionResult);
-              el->NotifyUAWidgetSetupOrChange();
-            }
-
             nsTArray<ImageText> imageTexts(
                 textRecognitionResult.quads().Length());
-            nsIGlobalObject* global = el->OwnerDoc()->GetOwnerGlobal();
+            // XXX shouldn't this be GetRelevantGlobal? But it's privileged code
+            // so seems probably fine.
+            nsIGlobalObject* global = el->GetDocumentGlobal();
 
             for (const auto& quad : textRecognitionResult.quads()) {
               NotNull<ImageText*> imageText = imageTexts.AppendElement();
@@ -1943,7 +1929,7 @@ Element* nsImageLoadingContent::FindImageMap() {
     return nullptr;  // useMap == "#"
   }
 
-  RefPtr<nsContentList> imageMapList;
+  RefPtr<ContentList> imageMapList;
   if (aElement->IsInUncomposedDoc()) {
     // Optimize the common case and use document level image map.
     imageMapList = aElement->OwnerDoc()->ImageMapList();
@@ -1952,9 +1938,9 @@ Element* nsImageLoadingContent::FindImageMap() {
     // so using SubtreeRoot() here.
     // Because this is a temporary list, we don't need to make it live.
     imageMapList =
-        new nsContentList(aElement->SubtreeRoot(), kNameSpaceID_XHTML,
-                          nsGkAtoms::map, nsGkAtoms::map, true, /* deep */
-                          false /* live */);
+        new ContentList(aElement->SubtreeRoot(), kNameSpaceID_XHTML,
+                        nsGkAtoms::map, nsGkAtoms::map, true, /* deep */
+                        false /* live */);
   }
 
   nsAutoString mapName(Substring(start, end));
