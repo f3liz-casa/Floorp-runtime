@@ -8,7 +8,6 @@
 
 ChromeUtils.defineESModuleGetters(this, {
   SearchEngine: "moz-src:///toolkit/components/search/SearchEngine.sys.mjs",
-  sinon: "resource://testing-common/Sinon.sys.mjs",
 });
 
 const CONTEXT_MENU_ID = "contentAreaContextMenu";
@@ -103,10 +102,7 @@ SearchTestUtils.init(this);
 
 add_setup(async function () {
   await SpecialPowers.pushPrefEnv({
-    set: [
-      ["test.wait300msAfterTabSwitch", true],
-      ["browser.search.visualSearch.featureGate", true],
-    ],
+    set: [["browser.search.visualSearch.featureGate", true]],
   });
 
   await SearchTestUtils.updateRemoteSettingsConfig(SEARCH_CONFIG);
@@ -329,12 +325,9 @@ async function setDefaultEngineAndCheckMenu({
   leaveOpen = false,
   shouldHaveNewBadge = false,
 }) {
-  let engine = Services.search.getEngineById(defaultEngineId);
+  let engine = SearchService.getEngineById(defaultEngineId);
   Assert.ok(engine, "Sanity check: Engine should exist: " + defaultEngineId);
-  await Services.search.setDefault(
-    engine,
-    Ci.nsISearchService.CHANGE_REASON_UNKNOWN
-  );
+  await SearchService.setDefault(engine, SearchService.CHANGE_REASON.UNKNOWN);
 
   let data = await openAndCheckMenu({
     win,
@@ -390,20 +383,20 @@ async function withPrivateWindow({ callback, privateDefaultEngineId = null }) {
   if (privateDefaultEngineId) {
     await SpecialPowers.pushPrefEnv({
       set: [
-        ["browser.search.separatePrivateDefault", true],
-        ["browser.search.separatePrivateDefault.ui.enabled", true],
+        ["browser.search.separatePrivateDefault.enabled", true],
+        ["browser.search.separatePrivateDefault.featureGate", true],
       ],
     });
 
-    let engine = Services.search.getEngineById(privateDefaultEngineId);
+    let engine = SearchService.getEngineById(privateDefaultEngineId);
     Assert.ok(
       engine,
       "Sanity check: Engine should exist: " + privateDefaultEngineId
     );
 
-    await Services.search.setDefaultPrivate(
+    await SearchService.setDefaultPrivate(
       engine,
-      Ci.nsISearchService.CHANGE_REASON_UNKNOWN
+      SearchService.CHANGE_REASON.UNKNOWN
     );
   }
 
@@ -486,6 +479,10 @@ async function checkNewBadge({ item, shouldHaveNewBadge }) {
       !item.hasAttribute("badge"),
       "The visual search menuitem should not have the New badge"
     );
+    Assert.ok(
+      !item.classList.contains("badge-new"),
+      "The visual search menuitem should not have the badge-new class"
+    );
     return;
   }
 
@@ -497,6 +494,10 @@ async function checkNewBadge({ item, shouldHaveNewBadge }) {
     item.getAttribute("badge"),
     "New",
     "The visual search menu item `badge` attribute should be 'New'"
+  );
+  Assert.ok(
+    item.classList.contains("badge-new"),
+    "The visual search menuitem should have the badge-new class"
   );
 }
 

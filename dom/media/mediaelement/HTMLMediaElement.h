@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -110,6 +108,10 @@ enum class StreamCaptureBehavior : uint8_t {
   FINISH_WHEN_ENDED
 };
 
+// `NotNeeded` means audio is routed through WebAudio (audio output is
+// configured by WebAudio), or audio output configuration is not required.
+enum class AudioOutputConfig : bool { NotNeeded = false, Needed = true };
+
 /**
  * Possible values of the 'preload' attribute.
  */
@@ -170,8 +172,7 @@ class HTMLMediaElement : public nsGenericHTMLElement,
 
   CORSMode GetCORSMode() { return mCORSMode; }
 
-  explicit HTMLMediaElement(
-      already_AddRefed<mozilla::dom::NodeInfo>&& aNodeInfo);
+  explicit HTMLMediaElement(already_AddRefed<mozilla::dom::NodeInfo> aNodeInfo);
   void Init();
 
   virtual HTMLVideoElement* AsHTMLVideoElement() { return nullptr; };
@@ -226,7 +227,7 @@ class HTMLMediaElement : public nsGenericHTMLElement,
                       nsAttrValue& aResult) override;
 
   nsresult BindToTree(BindContext&, nsINode& aParent) override;
-  void UnbindFromTree(UnbindContext&) override;
+  MOZ_CAN_RUN_SCRIPT_BOUNDARY void UnbindFromTree(UnbindContext&) override;
   void DoneCreatingElement() override;
 
   bool IsHTMLFocusable(IsFocusableFlags, bool* aIsFocusable,
@@ -274,6 +275,10 @@ class HTMLMediaElement : public nsGenericHTMLElement,
   // Called by the video decoder object, on the main thread,
   // when the resource has completed seeking.
   void SeekCompleted() final;
+
+  // Called by the video decoder object, on the main thread, before a seek
+  // operation to update the played time ranges.
+  void UpdatePlayedRangesBeforeSeek(double aRangeEndTime) final;
 
   // Called by the video decoder object, on the main thread,
   // when the resource has aborted seeking.
@@ -355,6 +360,14 @@ class HTMLMediaElement : public nsGenericHTMLElement,
 
   void RunAutoplay();
 
+  // Start listening for async GV autoplay permission request results.
+  void StartObservingGVAutoplayIfNeeded();
+
+  // Stops listening for async GV autoplay permissions if observer exists.
+  void StopObservingGVAutoplayIfNeeded();
+
+  bool ShouldDelayPlayUntilGVAutoplayRequestResolved() const;
+
   // Check if the media element had crossorigin set when loading started
   bool ShouldCheckAllowOrigin();
 
@@ -395,12 +408,13 @@ class HTMLMediaElement : public nsGenericHTMLElement,
 
   void GetEMEInfo(dom::EMEDebugInfo& aInfo);
 
-  // Update the visual size of the media. Called from the decoder on the
-  // main thread when/if the size changes.
-  virtual void UpdateMediaSize(const nsIntSize& aSize);
+  // Update the visual size and rotation of the media. Called from the
+  // decoder on the main thread when/if either changes.
+  virtual void UpdateMediaSize(const nsIntSize& aSize, VideoRotation aRotation);
 
   void Invalidate(ImageSizeChanged aImageSizeChanged,
                   const Maybe<nsIntSize>& aNewIntrinsicSize,
+                  const Maybe<VideoRotation>& aNewRotation,
                   ForceInvalidate aForceInvalidate) override;
 
   // Returns the CanPlayStatus indicating if we can handle the
@@ -643,22 +657,30 @@ class HTMLMediaElement : public nsGenericHTMLElement,
 
   void SetVolume(double aVolume, ErrorResult& aRv);
 
-  bool Muted() const { return mMuted & MUTED_BY_CONTENT; }
-  void SetMuted(bool aMuted);
+  enum MutedReasons {
+    MUTED_BY_CONTENT = 0x01,
+    MUTED_BY_INVALID_PLAYBACK_RATE = 0x02,
+    MUTED_BY_AUDIO_CHANNEL = 0x04,
+    MUTED_BY_AUDIO_TRACK = 0x08,
+    MUTED_BY_MEDIA_CONTROL = 0x10
+  };
+
+  bool Muted() const {
+    // https://html.spec.whatwg.org/multipage/media.html#concept-media-muted
+    return !!(mMuted & (MUTED_BY_CONTENT | MUTED_BY_INVALID_PLAYBACK_RATE));
+  }
+  void SetMuted(bool aMuted, MutedReasons aReason = MUTED_BY_CONTENT);
+
+  // Chrome-only accessor exposing which reasons currently contribute to the
+  // muted state, so tests can verify muting that does not affect the
+  // web-visible muted attribute (e.g. mute via media control).
+  uint32_t GetMutedReasons() const { return mMuted; }
 
   bool DefaultMuted() const { return GetBoolAttr(nsGkAtoms::muted); }
 
   void SetDefaultMuted(bool aMuted, ErrorResult& aRv) {
     SetHTMLBoolAttr(nsGkAtoms::muted, aMuted, aRv);
   }
-
-  bool MozAllowCasting() const { return mAllowCasting; }
-
-  void SetMozAllowCasting(bool aShow) { mAllowCasting = aShow; }
-
-  bool MozIsCasting() const { return mIsCasting; }
-
-  void SetMozIsCasting(bool aShow) { mIsCasting = aShow; }
 
   // Returns whether a call to Play() would be rejected with NotAllowedError.
   // This assumes "worst case" for unknowns. So if prompting for permission is
@@ -747,7 +769,9 @@ class HTMLMediaElement : public nsGenericHTMLElement,
 
   already_AddRefed<DOMMediaStream> MozCaptureStreamUntilEnded(ErrorResult& aRv);
 
-  bool MozAudioCaptured() const { return mAudioCaptured; }
+  already_AddRefed<DOMMediaStream> CaptureStream(ErrorResult& aRv);
+
+  bool MozAudioCaptured() const;
 
   void MozGetMetadata(JSContext* aCx, JS::MutableHandle<JSObject*> aResult,
                       ErrorResult& aRv);
@@ -792,6 +816,18 @@ class HTMLMediaElement : public nsGenericHTMLElement,
 
   void NotifyCueDisplayStatesChanged();
 
+  void SetCuesDirty() {
+    if (mTextTrackManager) {
+      mTextTrackManager->SetCuesDirty();
+    }
+  }
+
+  void UpdateCueDisplay() {
+    if (mTextTrackManager) {
+      mTextTrackManager->UpdateCueDisplay();
+    }
+  }
+
   bool IsBlessed() const { return mIsBlessed; }
 
   // A method to check whether we are currently playing.
@@ -804,8 +840,11 @@ class HTMLMediaElement : public nsGenericHTMLElement,
 
   virtual void OnVisibilityChange(Visibility aNewVisibility);
 
-  // Begin testing only methods
+  // Return the effective volume, taking mute and other factors that affect the
+  // final output volume into account.
   float ComputedVolume() const;
+
+  // Begin testing only methods
   bool ComputedMuted() const;
 
   // Return true if the media has been suspended media due to an inactive
@@ -861,12 +900,17 @@ class HTMLMediaElement : public nsGenericHTMLElement,
   // Return key system in use if we have one, otherwise return nothing.
   Maybe<nsAutoString> GetKeySystem() const override;
 
+  MediaEventSource<float>& EffectiveVolumeChangeEvent() {
+    return mEffectiveVolumeChangeEvent;
+  }
+
  protected:
   virtual ~HTMLMediaElement();
 
   class AudioChannelAgentCallback;
   class ChannelLoader;
   class ErrorSink;
+  class GVAutoplayObserver;
   class MediaElementTrackSource;
   class MediaLoadListener;
   class MediaStreamRenderer;
@@ -901,6 +945,11 @@ class HTMLMediaElement : public nsGenericHTMLElement,
    */
   virtual void WakeLockRelease();
   virtual void UpdateWakeLock();
+
+  // This must be called immediately after monitor attributes change, and cannot
+  // wait for the Watchable notification, because some pseudo-classes are
+  // required to be applied immediately after the change.
+  void UpdatePlaybackPseudoClasses();
 
   void CreateAudioWakeLockIfNeeded();
   void ReleaseAudioWakeLockIfExists();
@@ -1031,12 +1080,16 @@ class HTMLMediaElement : public nsGenericHTMLElement,
    * to the DOMMediaStream. Volume and mute state will be applied to the audio
    * reaching the stream. No video tracks will be captured in this case.
    *
+   * aAudioOutputConfig determines if we should configure audio output in our
+   * media pipeline.
+   *
    * aGraph may be null if the stream's tracks do not need to use a
    * specific graph.
    */
   already_AddRefed<DOMMediaStream> CaptureStreamInternal(
       StreamCaptureBehavior aFinishBehavior,
-      StreamCaptureType aStreamCaptureType, MediaTrackGraph* aGraph);
+      StreamCaptureType aStreamCaptureType,
+      AudioOutputConfig aAudioOutputConfig, MediaTrackGraph* aGraph);
 
   /**
    * Initialize a decoder as a clone of an existing decoder in another
@@ -1281,6 +1334,11 @@ class HTMLMediaElement : public nsGenericHTMLElement,
    */
   void SetVolumeInternal();
 
+  // Record the glean probe once per resource when a playback that would
+  // otherwise be audible is muted only by the muted content attribute added at
+  // runtime.
+  void MaybeRecordRuntimeMutedContentAttrImpact();
+
   /**
    * Suspend or resume element playback and resource download.  When we suspend
    * playback, event delivery would also be suspended (and events queued) until
@@ -1330,10 +1388,11 @@ class HTMLMediaElement : public nsGenericHTMLElement,
   // tracks this HTMLMediaElement has.
   StreamCaptureType CaptureTypeForElement();
 
-  // True if this element can be captured, false otherwise.
-  bool CanBeCaptured(StreamCaptureType aCaptureType);
+  // Returns true if capture is allowed. Returns false and sets aRv if capture
+  // is not allowed: NotSupportedError if the element contains restricted
+  // content, or NS_ERROR_FAILURE if the document has no window.
+  bool CanBeCaptured(StreamCaptureType aCaptureType, ErrorResult& aRv);
 
-  using nsGenericHTMLElement::DispatchEvent;
   // For nsAsyncEventRunner.
   // The event is blocked while the document is in B/F cache.
   MOZ_CAN_RUN_SCRIPT nsresult FireEvent(const nsAString& aName);
@@ -1378,11 +1437,10 @@ class HTMLMediaElement : public nsGenericHTMLElement,
   // suspend-video-decoder is disabled.
   void MarkAsTainted();
 
-  virtual void AfterSetAttr(int32_t aNameSpaceID, nsAtom* aName,
-                            const nsAttrValue* aValue,
-                            const nsAttrValue* aOldValue,
-                            nsIPrincipal* aMaybeScriptedPrincipal,
-                            bool aNotify) override;
+  MOZ_CAN_RUN_SCRIPT_BOUNDARY void AfterSetAttr(
+      int32_t aNameSpaceID, nsAtom* aName, const nsAttrValue* aValue,
+      const nsAttrValue* aOldValue, nsIPrincipal* aMaybeScriptedPrincipal,
+      bool aNotify) override;
   virtual void OnAttrSetButNotChanged(int32_t aNamespaceID, nsAtom* aName,
                                       const nsAttrValueOrString& aValue,
                                       bool aNotify) override;
@@ -1492,6 +1550,9 @@ class HTMLMediaElement : public nsGenericHTMLElement,
   // The currently selected video stream track.
   RefPtr<VideoStreamTrack> mSelectedVideoStreamTrack;
 
+  // Created in Init() and AfterSetAttr(), released in deconstructor
+  RefPtr<GVAutoplayObserver> mGVAutoplayObserver;
+
   const RefPtr<ShutdownObserver> mShutdownObserver;
 
   const RefPtr<TitleChangeObserver> mTitleChangeObserver;
@@ -1559,14 +1620,22 @@ class HTMLMediaElement : public nsGenericHTMLElement,
   // True if the audio track is not silent.
   bool mIsAudioTrackAudible = false;
 
-  enum MutedReasons {
-    MUTED_BY_CONTENT = 0x01,
-    MUTED_BY_INVALID_PLAYBACK_RATE = 0x02,
-    MUTED_BY_AUDIO_CHANNEL = 0x04,
-    MUTED_BY_AUDIO_TRACK = 0x08
-  };
-
   uint32_t mMuted = 0;
+
+  // The tristate "muted state". While Default, the muted content attribute is a
+  // fallback that determines whether the element is muted; once the muted
+  // setter latches the state to True or False, the content attribute no longer
+  // applies.
+  // https://html.spec.whatwg.org/multipage/media.html#concept-media-muted-state
+  enum class MutedState : uint8_t { Default, True, False };
+  MutedState mMutedState = MutedState::Default;
+
+  // Whether the muted content attribute added at runtime (while the muted state
+  // is "default") is what would mute this element, and whether the resulting
+  // impact has already been recorded for the current resource. Used only for
+  // the glean probe.
+  bool mMutedByRuntimeContentAttr = false;
+  bool mRecordedRuntimeContentAttrImpact = false;
 
   UniquePtr<const MetadataTags> mTags;
 
@@ -1576,6 +1645,12 @@ class HTMLMediaElement : public nsGenericHTMLElement,
   // This is always the original URL we're trying to load --- before
   // redirects etc.
   nsCOMPtr<nsIURI> mLoadingSrc;
+
+  // The URI of the resource actually loaded. Starts equal to mLoadingSrc and
+  // is updated to the post-redirect URI on each redirect. Used to decide
+  // cross-origin load-error redaction; null means we have no captured URI, and
+  // is treated as cross-origin.
+  nsCOMPtr<nsIURI> mLoadingSrcFinalURI;
 
   // The triggering principal for the current source.
   nsCOMPtr<nsIPrincipal> mLoadingSrcTriggeringPrincipal;
@@ -1650,8 +1725,8 @@ class HTMLMediaElement : public nsGenericHTMLElement,
   bool mAttachingMediaKey = false;
   MozPromiseRequestHolder<SetCDMPromise> mSetCDMRequest;
 
-  // Stores the time at the start of the current 'played' range.
-  double mCurrentPlayRangeStart = 1.0;
+  // Stores the time at the start of the current 'played' range, if any.
+  Maybe<double> mCurrentPlayRangeStart;
 
   // True if loadeddata has been fired.
   bool mLoadedDataFired = false;
@@ -1693,6 +1768,13 @@ class HTMLMediaElement : public nsGenericHTMLElement,
   // True if this element is suspended because the document is inactive or the
   // inactive docshell is not allowing media to play.
   bool mSuspendedByInactiveDocOrDocshell = false;
+
+#if defined(MOZ_WIDGET_ANDROID)
+  // Android-only state for the temporary background media playback probe (bug
+  // 2066141): true once we have recorded telemetry for the current background
+  // episode. Reset when the document becomes visible again.
+  bool mRecordedBackgroundAudioPlayback = false;
+#endif
 
   // True if we're running the "load()" method.
   bool mIsRunningLoadMethod = false;
@@ -1817,6 +1899,8 @@ class HTMLMediaElement : public nsGenericHTMLElement,
   // https://html.spec.whatwg.org/multipage/media.html#pending-text-track-change-notification-flag
   bool mPendingTextTrackChanged = false;
 
+  Visibility mVisibilityState = Visibility::Untracked;
+
  public:
   // This function will be called whenever a text track that is in a media
   // element's list of text tracks has its text track mode change value
@@ -1870,7 +1954,8 @@ class HTMLMediaElement : public nsGenericHTMLElement,
   // For use by mochitests. Enabling pref "media.test.video-suspend"
   bool mForcedHidden = false;
 
-  Visibility mVisibilityState = Visibility::Untracked;
+  // https://html.spec.whatwg.org/multipage/media.html#is-currently-stalled
+  bool mIsCurrentlyStalled = false;
 
   UniquePtr<ErrorSink> mErrorSink;
 
@@ -1930,9 +2015,10 @@ class HTMLMediaElement : public nsGenericHTMLElement,
   // error.
   bool IsPlayable() const;
 
-  // Return true if the media qualifies for being controlled by media control
-  // keys.
-  bool ShouldStartMediaControlKeyListener() const;
+  // Return true if the media source qualifies for full media-key control,
+  // meaning the OS media-control interface (media keys, lock-screen widget,
+  // etc.) will be activated for this element.
+  bool IsControllableMediaSource() const;
 
   // Start the listener if media fits the requirement of being able to be
   // controlled be media control keys.
@@ -1957,16 +2043,28 @@ class HTMLMediaElement : public nsGenericHTMLElement,
   // with. See bug 1946547.
   void MaybeMarkSHEntryAsUserInteracted();
 
+  // True if we should have track sources for captured tracks.
+  bool ShouldHaveTrackSources() const;
+
 #ifdef MOZ_WMF_CDM
   // It's used to record telemetry probe for WMFCDM playback.
   bool mIsUsingWMFCDM = false;
 #endif
 
   Maybe<DelayedScheduler<AwakeTimeStamp>> mAudioWakelockReleaseScheduler;
-};
 
-// Check if the context is chrome or has the debugger or tabs permission
-bool HasDebuggerOrTabsPrivilege(JSContext* aCx, JSObject* aObj);
+  // AudioOutputConfig::Needed means audio is rendered through our own
+  // media-pipeline audio backend. Otherwise, audio output configuration is not
+  // required because audio is routed to Web Audio’s backend (via
+  // MediaElementAudioSourceNode), or is not played through output devices at
+  // all (via MozCaptureStreamXXX). The latter will be unsupported and removed
+  // soon.
+  // Note: Once this becomes NotNeeded, it will never change back. The current
+  // API design does not provide a way to revert this change.
+  AudioOutputConfig mAudioOutputConfig = AudioOutputConfig::Needed;
+
+  MediaEventProducer<float> mEffectiveVolumeChangeEvent;
+};
 
 }  // namespace mozilla::dom
 

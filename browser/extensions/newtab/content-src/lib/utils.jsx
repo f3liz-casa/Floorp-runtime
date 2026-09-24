@@ -7,16 +7,14 @@ import { useCallback, useEffect, useRef } from "react";
  * A custom react hook that sets up an IntersectionObserver to observe a single
  * or list of elements and triggers a callback when the element comes into the viewport
  * Note: The refs used should be an array type
+ *
  * @function useIntersectionObserver
  * @param {function} callback - The function to call when an element comes into the viewport
- * @param {Object} options - Options object passed to Intersection Observer:
+ * @param {object} options - Options object passed to Intersection Observer:
  * https://developer.mozilla.org/en-US/docs/Web/API/IntersectionObserver/IntersectionObserver#options
- * @param {Boolean} [isSingle = false] Boolean if the elements are an array or single element
+ * @param {boolean} [isSingle = false] Boolean if the elements are an array or single element
  *
  * @returns {React.MutableRefObject} a ref containing an array of elements or single element
- *
- *
- *
  */
 function useIntersectionObserver(callback, threshold = 0.3) {
   const elementsRef = useRef([]);
@@ -52,16 +50,107 @@ function useIntersectionObserver(callback, threshold = 0.3) {
 }
 
 /**
+ * Determines which column layout is active based on the screen width
+ *
+ * @param {number} screenWidth - The current window width (in pixels)
+ * @returns {string} The active column layout (e.g. "col-3", "col-2", "col-1")
+ */
+function getActiveColumnLayout(screenWidth) {
+  // Startup-cache rendering can call this before window.innerWidth is usable.
+  const safeScreenWidth = Number.isFinite(screenWidth) ? screenWidth : 0;
+  const breakpoints = [
+    { min: 1374, column: "col-4" }, // $break-point-sections-variant
+    { min: 1122, column: "col-3" }, // $break-point-widest
+    { min: 724, column: "col-2" }, // $break-point-layout-variant
+    { min: 0, column: "col-1" }, // (default layout)
+  ];
+  return breakpoints.find(bp => safeScreenWidth >= bp.min).column;
+}
+
+/**
+ * Reads the active column layout from a DOM element via the --sections-col-count
+ * CSS variable set by Nova grid container queries.
+ *
+ * @param {Element} el
+ * @returns {string|null} e.g. "col-2", or null if the property is not set (classic path)
+ */
+function getNovaColumnLayout(el) {
+  if (!el) {
+    return null;
+  }
+  const val = parseInt(
+    getComputedStyle(el).getPropertyValue("--sections-col-count"),
+    10
+  );
+  return Number.isInteger(val) ? `col-${val}` : null;
+}
+
+/**
+ * Determines which sections-grid column a card occupies, by measuring where
+ * the browser actually placed it.
+ *
+ * Every column is the same width, so a fixed distance separates it from the
+ * previous one: that width plus the grid's column gap. Dividing how far the
+ * card starts from the edge of the grid by that distance gives its column
+ * number. Only the leading edge is measured, so a card spanning several
+ * columns reports the first one it occupies.
+ *
+ * Nova only: classic layouts do not set --sections-col-count.
+ *
+ * @param {Element} el - Any element inside the card, or the card itself
+ * @returns {number|null} 1-based column, or null if it cannot be determined
+ */
+function getCardColumn(el) {
+  const item = el?.closest(".ds-section-grid > *");
+  if (!item) {
+    return null;
+  }
+  const grid = item.parentElement;
+
+  const style = getComputedStyle(grid);
+  const columnCount = parseInt(
+    style.getPropertyValue("--sections-col-count"),
+    10
+  );
+  if (!(columnCount > 0)) {
+    return null;
+  }
+
+  const itemRect = item.getBoundingClientRect();
+  if (!itemRect.width) {
+    return null;
+  }
+
+  const gridRect = grid.getBoundingClientRect();
+  const columnGap = parseFloat(style.columnGap) || 0;
+  const columnStride = (gridRect.width + columnGap) / columnCount;
+
+  const offset =
+    grid.ownerDocument.dir === "rtl"
+      ? gridRect.right - itemRect.right
+      : itemRect.left - gridRect.left;
+
+  return Math.round(offset / columnStride) + 1;
+}
+
+/**
  * Determines the active card size ("small", "medium", or "large") based on the screen width
  * and class names applied to the card element at the time of an event (example: click)
  *
  * @param {number} screenWidth - The current window width (in pixels).
  * @param {string | string[]} classNames - A string or array of class names applied to the sections card.
  * @param {boolean[]} sectionsEnabled - If sections is not enabled, all cards are `medium-card`
- * @param {number} flightId - Error ege case: This function should not be called on spocs, which have flightId
+ * @param {number} flightId - Error edge case: This function should not be called on spocs, which have flightId
+ * @param {string} [columnLayout] - The active column layout (e.g. "col-2")
  * @returns {"small-card" | "medium-card" | "large-card" | null} The active card type, or null if none is matched.
  */
-function getActiveCardSize(screenWidth, classNames, sectionsEnabled, flightId) {
+function getActiveCardSize(
+  screenWidth,
+  classNames,
+  sectionsEnabled,
+  flightId,
+  columnLayout
+) {
   // Only applies to sponsored content
   if (flightId) {
     return "spoc";
@@ -74,39 +163,23 @@ function getActiveCardSize(screenWidth, classNames, sectionsEnabled, flightId) {
   }
 
   // Return null if no values are available
-  if (!screenWidth || !classNames) {
+  // @nova-cleanup(remove-conditional): Remove the screenWidth check once Nova ships
+  if ((!screenWidth && !columnLayout) || !classNames) {
     // Missing arguments
     return null;
   }
 
   const classList = classNames.split(" ");
-
-  // Each breakpoint corresponds to a minimum screen width and its associated column class
-  const breakpoints = [
-    { min: 1374, column: "col-4" }, // $break-point-sections-variant
-    { min: 1122, column: "col-3" }, // $break-point-widest
-    { min: 724, column: "col-2" }, // $break-point-layout-variant
-    { min: 0, column: "col-1" }, // (default layout)
-  ];
-
   const cardTypes = ["small", "medium", "large"];
 
   // Determine which column is active based on the current screen width
-  const currColumnCount = breakpoints.find(bp => screenWidth >= bp.min).column;
+  // @nova-cleanup(remove-conditional): Replace with just columnLayout once Nova ships
+  const currColumnCount = columnLayout ?? getActiveColumnLayout(screenWidth);
 
   // Match the card type for that column count
   for (let type of cardTypes) {
     const className = `${currColumnCount}-${type}`;
     if (classList.includes(className)) {
-      // Special case: below $break-point-medium (610px), report `col-1-small` as medium
-      if (
-        screenWidth < 610 &&
-        currColumnCount === "col-1" &&
-        type === "small"
-      ) {
-        return "medium-card";
-      }
-      // Will be either "small-card", "medium-card", or "large-card"
       return `${type}-card`;
     }
   }
@@ -257,4 +330,95 @@ function useConfetti(count = 80, spread = Math.PI / 3) {
   return [canvasRef, fireConfetti];
 }
 
-export { useIntersectionObserver, getActiveCardSize, useConfetti };
+/**
+ * Wires a click listener onto a widget's "change size" submenu and returns a
+ * ref callback to attach to its <panel-list slot="submenu"> element.
+ *
+ * moz-panel-list moves the submenu into shadow DOM, so React synthetic events
+ * don't reach the inner <panel-item> elements; we listen on the submenu element
+ * directly and resolve the clicked item across the shadow boundary via
+ * composedPath() and its data-size attribute.
+ *
+ * A ref callback is required because several widgets gate their whole render on
+ * async data and only mount the submenu once that data loads. The ref callback
+ * fires whenever the node attaches, so the listener is wired up no matter when
+ * the menu first appears.
+ *
+ * @function useSizeSubmenu
+ * @param {function} onChangeSize - Called with the selected size string when a
+ *   submenu item is clicked.
+ * @returns {function} A ref callback for the submenu <panel-list> element.
+ */
+function useSizeSubmenu(onChangeSize) {
+  const onChangeSizeRef = useRef(onChangeSize);
+  const cleanupRef = useRef(null);
+
+  useEffect(() => {
+    onChangeSizeRef.current = onChangeSize;
+  }, [onChangeSize]);
+
+  return useCallback(el => {
+    cleanupRef.current?.();
+    cleanupRef.current = null;
+    if (!el) {
+      return;
+    }
+    const listener = e => {
+      const item = e.composedPath().find(node => node.dataset?.size);
+      if (item) {
+        onChangeSizeRef.current(item.dataset.size);
+      }
+    };
+    el.addEventListener("click", listener);
+    cleanupRef.current = () => el.removeEventListener("click", listener);
+  }, []);
+}
+
+// Biggest units first, so the loop returns the coarsest one that fits.
+const RELATIVE_TIME_UNITS = [
+  ["year", 365 * 24 * 60 * 60 * 1000],
+  ["month", 30 * 24 * 60 * 60 * 1000],
+  ["week", 7 * 24 * 60 * 60 * 1000],
+  ["day", 24 * 60 * 60 * 1000],
+  ["hour", 60 * 60 * 1000],
+  ["minute", 60 * 1000],
+];
+
+/**
+ * Picks the largest relative-time unit that fits ("2 hours ago", "5 days ago").
+ * Under a minute there is no unit to pick, so the caller gets a Fluent id to
+ * render instead of a string: the wording of "just now" belongs to the surface
+ * showing it, and each has its own message.
+ *
+ * @param {number} timestamp ms epoch of the moment being described.
+ * @param {string} [locale] BCP-47 locale; falls back to the runtime default.
+ * @param {number} now ms epoch to measure against.
+ * @param {string} justNowL10nId Fluent id for the under-a-minute case.
+ * @returns {{text: ?string, l10nId: ?string}} Exactly one of the two is set.
+ */
+function formatRelativeTime(timestamp, locale, now, justNowL10nId) {
+  const delta = timestamp - now;
+  const abs = Math.abs(delta);
+  for (const [unit, ms] of RELATIVE_TIME_UNITS) {
+    if (abs >= ms) {
+      return {
+        text: new Intl.RelativeTimeFormat(locale || undefined, {
+          numeric: "auto",
+        }).format(Math.round(delta / ms), unit),
+        l10nId: null,
+      };
+    }
+  }
+  return { text: null, l10nId: justNowL10nId };
+}
+
+export {
+  formatRelativeTime,
+  useIntersectionObserver,
+  useSizeSubmenu,
+  getActiveCardSize,
+  getActiveColumnLayout,
+  getNovaColumnLayout,
+  getCardColumn,
+  useConfetti,
+};
