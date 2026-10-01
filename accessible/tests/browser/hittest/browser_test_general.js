@@ -4,12 +4,6 @@
 
 "use strict";
 
-add_setup(async function () {
-  await SpecialPowers.pushPrefEnv({
-    set: [["test.wait300msAfterTabSwitch", true]],
-  });
-});
-
 async function runTests(browser, accDoc) {
   const dpr = await getContentDPR(browser);
 
@@ -488,14 +482,6 @@ addAccessibleTask(
   p {
     font-family: monospace;
   }
-
-  #detailsOpen::details-content {
-    /* TODO(dholbert): In bug 1982467, remove this style-rule and fix up the
-     * test expectations instead. This is a hackaround to mimic the
-     * pre-"::details-content" setup, so that the test's expectations from
-     * that time will still hold up. */
-    display: contents;
-  }
 </style>
 <details id="detailsOpen" open>
   <summary>summary</summary>
@@ -515,7 +501,15 @@ addAccessibleTask(
   async function testChangeDisplayContents(browser, docAcc) {
     const detailsOpen = findAccessibleChildByID(docAcc, "detailsOpen");
     const detailsOpenP = findAccessibleChildByID(docAcc, "detailsOpenP");
-    await hitTest(browser, detailsOpen, detailsOpenP, detailsOpenP.firstChild);
+    // Between the details element and its <p> exists
+    // a pseudoelement, ::details-content. Use this as
+    // our expected target for direct-child hittesting.
+    await hitTest(
+      browser,
+      detailsOpen,
+      detailsOpenP.parent,
+      detailsOpenP.firstChild
+    );
 
     info("Opening details");
     let shown = waitForEvent(EVENT_SHOW, "detailsP");

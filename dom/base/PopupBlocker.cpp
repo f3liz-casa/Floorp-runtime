@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -26,7 +24,9 @@ static char* sPopupAllowedEvents;
 
 static PopupBlocker::PopupControlState sPopupControlState =
     PopupBlocker::openAbused;
+#ifdef DEBUG
 static uint32_t sPopupStatePusherCount = 0;
+#endif
 
 static TimeStamp sLastAllowedExternalProtocolIFrameTimeStamp;
 
@@ -131,12 +131,18 @@ uint32_t PopupBlocker::GetPopupPermission(nsIPrincipal* aPrincipal) {
 }
 
 /* static */
-void PopupBlocker::PopupStatePusherCreated() { ++sPopupStatePusherCount; }
+void PopupBlocker::PopupStatePusherCreated() {
+#ifdef DEBUG
+  ++sPopupStatePusherCount;
+#endif
+}
 
 /* static */
 void PopupBlocker::PopupStatePusherDestroyed() {
+#ifdef DEBUG
   MOZ_ASSERT(sPopupStatePusherCount);
   --sPopupStatePusherCount;
+#endif
 }
 
 // static

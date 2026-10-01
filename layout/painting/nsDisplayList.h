@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/.
@@ -18,26 +16,22 @@
 
 #include "DisplayItemClipChain.h"
 #include "DisplayListClipState.h"
-#include "FrameMetrics.h"
 #include "HitTestInfo.h"
-#include "ImgDrawResult.h"
 #include "RetainedDisplayListHelpers.h"
 #include "Units.h"
 #include "gfxContext.h"
 #include "mozilla/ArenaAllocator.h"
-#include "mozilla/Array.h"
 #include "mozilla/ArrayIterator.h"
 #include "mozilla/Assertions.h"
 #include "mozilla/Attributes.h"
 #include "mozilla/DebugOnly.h"
 #include "mozilla/EffectCompositor.h"
 #include "mozilla/EnumSet.h"
-#include "mozilla/EnumeratedArray.h"
 #include "mozilla/Logging.h"
 #include "mozilla/Maybe.h"
 #include "mozilla/MotionPathUtils.h"
 #include "mozilla/RefPtr.h"
-#include "mozilla/TemplateLib.h"
+#include "mozilla/ResultVariant.h"
 #include "mozilla/TimeStamp.h"
 #include "mozilla/UniquePtr.h"
 #include "mozilla/gfx/UserData.h"
@@ -103,10 +97,18 @@ class Selection;
 
 enum class DisplayListArenaObjectId {
 #define DISPLAY_LIST_ARENA_OBJECT(name_) name_,
-#include "nsDisplayListArenaTypes.h"
+#include "nsDisplayListArenaTypes.inc"
 #undef DISPLAY_LIST_ARENA_OBJECT
   COUNT
 };
+
+/**
+ * Return type of nsDisplayItem::CreateWebRenderCommands. The error case
+ * carries a string literal naming the reason the item could not be expressed
+ * as WebRender commands, which callers use for diagnostics before falling
+ * back to painting the item into an image.
+ */
+using WebRenderCommandsResult = Result<Ok, const char*>;
 
 extern LazyLogModule sContentDisplayListLog;
 extern LazyLogModule sParentDisplayListLog;
@@ -187,15 +189,21 @@ LazyLogModule& GetLoggerByProcess();
  *    is on the stack.
  */
 struct ActiveScrolledRoot {
-  static already_AddRefed<ActiveScrolledRoot> CreateASRForFrame(
-      const ActiveScrolledRoot* aParent,
-      ScrollContainerFrame* aScrollContainerFrame, bool aIsRetained);
+  enum class ASRKind { Scroll, Sticky };
+
+  static already_AddRefed<ActiveScrolledRoot> GetOrCreateASRForFrame(
+      const ActiveScrolledRoot* aParent, nsIFrame* aFrame,
+      nsTArray<RefPtr<ActiveScrolledRoot>>& aActiveScrolledRoots,
+      ASRKind asrKind = ASRKind::Scroll);
 
   static const ActiveScrolledRoot* PickAncestor(
       const ActiveScrolledRoot* aOne, const ActiveScrolledRoot* aTwo) {
     MOZ_ASSERT(IsAncestor(aOne, aTwo) || IsAncestor(aTwo, aOne));
     return Depth(aOne) <= Depth(aTwo) ? aOne : aTwo;
   }
+
+  static const ActiveScrolledRoot* LowestCommonAncestor(
+      const ActiveScrolledRoot* aOne, const ActiveScrolledRoot* aTwo);
 
   static const ActiveScrolledRoot* PickDescendant(
       const ActiveScrolledRoot* aOne, const ActiveScrolledRoot* aTwo) {
@@ -218,28 +226,59 @@ struct ActiveScrolledRoot {
    * corresponding to the ASR.
    */
   layers::ScrollableLayerGuid::ViewID GetViewId() const {
+    MOZ_ASSERT(mKind == ASRKind::Scroll);
     if (!mViewId.isSome()) {
       mViewId = Some(ComputeViewId());
     }
     return *mViewId;
   }
 
+  ScrollContainerFrame* ScrollFrame() const {
+    MOZ_ASSERT(mKind == ASRKind::Scroll);
+    return ScrollFrameOrNull();
+  }
+
+  ScrollContainerFrame* ScrollFrameOrNull() const;
+
+  // Return the nearest ASR that is of ASR kind scroll.
+  const ActiveScrolledRoot* GetNearestScrollASR() const;
+
+  // Return the scrollable layer view id of the nearest scroll ASR, otherwise
+  // return the null scroll id.
+  layers::ScrollableLayerGuid::ViewID GetNearestScrollASRViewId() const;
+
+  // Return the ASR of kind ASRKind::Sticky corresponding to a sticky frame.
+  // Returns null if |aStickyFrame| is not a sticky frame, or if
+  // CreateASRForStickyFrame has not yet been called for it or its first
+  // continuation.
+  static const ActiveScrolledRoot* GetStickyASRFromFrame(
+      nsIFrame* aStickyFrame);
+
   RefPtr<const ActiveScrolledRoot> mParent;
-  ScrollContainerFrame* mScrollContainerFrame = nullptr;
+  nsIFrame* mFrame = nullptr;
+  // This gets updated by both functions that can create this struct.
+  ASRKind mKind = ASRKind::Scroll;
 
   NS_INLINE_DECL_REFCOUNTING(ActiveScrolledRoot)
 
+  void AssertDepthInvariant() const;
+
  private:
-  ActiveScrolledRoot() : mDepth(0), mRetained(false) {}
+  ActiveScrolledRoot() : mDepth(0) {}
 
   ~ActiveScrolledRoot();
 
   static void DetachASR(ActiveScrolledRoot* aASR) {
     aASR->mParent = nullptr;
-    aASR->mScrollContainerFrame = nullptr;
+    aASR->mFrame = nullptr;
     NS_RELEASE(aASR);
   }
   NS_DECLARE_FRAME_PROPERTY_WITH_DTOR(ActiveScrolledRootCache,
+                                      ActiveScrolledRoot, DetachASR)
+  // We need a distinct frame property for storing the sticky ASR,
+  // because a single frame could be both a scroll frame and position:sticky
+  // and thus have two associated ASRs.
+  NS_DECLARE_FRAME_PROPERTY_WITH_DTOR(StickyActiveScrolledRootCache,
                                       ActiveScrolledRoot, DetachASR)
 
   static uint32_t Depth(const ActiveScrolledRoot* aActiveScrolledRoot) {
@@ -254,7 +293,6 @@ struct ActiveScrolledRoot {
   mutable Maybe<layers::ScrollableLayerGuid::ViewID> mViewId;
 
   uint32_t mDepth;
-  bool mRetained;
 };
 
 enum class nsDisplayListBuilderMode : uint8_t {
@@ -361,9 +399,8 @@ class nsDisplayListBuilder {
     mTemporaryItems.AppendElement(aItem);
   }
 
-  WindowRenderer* GetWidgetWindowRenderer(nsView** aView = nullptr);
-  layers::WebRenderLayerManager* GetWidgetLayerManager(
-      nsView** aView = nullptr);
+  WindowRenderer* GetWidgetWindowRenderer();
+  layers::WebRenderLayerManager* GetWidgetLayerManager();
 
   /**
    * @return true if the display is being built in order to determine which
@@ -623,11 +660,12 @@ class nsDisplayListBuilder {
     mAllowMergingAndFlattening = aAllow;
   }
 
-  void SetCompositorHitTestInfo(const gfx::CompositorHitTestInfo& aInfo) {
+  void SetInheritedCompositorHitTestInfo(
+      const gfx::CompositorHitTestInfo& aInfo) {
     mCompositorHitTestInfo = aInfo;
   }
 
-  const gfx::CompositorHitTestInfo& GetCompositorHitTestInfo() const {
+  const gfx::CompositorHitTestInfo& GetInheritedCompositorHitTestInfo() const {
     return mCompositorHitTestInfo;
   }
 
@@ -924,7 +962,7 @@ class nsDisplayListBuilder {
   static_assert(size_t(DisplayItemType::TYPE_##name_) ==     \
                     size_t(DisplayListArenaObjectId::name_), \
                 "");
-#include "nsDisplayItemTypesList.h"
+#include "nsDisplayItemTypesList.inc"
     static_assert(size_t(DisplayItemType::TYPE_MAX) ==
                       size_t(DisplayListArenaObjectId::CLIPCHAIN),
                   "");
@@ -945,12 +983,13 @@ class nsDisplayListBuilder {
   }
 
   /**
-   * Allocate a new ActiveScrolledRoot in the arena. Will be cleaned up
-   * automatically when the arena goes away.
+   * Get an existing or allocate a new ActiveScrolledRoot in the arena. Will be
+   * cleaned up automatically when the arena goes away.
    */
-  ActiveScrolledRoot* AllocateActiveScrolledRoot(
-      const ActiveScrolledRoot* aParent,
-      ScrollContainerFrame* aScrollContainerFrame);
+  ActiveScrolledRoot* GetOrCreateActiveScrolledRoot(
+      const ActiveScrolledRoot* aParent, nsIFrame* aFrame,
+      ActiveScrolledRoot::ASRKind asrKind =
+          ActiveScrolledRoot::ASRKind::Scroll);
 
   /**
    * Allocate a new DisplayItemClipChain object in the arena. Will be cleaned
@@ -1050,10 +1089,10 @@ class nsDisplayListBuilder {
     nsDisplayListBuilder* mBuilder;
     const nsIFrame* mPrevFrame;
     const nsIFrame* mPrevReferenceFrame;
-    nsPoint mPrevOffset;
-    Maybe<nsPoint> mPrevAdditionalOffset;
     nsRect mPrevVisibleRect;
     nsRect mPrevDirtyRect;
+    nsPoint mPrevOffset;
+    Maybe<nsPoint> mPrevAdditionalOffset;
     gfx::CompositorHitTestInfo mPrevCompositorHitTestInfo;
     bool mPrevAncestorHasApzAwareEventHandler;
     bool mPrevBuildingInvisibleItems;
@@ -1148,12 +1187,10 @@ class nsDisplayListBuilder {
           mSavedActiveScrolledRoot(aBuilder->mCurrentActiveScrolledRoot),
           mContentClipASR(aBuilder->ClipState().GetContentClipASR()),
           mDescendantsStartIndex(aBuilder->mActiveScrolledRoots.Length()),
-          mUsed(false),
           mOldScrollParentId(aBuilder->mCurrentScrollParentId),
           mOldForceLayer(aBuilder->mForceLayerForScrollParent),
           mOldContainsNonMinimalDisplayPort(
-              mBuilder->mContainsNonMinimalDisplayPort),
-          mCanBeScrollParent(false) {}
+              mBuilder->mContainsNonMinimalDisplayPort) {}
 
     void SetCurrentScrollParentId(ViewID aScrollId) {
       // Update the old scroll parent id.
@@ -1201,13 +1238,7 @@ class nsDisplayListBuilder {
     void SetCurrentActiveScrolledRoot(
         const ActiveScrolledRoot* aActiveScrolledRoot);
 
-    void EnterScrollFrame(ScrollContainerFrame* aScrollContainerFrame) {
-      MOZ_ASSERT(!mUsed);
-      ActiveScrolledRoot* asr = mBuilder->AllocateActiveScrolledRoot(
-          mBuilder->mCurrentActiveScrolledRoot, aScrollContainerFrame);
-      mBuilder->mCurrentActiveScrolledRoot = asr;
-      mUsed = true;
-    }
+    void EnterScrollFrame(ScrollContainerFrame* aScrollContainerFrame);
 
     void InsertScrollFrame(ScrollContainerFrame* aScrollContainerFrame);
 
@@ -1236,11 +1267,11 @@ class nsDisplayListBuilder {
      * EnterScrollFrame / InsertScrollFrame is called per instance of this
      * class.
      */
-    bool mUsed;
     ViewID mOldScrollParentId;
+    bool mUsed = false;
     bool mOldForceLayer;
     bool mOldContainsNonMinimalDisplayPort;
-    bool mCanBeScrollParent;
+    bool mCanBeScrollParent = false;
   };
 
   /**
@@ -1460,6 +1491,11 @@ class nsDisplayListBuilder {
     // TODO(emilio, bug 1968754): Deal with nested captures properly.
     bool mContainingBlockInViewTransitionCapture;
 
+#ifdef DEBUG
+    // Assert that the asr is as expected.
+    void CheckASR(nsDisplayListBuilder* aBuilder, nsIFrame* aFrame);
+#endif
+
     static nsRect ComputeVisibleRectForFrame(nsDisplayListBuilder* aBuilder,
                                              nsIFrame* aFrame,
                                              const nsRect& aVisibleRect,
@@ -1555,37 +1591,6 @@ class nsDisplayListBuilder {
     return mCurrentContainerASR;
   }
 
-  /**
-   * Add the current frame to the will-change budget if possible and
-   * remeber the outcome. Subsequent calls to IsInWillChangeBudget
-   * will return the same value as return here.
-   */
-  bool AddToWillChangeBudget(nsIFrame* aFrame, const nsSize& aSize);
-
-  /**
-   * This will add the current frame to the will-change budget the first
-   * time it is seen. On subsequent calls this will return the same
-   * answer. This effectively implements a first-come, first-served
-   * allocation of the will-change budget.
-   */
-  bool IsInWillChangeBudget(nsIFrame* aFrame, const nsSize& aSize);
-
-  /**
-   * Clears the will-change budget status for the given |aFrame|.
-   * This will also remove the frame from will-change budgets.
-   */
-  void ClearWillChangeBudgetStatus(nsIFrame* aFrame);
-
-  /**
-   * Removes the given |aFrame| from will-change budgets.
-   */
-  void RemoveFromWillChangeBudgets(const nsIFrame* aFrame);
-
-  /**
-   * Clears the will-change budgets.
-   */
-  void ClearWillChangeBudgets();
-
   void EnterSVGEffectsContents(nsIFrame* aEffectsFrame,
                                nsDisplayList* aHoistedItemsStorage);
   void ExitSVGEffectsContents();
@@ -1664,6 +1669,10 @@ class nsDisplayListBuilder {
   void UpdateShouldBuildAsyncZoomContainer();
 
   bool ShouldRebuildDisplayListDueToPrefChange();
+
+  bool ShouldActivateAllScrollFrames() const {
+    return mShouldActivateAllScrollFrames;
+  }
 
   /**
    * Represents a region composed of frame/rect pairs.
@@ -1786,6 +1795,11 @@ class nsDisplayListBuilder {
   void SetIsDestroying() { mIsDestroying = true; }
   bool IsDestroying() const { return mIsDestroying; }
 
+  nsTHashMap<nsPtrHashKey<const nsIFrame>, bool>&
+  AsyncScrollsWithAnchorHashmap() {
+    return mAsyncScrollsWithAnchor;
+  }
+
  private:
   bool MarkOutOfFlowFrameForDisplay(nsIFrame* aDirtyFrame, nsIFrame* aFrame,
                                     const nsRect& aVisibleRect,
@@ -1825,19 +1839,6 @@ class nsDisplayListBuilder {
   }
 
   void AddSizeOfExcludingThis(nsWindowSizes&) const;
-
-  struct FrameWillChangeBudget {
-    FrameWillChangeBudget() : mPresContext(nullptr), mUsage(0) {}
-
-    FrameWillChangeBudget(const nsPresContext* aPresContext, uint32_t aUsage)
-        : mPresContext(aPresContext), mUsage(aUsage) {}
-
-    const nsPresContext* mPresContext;
-    uint32_t mUsage;
-  };
-
-  // will-change budget tracker
-  typedef uint32_t DocumentWillChangeBudget;
 
   nsIFrame* const mReferenceFrame;
   nsIFrame* mIgnoreScrollFrame;
@@ -1879,14 +1880,6 @@ class nsDisplayListBuilder {
                    nsTArray<nsIWidget::ThemeGeometry>>
       mThemeGeometries;
   DisplayListClipState mClipState;
-  nsTHashMap<nsPtrHashKey<const nsPresContext>, DocumentWillChangeBudget>
-      mDocumentWillChangeBudgets;
-
-  // Any frame listed in this set is already counted in the budget
-  // and thus is in-budget.
-  nsTHashMap<nsPtrHashKey<const nsIFrame>, FrameWillChangeBudget>
-      mFrameWillChangeBudgets;
-
   nsTHashSet<nsCString> mDestinations;  // Destination names emitted.
 
   // Stores reusable items collected during display list preprocessing.
@@ -1932,6 +1925,12 @@ class nsDisplayListBuilder {
   nsRect mCaretRect;
 
   Preserves3DContext mPreserves3DCtx;
+
+  // For frames which are anchored, and compensate for scroll (according to the
+  // spec definition), whether the frame should async scroll with the anchor. It
+  // might be disabled for things that are limitations of our current
+  // implementation (one-axis only, transforms).
+  nsTHashMap<nsPtrHashKey<const nsIFrame>, bool> mAsyncScrollsWithAnchor;
 
   uint8_t mBuildingPageNum = 0;
 
@@ -1995,6 +1994,9 @@ class nsDisplayListBuilder {
   // display items.
   bool mAvoidBuildingDuplicateOofs = false;
 
+  // Cached copy so we don't have to get the root presshell repeatedly.
+  bool mShouldActivateAllScrollFrames = false;
+
   Maybe<layers::ScrollDirection> mCurrentScrollbarDirection;
 };
 
@@ -2026,7 +2028,7 @@ class nsDisplayListBuilder {
 
 template <typename T>
 MOZ_ALWAYS_INLINE T* MakeClone(nsDisplayListBuilder* aBuilder, const T* aItem) {
-  static_assert(std::is_base_of<nsDisplayWrapList, T>::value,
+  static_assert(std::is_base_of_v<nsDisplayWrapList, T>,
                 "Display item type should be derived from nsDisplayWrapList");
   T* item = new (aBuilder) T(aBuilder, *aItem);
   item->SetType(T::ItemType());
@@ -2054,9 +2056,9 @@ template <typename T, typename F, typename... Args>
 MOZ_ALWAYS_INLINE T* MakeDisplayItemWithIndex(nsDisplayListBuilder* aBuilder,
                                               F* aFrame, const uint16_t aIndex,
                                               Args&&... aArgs) {
-  static_assert(std::is_base_of<nsDisplayItem, T>::value,
+  static_assert(std::is_base_of_v<nsDisplayItem, T>,
                 "Display item type should be derived from nsDisplayItem");
-  static_assert(std::is_base_of<nsIFrame, F>::value,
+  static_assert(std::is_base_of_v<nsIFrame, F>,
                 "Frame type should be derived from nsIFrame");
 
   const DisplayItemType type = T::ItemType();
@@ -2247,23 +2249,20 @@ class nsDisplayItem {
    * Pairing this with the Frame() pointer gives a key that
    * uniquely identifies this display item in the display item tree.
    */
-  uint32_t GetPerFrameKey() const {
+  static uint32_t GetPerFrameKey(uint8_t aPageNum, uint16_t aPerFrameIndex,
+                                 DisplayItemType aType) {
     // The top 8 bits are the page index
     // The middle 16 bits of the per frame key uniquely identify the display
     // item when there are more than one item of the same type for a frame.
     // The low 8 bits are the display item type.
-    return (static_cast<uint32_t>(mPageNum)
-            << (TYPE_BITS + (sizeof(mPerFrameIndex) * 8))) |
-           (static_cast<uint32_t>(mPerFrameIndex) << TYPE_BITS) |
-           static_cast<uint32_t>(mType);
+    return (static_cast<uint32_t>(aPageNum)
+            << (TYPE_BITS + (sizeof(aPerFrameIndex) * 8))) |
+           (static_cast<uint32_t>(aPerFrameIndex) << TYPE_BITS) |
+           static_cast<uint32_t>(aType);
   }
-
-  /**
-   * Returns true if this item was reused during display list merging.
-   */
-  bool IsReused() const { return mItemFlags.contains(ItemFlag::ReusedItem); }
-
-  void SetReused(bool aReused) { SetItemFlag(ItemFlag::ReusedItem, aReused); }
+  uint32_t GetPerFrameKey() const {
+    return GetPerFrameKey(mPageNum, mPerFrameIndex, mType);
+  }
 
   /**
    * Returns true if this item can be reused during display list merging.
@@ -2273,12 +2272,6 @@ class nsDisplayItem {
   }
 
   void SetCantBeReused() { mItemFlags += ItemFlag::CantBeReused; }
-
-  bool CanBeCached() const {
-    return !mItemFlags.contains(ItemFlag::CantBeCached);
-  }
-
-  void SetCantBeCached() { mItemFlags += ItemFlag::CantBeCached; }
 
   bool IsOldItem() const { return !!mOldList; }
 
@@ -2401,21 +2394,6 @@ class nsDisplayItem {
  public:
   nsDisplayItem() = delete;
   nsDisplayItem(const nsDisplayItem&) = delete;
-
-  /**
-   * Invalidate cached information that depends on this node's contents, after
-   * a mutation of those contents.
-   *
-   * Specifically, if you mutate an |nsDisplayItem| in a way that would change
-   * the WebRender display list items generated for it, you should call this
-   * method.
-   *
-   * If a |RestoreState| method exists to restore some piece of state, that's a
-   * good indication that modifications to said state should be accompanied by a
-   * call to this method. Opacity flattening's effects on
-   * |nsDisplayBackgroundColor| items are one example.
-   */
-  virtual void InvalidateItemCacheEntry() {}
 
   struct HitTestState {
     explicit HitTestState() = default;
@@ -2605,7 +2583,7 @@ class nsDisplayItem {
     nsRect bounds = GetBounds(aBuilder, &snap);
 
     if (!aGeometry->mBounds.IsEqualInterior(bounds)) {
-      nscoord radii[8];
+      nsRectCornerRadii radii;
       if (aGeometry->mHasRoundedCorners || Frame()->GetBorderRadii(radii)) {
         aInvalidRegion->Or(aGeometry->mBounds, bounds);
       } else {
@@ -2672,14 +2650,15 @@ class nsDisplayItem {
    * active first and have an early return if the layer state is
    * not active.
    *
-   * @return true if successfully creating webrender commands.
+   * @return Ok if webrender commands were created, or an error holding a
+   *         string literal describing why they could not be.
    */
-  virtual bool CreateWebRenderCommands(
+  virtual WebRenderCommandsResult CreateWebRenderCommands(
       wr::DisplayListBuilder& aBuilder, wr::IpcResourceUpdateQueue& aResources,
       const StackingContextHelper& aSc,
       layers::RenderRootStateManager* aManager,
       nsDisplayListBuilder* aDisplayListBuilder) {
-    return false;
+    return Err("item type has no WebRender implementation");
   }
 
   /**
@@ -2707,16 +2686,6 @@ class nsDisplayItem {
    * returning empty invalidation region.
    */
   virtual bool NeedsGeometryUpdates() const { return false; }
-
-  /**
-   * When this item is rendered using fallback rendering, whether it should use
-   * blob rendering (i.e. a recording DrawTarget), as opposed to a pixel-backed
-   * DrawTarget.
-   * Some items, such as those calling into the native themed widget machinery,
-   * are more efficiently painted without blob recording. Those should return
-   * false here.
-   */
-  virtual bool ShouldUseBlobRenderingForFallback() const { return true; }
 
   /**
    * If this has a child list where the children are in the same coordinate
@@ -2789,12 +2758,8 @@ class nsDisplayItem {
     return nsRect();
   }
 
-  /**
-   * Check if we can add async animations to the layer for this display item.
-   */
-  virtual bool CanUseAsyncAnimations(nsDisplayListBuilder* aBuilder) {
-    return false;
-  }
+  // Check if we can add async animations to the layer for this display item.
+  virtual bool CanUseAsyncAnimations() { return false; }
 
   virtual bool SupportsOptimizingToImage() const { return false; }
 
@@ -2809,6 +2774,7 @@ class nsDisplayItem {
   const ActiveScrolledRoot* GetActiveScrolledRoot() const {
     return mActiveScrolledRoot;
   }
+  const ActiveScrolledRoot* GetNearestScrollASR() const;
 
   virtual void SetClipChain(const DisplayItemClipChain* aClipChain,
                             bool aStore);
@@ -2901,13 +2867,31 @@ class nsDisplayItem {
 
   nsIFrame* mFrame;  // 8
 
+  enum class ContainerASRType : uint8_t {
+    // The ASR of the item doesn't depend on what is contained in the item.
+    Constant,
+    // The ASR of the item is the ancestor of all asrs of items contained in the
+    // item (and the item's original asr).
+    AncestorOfContained,
+  };
+
+  // This function determines how retained display lists update the asr of this
+  // item during merging of a partial display list build. If this function
+  // returns something it indicates that this item wants its asr set to the
+  // ancestor of the return value and the ancestor of all asrs of items
+  // contained in this item (ie its ContainerASRType is AncestorOfContained). If
+  // this function returns nothing then the asr of this item is left alone
+  // (Constant asr and/or items that arent't a container type).
+  virtual const Maybe<const ActiveScrolledRoot*>
+  GetBaseASRForAncestorOfContainedASR() const {
+    return Nothing();
+  }
+
  private:
   enum class ItemFlag : uint16_t {
     CantBeReused,
-    CantBeCached,
     DeletedFrame,
     ModifiedFrame,
-    ReusedItem,
 #ifdef MOZ_DIAGNOSTIC_ASSERT_ENABLED
     MergedItem,
     PreProcessedItem,
@@ -3008,20 +2992,6 @@ class nsPaintedDisplayItem : public nsDisplayItem {
    */
   virtual void Paint(nsDisplayListBuilder* aBuilder, gfxContext* aCtx) = 0;
 
-  /**
-   * External storage used by |DisplayItemCache| to avoid hashmap lookups.
-   * If an item is reused and has the cache index set, it means that
-   * |DisplayItemCache| has assigned a cache slot for the item.
-   */
-  Maybe<uint16_t>& CacheIndex() { return mCacheIndex; }
-
-  void InvalidateItemCacheEntry() override {
-    // |nsPaintedDisplayItem|s may have |DisplayItemCache| entries
-    // that no longer match after a mutation. The cache will notice
-    // on its own that the entry is no longer in use, and free it.
-    mCacheIndex = Nothing();
-  }
-
   const HitTestInfo& GetHitTestInfo() final { return mHitTestInfo; }
   void InitializeHitTestInfo(nsDisplayListBuilder* aBuilder) {
     mHitTestInfo.Initialize(aBuilder, Frame());
@@ -3043,7 +3013,6 @@ class nsPaintedDisplayItem : public nsDisplayItem {
 
  protected:
   HitTestInfo mHitTestInfo;
-  Maybe<uint16_t> mCacheIndex;
 };
 
 template <typename T>
@@ -3072,13 +3041,7 @@ struct LinkedListIterator {
     return *this;
   }
 
-  bool operator==(const LinkedListIterator<T>& aOther) const {
-    return mNode == aOther.mNode;
-  }
-
-  bool operator!=(const LinkedListIterator<T>& aOther) const {
-    return mNode != aOther.mNode;
-  }
+  bool operator==(const LinkedListIterator<T>&) const = default;
 
   const T operator*() const {
     MOZ_ASSERT(mNode);
@@ -3307,7 +3270,7 @@ class nsDisplayList {
     for (nsDisplayItem* item : TakeItems()) {
       items.AppendElement(Item(item));
     }
-    items.StableSort(aComparator);
+    items.template StableSort<SortBoundsCheck::Disable>(aComparator);
 
     for (Item& item : items) {
       AppendToTop(item);
@@ -3712,7 +3675,7 @@ class nsDisplayContainer final : public nsDisplayItem {
  public:
   nsDisplayContainer(nsDisplayListBuilder* aBuilder, nsIFrame* aFrame,
                      const ActiveScrolledRoot* aActiveScrolledRoot,
-                     nsDisplayList* aList);
+                     ContainerASRType aContainerASRType, nsDisplayList* aList);
 
   MOZ_COUNTED_DTOR_FINAL(nsDisplayContainer)
 
@@ -3723,7 +3686,7 @@ class nsDisplayContainer final : public nsDisplayItem {
     nsDisplayItem::Destroy(aBuilder);
   }
 
-  bool CreateWebRenderCommands(
+  WebRenderCommandsResult CreateWebRenderCommands(
       wr::DisplayListBuilder& aBuilder, wr::IpcResourceUpdateQueue& aResources,
       const StackingContextHelper& aSc,
       layers::RenderRootStateManager* aManager,
@@ -3763,9 +3726,20 @@ class nsDisplayContainer final : public nsDisplayItem {
 
   void UpdateBounds(nsDisplayListBuilder* aBuilder) override;
 
+  const Maybe<const ActiveScrolledRoot*> GetBaseASRForAncestorOfContainedASR()
+      const override {
+    return (mContainerASRType == ContainerASRType::AncestorOfContained)
+               ? Some(mFrameASR.get())
+               : Nothing();
+  }
+
  private:
   mutable RetainedDisplayList mChildren;
   nsRect mBounds;
+  // only filled in if mContainerASRType == AncestorOfContained.
+  RefPtr<const ActiveScrolledRoot> mFrameASR;
+  ContainerASRType mContainerASRType = ContainerASRType::Constant;
+  /* there's a 3 byte hole here */
 };
 
 /**
@@ -3938,7 +3912,7 @@ class nsDisplayCaret final : public nsPaintedDisplayItem {
 
   nsRect GetBounds(nsDisplayListBuilder* aBuilder, bool* aSnap) const override;
   void Paint(nsDisplayListBuilder* aBuilder, gfxContext* aCtx) override;
-  bool CreateWebRenderCommands(
+  WebRenderCommandsResult CreateWebRenderCommands(
       wr::DisplayListBuilder& aBuilder, wr::IpcResourceUpdateQueue& aResources,
       const StackingContextHelper& aSc,
       layers::RenderRootStateManager* aManager,
@@ -3962,7 +3936,7 @@ class nsDisplayBorder : public nsPaintedDisplayItem {
 
   bool IsInvisibleInRect(const nsRect& aRect) const override;
   nsRect GetBounds(nsDisplayListBuilder* aBuilder, bool* aSnap) const override;
-  bool CreateWebRenderCommands(
+  WebRenderCommandsResult CreateWebRenderCommands(
       wr::DisplayListBuilder& aBuilder, wr::IpcResourceUpdateQueue& aResources,
       const StackingContextHelper& aSc,
       layers::RenderRootStateManager* aManager,
@@ -4010,27 +3984,25 @@ class nsDisplayBorder : public nsPaintedDisplayItem {
                            borderBounds.Height()));
     }
 
-    nscoord radii[8];
+    nsRectCornerRadii radii;
     if (mFrame->GetBorderRadii(radii)) {
       if (border.left > 0 || border.top > 0) {
-        nsSize cornerSize(radii[eCornerTopLeftX], radii[eCornerTopLeftY]);
-        result.OrWith(nsRect(borderBounds.TopLeft(), cornerSize));
+        result.OrWith(nsRect(borderBounds.TopLeft(), radii.TopLeft()));
       }
       if (border.top > 0 || border.right > 0) {
-        nsSize cornerSize(radii[eCornerTopRightX], radii[eCornerTopRightY]);
+        const nsSize& cornerSize = radii.TopRight();
         result.OrWith(
             nsRect(borderBounds.TopRight() - nsPoint(cornerSize.width, 0),
                    cornerSize));
       }
       if (border.right > 0 || border.bottom > 0) {
-        nsSize cornerSize(radii[eCornerBottomRightX],
-                          radii[eCornerBottomRightY]);
+        const nsSize& cornerSize = radii.BottomRight();
         result.OrWith(nsRect(borderBounds.BottomRight() -
                                  nsPoint(cornerSize.width, cornerSize.height),
                              cornerSize));
       }
       if (border.bottom > 0 || border.left > 0) {
-        nsSize cornerSize(radii[eCornerBottomLeftX], radii[eCornerBottomLeftY]);
+        const nsSize& cornerSize = radii.BottomLeft();
         result.OrWith(
             nsRect(borderBounds.BottomLeft() - nsPoint(0, cornerSize.height),
                    cornerSize));
@@ -4084,17 +4056,13 @@ class nsDisplaySolidColor final : public nsPaintedDisplayItem {
   }
 
   nsDisplaySolidColor(nsDisplayListBuilder* aBuilder, nsIFrame* aFrame,
-                      const nsRect& aBounds, nscolor aColor,
-                      bool aCanBeReused = true)
+                      const nsRect& aBounds, nscolor aColor)
       : nsPaintedDisplayItem(aBuilder, aFrame),
         mColor(aColor),
         mBounds(aBounds) {
     NS_ASSERTION(NS_GET_A(aColor) > 0,
                  "Don't create invisible nsDisplaySolidColors!");
     MOZ_COUNT_CTOR(nsDisplaySolidColor);
-    if (!aCanBeReused) {
-      SetCantBeReused();
-    }
   }
 
   MOZ_COUNTED_DTOR_FINAL(nsDisplaySolidColor)
@@ -4105,7 +4073,7 @@ class nsDisplaySolidColor final : public nsPaintedDisplayItem {
   void Paint(nsDisplayListBuilder* aBuilder, gfxContext* aCtx) override;
   void WriteDebugInfo(std::stringstream& aStream) override;
   void SetIsCheckerboardBackground() { mIsCheckerboardBackground = true; }
-  bool CreateWebRenderCommands(
+  WebRenderCommandsResult CreateWebRenderCommands(
       wr::DisplayListBuilder& aBuilder, wr::IpcResourceUpdateQueue& aResources,
       const StackingContextHelper& aSc,
       layers::RenderRootStateManager* aManager,
@@ -4167,7 +4135,7 @@ class nsDisplaySolidColorRegion final : public nsPaintedDisplayItem {
     }
   }
 
-  bool CreateWebRenderCommands(
+  WebRenderCommandsResult CreateWebRenderCommands(
       wr::DisplayListBuilder& aBuilder, wr::IpcResourceUpdateQueue& aResources,
       const StackingContextHelper& aSc,
       layers::RenderRootStateManager* aManager,
@@ -4244,7 +4212,7 @@ class nsDisplayBackgroundImage : public nsPaintedDisplayItem {
       Maybe<nsDisplayListBuilder::AutoBuildingDisplayList>*
           aAutoBuildingDisplayList = nullptr);
 
-  bool CreateWebRenderCommands(
+  WebRenderCommandsResult CreateWebRenderCommands(
       wr::DisplayListBuilder& aBuilder, wr::IpcResourceUpdateQueue& aResources,
       const StackingContextHelper& aSc,
       layers::RenderRootStateManager* aManager,
@@ -4406,15 +4374,11 @@ class nsDisplayThemedBackground : public nsPaintedDisplayItem {
   nsRegion GetOpaqueRegion(nsDisplayListBuilder* aBuilder,
                            bool* aSnap) const override;
   Maybe<nscolor> IsUniform(nsDisplayListBuilder* aBuilder) const override;
-  bool CreateWebRenderCommands(
+  WebRenderCommandsResult CreateWebRenderCommands(
       wr::DisplayListBuilder& aBuilder, wr::IpcResourceUpdateQueue& aResources,
       const StackingContextHelper& aSc,
       layers::RenderRootStateManager* aManager,
       nsDisplayListBuilder* aDisplayListBuilder) override;
-
-  bool ShouldUseBlobRenderingForFallback() const override {
-    return !XRE_IsParentProcess();
-  }
 
   /**
    * GetBounds() returns the background painting area.
@@ -4517,13 +4481,13 @@ class nsDisplayBackgroundColor : public nsPaintedDisplayItem {
 
   bool HasBackgroundClipText() const {
     MOZ_ASSERT(mHasStyle);
-    return mBottomLayerClip == StyleGeometryBox::Text;
+    return mBottomLayerClip == StyleBackgroundClip::Text;
   }
 
   void Paint(nsDisplayListBuilder* aBuilder, gfxContext* aCtx) override;
   void PaintWithClip(nsDisplayListBuilder* aBuilder, gfxContext* aCtx,
                      const DisplayItemClip& aClip) override;
-  bool CreateWebRenderCommands(
+  WebRenderCommandsResult CreateWebRenderCommands(
       wr::DisplayListBuilder& aBuilder, wr::IpcResourceUpdateQueue& aResources,
       const StackingContextHelper& aSc,
       layers::RenderRootStateManager* aManager,
@@ -4545,6 +4509,10 @@ class nsDisplayBackgroundColor : public nsPaintedDisplayItem {
 
   bool CanPaintWithClip(const DisplayItemClip& aClip) override {
     if (HasBackgroundClipText()) {
+      return false;
+    }
+
+    if (mBottomLayerClip == StyleBackgroundClip::BorderArea) {
       return false;
     }
 
@@ -4596,12 +4564,12 @@ class nsDisplayBackgroundColor : public nsPaintedDisplayItem {
 
   void WriteDebugInfo(std::stringstream& aStream) override;
 
-  bool CanUseAsyncAnimations(nsDisplayListBuilder* aBuilder) override;
+  bool CanUseAsyncAnimations() override;
 
  protected:
   const nsRect mBackgroundRect;
   const bool mHasStyle;
-  StyleGeometryBox mBottomLayerClip;
+  StyleBackgroundClip mBottomLayerClip = StyleBackgroundClip::BorderBox;
   nsIFrame* mDependentFrame;
   gfx::sRGBColor mColor;
 };
@@ -4634,9 +4602,7 @@ class nsDisplayTableBackgroundColor final : public nsDisplayBackgroundColor {
     nsDisplayBackgroundColor::RemoveFrame(aFrame);
   }
 
-  bool CanUseAsyncAnimations(nsDisplayListBuilder* aBuilder) override {
-    return false;
-  }
+  bool CanUseAsyncAnimations() override { return false; }
 
  protected:
   nsIFrame* mAncestorFrame;
@@ -4670,7 +4636,7 @@ class nsDisplayBoxShadowOuter final : public nsPaintedDisplayItem {
   }
 
   bool CanBuildWebRenderDisplayItems() const;
-  bool CreateWebRenderCommands(
+  WebRenderCommandsResult CreateWebRenderCommands(
       wr::DisplayListBuilder& aBuilder, wr::IpcResourceUpdateQueue& aResources,
       const StackingContextHelper& aSc,
       layers::RenderRootStateManager* aManager,
@@ -4721,7 +4687,7 @@ class nsDisplayBoxShadowInner final : public nsPaintedDisplayItem {
   static void CreateInsetBoxShadowWebRenderCommands(
       wr::DisplayListBuilder& aBuilder, const StackingContextHelper& aSc,
       nsRect& aVisibleRect, nsIFrame* aFrame, const nsRect& aBorderRect);
-  bool CreateWebRenderCommands(
+  WebRenderCommandsResult CreateWebRenderCommands(
       wr::DisplayListBuilder& aBuilder, wr::IpcResourceUpdateQueue& aResources,
       const StackingContextHelper& aSc,
       layers::RenderRootStateManager* aManager,
@@ -4742,13 +4708,7 @@ class nsDisplayOutline final : public nsPaintedDisplayItem {
 
   NS_DISPLAY_DECL_NAME("Outline", TYPE_OUTLINE)
 
-  bool ShouldUseBlobRenderingForFallback() const override {
-    MOZ_ASSERT(IsThemedOutline(),
-               "The only fallback path we have is for themed outlines");
-    return !XRE_IsParentProcess();
-  }
-
-  bool CreateWebRenderCommands(
+  WebRenderCommandsResult CreateWebRenderCommands(
       wr::DisplayListBuilder& aBuilder, wr::IpcResourceUpdateQueue& aResources,
       const StackingContextHelper& aSc,
       layers::RenderRootStateManager* aManager,
@@ -4812,13 +4772,13 @@ class nsDisplayCompositorHitTestInfo final : public nsDisplayItem {
 
   NS_DISPLAY_DECL_NAME("CompositorHitTestInfo", TYPE_COMPOSITOR_HITTEST_INFO)
 
-  bool CreateWebRenderCommands(
+  WebRenderCommandsResult CreateWebRenderCommands(
       wr::DisplayListBuilder& aBuilder, wr::IpcResourceUpdateQueue& aResources,
       const StackingContextHelper& aSc,
       layers::RenderRootStateManager* aManager,
       nsDisplayListBuilder* aDisplayListBuilder) override;
 
-  bool isInvisible() const { return true; }
+  bool IsInvisible() const override { return true; }
 
   int32_t ZIndex() const override;
   void SetOverrideZIndex(int32_t aZIndex);
@@ -4857,7 +4817,7 @@ class nsDisplayWrapList : public nsPaintedDisplayItem {
    * Takes all the items from aList and puts them in our list.
    */
   nsDisplayWrapList(nsDisplayListBuilder* aBuilder, nsIFrame* aFrame,
-                    nsDisplayList* aList);
+                    nsDisplayList* aList, bool aClearClipChain = false);
 
   nsDisplayWrapList(nsDisplayListBuilder* aBuilder, nsIFrame* aFrame,
                     nsDisplayItem* aItem);
@@ -4865,12 +4825,12 @@ class nsDisplayWrapList : public nsPaintedDisplayItem {
   nsDisplayWrapList(nsDisplayListBuilder* aBuilder, nsIFrame* aFrame,
                     nsDisplayList* aList,
                     const ActiveScrolledRoot* aActiveScrolledRoot,
+                    ContainerASRType aContainerASRType,
                     bool aClearClipChain = false);
 
   nsDisplayWrapList(nsDisplayListBuilder* aBuilder, nsIFrame* aFrame)
       : nsPaintedDisplayItem(aBuilder, aFrame),
         mList(aBuilder),
-        mFrameActiveScrolledRoot(aBuilder->CurrentActiveScrolledRoot()),
         mOverrideZIndex(0),
         mHasZIndexOverride(false) {
     MOZ_COUNT_CTOR(nsDisplayWrapList);
@@ -4891,11 +4851,11 @@ class nsDisplayWrapList : public nsPaintedDisplayItem {
       : nsPaintedDisplayItem(aBuilder, aOther),
         mList(aBuilder),
         mListPtr(&mList),
-        mFrameActiveScrolledRoot(aOther.mFrameActiveScrolledRoot),
         mMergedFrames(aOther.mMergedFrames.Clone()),
         mBounds(aOther.mBounds),
         mBaseBuildingRect(aOther.mBaseBuildingRect),
         mOriginalClipChain(aOther.mClipChain),
+        mFrameASR(aOther.mFrameASR),
         mOverrideZIndex(aOther.mOverrideZIndex),
         mHasZIndexOverride(aOther.mHasZIndexOverride),
         mClearingClipChain(aOther.mClearingClipChain) {
@@ -5036,7 +4996,7 @@ class nsDisplayWrapList : public nsPaintedDisplayItem {
     return nullptr;
   }
 
-  bool CreateWebRenderCommands(
+  WebRenderCommandsResult CreateWebRenderCommands(
       wr::DisplayListBuilder& aBuilder, wr::IpcResourceUpdateQueue& aResources,
       const StackingContextHelper& aSc,
       layers::RenderRootStateManager* aManager,
@@ -5047,14 +5007,17 @@ class nsDisplayWrapList : public nsPaintedDisplayItem {
 
   // Same as the above but with the option to pass the aNewClipList argument to
   // WebRenderCommandBuilder::CreateWebRenderCommandsFromDisplayList.
-  bool CreateWebRenderCommandsNewClipListOption(
+  WebRenderCommandsResult CreateWebRenderCommandsNewClipListOption(
       wr::DisplayListBuilder& aBuilder, wr::IpcResourceUpdateQueue& aResources,
       const StackingContextHelper& aSc,
       layers::RenderRootStateManager* aManager,
       nsDisplayListBuilder* aDisplayListBuilder, bool aNewClipList);
 
-  const ActiveScrolledRoot* GetFrameActiveScrolledRoot() {
-    return mFrameActiveScrolledRoot;
+  const Maybe<const ActiveScrolledRoot*> GetBaseASRForAncestorOfContainedASR()
+      const override {
+    return (mContainerASRType == ContainerASRType::AncestorOfContained)
+               ? Some(mFrameASR.get())
+               : Nothing();
   }
 
  protected:
@@ -5069,9 +5032,6 @@ class nsDisplayWrapList : public nsPaintedDisplayItem {
 
   RetainedDisplayList mList;
   RetainedDisplayList* mListPtr;
-  // The active scrolled root for the frame that created this
-  // wrap list.
-  RefPtr<const ActiveScrolledRoot> mFrameActiveScrolledRoot;
   // The frames from items that have been merged into this item, excluding
   // this item's own frame.
   nsTArray<nsIFrame*> mMergedFrames;
@@ -5080,7 +5040,12 @@ class nsDisplayWrapList : public nsPaintedDisplayItem {
   // Our mBuildingRect may include the visible areas of children.
   nsRect mBaseBuildingRect;
   RefPtr<const DisplayItemClipChain> mOriginalClipChain;
+  // only filled in if mContainerASRType == AncestorOfContained.
+  RefPtr<const ActiveScrolledRoot> mFrameASR;
   int32_t mOverrideZIndex;
+  // Note that these next three 1-byte fields are here so that they pack nicely
+  // into the 4-byte space following the 4-byte int32_t.
+  ContainerASRType mContainerASRType = ContainerASRType::Constant;
   bool mHasZIndexOverride;
   bool mClearingClipChain = false;
 };
@@ -5090,11 +5055,8 @@ class nsDisplayWrapper final : public nsDisplayWrapList {
   NS_DISPLAY_DECL_NAME("WrapList", TYPE_WRAP_LIST)
 
   nsDisplayWrapper(nsDisplayListBuilder* aBuilder, nsIFrame* aFrame,
-                   nsDisplayList* aList,
-                   const ActiveScrolledRoot* aActiveScrolledRoot,
-                   bool aClearClipChain = false)
-      : nsDisplayWrapList(aBuilder, aFrame, aList, aActiveScrolledRoot,
-                          aClearClipChain) {}
+                   nsDisplayList* aList, bool aClearClipChain = false)
+      : nsDisplayWrapList(aBuilder, aFrame, aList, aClearClipChain) {}
 
   nsDisplayWrapper(const nsDisplayWrapper& aOther) = delete;
   nsDisplayWrapper(nsDisplayListBuilder* aBuilder,
@@ -5145,8 +5107,9 @@ class nsDisplayOpacity final : public nsDisplayWrapList {
   nsDisplayOpacity(nsDisplayListBuilder* aBuilder, nsIFrame* aFrame,
                    nsDisplayList* aList,
                    const ActiveScrolledRoot* aActiveScrolledRoot,
-                   bool aForEventsOnly, bool aNeedsActiveLayer,
-                   bool aWrapsBackdropFilter, bool aForceIsolation);
+                   ContainerASRType aContainerASRType, bool aForEventsOnly,
+                   bool aNeedsActiveLayer, bool aWrapsBackdropFilter,
+                   bool aForceIsolation);
 
   nsDisplayOpacity(nsDisplayListBuilder* aBuilder,
                    const nsDisplayOpacity& aOther)
@@ -5227,11 +5190,12 @@ class nsDisplayOpacity final : public nsDisplayWrapList {
     return mChildOpacityState == ChildOpacityState::Applied;
   }
 
-  static bool NeedsActiveLayer(nsDisplayListBuilder* aBuilder,
-                               nsIFrame* aFrame);
+  static bool NeedsActiveLayer(nsIFrame* aFrame);
+  bool NeedsActiveLayer() const { return mNeedsActiveLayer; }
+
   void WriteDebugInfo(std::stringstream& aStream) override;
-  bool CanUseAsyncAnimations(nsDisplayListBuilder* aBuilder) override;
-  bool CreateWebRenderCommands(
+  bool CanUseAsyncAnimations() override;
+  WebRenderCommandsResult CreateWebRenderCommands(
       wr::DisplayListBuilder& aBuilder, wr::IpcResourceUpdateQueue& aResources,
       const StackingContextHelper& aSc,
       layers::RenderRootStateManager* aManager,
@@ -5274,6 +5238,7 @@ class nsDisplayBlendMode : public nsDisplayWrapList {
   nsDisplayBlendMode(nsDisplayListBuilder* aBuilder, nsIFrame* aFrame,
                      nsDisplayList* aList, StyleBlend aBlendMode,
                      const ActiveScrolledRoot* aActiveScrolledRoot,
+                     ContainerASRType aContainerASRType,
                      const bool aIsForBackground);
   nsDisplayBlendMode(nsDisplayListBuilder* aBuilder,
                      const nsDisplayBlendMode& aOther)
@@ -5296,7 +5261,7 @@ class nsDisplayBlendMode : public nsDisplayWrapList {
     // LayerTreeInvalidation
   }
 
-  bool CreateWebRenderCommands(
+  WebRenderCommandsResult CreateWebRenderCommands(
       wr::DisplayListBuilder& aBuilder, wr::IpcResourceUpdateQueue& aResources,
       const StackingContextHelper& aSc,
       layers::RenderRootStateManager* aManager,
@@ -5326,9 +5291,11 @@ class nsDisplayTableBlendMode final : public nsDisplayBlendMode {
   nsDisplayTableBlendMode(nsDisplayListBuilder* aBuilder, nsIFrame* aFrame,
                           nsDisplayList* aList, StyleBlend aBlendMode,
                           const ActiveScrolledRoot* aActiveScrolledRoot,
+                          ContainerASRType aContainerASRType,
                           nsIFrame* aAncestorFrame, const bool aIsForBackground)
       : nsDisplayBlendMode(aBuilder, aFrame, aList, aBlendMode,
-                           aActiveScrolledRoot, aIsForBackground),
+                           aActiveScrolledRoot, aContainerASRType,
+                           aIsForBackground),
         mAncestorFrame(aAncestorFrame) {
     if (aBuilder->IsRetainingDisplayList()) {
       mAncestorFrame->AddDisplayItem(this);
@@ -5369,23 +5336,26 @@ class nsDisplayBlendContainer : public nsDisplayWrapList {
  public:
   static nsDisplayBlendContainer* CreateForMixBlendMode(
       nsDisplayListBuilder* aBuilder, nsIFrame* aFrame, nsDisplayList* aList,
-      const ActiveScrolledRoot* aActiveScrolledRoot);
+      const ActiveScrolledRoot* aActiveScrolledRoot,
+      ContainerASRType aContainerASRType);
 
   static nsDisplayBlendContainer* CreateForBackgroundBlendMode(
       nsDisplayListBuilder* aBuilder, nsIFrame* aFrame,
       nsIFrame* aSecondaryFrame, nsDisplayList* aList,
-      const ActiveScrolledRoot* aActiveScrolledRoot);
+      const ActiveScrolledRoot* aActiveScrolledRoot,
+      ContainerASRType aContainerASRType);
 
   static nsDisplayBlendContainer* CreateForIsolation(
       nsDisplayListBuilder* aBuilder, nsIFrame* aFrame, nsDisplayList* aList,
-      const ActiveScrolledRoot* aActiveScrolledRoot, bool aNeedsIsolation);
+      const ActiveScrolledRoot* aActiveScrolledRoot,
+      ContainerASRType aContainerASRType, bool aNeedsIsolation);
 
   MOZ_COUNTED_DTOR_OVERRIDE(nsDisplayBlendContainer)
 
   NS_DISPLAY_DECL_NAME("BlendContainer", TYPE_BLEND_CONTAINER)
 
   void Paint(nsDisplayListBuilder* aBuilder, gfxContext* aCtx) override;
-  bool CreateWebRenderCommands(
+  WebRenderCommandsResult CreateWebRenderCommands(
       wr::DisplayListBuilder& aBuilder, wr::IpcResourceUpdateQueue& aResources,
       const StackingContextHelper& aSc,
       layers::RenderRootStateManager* aManager,
@@ -5423,6 +5393,7 @@ class nsDisplayBlendContainer : public nsDisplayWrapList {
   nsDisplayBlendContainer(nsDisplayListBuilder* aBuilder, nsIFrame* aFrame,
                           nsDisplayList* aList,
                           const ActiveScrolledRoot* aActiveScrolledRoot,
+                          ContainerASRType aContainerASRType,
                           BlendContainerType aBlendContainerType);
   nsDisplayBlendContainer(nsDisplayListBuilder* aBuilder,
                           const nsDisplayBlendContainer& aOther)
@@ -5457,10 +5428,11 @@ class nsDisplayTableBlendContainer final : public nsDisplayBlendContainer {
   nsDisplayTableBlendContainer(nsDisplayListBuilder* aBuilder, nsIFrame* aFrame,
                                nsDisplayList* aList,
                                const ActiveScrolledRoot* aActiveScrolledRoot,
+                               ContainerASRType aContainerASRType,
                                BlendContainerType aBlendContainerType,
                                nsIFrame* aAncestorFrame)
       : nsDisplayBlendContainer(aBuilder, aFrame, aList, aActiveScrolledRoot,
-                                aBlendContainerType),
+                                aContainerASRType, aBlendContainerType),
         mAncestorFrame(aAncestorFrame) {
     if (aBuilder->IsRetainingDisplayList()) {
       mAncestorFrame->AddDisplayItem(this);
@@ -5519,6 +5491,7 @@ class nsDisplayOwnLayer : public nsDisplayWrapList {
   nsDisplayOwnLayer(
       nsDisplayListBuilder* aBuilder, nsIFrame* aFrame, nsDisplayList* aList,
       const ActiveScrolledRoot* aActiveScrolledRoot,
+      ContainerASRType aContainerASRType,
       nsDisplayOwnLayerFlags aFlags = nsDisplayOwnLayerFlags::None,
       const layers::ScrollbarData& aScrollbarData = layers::ScrollbarData{},
       bool aForceActive = true, bool aClearClipChain = false);
@@ -5537,7 +5510,7 @@ class nsDisplayOwnLayer : public nsDisplayWrapList {
 
   NS_DISPLAY_DECL_NAME("OwnLayer", TYPE_OWN_LAYER)
 
-  bool CreateWebRenderCommands(
+  WebRenderCommandsResult CreateWebRenderCommands(
       wr::DisplayListBuilder& aBuilder, wr::IpcResourceUpdateQueue& aResources,
       const StackingContextHelper& aSc,
       layers::RenderRootStateManager* aManager,
@@ -5546,12 +5519,11 @@ class nsDisplayOwnLayer : public nsDisplayWrapList {
                                    aDisplayListBuilder,
                                    /* aForceIsolation = */ false);
   }
-  bool CreateWebRenderCommands(wr::DisplayListBuilder& aBuilder,
-                               wr::IpcResourceUpdateQueue& aResources,
-                               const StackingContextHelper& aSc,
-                               layers::RenderRootStateManager* aManager,
-                               nsDisplayListBuilder* aDisplayListBuilder,
-                               bool aForceIsolation);
+  WebRenderCommandsResult CreateWebRenderCommands(
+      wr::DisplayListBuilder& aBuilder, wr::IpcResourceUpdateQueue& aResources,
+      const StackingContextHelper& aSc,
+      layers::RenderRootStateManager* aManager,
+      nsDisplayListBuilder* aDisplayListBuilder, bool aForceIsolation);
   bool UpdateScrollData(layers::WebRenderScrollData* aData,
                         layers::WebRenderLayerScrollData* aLayerData) override;
   void Paint(nsDisplayListBuilder* aBuilder, gfxContext* aCtx) override {
@@ -5577,6 +5549,7 @@ class nsDisplayOwnLayer : public nsDisplayWrapList {
   bool IsZoomingLayer() const;
   bool IsFixedPositionLayer() const;
   bool IsStickyPositionLayer() const;
+  static bool HasDynamicToolbar(nsIFrame* aFrame);
   bool HasDynamicToolbar() const;
   virtual bool ShouldGetFixedAnimationId() { return false; }
 
@@ -5658,15 +5631,13 @@ class nsDisplayStickyPosition final : public nsDisplayOwnLayer {
   nsDisplayStickyPosition(nsDisplayListBuilder* aBuilder, nsIFrame* aFrame,
                           nsDisplayList* aList,
                           const ActiveScrolledRoot* aActiveScrolledRoot,
-                          const ActiveScrolledRoot* aContainerASR,
-                          bool aClippedToDisplayPort);
+                          ContainerASRType aContainerASRType,
+                          const ActiveScrolledRoot* aContainerASR);
   nsDisplayStickyPosition(nsDisplayListBuilder* aBuilder,
                           const nsDisplayStickyPosition& aOther)
       : nsDisplayOwnLayer(aBuilder, aOther),
         mContainerASR(aOther.mContainerASR),
-        mClippedToDisplayPort(aOther.mClippedToDisplayPort),
-        mShouldFlatten(false),
-        mWrStickyAnimationId(0) {
+        mShouldFlatten(false) {
     MOZ_COUNT_CTOR(nsDisplayStickyPosition);
   }
 
@@ -5675,7 +5646,6 @@ class nsDisplayStickyPosition final : public nsDisplayOwnLayer {
   const DisplayItemClip& GetClip() const override {
     return DisplayItemClip::NoClip();
   }
-  bool IsClippedToDisplayPort() const { return mClippedToDisplayPort; }
 
   NS_DISPLAY_DECL_NAME("StickyPosition", TYPE_STICKY_POSITION)
   void Paint(nsDisplayListBuilder* aBuilder, gfxContext* aCtx) override {
@@ -5683,7 +5653,7 @@ class nsDisplayStickyPosition final : public nsDisplayOwnLayer {
                          mFrame->PresContext()->AppUnitsPerDevPixel());
   }
 
-  bool CreateWebRenderCommands(
+  WebRenderCommandsResult CreateWebRenderCommands(
       wr::DisplayListBuilder& aBuilder, wr::IpcResourceUpdateQueue& aResources,
       const StackingContextHelper& aSc,
       layers::RenderRootStateManager* aManager,
@@ -5706,6 +5676,7 @@ class nsDisplayStickyPosition final : public nsDisplayOwnLayer {
     return mShouldFlatten;
   }
 
+  static bool ShouldGetStickyAnimationId(nsIFrame* aStickyFrame);
   bool ShouldGetStickyAnimationId() const;
 
  private:
@@ -5723,27 +5694,9 @@ class nsDisplayStickyPosition final : public nsDisplayOwnLayer {
   // has no fixed descendants. This may be the same as the ASR returned by
   // GetActiveScrolledRoot(), or it may be a descendant of that.
   RefPtr<const ActiveScrolledRoot> mContainerASR;
-  // This flag tracks if this sticky item is just clipped to the enclosing
-  // scrollframe's displayport, or if there are additional clips in play. In
-  // the former case, we can skip setting the displayport clip as the scrolled-
-  // clip of the corresponding layer. This allows sticky items to remain
-  // unclipped when the enclosing scrollframe is scrolled past the displayport.
-  // i.e. when the rest of the scrollframe checkerboards, the sticky item will
-  // not. This makes sense to do because the sticky item has abnormal scrolling
-  // behavior and may still be visible even if the rest of the scrollframe is
-  // checkerboarded. Note that the sticky item will still be subject to the
-  // scrollport clip.
-  bool mClippedToDisplayPort;
 
   // True if this item should be flattened away.
   bool mShouldFlatten;
-
-  // Used for APZ to animate the sticky element in the compositor
-  // for purposes such as dynamic toolbar movement and (in the future)
-  // overscroll-related adjustment. Unlike nsDisplayOwnLayer::mWrAnimationId,
-  // this does not create a WebRender ReferenceFrame, which is important
-  // because sticky elements do not establish Gecko reference frames either.
-  uint64_t mWrStickyAnimationId;
 };
 
 class nsDisplayViewTransitionCapture final : public nsDisplayOwnLayer {
@@ -5751,8 +5704,12 @@ class nsDisplayViewTransitionCapture final : public nsDisplayOwnLayer {
   nsDisplayViewTransitionCapture(nsDisplayListBuilder* aBuilder,
                                  nsIFrame* aFrame, nsDisplayList* aList,
                                  const ActiveScrolledRoot* aASR, bool aIsRoot)
-      : nsDisplayOwnLayer(aBuilder, aFrame, aList, aASR), mIsRoot(aIsRoot) {
+      : nsDisplayOwnLayer(aBuilder, aFrame, aList, aASR,
+                          ContainerASRType::Constant),
+        mIsRoot(aIsRoot) {
     MOZ_COUNT_CTOR(nsDisplayViewTransitionCapture);
+    // aASR should always be null so ContainerASRType::Constant is correct.
+    MOZ_ASSERT(aASR == nullptr);
   }
 
   nsDisplayViewTransitionCapture(nsDisplayListBuilder* aBuilder,
@@ -5769,7 +5726,7 @@ class nsDisplayViewTransitionCapture final : public nsDisplayOwnLayer {
                          mFrame->PresContext()->AppUnitsPerDevPixel());
   }
 
-  bool CreateWebRenderCommands(
+  WebRenderCommandsResult CreateWebRenderCommands(
       wr::DisplayListBuilder& aBuilder, wr::IpcResourceUpdateQueue& aResources,
       const StackingContextHelper& aSc,
       layers::RenderRootStateManager* aManager,
@@ -5785,6 +5742,7 @@ class nsDisplayFixedPosition : public nsDisplayOwnLayer {
   nsDisplayFixedPosition(nsDisplayListBuilder* aBuilder, nsIFrame* aFrame,
                          nsDisplayList* aList,
                          const ActiveScrolledRoot* aActiveScrolledRoot,
+                         ContainerASRType aContainerASRType,
                          const ActiveScrolledRoot* aScrollTargetASR,
                          bool aForceIsolation);
   nsDisplayFixedPosition(nsDisplayListBuilder* aBuilder,
@@ -5810,7 +5768,7 @@ class nsDisplayFixedPosition : public nsDisplayOwnLayer {
                          mFrame->PresContext()->AppUnitsPerDevPixel());
   }
 
-  bool CreateWebRenderCommands(
+  WebRenderCommandsResult CreateWebRenderCommands(
       wr::DisplayListBuilder& aBuilder, wr::IpcResourceUpdateQueue& aResources,
       const StackingContextHelper& aSc,
       layers::RenderRootStateManager* aManager,
@@ -5903,7 +5861,7 @@ class nsDisplayScrollInfoLayer final : public nsDisplayWrapList {
       layers::WebRenderLayerManager* aLayerManager);
   bool UpdateScrollData(layers::WebRenderScrollData* aData,
                         layers::WebRenderLayerScrollData* aLayerData) override;
-  bool CreateWebRenderCommands(
+  WebRenderCommandsResult CreateWebRenderCommands(
       wr::DisplayListBuilder& aBuilder, wr::IpcResourceUpdateQueue& aResources,
       const StackingContextHelper& aSc,
       layers::RenderRootStateManager* aManager,
@@ -5966,7 +5924,7 @@ class nsDisplayAsyncZoom final : public nsDisplayOwnLayer {
   nsDisplayAsyncZoom(nsDisplayListBuilder* aBuilder, nsIFrame* aFrame,
                      nsDisplayList* aList,
                      const ActiveScrolledRoot* aActiveScrolledRoot,
-                     layers::FrameMetrics::ViewID aViewID);
+                     ContainerASRType aContainerASRType, ViewID aViewID);
   nsDisplayAsyncZoom(nsDisplayListBuilder* aBuilder,
                      const nsDisplayAsyncZoom& aOther)
       : nsDisplayOwnLayer(aBuilder, aOther), mViewID(aOther.mViewID) {
@@ -5983,7 +5941,7 @@ class nsDisplayAsyncZoom final : public nsDisplayOwnLayer {
                         layers::WebRenderLayerScrollData* aLayerData) override;
 
  protected:
-  layers::FrameMetrics::ViewID mViewID;
+  ViewID mViewID;
 };
 
 /**
@@ -5994,6 +5952,7 @@ class nsDisplayEffectsBase : public nsDisplayWrapList {
   nsDisplayEffectsBase(nsDisplayListBuilder* aBuilder, nsIFrame* aFrame,
                        nsDisplayList* aList,
                        const ActiveScrolledRoot* aActiveScrolledRoot,
+                       ContainerASRType aContainerASRType,
                        bool aClearClipChain = false);
   nsDisplayEffectsBase(nsDisplayListBuilder* aBuilder, nsIFrame* aFrame,
                        nsDisplayList* aList);
@@ -6045,12 +6004,14 @@ class nsDisplayMasksAndClipPaths final : public nsDisplayEffectsBase {
   nsDisplayMasksAndClipPaths(nsDisplayListBuilder* aBuilder, nsIFrame* aFrame,
                              nsDisplayList* aList,
                              const ActiveScrolledRoot* aActiveScrolledRoot,
-                             bool aWrapsBackdropFilter);
+                             ContainerASRType aContainerASRType,
+                             bool aWrapsBackdropFilter, bool aForceIsolation);
   nsDisplayMasksAndClipPaths(nsDisplayListBuilder* aBuilder,
                              const nsDisplayMasksAndClipPaths& aOther)
       : nsDisplayEffectsBase(aBuilder, aOther),
         mDestRects(aOther.mDestRects.Clone()),
-        mWrapsBackdropFilter(aOther.mWrapsBackdropFilter) {
+        mWrapsBackdropFilter(aOther.mWrapsBackdropFilter),
+        mForceIsolation(aOther.mForceIsolation) {
     MOZ_COUNT_CTOR(nsDisplayMasksAndClipPaths);
   }
 
@@ -6099,7 +6060,7 @@ class nsDisplayMasksAndClipPaths final : public nsDisplayEffectsBase {
 
   const nsTArray<nsRect>& GetDestRects() { return mDestRects; }
 
-  bool CreateWebRenderCommands(
+  WebRenderCommandsResult CreateWebRenderCommands(
       wr::DisplayListBuilder& aBuilder, wr::IpcResourceUpdateQueue& aResources,
       const StackingContextHelper& aSc,
       layers::RenderRootStateManager* aManager,
@@ -6115,7 +6076,8 @@ class nsDisplayMasksAndClipPaths final : public nsDisplayEffectsBase {
   NS_DISPLAY_ALLOW_CLONING()
 
   nsTArray<nsRect> mDestRects;
-  bool mWrapsBackdropFilter;
+  bool mWrapsBackdropFilter : 1;
+  bool mForceIsolation : 1;
 };
 
 class nsDisplayBackdropFilters final : public nsDisplayWrapList {
@@ -6133,7 +6095,7 @@ class nsDisplayBackdropFilters final : public nsDisplayWrapList {
 
   NS_DISPLAY_DECL_NAME("BackdropFilter", TYPE_BACKDROP_FILTER)
 
-  bool CreateWebRenderCommands(
+  WebRenderCommandsResult CreateWebRenderCommands(
       wr::DisplayListBuilder& aBuilder, wr::IpcResourceUpdateQueue& aResources,
       const StackingContextHelper& aSc,
       layers::RenderRootStateManager* aManager,
@@ -6215,7 +6177,7 @@ class nsDisplayFilters final : public nsDisplayEffectsBase {
       nsDisplayListBuilder* aBuilder, gfxContext* aCtx,
       const std::function<void(gfxContext* aContext)>& aPaintChildren);
 
-  bool CreateWebRenderCommands(
+  WebRenderCommandsResult CreateWebRenderCommands(
       wr::DisplayListBuilder& aBuilder, wr::IpcResourceUpdateQueue& aResources,
       const StackingContextHelper& aSc,
       layers::RenderRootStateManager* aManager,
@@ -6320,7 +6282,7 @@ class nsDisplayTransform final : public nsPaintedDisplayItem {
   void Paint(nsDisplayListBuilder* aBuilder, gfxContext* aCtx) override;
   void Paint(nsDisplayListBuilder* aBuilder, gfxContext* aCtx,
              const Maybe<gfx::Polygon>& aPolygon);
-  bool CreateWebRenderCommands(
+  WebRenderCommandsResult CreateWebRenderCommands(
       wr::DisplayListBuilder& aBuilder, wr::IpcResourceUpdateQueue& aResources,
       const StackingContextHelper& aSc,
       layers::RenderRootStateManager* aManager,
@@ -6377,7 +6339,8 @@ class nsDisplayTransform final : public nsPaintedDisplayItem {
 
   bool ShouldSkipTransform(nsDisplayListBuilder* aBuilder) const;
   Matrix4x4 GetTransformForRendering(
-      LayoutDevicePoint* aOutOrigin = nullptr) const;
+      LayoutDevicePoint* aOutOrigin = nullptr,
+      const nsDisplayListBuilder* aBuilder = nullptr) const;
 
   /**
    * Return the transform that is aggregation of all transform on the
@@ -6532,7 +6495,7 @@ class nsDisplayTransform final : public nsPaintedDisplayItem {
   static PrerenderInfo ShouldPrerenderTransformedContent(
       nsDisplayListBuilder* aBuilder, nsIFrame* aFrame, nsRect* aDirtyRect);
 
-  bool CanUseAsyncAnimations(nsDisplayListBuilder* aBuilder) override;
+  bool CanUseAsyncAnimations() override;
 
   bool MayBeAnimated(nsDisplayListBuilder* aBuilder) const;
 
@@ -6670,7 +6633,7 @@ class nsDisplayPerspective final : public nsPaintedDisplayItem {
   nsRegion GetOpaqueRegion(nsDisplayListBuilder* aBuilder,
                            bool* aSnap) const override;
 
-  bool CreateWebRenderCommands(
+  WebRenderCommandsResult CreateWebRenderCommands(
       wr::DisplayListBuilder& aBuilder, wr::IpcResourceUpdateQueue& aResources,
       const StackingContextHelper& aSc,
       layers::RenderRootStateManager* aManager,
@@ -6739,11 +6702,11 @@ class nsDisplayText final : public nsPaintedDisplayItem {
     }
   }
 
-  bool CreateWebRenderCommands(wr::DisplayListBuilder& aBuilder,
-                               wr::IpcResourceUpdateQueue& aResources,
-                               const StackingContextHelper& aSc,
-                               layers::RenderRootStateManager* aManager,
-                               nsDisplayListBuilder* aDisplayListBuilder) final;
+  WebRenderCommandsResult CreateWebRenderCommands(
+      wr::DisplayListBuilder& aBuilder, wr::IpcResourceUpdateQueue& aResources,
+      const StackingContextHelper& aSc,
+      layers::RenderRootStateManager* aManager,
+      nsDisplayListBuilder* aDisplayListBuilder) final;
   void Paint(nsDisplayListBuilder* aBuilder, gfxContext* aCtx) final;
 
   nsRect GetComponentAlphaBounds(nsDisplayListBuilder* aBuilder) const final {
@@ -6811,7 +6774,7 @@ class nsDisplaySVGWrapper final : public nsDisplayWrapList {
                          mFrame->PresContext()->AppUnitsPerDevPixel());
   }
   bool ShouldFlattenAway(nsDisplayListBuilder* aBuilder) override;
-  bool CreateWebRenderCommands(
+  WebRenderCommandsResult CreateWebRenderCommands(
       wr::DisplayListBuilder& aBuilder, wr::IpcResourceUpdateQueue& aResources,
       const StackingContextHelper& aSc,
       layers::RenderRootStateManager* aManager,
@@ -6836,7 +6799,7 @@ class nsDisplayForeignObject final : public nsDisplayWrapList {
                          mFrame->PresContext()->AppUnitsPerDevPixel());
   }
 
-  bool CreateWebRenderCommands(
+  WebRenderCommandsResult CreateWebRenderCommands(
       wr::DisplayListBuilder& aBuilder, wr::IpcResourceUpdateQueue& aResources,
       const StackingContextHelper& aSc,
       layers::RenderRootStateManager* aManager,
@@ -6884,6 +6847,29 @@ class nsDisplayDestination final : public nsPaintedDisplayItem {
  private:
   nsCString mDestinationName;
   nsPoint mPosition;
+};
+
+/**
+ * A display item to associate subsequent display items with a specific
+ * accessibility node. This is used to generate tagged PDF output. Specifying an
+ * id of (0, 0) disassociates subsequent display items from any accessibility
+ * node.
+ */
+class nsDisplayAccessibleId final : public nsPaintedDisplayItem {
+ public:
+  nsDisplayAccessibleId(nsDisplayListBuilder* aBuilder, nsIFrame* aFrame,
+                        uint64_t aInnerWindowId, uint64_t aAccId)
+      : nsPaintedDisplayItem(aBuilder, aFrame),
+        mInnerWindowId(aInnerWindowId),
+        mAccId(aAccId) {}
+
+  NS_DISPLAY_DECL_NAME("AccessibleId", TYPE_ACCESSIBLE_ID)
+
+  void Paint(nsDisplayListBuilder* aBuilder, gfxContext* aCtx) override;
+
+ private:
+  uint64_t mInnerWindowId;
+  uint64_t mAccId;
 };
 
 class MOZ_STACK_CLASS FlattenedDisplayListIterator {

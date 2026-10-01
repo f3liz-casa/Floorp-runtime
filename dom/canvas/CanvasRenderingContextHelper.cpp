@@ -1,4 +1,3 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -62,6 +61,12 @@ void CanvasRenderingContextHelper::ToBlob(
     }
   }
 
+  nsCString randomizationKeyStr = VoidCString();
+  if (aExtractionBehavior == CanvasUtils::ImageExtraction::EfficientRandomize) {
+    nsRFPService::GetFingerprintingRandomizationKeyAsString(
+        GetCookieJarSettings(), randomizationKeyStr);
+  }
+
   int32_t format = 0;
   auto imageSize = gfx::IntSize{elementSize.width, elementSize.height};
   UniquePtr<uint8_t[]> imageBuffer =
@@ -71,7 +76,7 @@ void CanvasRenderingContextHelper::ToBlob(
   aRv = ImageEncoder::ExtractDataAsync(
       aType, aEncodeOptions, aUsingCustomOptions, std::move(imageBuffer),
       format, CSSIntSize::FromUnknownSize(imageSize), aExtractionBehavior,
-      callback);
+      randomizationKeyStr, callback);
 }
 
 UniquePtr<uint8_t[]> CanvasRenderingContextHelper::GetImageBuffer(
@@ -80,6 +85,14 @@ UniquePtr<uint8_t[]> CanvasRenderingContextHelper::GetImageBuffer(
   if (mCurrentContext) {
     return mCurrentContext->GetImageBuffer(aExtractionBehavior, aOutFormat,
                                            aOutImageSize);
+  }
+  return nullptr;
+}
+
+nsICookieJarSettings* CanvasRenderingContextHelper::GetCookieJarSettings()
+    const {
+  if (mCurrentContext) {
+    return mCurrentContext->GetCookieJarSettings();
   }
   return nullptr;
 }
@@ -216,6 +229,10 @@ already_AddRefed<nsISupports> CanvasRenderingContextHelper::GetOrCreateContext(
     } else if (aContextType == CanvasContextType::WebGPU) {
       // Telemetry::Accumulate(Telemetry::CANVAS_WEBGPU_SUCCESS, 1);
     }
+  } else if (!CanCreateContext()) {
+    // Ensure the canvas has not been detached via a transfer.
+    aRv.ThrowInvalidStateError("Cannot create context for detached canvas.");
+    return nullptr;
   } else {
     // We already have a context of some type.
     if (aContextType != mCurrentContextType) return nullptr;

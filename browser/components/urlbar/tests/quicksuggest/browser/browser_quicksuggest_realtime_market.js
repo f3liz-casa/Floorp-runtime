@@ -66,7 +66,7 @@ const TEST_MERINO_MULTI = [
 ];
 
 // This array should be parallel to `TEST_MERINO_MULTI`. The object at index `i`
-// contains the expected values that will be passed to `assertUI()` for
+// contains the expected values that will be passed to `assertItemUI()` for
 // `TEST_MERINO_MULTI[i]`.
 const EXPECTED_MERINO_MULTI = [
   {
@@ -97,7 +97,8 @@ add_setup(async function () {
     prefs: [
       ["market.featureGate", true],
       ["suggest.market", true],
-      ["suggest.quicksuggest.nonsponsored", true],
+      ["suggest.quickactions", false],
+      ["suggest.quicksuggest.all", true],
     ],
   });
 });
@@ -114,18 +115,26 @@ add_task(async function ui_single() {
     1
   );
   Assert.ok(result.isBestMatch);
-  Assert.ok(result.hideRowLabel);
 
   Assert.ok(
     element.row.querySelector(".urlbarView-button-result-menu"),
     "The row should have a result menu button"
   );
 
-  let items = element.row.querySelectorAll(".urlbarView-market-item");
+  Assert.deepEqual(
+    document.l10n.getAttributes(element.row._content),
+    {
+      id: null,
+      args: null,
+    },
+    "ARIA group label should not be set on the row inner"
+  );
+
+  let items = element.row.querySelectorAll(".urlbarView-realtime-item");
   Assert.equal(items.length, 1);
 
   let target = TEST_MERINO_SINGLE[0].custom_details.polygon.values[0];
-  assertUI(items[0], {
+  assertItemUI(items[0], {
     changeDescription: "down",
     image: target.image_url,
     isImageAnArrow: false,
@@ -186,7 +195,16 @@ add_task(async function ui_multi() {
   });
   let { element } = await UrlbarTestUtils.getDetailsOfResultAt(window, 1);
 
-  let items = element.row.querySelectorAll(".urlbarView-market-item");
+  Assert.deepEqual(
+    document.l10n.getAttributes(element.row._content),
+    {
+      id: "urlbar-result-aria-group-market",
+      args: null,
+    },
+    "ARIA group label should be set on the row inner"
+  );
+
+  let items = element.row.querySelectorAll(".urlbarView-realtime-item");
   Assert.equal(items.length, 3);
 
   // Check each item in the row, then select it and check the selection.
@@ -194,7 +212,7 @@ add_task(async function ui_multi() {
     info(`Check the item[${i}]`);
     let expected = EXPECTED_MERINO_MULTI[i];
     let target = TEST_MERINO_MULTI[0].custom_details.polygon.values[i];
-    assertUI(items[i], {
+    assertItemUI(items[i], {
       ...expected,
       name: target.name,
       todaysChangePerc: target.todays_change_perc,
@@ -243,7 +261,7 @@ add_task(async function activate() {
       value: "only match the Merino suggestion",
     });
     let { element } = await UrlbarTestUtils.getDetailsOfResultAt(window, 1);
-    let items = element.row.querySelectorAll(".urlbarView-market-item");
+    let items = element.row.querySelectorAll(".urlbarView-realtime-item");
 
     info("Activate the button");
     let target = TEST_MERINO_MULTI[0].custom_details.polygon.values[i];
@@ -253,11 +271,7 @@ add_task(async function activate() {
       gBrowser,
       expectedURL
     );
-    await EventUtils.synthesizeMouseAtCenter(
-      items[i],
-      {},
-      items[i].ownerGlobal
-    );
+    EventUtils.synthesizeMouseAtCenter(items[i], {}, items[i].documentGlobal);
     await onLocationChange;
     Assert.ok(true, `Expected URL is loaded [${expectedURL}]`);
 
@@ -266,21 +280,62 @@ add_task(async function activate() {
   }
 });
 
-function assertUI(item, expected) {
+// The row's dynamic result carries an engine and a query, so activating an item
+// resolves to an engine search, which records no input history.
+add_task(async function noInputHistory() {
+  MerinoTestUtils.server.response.body.suggestions = TEST_MERINO_SINGLE;
+
+  let sandbox = sinon.createSandbox();
+  let addToInputHistorySpy = sandbox.spy(UrlbarUtils, "addToInputHistory");
+
+  await UrlbarTestUtils.promiseAutocompleteResultPopup({
+    window,
+    value: "only match the Merino suggestion",
+  });
+  let { element, result } = await UrlbarTestUtils.getDetailsOfResultAt(
+    window,
+    1
+  );
+  Assert.ok(result.payload.engine, "The result carries an engine");
+
+  let { query } = TEST_MERINO_SINGLE[0].custom_details.polygon.values[0];
+  let urlParam = new URLSearchParams({ q: query });
+  let onLocationChange = BrowserTestUtils.waitForLocationChange(
+    gBrowser,
+    `https://example.com/?${urlParam}`
+  );
+  let item = element.row.querySelector(".urlbarView-realtime-item");
+  EventUtils.synthesizeMouseAtCenter(item, {}, item.documentGlobal);
+  await onLocationChange;
+
+  Assert.equal(
+    addToInputHistorySpy.getCalls().length,
+    0,
+    "UrlbarUtils.addToInputHistory() not called"
+  );
+
+  sandbox.restore();
+  await UrlbarTestUtils.promisePopupClose(window);
+  gURLBar.handleRevert();
+});
+
+function assertItemUI(item, expected) {
   Assert.equal(
     item.getAttribute("change"),
     expected.changeDescription,
     "change attribute should be correct"
   );
 
-  let imageContainer = item.querySelector(".urlbarView-market-image-container");
+  let imageContainer = item.querySelector(
+    ".urlbarView-realtime-image-container"
+  );
   Assert.equal(
     imageContainer.hasAttribute("is-arrow"),
     expected.isImageAnArrow,
     "is-arrow should be correct"
   );
 
-  let image = item.querySelector(".urlbarView-market-image");
+  let image = item.querySelector(".urlbarView-realtime-image");
   Assert.equal(image.getAttribute("src"), expected.image, "Image is correct");
 
   let name = item.querySelector(".urlbarView-market-name");
