@@ -1,4 +1,3 @@
-/* -*- Mode: C++; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -8,6 +7,7 @@
 #include "mozilla/Encoding.h"
 #include "mozilla/dom/Document.h"
 #include "mozilla/dom/DocumentFragment.h"
+#include "mozilla/dom/ScriptLoader.h"
 #include "nsCharsetSource.h"
 #include "nsContentCreatorFunctions.h"
 #include "nsContentUtils.h"
@@ -62,7 +62,9 @@ nsresult txMozillaTextOutput::characters(const nsAString& aData, bool aDOE) {
 
 nsresult txMozillaTextOutput::comment(const nsString& aData) { return NS_OK; }
 
-nsresult txMozillaTextOutput::endDocument(nsresult aResult) {
+// XSLT event handlers are not yet MOZ_CAN_RUN_SCRIPT (bug 1415230).
+nsresult txMozillaTextOutput::endDocument(nsresult aResult)
+    MOZ_CAN_RUN_SCRIPT_BOUNDARY {
   NS_ENSURE_TRUE(mDocument && mTextParent, NS_ERROR_FAILURE);
 
   RefPtr<nsTextNode> text = new (mDocument->NodeInfoManager())
@@ -86,9 +88,13 @@ nsresult txMozillaTextOutput::endDocument(nsresult aResult) {
   }
   mDocument->SetReadyStateInternal(Document::READYSTATE_INTERACTIVE);
 
-  if (NS_SUCCEEDED(aResult)) {
-    nsCOMPtr<nsITransformObserver> observer = do_QueryReferent(mObserver);
-    if (observer) {
+  if (nsCOMPtr<nsITransformObserver> observer = do_QueryReferent(mObserver)) {
+    if (const RefPtr<ScriptLoader> loader = mDocument->GetScriptLoader()) {
+      loader->ParsingComplete(false);
+      loader->DeferCheckpointReached();
+    }
+
+    if (NS_SUCCEEDED(aResult)) {
       observer->OnTransformDone(mSourceDocument, aResult, mDocument);
     }
   }
@@ -123,8 +129,9 @@ nsresult txMozillaTextOutput::createResultDocument(bool aLoadedAsData) {
    */
 
   // Create the document
-  nsresult rv = NS_NewXMLDocument(getter_AddRefs(mDocument), nullptr, nullptr,
-                                  aLoadedAsData);
+  nsresult rv = NS_NewXMLDocument(
+      getter_AddRefs(mDocument), nullptr, nullptr,
+      aLoadedAsData ? LoadedAsData::AsData : LoadedAsData::No);
   NS_ENSURE_SUCCESS(rv, rv);
   mCreatedDocument = true;
   // This should really be handled by Document::BeginLoad

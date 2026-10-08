@@ -13,7 +13,7 @@
 
 import sys
 
-MINIMUM_MINOR_VERSION = 9
+MINIMUM_MINOR_VERSION = 10
 
 major, minor = sys.version_info[:2]
 if (major < 3) or (major == 3 and minor < MINIMUM_MINOR_VERSION):
@@ -70,6 +70,26 @@ def which(name):
 
 def validate_clone_dest(dest: Path):
     dest = dest.resolve()
+
+    if WINDOWS:
+        # Keep in sync with the path length checks in configure.py.
+        WIN32_MAX_PATH = 260
+        LONGEST_KNOWN_OBJDIR_RELATIVE_PATH = 170
+        DEFAULT_OBJDIR_NAME_LEN = 28  # /obj-x86_64-pc-windows-msvc/
+        max_srcdir_len = (
+            WIN32_MAX_PATH
+            - LONGEST_KNOWN_OBJDIR_RELATIVE_PATH
+            - DEFAULT_OBJDIR_NAME_LEN
+        )
+        dest_len = len(str(dest))
+        if dest_len > max_srcdir_len:
+            print(
+                f"ERROR! Destination path ({dest}) is {dest_len} characters, "
+                f"which exceeds the Windows limit of {max_srcdir_len}. "
+                f"This will cause build failures due to path length restrictions.\n"
+                f"Please choose a shorter path (e.g. D:\\mozilla-source\\firefox)."
+            )
+            return None
 
     if not dest.exists():
         return dest
@@ -170,6 +190,21 @@ def hg_clone_firefox(hg: Path, dest: Path, head_repo, head_rev):
     return dest
 
 
+def enable_parallel_checkout(git: Path, dest: Path, env=None):
+    try:
+        subprocess.check_call(
+            [str(git), "config", "--get", "checkout.workers"],
+            cwd=str(dest),
+            env=env,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    except subprocess.CalledProcessError:
+        subprocess.check_call(
+            [str(git), "config", "checkout.workers", "0"], cwd=str(dest), env=env
+        )
+
+
 def git_clone_firefox(git: Path, dest: Path, head_repo, head_rev):
     if head_repo and "hg.mozilla.org" in head_repo:
         print("GECKO_HEAD_REPOSITORY cannot be a Mercurial repository when using Git")
@@ -185,6 +220,7 @@ def git_clone_firefox(git: Path, dest: Path, head_repo, head_rev):
         ],
     )
     subprocess.check_call([str(git), "config", "pull.ff", "only"], cwd=str(dest))
+    enable_parallel_checkout(git, dest)
 
     if head_repo:
         subprocess.check_call(
@@ -278,6 +314,7 @@ def git_cinnabar_clone_firefox(git: Path, dest: Path, head_repo, head_rev):
         subprocess.check_call(
             [str(git), "config", "pull.ff", "only"], cwd=str(dest), env=env
         )
+        enable_parallel_checkout(git, dest, env)
 
         if head_repo:
             subprocess.check_call(
@@ -444,7 +481,7 @@ def main(args):
         "--no-system-changes",
         dest="no_system_changes",
         action="store_true",
-        help="Only executes actions that leave the system " "configuration alone.",
+        help="Only executes actions that leave the system configuration alone.",
     )
 
     options, leftover = parser.parse_args(args)

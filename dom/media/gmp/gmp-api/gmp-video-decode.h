@@ -1,4 +1,3 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* Copyright (c) 2011, The WebRTC project authors. All rights reserved.
  * Copyright (c) 2014, Mozilla
  *
@@ -44,7 +43,7 @@
 // ALL METHODS MUST BE CALLED ON THE MAIN THREAD
 class GMPVideoDecoderCallback {
  public:
-  virtual ~GMPVideoDecoderCallback() {}
+  virtual ~GMPVideoDecoderCallback() = default;
 
   virtual void Decoded(GMPVideoi420Frame* aDecodedFrame) = 0;
 
@@ -74,7 +73,7 @@ class GMPVideoDecoderCallback {
 // ALL METHODS MUST BE CALLED ON THE MAIN THREAD
 class GMPVideoDecoder {
  public:
-  virtual ~GMPVideoDecoder() {}
+  virtual ~GMPVideoDecoder() = default;
 
   // - aCodecSettings: Details of decoder to create.
   // - aCodecSpecific: codec specific data, cast to a GMPVideoCodecXXX struct

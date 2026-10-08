@@ -1,15 +1,12 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include <algorithm>
 #include <cerrno>
-#include <cstring>
 #include <dlfcn.h>
 #include <string>
 #include <unistd.h>
-#include "mozilla/Unused.h"
 #include "third_party/curl/curl.h"
 
 #include "pingsender.h"
@@ -17,8 +14,6 @@
 namespace PingSender {
 
 using std::string;
-
-using mozilla::Unused;
 
 /**
  * A simple wrapper around libcurl "easy" functions. Provides RAII opening
@@ -95,9 +90,11 @@ bool CurlWrapper::Init() {
       "/usr/lib/libcurl.4.dylib",
       "/usr/lib/libcurl.3.dylib",
 #else  // Linux, *BSD, ...
-      "libcurl.so", "libcurl.so.4",
+      "libcurl.so",
+      "libcurl.so.4",
       // Debian gives libcurl a different name when it is built against GnuTLS
-      "libcurl-gnutls.so", "libcurl-gnutls.so.4",
+      "libcurl-gnutls.so",
+      "libcurl-gnutls.so.4",
       // Older versions in case we find nothing better
       "libcurl.so.3",
       "libcurl-gnutls.so.3",  // See above for Debian
@@ -161,10 +158,10 @@ bool CurlWrapper::Init() {
 
 static size_t DummyWriteCallback(char* ptr, size_t size, size_t nmemb,
                                  void* userdata) {
-  Unused << ptr;
-  Unused << size;
-  Unused << nmemb;
-  Unused << userdata;
+  (void)ptr;
+  (void)size;
+  (void)nmemb;
+  (void)userdata;
 
   return size * nmemb;
 }
@@ -177,9 +174,9 @@ bool FallbackIsValidDestination(const string& aUrl) {
   std::transform(url.begin(), url.end(), url.begin(),
                  [](unsigned char c) { return std::tolower(c); });
   // Strip off the scheme in the beginning
-  if (url.find("http://") == 0) {
+  if (url.starts_with("http://")) {
     url = url.substr(7);
-  } else if (url.find("https://") == 0) {
+  } else if (url.starts_with("https://")) {
     url = url.substr(8);
   }
 

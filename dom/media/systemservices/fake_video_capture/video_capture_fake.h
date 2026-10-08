@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -8,11 +6,13 @@
 #define DOM_MEDIA_SYSTEMSERVICES_FAKE_VIDEO_CAPTURE_VIDEO_CAPTURE_FAKE_H_
 
 #include "MediaEventSource.h"
+#include "MediaInfo.h"
 #include "modules/video_capture/video_capture_impl.h"
 #include "mozilla/Maybe.h"
 #include "mozilla/RefPtr.h"
 #include "mozilla/ThreadSafety.h"
 #include "mozilla/TimeStamp.h"
+#include "system_wrappers/include/clock.h"
 
 class nsISerialEventTarget;
 
@@ -26,7 +26,7 @@ class Image;
 namespace webrtc::videocapturemodule {
 class VideoCaptureFake : public webrtc::videocapturemodule::VideoCaptureImpl {
  public:
-  explicit VideoCaptureFake(nsISerialEventTarget* aTarget);
+  explicit VideoCaptureFake(Clock* clock, nsISerialEventTarget* aTarget);
   ~VideoCaptureFake() override;
 
   static webrtc::scoped_refptr<webrtc::VideoCaptureModule> Create(
@@ -49,7 +49,8 @@ class VideoCaptureFake : public webrtc::videocapturemodule::VideoCaptureImpl {
 
  private:
   void OnGeneratedImage(const RefPtr<mozilla::layers::Image>& aImage,
-                        mozilla::TimeStamp aTime);
+                        mozilla::TimeStamp aTime,
+                        mozilla::VideoRotation aRotation);
 
   const nsCOMPtr<nsISerialEventTarget> mTarget;
   const RefPtr<mozilla::FakeVideoSource> mSource;

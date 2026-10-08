@@ -315,11 +315,9 @@ def copy_contents(srcdir, dstdir, ignore_dangling_symlinks=False):
     """
     import shutil
 
-    # dirs_exist_ok was introduced in Python 3.8
-    # On earlier versions, or Windows, use the verbose mechanism.
-    # We use it on Windows because _call_with_windows_retry doesn't allow
-    # named arguments to be passed.
-    if (sys.version_info.major < 3 or sys.version_info.minor < 8) or (os.name == "nt"):
+    # On Windows, use the verbose mechanism because _call_with_windows_retry
+    # doesn't allow named arguments (dirs_exist_ok) to be passed.
+    if os.name == "nt":
         names = os.listdir(srcdir)
         if not os.path.isdir(dstdir):
             os.makedirs(dstdir)
@@ -434,19 +432,17 @@ def tree(directory, sort_key=lambda x: x.lower()):
         # add the files
         if filenames:
             last_file = filenames[-1]
-            retval.extend(
-                [
-                    (
-                        "%s%s%s"
-                        % (
-                            "".join(indent),
-                            files_end if filename == last_file else item_marker,
-                            filename,
-                        )
+            retval.extend([
+                (
+                    "%s%s%s"
+                    % (
+                        "".join(indent),
+                        files_end if filename == last_file else item_marker,
+                        filename,
                     )
-                    for index, filename in enumerate(filenames)
-                ]
-            )
+                )
+                for index, filename in enumerate(filenames)
+            ])
 
     return "\n".join(retval)
 

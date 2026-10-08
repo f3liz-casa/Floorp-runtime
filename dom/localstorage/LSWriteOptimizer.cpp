@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -7,11 +5,26 @@
 #include "LSWriteOptimizer.h"
 
 #include <new>
+#include <utility>
 
 #include "nsBaseHashtable.h"
 #include "nsTArray.h"
 
 namespace mozilla::dom {
+
+LSWriteOptimizerBase::LSWriteOptimizerBase()
+    : mLastSerialNumber(0), mTotalDelta(0) {}
+
+LSWriteOptimizerBase::LSWriteOptimizerBase(
+    LSWriteOptimizerBase&& aWriteOptimizer)
+    : mTruncateInfo(std::move(aWriteOptimizer.mTruncateInfo)) {
+  AssertIsOnOwningThread();
+  MOZ_ASSERT(&aWriteOptimizer != this);
+
+  mWriteInfos.SwapElements(aWriteOptimizer.mWriteInfos);
+  mTotalDelta = aWriteOptimizer.mTotalDelta;
+  aWriteOptimizer.mTotalDelta = 0;
+}
 
 class LSWriteOptimizerBase::WriteInfoComparator {
  public:
@@ -51,6 +64,13 @@ void LSWriteOptimizerBase::Truncate(int64_t aDelta) {
   }
 
   mTotalDelta += aDelta;
+}
+
+void LSWriteOptimizerBase::Reset() {
+  AssertIsOnOwningThread();
+
+  mTruncateInfo = nullptr;
+  mWriteInfos.Clear();
 }
 
 void LSWriteOptimizerBase::GetSortedWriteInfos(

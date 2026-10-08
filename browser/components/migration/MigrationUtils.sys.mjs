@@ -43,6 +43,11 @@ function getL10n() {
   return gL10n;
 }
 
+const FIREFOX_REFRESH_MIGRATOR_KEYS = new Set([
+  AppConstants.MOZ_APP_NAME,
+  AppConstants.MOZ_APP_NAME + "-selectable-profile",
+]);
+
 const MIGRATOR_MODULES = Object.freeze({
   EdgeProfileMigrator: {
     moduleURI: "resource:///modules/EdgeProfileMigrator.sys.mjs",
@@ -52,9 +57,9 @@ const MIGRATOR_MODULES = Object.freeze({
     moduleURI: "resource:///modules/FirefoxProfileMigrator.sys.mjs",
     platforms: ["linux", "macosx", "win"],
   },
-  IEProfileMigrator: {
-    moduleURI: "resource:///modules/IEProfileMigrator.sys.mjs",
-    platforms: ["win"],
+  FirefoxSelectableProfileMigrator: {
+    moduleURI: "resource:///modules/FirefoxSelectableProfileMigrator.sys.mjs",
+    platforms: ["linux", "macosx", "win"],
   },
   SafariProfileMigrator: {
     moduleURI: "resource:///modules/SafariProfileMigrator.sys.mjs",
@@ -93,7 +98,7 @@ const MIGRATOR_MODULES = Object.freeze({
   },
   ChromiumEdgeMigrator: {
     moduleURI: "resource:///modules/ChromeProfileMigrator.sys.mjs",
-    platforms: ["macosx", "win"],
+    platforms: ["linux", "macosx", "win"],
   },
   ChromiumEdgeBetaMigrator: {
     moduleURI: "resource:///modules/ChromeProfileMigrator.sys.mjs",
@@ -157,6 +162,7 @@ class MigrationUtils {
           "MigrationWizard:PermissionsNeeded": { wantUntrusted: true },
           "MigrationWizard:GetPermissions": { wantUntrusted: true },
           "MigrationWizard:OpenURL": { wantUntrusted: true },
+          "MigrationWizard:LaunchMacOSPasswordsApp": { wantUntrusted: true },
         },
       },
 
@@ -171,6 +177,7 @@ class MigrationUtils {
         "chrome://browser/content/spotlight.html",
         "about:firefoxview",
       ],
+      remoteTypes: ["parent", "privilegedabout"],
     });
 
     ChromeUtils.defineLazyGetter(this, "IS_LINUX_SNAP_PACKAGE", () => {
@@ -502,8 +509,8 @@ class MigrationUtils {
       "Internet Explorer": "ie",
       "Microsoft Edge": "edge",
       Safari: "safari",
-      Firefox: "firefox",
-      Nightly: "firefox",
+      [AppConstants.MOZ_APP_BASENAME]: AppConstants.MOZ_APP_NAME,
+      Nightly: AppConstants.MOZ_APP_NAME,
       Opera: "opera",
       Vivaldi: "vivaldi",
       "Opera GX": "opera-gx",
@@ -523,8 +530,8 @@ class MigrationUtils {
         .getApplicationDescription("http");
       key = APP_DESC_TO_KEY[browserDesc] || "";
       // Handle devedition, as well as "FirefoxNightly" on OS X.
-      if (!key && browserDesc.startsWith("Firefox")) {
-        key = "firefox";
+      if (!key && browserDesc.startsWith(AppConstants.MOZ_APP_BASENAME)) {
+        key = AppConstants.MOZ_APP_NAME;
       }
     } catch (ex) {
       console.error("Could not detect default browser: ", ex);
@@ -745,7 +752,7 @@ class MigrationUtils {
     let isRefresh =
       migrator &&
       skipSourceSelection &&
-      migratorKey == AppConstants.MOZ_APP_NAME;
+      FIREFOX_REFRESH_MIGRATOR_KEYS.has(migratorKey);
 
     let entrypoint = this.MIGRATION_ENTRYPOINTS.FIRSTRUN;
     if (isRefresh) {

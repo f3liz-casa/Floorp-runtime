@@ -1,4 +1,3 @@
-/* -*- Mode: C++; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -20,9 +19,7 @@
 #include "gfxTypes.h"
 #include "mozilla/Casting.h"
 #include "mozilla/CheckedInt.h"
-#include "mozilla/EnumTypeTraits.h"
-#include "mozilla/IsEnumCase.h"
-#include "mozilla/MathAlgorithms.h"
+#include "mozilla/DefineEnum.h"
 #include "mozilla/Range.h"
 #include "mozilla/RefCounted.h"
 #include "mozilla/Result.h"
@@ -30,6 +27,7 @@
 #include "mozilla/Span.h"
 #include "mozilla/TiedFields.h"
 #include "mozilla/TypedEnumBits.h"
+#include "mozilla/WeakPtr.h"
 #include "mozilla/dom/WebGLRenderingContextBinding.h"
 #include "mozilla/gfx/2D.h"
 #include "mozilla/gfx/BuildConstants.h"
@@ -217,6 +215,7 @@ enum class WebGLExtensionID : uint8_t {
   EXT_disjoint_timer_query,
   EXT_float_blend,
   EXT_frag_depth,
+  EXT_polygon_offset_clamp,
   EXT_shader_texture_lod,
   EXT_sRGB,
   EXT_texture_compression_bptc,
@@ -304,26 +303,11 @@ struct SampleableInfo final {
   bool IsComplete() const { return bool(levels); }
 };
 
-enum class AttribBaseType : uint8_t {
-  Boolean,  // Can convert from anything.
-  Float,    // Also includes NormU?Int
-  Int,
-  Uint,
-};
-}  // namespace webgl
-template <>
-inline constexpr bool IsEnumCase<webgl::AttribBaseType>(
-    const webgl::AttribBaseType v) {
-  switch (v) {
-    case webgl::AttribBaseType::Boolean:
-    case webgl::AttribBaseType::Float:
-    case webgl::AttribBaseType::Int:
-    case webgl::AttribBaseType::Uint:
-      return true;
-  }
-  return false;
-}
-namespace webgl {
+MOZ_DEFINE_ENUM_CLASS_WITH_BASE(AttribBaseType, uint8_t,
+                                (Boolean,  // Can convert from anything.
+                                 Float,    // Also includes NormU?Int
+                                 Int, Uint))
+
 webgl::AttribBaseType ToAttribBaseType(GLenum);
 const char* ToString(AttribBaseType);
 
@@ -456,8 +440,7 @@ struct avec2 {
   avec2() = default;
   avec2(const T _x, const T _y) : x(_x), y(_y) {}
 
-  bool operator==(const avec2& rhs) const { return x == rhs.x && y == rhs.y; }
-  bool operator!=(const avec2& rhs) const { return !(*this == rhs); }
+  bool operator==(const avec2& rhs) const = default;
 
 #define _(OP)                                 \
   avec2 operator OP(const avec2& rhs) const { \
@@ -521,10 +504,7 @@ struct avec3 {
   avec3() = default;
   avec3(const T _x, const T _y, const T _z) : x(_x), y(_y), z(_z) {}
 
-  bool operator==(const avec3& rhs) const {
-    return x == rhs.x && y == rhs.y && z == rhs.z;
-  }
-  bool operator!=(const avec3& rhs) const { return !(*this == rhs); }
+  bool operator==(const avec3& rhs) const = default;
 };
 
 using ivec2 = avec2<int32_t>;
@@ -741,27 +721,10 @@ enum class OptionalRenderableFormatBits : uint8_t {
   RGB8 = (1 << 0),
   SRGB8 = (1 << 1),
 };
-MOZ_MAKE_ENUM_CLASS_BITWISE_OPERATORS(OptionalRenderableFormatBits)
+constexpr auto kAllOptionalRenderableFormatBits =
+    OptionalRenderableFormatBits((1 << 2) - 1);
 
-}  // namespace webgl
-template <>
-inline constexpr bool IsEnumCase<webgl::OptionalRenderableFormatBits>(
-    const webgl::OptionalRenderableFormatBits raw) {
-  auto rawWithoutValidBits = UnderlyingValue(raw);
-  auto bit = decltype(rawWithoutValidBits){1};
-  while (bit) {
-    switch (webgl::OptionalRenderableFormatBits{bit}) {
-      // -Werror=switch ensures exhaustive.
-      case webgl::OptionalRenderableFormatBits::RGB8:
-      case webgl::OptionalRenderableFormatBits::SRGB8:
-        rawWithoutValidBits &= ~bit;
-        break;
-    }
-    bit <<= 1;
-  }
-  return rawWithoutValidBits == 0;
-}
-namespace webgl {
+MOZ_MAKE_ENUM_CLASS_BITWISE_OPERATORS(OptionalRenderableFormatBits)
 
 // -
 
@@ -770,13 +733,12 @@ using GetShaderPrecisionFormatArgs = std::tuple<GLenum, GLenum>;
 template <class Tuple>
 struct TupleStdHash {
   size_t operator()(const Tuple& t) const {
-    size_t ret = 0;
-    mozilla::MapTuple(t, [&](const auto& field) {
-      using FieldT = std::remove_cv_t<std::remove_reference_t<decltype(field)>>;
-      ret ^= std::hash<FieldT>{}(field);
-      return true;  // ignored
-    });
-    return ret;
+    return std::apply(
+        [](const auto&... field) {
+          return (std::hash<std::remove_cvref_t<decltype(field)>>{}(field) ^
+                  ...);
+        },
+        t);
   }
 };
 
@@ -911,7 +873,10 @@ struct LinkActiveInfo final {
   std::vector<ActiveInfo> activeTfVaryings;
 };
 
-struct LinkResult final {
+struct LinkResult final : public SupportsWeakPtr {
+  LinkResult() = default;
+  ~LinkResult() = default;
+
   bool pending = true;
   nsCString log;
   bool success = false;
@@ -932,7 +897,7 @@ struct TypedQuad final {
 
 /// [1-16]x32-bit primitives, with a type tag.
 struct GetUniformData final {
-  alignas(alignof(float)) uint8_t data[4 * 4 * sizeof(float)] = {};
+  alignas(alignof(float)) std::array<uint8_t, 4 * 4 * sizeof(float)> data = {};
   GLenum type = 0;
 };
 
@@ -974,7 +939,7 @@ struct VertAttribPointerCalculated final {
 }  // namespace webgl
 
 template <class T>
-inline Range<T> ShmemRange(const mozilla::ipc::Shmem& shmem) {
+inline mozilla::Range<T> ShmemRange(const mozilla::ipc::Shmem& shmem) {
   return {shmem.get<T>(), shmem.Size<T>()};
 }
 
@@ -1151,6 +1116,9 @@ struct ExplicitPixelPackingState final {
     // ...aligned to ALIGNMENT.
     size_t bytesPerRowStride = 0;
 
+    // SKIP_PIXELS+size.x
+    size_t usedPixelsPerRow = 0;
+
     // structuredSrcSize.y, otherwise IMAGE_HEIGHT*(SKIP_IMAGES+size.z)
     size_t totalRows = 0;
 
@@ -1215,12 +1183,12 @@ struct TexUnpackBlobDesc final {
 // MakeRange
 
 template <typename T, size_t N>
-inline Range<const T> MakeRange(T (&arr)[N]) {
+inline mozilla::Range<const T> MakeRange(T (&arr)[N]) {
   return {arr, N};
 }
 
 template <typename T>
-inline Range<const T> MakeRange(const dom::Sequence<T>& seq) {
+inline mozilla::Range<const T> MakeRange(const dom::Sequence<T>& seq) {
   return {seq.Elements(), seq.Length()};
 }
 
@@ -1238,7 +1206,7 @@ inline size_t AlignmentOffset(const size_t alignment, const T posOrPtr) {
 }
 
 template <typename T>
-inline size_t ByteSize(const Range<T>& range) {
+inline size_t ByteSize(const mozilla::Range<T>& range) {
   return range.length() * sizeof(T);
 }
 
@@ -1275,13 +1243,13 @@ inline void Memcpy(const RangedPtr<uint8_t>& destBytes,
 }
 
 template <class T, class U>
-inline void Memcpy(const Range<T>* const destRange,
+inline void Memcpy(const mozilla::Range<T>* const destRange,
                    const RangedPtr<U>& srcBegin) {
   Memcpy(destRange->begin(), srcBegin, destRange->length());
 }
 template <class T, class U>
 inline void Memcpy(const RangedPtr<T>* const destBegin,
-                   const Range<U>& srcRange) {
+                   const mozilla::Range<U>& srcRange) {
   Memcpy(destBegin, srcRange->begin(), srcRange->length());
 }
 
@@ -1319,21 +1287,6 @@ enum class ProvokingVertex : GLenum {
   FirstVertex = LOCAL_GL_FIRST_VERTEX_CONVENTION,
   LastVertex = LOCAL_GL_LAST_VERTEX_CONVENTION,
 };
-
-}  // namespace webgl
-
-template <>
-inline constexpr bool IsEnumCase<webgl::ProvokingVertex>(
-    const webgl::ProvokingVertex raw) {
-  switch (raw) {
-    case webgl::ProvokingVertex::FirstVertex:
-    case webgl::ProvokingVertex::LastVertex:
-      return true;
-  }
-  return false;
-}
-
-namespace webgl {
 
 // -
 

@@ -1,34 +1,30 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef nsSHEntryShared_h__
-#define nsSHEntryShared_h__
+#ifndef nsSHEntryShared_h_
+#define nsSHEntryShared_h_
 
 #include "nsCOMArray.h"
 #include "nsCOMPtr.h"
 #include "nsExpirationTracker.h"
 #include "nsIBFCacheEntry.h"
+#include "nsILayoutHistoryState.h"
 #include "nsIPolicyContainer.h"
+#include "nsIPrincipal.h"
 #include "nsIWeakReferenceUtils.h"
 #include "nsRect.h"
 #include "nsString.h"
 #include "nsStructuredCloneContainer.h"
 #include "nsStubMutationObserver.h"
 
-#include "mozilla/Attributes.h"
 #include "mozilla/UniquePtr.h"
 
-class nsSHEntry;
 class nsISHEntry;
 class nsISHistory;
 class nsIDocShellTreeItem;
 class nsIDocumentViewer;
-class nsILayoutHistoryState;
 class nsIPolicyContainer;
-class nsIPrincipal;
 class nsDocShellEditorData;
 class nsFrameLoader;
 class nsIMutableArray;
@@ -65,8 +61,7 @@ struct SHEntrySharedState {
         mPrincipalToInherit(aPrincipalToInherit),
         mPartitionedPrincipalToInherit(aPartitionedPrincipalToInherit),
         mPolicyContainer(aPolicyContainer),
-        mContentType(aContentType),
-        mNavigationState(MakeRefPtr<nsStructuredCloneContainer>()) {}
+        mContentType(aContentType) {}
 
   // These members aren't copied by SHEntrySharedParentState::CopyFrom() because
   // they're specific to a particular content viewer.
@@ -85,8 +80,6 @@ struct SHEntrySharedState {
   uint32_t mCacheKey = 0;
   bool mIsFrameNavigation = false;
   bool mSaveLayoutState = true;
-
-  RefPtr<nsStructuredCloneContainer> mNavigationState;
 
  protected:
   static uint64_t GenerateId();
@@ -151,6 +144,8 @@ class SHEntrySharedParentState : public SHEntrySharedState {
   bool mDynamicallyCreated = false;
 
   // This flag is about necko cache, not bfcache.
+  // True when the HTTP response was already expired at the time this entry was
+  // committed.
   bool mExpired = false;
 };
 
@@ -179,46 +174,5 @@ class SHEntrySharedChildState {
 
 }  // namespace dom
 }  // namespace mozilla
-
-/**
- * nsSHEntryShared holds the shared state if the session history is not stored
- * in the parent process, or if the load itself happens in the parent process.
- * Note, since nsSHEntryShared inherits both SHEntrySharedParentState and
- * SHEntrySharedChildState and those have some same member variables,
- * the ones from SHEntrySharedParentState should be used.
- */
-class nsSHEntryShared final : public nsIBFCacheEntry,
-                              public nsStubMutationObserver,
-                              public mozilla::dom::SHEntrySharedParentState,
-                              public mozilla::dom::SHEntrySharedChildState {
- public:
-  static void EnsureHistoryTracker();
-  static void Shutdown();
-
-  using SHEntrySharedParentState::SHEntrySharedParentState;
-
-  already_AddRefed<nsSHEntryShared> Duplicate();
-
-  NS_DECL_ISUPPORTS_INHERITED
-  NS_DECL_NSIBFCACHEENTRY
-
-  // The nsIMutationObserver bits we actually care about.
-  NS_DECL_NSIMUTATIONOBSERVER_CHARACTERDATACHANGED
-  NS_DECL_NSIMUTATIONOBSERVER_ATTRIBUTECHANGED
-  NS_DECL_NSIMUTATIONOBSERVER_CONTENTAPPENDED
-  NS_DECL_NSIMUTATIONOBSERVER_CONTENTINSERTED
-  NS_DECL_NSIMUTATIONOBSERVER_CONTENTREMOVED
-
- private:
-  ~nsSHEntryShared();
-
-  friend class nsSHEntry;
-
-  void RemoveFromExpirationTracker();
-  void SyncPresentationState();
-  void DropPresentationState();
-
-  nsresult SetDocumentViewer(nsIDocumentViewer* aViewer);
-};
 
 #endif

@@ -1,5 +1,3 @@
-/* -*- Mode: indent-tabs-mode: nil; js-indent-level: 2 -*- */
-/* vim: set sts=2 sw=2 et tw=80: */
 "use strict";
 
 const lazy = {};
@@ -387,7 +385,9 @@ add_task(async function test_portal_unavailable() {
 
   let logged = false;
   function listener(msg) {
-    logged ||= /Native messaging portal is not available/.test(msg.message);
+    logged ||= /Native messaging proxy\/portal is not available/.test(
+      msg.message
+    );
   }
   Services.console.registerListener(listener);
   registerCleanupFunction(() => {

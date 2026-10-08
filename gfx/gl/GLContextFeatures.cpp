@@ -1,4 +1,3 @@
-/* -*- Mode: C++; tab-width: 20; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -25,6 +24,9 @@ enum class GLVersion : uint32_t {
   GL4_1 = 410,
   GL4_2 = 420,
   GL4_3 = 430,
+  GL4_4 = 440,
+  GL4_5 = 450,
+  GL4_6 = 460,
 };
 
 enum class GLESVersion : uint32_t {
@@ -90,6 +92,16 @@ static const FeatureInfo sFeatureInfoArr[] = {
      GLESVersion::ES3,
      GLContext::ARB_copy_buffer,
      {GLContext::Extensions_End}},
+    {"copy_image",
+     GLVersion::GL4_3,
+     GLESVersion::ES3_2,
+     GLContext::ARB_copy_image,
+     {GLContext::Extensions_End}},
+    {"debug",
+     GLVersion::GL4_3,
+     GLESVersion::ES3_2,
+     GLContext::Extension_None,
+     {GLContext::KHR_debug, GLContext::Extensions_End}},
     {"depth_clamp",
      GLVersion::GL3_2,
      GLESVersion::NONE,
@@ -300,6 +312,11 @@ static const FeatureInfo sFeatureInfoArr[] = {
      GLContext::Extension_None,
      {GLContext::EXT_packed_depth_stencil, GLContext::OES_packed_depth_stencil,
       GLContext::Extensions_End}},
+    {"polygon_offset_clamp",
+     GLVersion::GL4_6,
+     GLESVersion::NONE,
+     GLContext::ARB_polygon_offset_clamp,
+     {GLContext::EXT_polygon_offset_clamp, GLContext::Extensions_End}},
     {"prim_restart",
      GLVersion::GL3_1,
      GLESVersion::NONE,

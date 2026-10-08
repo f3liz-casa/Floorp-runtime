@@ -10,8 +10,12 @@
 
 #include "common_video/h264/sps_parser.h"
 
+#include <cstddef>
+#include <cstdint>
+#include <optional>
+#include <span>
+
 #include "common_video/h264/h264_common.h"
-#include "rtc_base/arraysize.h"
 #include "rtc_base/bit_buffer.h"
 #include "rtc_base/buffer.h"
 #include "test/gtest.h"
@@ -107,7 +111,7 @@ void GenerateFakeSps(uint16_t width,
   }
 
   out_buffer->Clear();
-  H264::WriteRbsp(MakeArrayView(rbsp, byte_count), out_buffer);
+  H264::WriteRbsp(std::span(rbsp, byte_count), out_buffer);
 }
 
 TEST(H264SpsParserTest, TestSampleSPSHdLandscape) {
@@ -220,6 +224,17 @@ TEST(H264SpsParserTest, TestLog2MaxPicOrderCntMinus4) {
 
   GenerateFakeSps(320u, 180u, 1, 0, 13, &buffer);
   EXPECT_FALSE(SpsParser::ParseSps(buffer));
+}
+
+TEST(H264SpsParserTest, TestInvalidSpsId) {
+  Buffer buffer;
+  // Valid sps.id = 31
+  GenerateFakeSps(320u, 180u, 31, 0, 0, &buffer);
+  EXPECT_NE(SpsParser::ParseSps(buffer), std::nullopt);
+
+  // Invalid sps.id = 32
+  GenerateFakeSps(320u, 180u, 32, 0, 0, &buffer);
+  EXPECT_EQ(SpsParser::ParseSps(buffer), std::nullopt);
 }
 
 }  // namespace webrtc

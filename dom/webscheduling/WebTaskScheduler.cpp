@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -17,7 +15,7 @@ namespace mozilla::dom {
 
 // Keeps track of all the existings schedulers that
 // share the same event loop.
-MOZ_RUNINIT static LinkedList<WebTaskScheduler> gWebTaskSchedulersMainThread;
+constinit static LinkedList<WebTaskScheduler> gWebTaskSchedulersMainThread;
 
 static Atomic<uint64_t> gWebTaskEnqueueOrder(0);
 
@@ -61,6 +59,13 @@ NS_IMPL_CYCLE_COLLECTION_TRAVERSE_END
 NS_IMPL_CYCLE_COLLECTION_UNLINK_BEGIN(WebTaskSchedulingState)
   NS_IMPL_CYCLE_COLLECTION_UNLINK(mAbortSource, mPrioritySource);
 NS_IMPL_CYCLE_COLLECTION_UNLINK_END
+
+NS_IMPL_CYCLE_COLLECTING_ADDREF(WebTaskSchedulingState)
+NS_IMPL_CYCLE_COLLECTING_RELEASE(WebTaskSchedulingState)
+
+NS_INTERFACE_MAP_BEGIN_CYCLE_COLLECTION(WebTaskSchedulingState)
+  NS_INTERFACE_MAP_ENTRY(nsISupports)
+NS_INTERFACE_MAP_END
 
 NS_IMPL_CYCLE_COLLECTION_CLASS(WebTask)
 
@@ -165,13 +170,13 @@ bool WebTask::Run() {
     return false;
   }
 
-  // 11.2.2 Set event loop’s current scheduling state to state.
-  global->SetWebTaskSchedulingState(mSchedulingState);
-
   AutoJSAPI jsapi;
   if (!jsapi.Init(global)) {
     return false;
   }
+
+  // 11.2.2 Set event loop’s current scheduling state to state.
+  global->SetWebTaskSchedulingState(mSchedulingState);
 
   JS::Rooted<JS::Value> returnVal(jsapi.cx());
 
@@ -179,9 +184,6 @@ bool WebTask::Run() {
 
   MOZ_KnownLive(mCallback)->Call(&returnVal, error, "WebTask",
                                  CallbackFunction::eRethrowExceptions);
-
-  // 11.2.4 Set event loop’s current scheduling state to null.
-  global->SetWebTaskSchedulingState(nullptr);
 
   error.WouldReportJSException();
 
@@ -203,6 +205,9 @@ bool WebTask::Run() {
   } else {
     mPromise->MaybeResolve(returnVal);
   }
+
+  // 11.2.4 Set event loop’s current scheduling state to null.
+  global->SetWebTaskSchedulingState(nullptr);
 
   MOZ_ASSERT(!isInList());
   return true;
@@ -228,7 +233,8 @@ inline void ImplCycleCollectionTraverse(
   }
 }
 
-NS_IMPL_CYCLE_COLLECTION_WRAPPERCACHE(WebTaskScheduler, mParent, mWebTaskQueues)
+NS_IMPL_CYCLE_COLLECTION_WRAPPERCACHE_WEAK_PTR(WebTaskScheduler, mParent,
+                                               mWebTaskQueues)
 
 /* static */
 already_AddRefed<WebTaskSchedulerMainThread>

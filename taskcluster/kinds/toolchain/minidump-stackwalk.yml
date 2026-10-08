@@ -6,12 +6,13 @@ task-defaults:
     description: "minidump-stackwalk toolchain build"
     attributes:
         local-toolchain: true
-    worker-type: b-linux-amd
+    worker-type: b-linux-docker-amd
     worker:
         max-run-time: 1800
         env:
             FETCH: rust-minidump/minidump-stackwalk
     run:
+        clone-with: hg
         script: build-rust-based-toolchain.sh
         toolchain-artifact: public/build/minidump-stackwalk.tar.zst
     fetches:
@@ -104,4 +105,4 @@ linux64-breakpad-injector:
     fetches:
         toolchain:
             - linux64-clang-toolchain
-            - linux64-toolchain-sysroot
+            - sysroot-x86_64-linux-gnu

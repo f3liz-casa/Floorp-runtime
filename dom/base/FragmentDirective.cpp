@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim:set ts=2 sw=2 sts=2 et cindent: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -15,6 +13,7 @@
 #include "TextDirectiveFinder.h"
 #include "TextDirectiveUtil.h"
 #include "mozilla/Assertions.h"
+#include "mozilla/CycleCollectedUniquePtr.h"
 #include "mozilla/PresShell.h"
 #include "mozilla/ResultVariant.h"
 #include "mozilla/dom/BrowsingContext.h"
@@ -22,6 +21,7 @@
 #include "mozilla/dom/FragmentDirectiveBinding.h"
 #include "mozilla/dom/FragmentOrElement.h"
 #include "mozilla/dom/Promise.h"
+#include "mozilla/dom/Range.h"
 #include "mozilla/dom/Selection.h"
 #include "mozilla/glean/DomMetrics.h"
 #include "nsContentUtils.h"
@@ -30,7 +30,6 @@
 #include "nsIFrame.h"
 #include "nsINode.h"
 #include "nsIURIMutator.h"
-#include "nsRange.h"
 #include "nsString.h"
 
 namespace mozilla::dom {
@@ -140,12 +139,12 @@ void FragmentDirective::ParseAndRemoveFragmentDirectiveFromFragment(
   if (!hasRemovedFragmentDirective) {
     return;
   }
-  Unused << NS_MutateURI(aURI).SetRef(hash).Finalize(aURI);
+  (void)NS_MutateURI(aURI).SetRef(hash).Finalize(aURI);
   TEXT_FRAGMENT_LOG("Updated hash of the URL. New URL: {}",
                     aURI->GetSpecOrDefault());
 }
 
-nsTArray<RefPtr<nsRange>> FragmentDirective::FindTextFragmentsInDocument() {
+nsTArray<RefPtr<Range>> FragmentDirective::FindTextFragmentsInDocument() {
   MOZ_ASSERT(mDocument);
   if (!mFinder) {
     auto uri = TextDirectiveUtil::ShouldLog() && mDocument->GetDocumentURI()
@@ -153,6 +152,11 @@ nsTArray<RefPtr<nsRange>> FragmentDirective::FindTextFragmentsInDocument() {
                    : nsCString();
     TEXT_FRAGMENT_LOG("No uninvoked text directives in document '{}'. Exiting.",
                       uri);
+    return {};
+  }
+  RefPtr doc = mDocument;
+  doc->FlushPendingNotifications(FlushType::Layout);
+  if (!mFinder) {
     return {};
   }
   auto textDirectives = mFinder->FindTextDirectivesInDocument();
@@ -226,7 +230,7 @@ bool FragmentDirective::IsTextDirectiveAllowedToBeScrolledTo() {
   // ---
   // we don't store the *pending* text directives in this class, only the
   // *uninvoked* text directives (uninvoked = `TextDirective`, pending =
-  // `nsRange`).
+  // `Range`).
   // Uninvoked text directives are typically already processed into pending text
   // directives when this code is called. Pending text directives are handled by
   // the caller when this code runs; therefore, the caller should decide if this
@@ -352,7 +356,7 @@ bool FragmentDirective::IsTextDirectiveAllowedToBeScrolledTo() {
 }
 
 void FragmentDirective::HighlightTextDirectives(
-    const nsTArray<RefPtr<nsRange>>& aTextDirectiveRanges) {
+    const nsTArray<RefPtr<Range>>& aTextDirectiveRanges) {
   MOZ_ASSERT(mDocument);
   if (!StaticPrefs::dom_text_fragments_enabled()) {
     return;
@@ -381,16 +385,28 @@ void FragmentDirective::HighlightTextDirectives(
   if (!targetTextSelection) {
     return;
   }
-  for (const RefPtr<nsRange>& range : aTextDirectiveRanges) {
+  for (const RefPtr<Range>& range : aTextDirectiveRanges) {
     // Script won't be able to manipulate `aTextDirectiveRanges`,
     // therefore we can mark `range` as known live.
     targetTextSelection->AddRangeAndSelectFramesAndNotifyListeners(
         MOZ_KnownLive(*range), IgnoreErrors());
   }
+  // AddRangeAndSelectFramesAndNotifyListeners sets the selection's anchor to
+  // each newly added range, so after the loop the anchor points to the last
+  // range. The selection stores ranges in document order, which may differ
+  // from directive (URL) order. Find the first directive's range and set the
+  // anchor to it so that ScrollSelectionIntoView scrolls to the correct one.
+  const Range* firstDirectiveRange = aTextDirectiveRanges[0];
+  for (uint32_t rangeIndex : IntegerRange(targetTextSelection->RangeCount())) {
+    if (targetTextSelection->GetRangeAt(rangeIndex) == firstDirectiveRange) {
+      targetTextSelection->SetAnchorFocusRange(rangeIndex);
+      break;
+    }
+  }
 }
 
 void FragmentDirective::GetTextDirectiveRanges(
-    nsTArray<RefPtr<nsRange>>& aRanges) const {
+    nsTArray<RefPtr<Range>>& aRanges) const {
   if (!StaticPrefs::dom_text_fragments_enabled()) {
     return;
   }
@@ -407,7 +423,7 @@ void FragmentDirective::GetTextDirectiveRanges(
   aRanges.Clear();
   for (uint32_t rangeIndex = 0; rangeIndex < targetTextSelection->RangeCount();
        ++rangeIndex) {
-    nsRange* range = targetTextSelection->GetRangeAt(rangeIndex);
+    Range* range = targetTextSelection->GetRangeAt(rangeIndex);
     MOZ_ASSERT(range);
     aRanges.AppendElement(range);
   }
@@ -429,14 +445,13 @@ void FragmentDirective::RemoveAllTextDirectives(ErrorResult& aRv) {
 }
 
 already_AddRefed<Promise> FragmentDirective::CreateTextDirectiveForRanges(
-    const Sequence<OwningNonNull<nsRange>>& aRanges) {
+    const Sequence<OwningNonNull<Range>>& aRanges) {
   RefPtr<Promise> resultPromise =
-      Promise::Create(mDocument->GetOwnerGlobal(), IgnoreErrors());
+      Promise::Create(mDocument->GetRelevantGlobal(), IgnoreErrors());
   if (!resultPromise) {
     return nullptr;
   }
-  if (!StaticPrefs::dom_text_fragments_create_text_fragment_enabled() ||
-      !StaticPrefs::dom_text_fragments_enabled()) {
+  if (!StaticPrefs::dom_text_fragments_enabled()) {
     TEXT_FRAGMENT_LOG("Creating text fragments is disabled.");
     resultPromise->MaybeResolve(JS::NullHandleValue);
     return resultPromise.forget();

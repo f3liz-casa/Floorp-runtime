@@ -8,10 +8,6 @@ include $(topsrcdir)/build/binary-location.mk
 
 SYMBOLS_PATH := --symbols-path=$(DIST)/crashreporter-symbols
 
-ifndef TEST_PACKAGE_NAME
-TEST_PACKAGE_NAME := $(ANDROID_PACKAGE_NAME)
-endif
-
 ifndef NO_FAIL_ON_TEST_ERRORS
 define check_test_error_internal
   @errors=`grep 'TEST-UNEXPECTED-' $@.log` ;\
@@ -33,7 +29,7 @@ RUN_REFTEST = rm -f ./$@.log && $(PYTHON3) _tests/reftest/runreftest.py \
 
 REMOTE_REFTEST = rm -f ./$@.log && $(PYTHON3) _tests/reftest/remotereftest.py \
   --ignore-window-size \
-  --app=$(TEST_PACKAGE_NAME) --deviceIP=${TEST_DEVICE} --xre-path=${MOZ_HOST_BIN} \
+  --deviceIP=${TEST_DEVICE} --xre-path=${MOZ_HOST_BIN} \
   --httpd-path=_tests/modules --suite reftest \
   --extra-profile-file=$(topsrcdir)/mobile/android/fonts \
   $(SYMBOLS_PATH) $(EXTRA_TEST_ARGS) $(1) | tee ./$@.log
@@ -94,42 +90,7 @@ include $(topsrcdir)/toolkit/mozapps/installer/package-name.mk
 
 PKG_STAGE = $(DIST)/test-stage
 
-stage-all: \
-  stage-config \
-  stage-mach \
-  stage-extensions \
-  stage-mochitest \
-  stage-jstests \
-  test-packages-manifest \
-  $(NULL)
-
-ifdef COMPILE_ENVIRONMENT
-stage-all: stage-cppunittests
-endif
-
-TEST_PKGS_TARGZ := \
-  common \
-  condprof \
-  cppunittest \
-  mochitest \
-  reftest \
-  talos \
-  raptor \
-  awsy \
-  xpcshell \
-  web-platform \
-  updater-dep \
-  jsreftest \
-  jittest \
-  perftests \
-  fuzztest \
-  trainhop \
-  $(NULL)
-
-ifdef LINK_GTEST_DURING_COMPILE
-stage-all: stage-gtest
-TEST_PKGS_TARGZ += gtest
-endif
+stage-all: $(TEST_PKG_STAGE_TARGETS)
 
 PKG_ARG = --$(1) '$(PKG_BASENAME).$(1).tests.$(2)'
 
@@ -140,7 +101,7 @@ test-packages-manifest:
       --jsshell $(JSSHELL_NAME) \
       --dest-file '$(MOZ_TEST_PACKAGES_FILE)' \
       $(call PKG_ARG,common,zip) \
-      $(foreach pkg,$(TEST_PKGS_TARGZ),$(call PKG_ARG,$(pkg),tar.gz))
+      $(foreach pkg,$(TEST_PKGS_TARZST),$(call PKG_ARG,$(pkg),tar.zst))
 
 ifdef UPLOAD_PATH
 test_archive_dir = $(UPLOAD_PATH)
@@ -162,11 +123,7 @@ package-tests-$(1): stage-all package-tests-prepare-dest download-wpt-manifest
 package-tests: package-tests-$(1)
 endef
 
-$(foreach name,$(TEST_PKGS_TARGZ),$(eval $(call package_archive,$(name),tar.gz)))
-
-ifeq ($(MOZ_BUILD_APP),mobile/android)
-stage-all: stage-android
-endif
+$(foreach name,$(TEST_PKGS_TARZST),$(eval $(call package_archive,$(name),tar.zst)))
 
 # Prepare _tests before any of the other staging/packaging steps.
 # make-stage-dir is a prerequisite to all the stage-* targets in testsuite-targets.mk.
@@ -220,6 +177,7 @@ endif
 	cp $(topsrcdir)/testing/gtest/gtest_filter_sets.yml $(PKG_STAGE)/gtest
 	cp $(topsrcdir)/testing/gtest/rungtests.py $(PKG_STAGE)/gtest
 	cp $(topsrcdir)/testing/gtest/remotegtests.py $(PKG_STAGE)/gtest
+	cp $(topsrcdir)/testing/gtest/suites.py $(PKG_STAGE)/gtest
 	cp $(topsrcdir)/testing/gtest/mach_test_package_commands.py $(PKG_STAGE)/gtest
 	cp $(DIST)/bin/dependentlibs.list.gtest $(PKG_STAGE)/gtest
 	cp $(DEPTH)/mozinfo.json $(PKG_STAGE)/gtest

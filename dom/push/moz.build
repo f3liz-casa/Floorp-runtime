@@ -1,4 +1,3 @@
-# vim: set filetype=python:
 # This Source Code Form is subject to the terms of the Mozilla Public
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
@@ -31,6 +30,14 @@ XPCOM_MANIFESTS += [
     "components.conf",
 ]
 
+XPIDL_SOURCES += [
+    "nsIPushErrorReporter.idl",
+    "nsIPushNotifier.idl",
+    "nsIPushService.idl",
+]
+
+XPIDL_MODULE = "dom_push"
+
 MOCHITEST_MANIFESTS += [
     "test/mochitest.toml",
 ]
@@ -40,6 +47,7 @@ XPCSHELL_TESTS_MANIFESTS += [
 ]
 
 EXPORTS.mozilla.dom += [
+    "Declarative.h",
     "PushManager.h",
     "PushNotifier.h",
     "PushSubscription.h",
@@ -47,6 +55,7 @@ EXPORTS.mozilla.dom += [
 ]
 
 UNIFIED_SOURCES += [
+    "Declarative.cpp",
     "PushManager.cpp",
     "PushNotifier.cpp",
     "PushSubscription.cpp",
@@ -61,5 +70,14 @@ LOCAL_INCLUDES += [
     "../base",
     "../ipc",
 ]
+
+if CONFIG["COMPILE_ENVIRONMENT"]:
+    CbindgenHeader(
+        "dom_push_rust_generated.h",
+        inputs=["/dom/push/rust"],
+    )
+    EXPORTS.mozilla.dom += [
+        "!dom_push_rust_generated.h",
+    ]
 
 FINAL_LIBRARY = "xul"

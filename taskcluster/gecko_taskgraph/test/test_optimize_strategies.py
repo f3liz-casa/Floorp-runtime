@@ -2,6 +2,7 @@
 # http://creativecommons.org/publicdomain/zero/1.0/
 
 
+import json
 import time
 from datetime import datetime
 from time import mktime
@@ -11,8 +12,11 @@ from mozunit import main
 from taskgraph.optimize.base import registry
 from taskgraph.task import Task
 from taskgraph.util.copy import deepcopy
+from taskgraph.util.python_path import find_object
+from taskgraph.util.yaml import load_yaml
 
-from gecko_taskgraph.optimize import project
+from gecko_taskgraph import GECKO
+from gecko_taskgraph.optimize import experimental, perf_batching, project
 from gecko_taskgraph.optimize.backstop import SkipUnlessBackstop, SkipUnlessPushInterval
 from gecko_taskgraph.optimize.bugbug import (
     FALLBACK,
@@ -20,7 +24,12 @@ from gecko_taskgraph.optimize.bugbug import (
     DisperseGroups,
     SkipUnlessDebug,
 )
+from gecko_taskgraph.optimize.docs import SkipUnlessSphinxJs
 from gecko_taskgraph.optimize.mozlint import SkipUnlessMozlint
+from gecko_taskgraph.optimize.perf_batching import (
+    PERF_CADENCE_STRATEGIES,
+    SkipUnlessTimeSinceLastBatch,
+)
 from gecko_taskgraph.optimize.strategies import SkipUnlessMissing, SkipUnlessSchedules
 from gecko_taskgraph.util.backstop import BACKSTOP_PUSH_INTERVAL
 from gecko_taskgraph.util.bugbug import (
@@ -32,7 +41,7 @@ from gecko_taskgraph.util.bugbug import (
 
 @pytest.fixture(autouse=True)
 def clear_push_schedules_memoize():
-    push_schedules.clear()
+    push_schedules.cache_clear()
 
 
 @pytest.fixture
@@ -358,9 +367,12 @@ def test_bugbug_multiple_pushes(responses, params):
     labels = [
         t.label for t in default_tasks if not opt.should_remove_task(t, params, {})
     ]
-    assert sorted(labels) == sorted(
-        ["task-0-label", "task-1-label", "task-2-label", "task-4-label"]
-    )
+    assert sorted(labels) == sorted([
+        "task-0-label",
+        "task-1-label",
+        "task-2-label",
+        "task-4-label",
+    ])
 
 
 def test_bugbug_timeout(monkeypatch, responses, params):
@@ -513,6 +525,134 @@ def test_project_autoland_test(monkeypatch, responses, params):
     assert scheduled == {"task-0-label", "task-1-label"}
 
 
+perf_batch_tasks = list(
+    generate_tasks(
+        {"attributes": {"unittest_suite": "raptor"}},
+        {"attributes": {"unittest_suite": "talos"}},
+        {"attributes": {"unittest_suite": "awsy"}},
+        {"attributes": {"perftest_name": "browsertime"}},
+        {"attributes": {"unittest_suite": "mochitest-plain"}},
+        {"attributes": {"build_type": "opt"}},
+    )
+)
+
+
+def test_perf_cadence_aliases(params):
+    """The perf-cadence aliases behave identically to the strategies they
+    wrap, so assigning them to perf tasks changes nothing until a shadow
+    scheduler (or later, production) overrides them."""
+    task = perf_batch_tasks[0]
+    pairs = [
+        ("perf-cadence-android", "skip-unless-android-perftest-backstop"),
+        ("perf-cadence-backstop", "skip-unless-backstop"),
+        ("perf-cadence-expanded", "skip-unless-expanded"),
+    ]
+    for backstop in (True, False):
+        for pushlog_id in (10, 11, 20):
+            params["backstop"] = backstop
+            params["android_perftest_backstop"] = backstop
+            params["pushlog_id"] = pushlog_id
+            for alias, original in pairs:
+                assert bool(
+                    registry[alias].should_remove_task(task, params, None)
+                ) == bool(registry[original].should_remove_task(task, params, None))
+
+    # perf-cadence-default forwards to the default `test` strategy.
+    assert registry["perf-cadence-default"].substrategies[0] is registry["test"]
+
+
+def test_perf_cadence_default_mirrors_test():
+    """Wherever `test` is overridden, talos/awsy (judged through
+    perf-cadence-default) get the identical override."""
+    assert project.autoland["perf-cadence-default"] is project.autoland["test"]
+    assert project.beta["perf-cadence-default"] is project.beta["test"]
+    assert (
+        experimental.bugbug_reduced["perf-cadence-default"]
+        is experimental.bugbug_reduced["test"]
+    )
+
+
+def test_perf_batch_overrides():
+    overrides = experimental.perf_fixed_batch_10
+    assert overrides["build"] is project.autoland["build"]
+    assert overrides["test"] is project.autoland["test"]
+
+    batch = overrides["perf-cadence-expanded"]
+    assert isinstance(batch, SkipUnlessPushInterval)
+    assert batch.push_interval == 10
+    for name in PERF_CADENCE_STRATEGIES:
+        assert overrides[name] is batch
+
+
+def test_skip_unless_time_since_last_batch(monkeypatch, params):
+    saved = []
+    monkeypatch.setattr(perf_batching, "save_state", saved.append)
+
+    def set_state(state):
+        monkeypatch.setattr(perf_batching, "load_state", lambda *args: state)
+
+    task = perf_batch_tasks[0]
+    params["pushdate"] = 1000000
+
+    # Cold start: kept, the current push becomes the last batch.
+    opt = SkipUnlessTimeSinceLastBatch(5.5, "perf_time_batch_5_5h")
+    params["pushlog_id"] = 100
+    set_state(None)
+    assert not opt.should_remove_task(task, params, None)
+    assert saved[-1]["batched"] and saved[-1]["cold_start"]
+    assert saved[-1]["last_batch"]["pushlog_id"] == 100
+
+    # Not enough time since the last batch: removed, last batch carried over.
+    opt = SkipUnlessTimeSinceLastBatch(5.5, "perf_time_batch_5_5h")
+    params["pushlog_id"] = 101
+    set_state({"last_batch": {"pushlog_id": 90, "pushdate": 1000000 - 19800 + 60}})
+    assert opt.should_remove_task(task, params, None)
+    assert not saved[-1]["batched"] and not saved[-1]["cold_start"]
+    assert saved[-1]["last_batch"]["pushlog_id"] == 90
+
+    # Interval elapsed: kept, the last batch advances to the current push.
+    opt = SkipUnlessTimeSinceLastBatch(5.5, "perf_time_batch_5_5h")
+    params["pushlog_id"] = 102
+    set_state({"last_batch": {"pushlog_id": 90, "pushdate": 1000000 - 19800}})
+    assert not opt.should_remove_task(task, params, None)
+    assert saved[-1]["batched"]
+    assert saved[-1]["last_batch"]["pushlog_id"] == 102
+
+    # The decision and state are computed once per push.
+    assert len(saved) == 3
+    assert not opt.should_remove_task(task, params, None)
+    assert len(saved) == 3
+
+
+def test_save_state(monkeypatch, tmp_path):
+    monkeypatch.delenv(perf_batching.STATE_PATH_ENVVAR, raising=False)
+    perf_batching.save_state({"batched": True})
+
+    state_path = tmp_path / "state" / "state.json"
+    monkeypatch.setenv(perf_batching.STATE_PATH_ENVVAR, str(state_path))
+    perf_batching.save_state({"batched": True})
+    assert json.loads(state_path.read_text()) == {"batched": True}
+
+
+def test_shadow_scheduler_strategies_resolve():
+    """Every strategy referenced by a shadow scheduler task resolves to a
+    non-empty strategy override dict."""
+    tasks = load_yaml(
+        GECKO, "taskcluster", "kinds", "source-test", "shadow-scheduler.yml"
+    )
+    strategies = {
+        name: task["worker"]["env"]["TASKGRAPH_OPTIMIZE_STRATEGIES"]
+        for name, task in tasks.items()
+        if name != "task-defaults"
+    }
+    assert strategies
+
+    for name, strategy_path in strategies.items():
+        overrides = find_object(strategy_path)
+        assert isinstance(overrides, dict), name
+        assert overrides, name
+
+
 @pytest.mark.parametrize(
     "pushed_files,to_lint,expected",
     [
@@ -587,18 +727,20 @@ def test_mozlint_should_remove_task2(
     assert result == expected
 
 
-def test_skip_unless_missing(responses, params):
+def test_skip_unless_missing(monkeypatch, responses, params):
     opt = SkipUnlessMissing()
     task = deepcopy(default_tasks[0])
     task.task["deadline"] = "2024-01-02T00:00:00.000Z"
     index = "foo.bar.baz"
     task_id = "abc"
-    root_url = "https://firefox-ci-tc.services.mozilla.com/api"
+    root_url = "https://taskcluster.example.com"
+    monkeypatch.delenv("TASKCLUSTER_PROXY_URL", raising=False)
+    monkeypatch.setenv("TASKCLUSTER_ROOT_URL", root_url)
 
     # Task is missing, don't optimize
     responses.add(
         responses.GET,
-        f"{root_url}/index/v1/task/{index}",
+        f"{root_url}/api/index/v1/task/{index}",
         status=404,
     )
     result = opt.should_remove_task(task, params, index)
@@ -607,13 +749,13 @@ def test_skip_unless_missing(responses, params):
     # Task is found but failed, don't optimize
     responses.replace(
         responses.GET,
-        f"{root_url}/index/v1/task/{index}",
+        f"{root_url}/api/index/v1/task/{index}",
         json={"taskId": task_id},
         status=200,
     )
     responses.add(
         responses.GET,
-        f"{root_url}/queue/v1/task/{task_id}/status",
+        f"{root_url}/api/queue/v1/task/{task_id}/status",
         json={"status": {"state": "failed"}},
         status=200,
     )
@@ -623,13 +765,13 @@ def test_skip_unless_missing(responses, params):
     # Task is found and passed but expires before deadline, don't optimize
     responses.replace(
         responses.GET,
-        f"{root_url}/index/v1/task/{index}",
+        f"{root_url}/api/index/v1/task/{index}",
         json={"taskId": task_id},
         status=200,
     )
     responses.replace(
         responses.GET,
-        f"{root_url}/queue/v1/task/{task_id}/status",
+        f"{root_url}/api/queue/v1/task/{task_id}/status",
         json={"status": {"state": "completed", "expires": "2024-01-01T00:00:00.000Z"}},
         status=200,
     )
@@ -639,13 +781,13 @@ def test_skip_unless_missing(responses, params):
     # Task is found and passed and expires after deadline, optimize
     responses.replace(
         responses.GET,
-        f"{root_url}/index/v1/task/{index}",
+        f"{root_url}/api/index/v1/task/{index}",
         json={"taskId": task_id},
         status=200,
     )
     responses.replace(
         responses.GET,
-        f"{root_url}/queue/v1/task/{task_id}/status",
+        f"{root_url}/api/queue/v1/task/{task_id}/status",
         json={"status": {"state": "completed", "expires": "2024-01-03T00:00:00.000Z"}},
         status=200,
     )
@@ -656,17 +798,73 @@ def test_skip_unless_missing(responses, params):
     task.task["deadline"] = {"relative-datestamp": "1 day"}
     responses.replace(
         responses.GET,
-        f"{root_url}/index/v1/task/{index}",
+        f"{root_url}/api/index/v1/task/{index}",
         json={"taskId": task_id},
         status=200,
     )
     responses.replace(
         responses.GET,
-        f"{root_url}/queue/v1/task/{task_id}/status",
+        f"{root_url}/api/queue/v1/task/{task_id}/status",
         json={"status": {"state": "completed", "expires": "2024-01-03T00:00:00.000Z"}},
         status=200,
     )
     opt.should_remove_task(task, params, index)
+
+
+@pytest.mark.parametrize(
+    "files_changed,js_source_paths,expected",
+    [
+        pytest.param(
+            [],
+            ["browser/components/urlbar"],
+            True,
+            id="no_files_changed",
+        ),
+        pytest.param(
+            ["browser/components/urlbar/UrlbarView.sys.mjs"],
+            ["browser/components/urlbar"],
+            False,
+            id="matching_file",
+        ),
+        pytest.param(
+            ["browser/components/urlbar/content/quickactions.js"],
+            ["browser/components/urlbar", "browser/components/urlbar/content"],
+            False,
+            id="matching_nested_file",
+        ),
+        pytest.param(
+            ["browser/components/migration/MigrationUtils.sys.mjs"],
+            ["browser/components/urlbar"],
+            True,
+            id="non_matching_file",
+        ),
+        pytest.param(
+            ["README.md", "browser/components/urlbar/UrlbarInput.sys.mjs"],
+            ["browser/components/urlbar"],
+            False,
+            id="one_matching_one_not",
+        ),
+        pytest.param(
+            ["toolkit/actors/AutoScrollChild.sys.mjs"],
+            ["toolkit/actors", "browser/components/urlbar"],
+            False,
+            id="matches_first_path",
+        ),
+    ],
+)
+def test_skip_unless_sphinx_js(
+    monkeypatch, params, files_changed, js_source_paths, expected
+):
+    opt = SkipUnlessSphinxJs()
+
+    def mock_get_js_source_paths():
+        return js_source_paths
+
+    monkeypatch.setattr(opt, "_get_js_source_paths", mock_get_js_source_paths)
+    params["files_changed"] = files_changed
+
+    result = opt.should_remove_task(default_tasks[0], params, None)
+    assert result == expected
 
 
 if __name__ == "__main__":

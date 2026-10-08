@@ -88,6 +88,11 @@ the global scope.
 .. js:autofunction:: test_driver.bless
 ```
 
+### Browsing Context ###
+```eval_rst
+.. js:autofunction:: test_driver.create_window
+```
+
 ### Window State ###
 ```eval_rst
 .. js:autofunction:: test_driver.minimize_window
@@ -191,6 +196,14 @@ the global scope.
 .. js:autofunction:: test_driver.set_display_features
 .. js:autofunction:: test_driver.clear_display_features
 ```
+
+### Global Privacy Control ###
+
+```eval_rst
+.. js:autofunction:: test_driver.get_global_privacy_control
+.. js:autofunction:: test_driver.set_global_privacy_control
+```
+
 
 ### Using test_driver in other browsing contexts ###
 
@@ -341,4 +354,5 @@ Emulation of browser APIs via [WebDriver BiDi Emulation](https://www.w3.org/TR/w
 .. js:autofunction:: test_driver.bidi.emulation.set_geolocation_override
 .. js:autofunction:: test_driver.bidi.emulation.set_locale_override
 .. js:autofunction:: test_driver.bidi.emulation.set_screen_orientation_override
+.. js:autofunction:: test_driver.bidi.emulation.set_touch_override
 ```

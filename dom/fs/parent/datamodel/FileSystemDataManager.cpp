@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -21,6 +19,7 @@
 #include "mozIStorageService.h"
 #include "mozStorageCID.h"
 #include "mozilla/Result.h"
+#include "mozilla/ScopeExit.h"
 #include "mozilla/StaticPtr.h"
 #include "mozilla/dom/FileSystemLog.h"
 #include "mozilla/dom/FileSystemManagerParent.h"
@@ -55,9 +54,9 @@ namespace {
 // The assertion type must be the same as the assertion type used for defining
 // the base class for FileSystemDataManager in FileSystemDataManager.h!
 using FileSystemDataManagerHashKey =
-    std::conditional<ReleaseAssertEnabled::value,
-                     quota::nsCStringHashKeyWithDisabledMemmove,
-                     nsCStringHashKey>::type;
+    std::conditional_t<ReleaseAssertEnabled::value,
+                       quota::nsCStringHashKeyWithDisabledMemmove,
+                       nsCStringHashKey>;
 
 // Raw (but checked when the diagnostic assert is enabled) references as we
 // don't want to keep FileSystemDataManager objects alive forever. When a
@@ -229,10 +228,8 @@ FileSystemDataManager::GetOrCreateFileSystemDataManager(
                                         NS_STREAMTRANSPORTSERVICE_CONTRACTID),
                 CreatePromise::CreateAndReject(NS_ERROR_FAILURE, __func__));
 
-  nsCString taskQueueName("OPFS "_ns + aOriginMetadata.mOrigin);
-
   RefPtr<TaskQueue> ioTaskQueue =
-      TaskQueue::Create(do_AddRef(streamTransportService), taskQueueName.get());
+      TaskQueue::Create(do_AddRef(streamTransportService), "OPFS");
 
   auto dataManager = MakeRefPtr<FileSystemDataManager>(
       aOriginMetadata, std::move(quotaManager),
@@ -466,6 +463,17 @@ Result<FileId, QMResult> FileSystemDataManager::LockShared(
   }
 
   auto& count = mSharedLocks.LookupOrInsert(aEntryId);
+
+  // LookupOrInsert may have created a new entry with count 0. If any of the
+  // operations below fail, we must remove it so IsLocked() doesn't see a
+  // stale zero-count entry. When count > 0, another shared lock already
+  // exists and the entry must stay.
+  auto removeOnFailure = MakeScopeExit([&] {
+    if (count == 0) {
+      mSharedLocks.Remove(aEntryId);
+    }
+  });
+
   if (!(1u + CheckedUint32(count)).isValid()) {  // don't make the count invalid
     return Err(QMResult(NS_ERROR_UNEXPECTED));
   }
@@ -479,6 +487,7 @@ Result<FileId, QMResult> FileSystemDataManager::LockShared(
   // quota usage until the (external) blocker is gone or the file is removed.
   QM_TRY(QM_TO_RESULT(mDatabaseManager->BeginUsageTracking(fileId)));
 
+  removeOnFailure.release();
   ++count;
   LOG_VERBOSE(("SharedLock %u", count));
 

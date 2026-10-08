@@ -7,7 +7,7 @@
 const { Timeouts } = ChromeUtils.importESModule(
   "chrome://remote/content/shared/webdriver/Capabilities.sys.mjs"
 );
-const { getWebDriverSessionById, WebDriverSession } =
+const { getWebDriverSessionById, hasActiveWebDriverSession, WebDriverSession } =
   ChromeUtils.importESModule(
     "chrome://remote/content/shared/webdriver/Session.sys.mjs"
   );
@@ -22,8 +22,37 @@ function createSession(options = {}) {
     flags.add("http");
   }
 
-  return new WebDriverSession(capabilities, flags, connection);
+  return new WebDriverSession(capabilities, flags, { connection });
 }
+
+// Has to run before the other tasks, which leave sessions behind and would
+// prevent hasActiveWebDriverSession from returning false.
+add_task(function test_hasActiveWebDriverSession() {
+  const topic = "webdriver-session-changed";
+  let notifications = 0;
+  const observer = () => notifications++;
+  Services.obs.addObserver(observer, topic);
+
+  ok(!hasActiveWebDriverSession(), "No active session initially");
+
+  const session1 = createSession();
+  equal(notifications, 1, "Creating a session sent a notification");
+  ok(hasActiveWebDriverSession(), "Session is active after creation");
+
+  const session2 = createSession();
+  equal(notifications, 2, "Creating a second session sent a notification");
+  ok(hasActiveWebDriverSession(), "Sessions are still active");
+
+  session1.destroy();
+  equal(notifications, 3, "Destroying a session sent a notification");
+  ok(hasActiveWebDriverSession(), "One session is still active");
+
+  session2.destroy();
+  equal(notifications, 4, "Destroying the last session sent a notification");
+  ok(!hasActiveWebDriverSession(), "No active session after destroying all");
+
+  Services.obs.removeObserver(observer, topic);
+});
 
 add_task(function test_WebDriverSession_ctor() {
   // Missing WebDriver session flags
@@ -120,6 +149,26 @@ add_task(function test_WebDriverSession_setters() {
 
   session.timeouts = timeouts;
   equal(session.timeouts, session.capabilities.get("timeouts"));
+});
+
+add_task(function test_WebDriverSession_userContext() {
+  const session = createSession();
+  equal(session.userContext, null, "Sessions are unrestricted by default");
+  ok(
+    !session.capabilities.has("moz:userContext"),
+    "Unrestricted sessions don't expose the moz:userContext capability"
+  );
+  session.destroy();
+
+  // Sessions restricted to the remote control container need a browser
+  // profile, they are covered by browser_WebDriverBiDi.js.
+
+  // moz:userContext can only be returned, never requested.
+  Assert.throws(
+    () =>
+      createSession({ capabilities: { "moz:userContext": "user-context" } }),
+    /SessionNotCreatedError/
+  );
 });
 
 add_task(function test_getWebDriverSessionById() {

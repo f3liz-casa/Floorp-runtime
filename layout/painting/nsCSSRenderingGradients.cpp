@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -15,9 +13,7 @@
 #include "gfxContext.h"
 #include "gfxGradientCache.h"
 #include "gfxUtils.h"
-#include "mozilla/ArrayUtils.h"
 #include "mozilla/ComputedStyle.h"
-#include "mozilla/DebugOnly.h"
 #include "mozilla/MathAlgorithms.h"
 #include "mozilla/ProfilerLabels.h"
 #include "mozilla/StaticPrefs_layout.h"
@@ -1368,8 +1364,8 @@ void nsCSSGradientRenderer::BuildWebRenderDisplayItems(
     aBuilder.PushLinearGradient(
         mozilla::wr::ToLayoutRect(gradientBounds),
         mozilla::wr::ToLayoutRect(clipBounds), aIsBackfaceVisible,
-        mozilla::wr::ToLayoutPoint(lineStart),
-        mozilla::wr::ToLayoutPoint(lineEnd), stops, extendMode,
+        mozilla::wr::ToLayoutVector2D(lineStart),
+        mozilla::wr::ToLayoutVector2D(lineEnd), stops, extendMode,
         mozilla::wr::ToLayoutSize(firstTileBounds.Size()),
         mozilla::wr::ToLayoutSize(tileSpacing));
   } else if (mGradient->IsRadial()) {
@@ -1379,7 +1375,7 @@ void nsCSSGradientRenderer::BuildWebRenderDisplayItems(
     aBuilder.PushRadialGradient(
         mozilla::wr::ToLayoutRect(gradientBounds),
         mozilla::wr::ToLayoutRect(clipBounds), aIsBackfaceVisible,
-        mozilla::wr::ToLayoutPoint(lineStart),
+        mozilla::wr::ToLayoutVector2D(lineStart),
         mozilla::wr::ToLayoutSize(gradientRadius), stops, extendMode,
         mozilla::wr::ToLayoutSize(firstTileBounds.Size()),
         mozilla::wr::ToLayoutSize(tileSpacing));
@@ -1388,7 +1384,7 @@ void nsCSSGradientRenderer::BuildWebRenderDisplayItems(
     aBuilder.PushConicGradient(
         mozilla::wr::ToLayoutRect(gradientBounds),
         mozilla::wr::ToLayoutRect(clipBounds), aIsBackfaceVisible,
-        mozilla::wr::ToLayoutPoint(gradientCenter), gradientAngle, stops,
+        mozilla::wr::ToLayoutVector2D(gradientCenter), gradientAngle, stops,
         extendMode, mozilla::wr::ToLayoutSize(firstTileBounds.Size()),
         mozilla::wr::ToLayoutSize(tileSpacing));
   }

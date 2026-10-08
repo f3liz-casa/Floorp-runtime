@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -14,6 +12,7 @@
 #include "mozilla/dom/PerformanceResourceTimingBinding.h"
 #include "mozilla/dom/PerformanceTimingBinding.h"
 #include "mozilla/glean/DomPerformanceMetrics.h"
+#include "nsICacheInfoChannel.h"
 #include "nsIDocShell.h"
 #include "nsIDocShellTreeItem.h"
 #include "nsIHttpChannel.h"
@@ -24,7 +23,7 @@ namespace mozilla::dom {
 NS_IMPL_CYCLE_COLLECTION_WRAPPERCACHE(PerformanceTiming, mPerformance)
 
 /* static */
-PerformanceTimingData* PerformanceTimingData::Create(
+UniquePtr<PerformanceTimingData> PerformanceTimingData::Create(
     nsITimedChannel* aTimedChannel, nsIHttpChannel* aChannel,
     DOMHighResTimeStamp aZeroTime, nsAString& aInitiatorType,
     nsAString& aEntryName) {
@@ -70,11 +69,11 @@ PerformanceTimingData* PerformanceTimingData::Create(
   // The last argument is the "zero time" (offset). Since we don't want
   // any offset for the resource timing, this will be set to "0" - the
   // resource timing returns a relative timing (no offset).
-  return new PerformanceTimingData(aTimedChannel, aChannel, 0);
+  return MakeUnique<PerformanceTimingData>(aTimedChannel, aChannel, 0);
 }
 
 /* static */
-PerformanceTimingData* PerformanceTimingData::Create(
+UniquePtr<PerformanceTimingData> PerformanceTimingData::Create(
     const CacheablePerformanceTimingData& aCachedData,
     DOMHighResTimeStamp aZeroTime, TimeStamp aStartTime, TimeStamp aEndTime,
     RenderBlockingStatusType aRenderBlockingStatus) {
@@ -85,8 +84,11 @@ PerformanceTimingData* PerformanceTimingData::Create(
     return nullptr;
   }
 
-  return new PerformanceTimingData(aCachedData, aZeroTime, aStartTime, aEndTime,
-                                   aRenderBlockingStatus);
+  // (Note: we have to use WrapUnique(new...) here instead of MakeUnique,
+  // because the PerformanceTimingData constructor that we're invoking
+  // happens to be private.)
+  return WrapUnique(new PerformanceTimingData(
+      aCachedData, aZeroTime, aStartTime, aEndTime, aRenderBlockingStatus));
 }
 
 PerformanceTiming::PerformanceTiming(Performance* aPerformance,
@@ -182,6 +184,8 @@ PerformanceTimingData::PerformanceTimingData(nsITimedChannel* aChannel,
     aChannel->GetConnectEnd(&mConnectEnd);
     aChannel->GetRequestStart(&mRequestStart);
     aChannel->GetResponseStart(&mResponseStart);
+    aChannel->GetFirstInterimResponseStart(&mFirstInterimResponseStart);
+    aChannel->GetFinalResponseHeadersStart(&mFinalResponseHeadersStart);
     aChannel->GetCacheReadStart(&mCacheReadStart);
     aChannel->GetResponseEnd(&mResponseEnd);
     aChannel->GetCacheReadEnd(&mCacheReadEnd);
@@ -233,6 +237,7 @@ PerformanceTimingData::PerformanceTimingData(nsITimedChannel* aChannel,
     // NOTE: Other fields are set by SetCacheablePropertiesFromHttpChannel,
     // called inside CacheablePerformanceTimingData constructor.
     SetTransferSizeFromHttpChannel(aHttpChannel);
+    SetServedFromCacheFromHttpChannel(aHttpChannel);
   }
 
   bool renderBlocking = false;
@@ -272,6 +277,7 @@ PerformanceTimingData::PerformanceTimingData(
       mResponseEnd(aEndTime),
       mZeroTime(aZeroTime),
       mTransferSize(kLocalCacheTransferSize),
+      mServedFromCache(true),
       mRenderBlockingStatus(aRenderBlockingStatus) {
   if (!StaticPrefs::dom_enable_performance()) {
     mZeroTime = 0;
@@ -323,6 +329,7 @@ PerformanceTimingData::PerformanceTimingData(
       mZeroTime(aIPCData.zeroTime()),
       mFetchStart(aIPCData.fetchStart()),
       mTransferSize(aIPCData.transferSize()),
+      mServedFromCache(aIPCData.servedFromCache()),
       mRenderBlockingStatus(aIPCData.renderBlocking()
                                 ? RenderBlockingStatusType::Blocking
                                 : RenderBlockingStatusType::Non_blocking) {}
@@ -331,11 +338,11 @@ IPCPerformanceTimingData PerformanceTimingData::ToIPC() {
   nsTArray<IPCServerTiming> ipcServerTiming;
   for (auto& serverTimingData : mServerTiming) {
     nsAutoCString name;
-    Unused << serverTimingData->GetName(name);
+    (void)serverTimingData->GetName(name);
     double duration = 0;
-    Unused << serverTimingData->GetDuration(&duration);
+    (void)serverTimingData->GetDuration(&duration);
     nsAutoCString description;
-    Unused << serverTimingData->GetDescription(description);
+    (void)serverTimingData->GetDescription(description);
     ipcServerTiming.AppendElement(IPCServerTiming(name, duration, description));
   }
   bool renderBlocking =
@@ -349,7 +356,7 @@ IPCPerformanceTimingData PerformanceTimingData::ToIPC() {
       mEncodedBodySize, mTransferSize, mDecodedBodySize, mResponseStatus,
       mRedirectCount, renderBlocking, mContentType, mAllRedirectsSameOrigin,
       mAllRedirectsPassTAO, mSecureConnection, mBodyInfoAccessAllowed,
-      mTimingAllowed, mInitialized);
+      mTimingAllowed, mInitialized, mServedFromCache);
 }
 
 void CacheablePerformanceTimingData::SetCacheablePropertiesFromHttpChannel(
@@ -357,21 +364,21 @@ void CacheablePerformanceTimingData::SetCacheablePropertiesFromHttpChannel(
   MOZ_ASSERT(aHttpChannel);
 
   nsAutoCString protocol;
-  Unused << aHttpChannel->GetProtocolVersion(protocol);
+  (void)aHttpChannel->GetProtocolVersion(protocol);
   CopyUTF8toUTF16(protocol, mNextHopProtocol);
 
-  Unused << aHttpChannel->GetEncodedBodySize(&mEncodedBodySize);
-  Unused << aHttpChannel->GetDecodedBodySize(&mDecodedBodySize);
+  (void)aHttpChannel->GetEncodedBodySize(&mEncodedBodySize);
+  (void)aHttpChannel->GetDecodedBodySize(&mDecodedBodySize);
   if (mDecodedBodySize == 0) {
     mDecodedBodySize = mEncodedBodySize;
   }
 
   uint32_t responseStatus = 0;
-  Unused << aHttpChannel->GetResponseStatus(&responseStatus);
+  (void)aHttpChannel->GetResponseStatus(&responseStatus);
   mResponseStatus = static_cast<uint16_t>(responseStatus);
 
   nsAutoCString contentType;
-  Unused << aHttpChannel->GetContentType(contentType);
+  (void)aHttpChannel->GetContentType(contentType);
   CopyUTF8toUTF16(contentType, mContentType);
 
   mBodyInfoAccessAllowed =
@@ -386,11 +393,27 @@ void PerformanceTimingData::SetPropertiesFromHttpChannel(
     nsIHttpChannel* aHttpChannel, nsITimedChannel* aChannel) {
   SetCacheablePropertiesFromHttpChannel(aHttpChannel, aChannel);
   SetTransferSizeFromHttpChannel(aHttpChannel);
+  SetServedFromCacheFromHttpChannel(aHttpChannel);
 }
 
 void PerformanceTimingData::SetTransferSizeFromHttpChannel(
     nsIHttpChannel* aHttpChannel) {
-  Unused << aHttpChannel->GetTransferSize(&mTransferSize);
+  (void)aHttpChannel->GetTransferSize(&mTransferSize);
+}
+
+void PerformanceTimingData::SetServedFromCacheFromHttpChannel(
+    nsIHttpChannel* aHttpChannel) {
+  nsCOMPtr<nsICacheInfoChannel> cacheInfo = do_QueryInterface(aHttpChannel);
+  if (!cacheInfo) {
+    return;
+  }
+  nsICacheInfoChannel::CacheDisposition disposition =
+      nsICacheInfoChannel::kCacheUnresolved;
+  if (NS_FAILED(cacheInfo->GetCacheDisposition(&disposition))) {
+    return;
+  }
+  mServedFromCache = disposition == nsICacheInfoChannel::kCacheHit ||
+                     disposition == nsICacheInfoChannel::kCacheHitViaReval;
 }
 
 PerformanceTiming::~PerformanceTiming() = default;
@@ -741,6 +764,7 @@ DOMHighResTimeStamp PerformanceTimingData::ResponseStartHighRes(
   if (!StaticPrefs::dom_enable_performance() || !IsInitialized()) {
     return mZeroTime;
   }
+
   if (mResponseStart.IsNull() ||
       (!mCacheReadStart.IsNull() && mCacheReadStart < mResponseStart)) {
     mResponseStart = mCacheReadStart;
@@ -755,6 +779,34 @@ DOMHighResTimeStamp PerformanceTimingData::ResponseStartHighRes(
 
 DOMTimeMilliSec PerformanceTiming::ResponseStart() {
   return static_cast<int64_t>(mTimingData->ResponseStartHighRes(mPerformance));
+}
+
+DOMHighResTimeStamp PerformanceTimingData::FirstInterimResponseStartHighRes(
+    Performance* aPerformance) {
+  MOZ_ASSERT(aPerformance);
+
+  if (!StaticPrefs::dom_enable_performance() || !IsInitialized()) {
+    return mZeroTime;
+  }
+  if (mFirstInterimResponseStart.IsNull()) {
+    return 0;
+  }
+  return TimeStampToReducedDOMHighResOrFetchStart(aPerformance,
+                                                  mFirstInterimResponseStart);
+}
+
+DOMHighResTimeStamp PerformanceTimingData::FinalResponseHeadersStartHighRes(
+    Performance* aPerformance) {
+  MOZ_ASSERT(aPerformance);
+
+  if (!StaticPrefs::dom_enable_performance() || !IsInitialized()) {
+    return mZeroTime;
+  }
+  if (mFinalResponseHeadersStart.IsNull()) {
+    return 0;
+  }
+  return TimeStampToReducedDOMHighResOrFetchStart(aPerformance,
+                                                  mFinalResponseHeadersStart);
 }
 
 DOMHighResTimeStamp PerformanceTimingData::ResponseEndHighRes(

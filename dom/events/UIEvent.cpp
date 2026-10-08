@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -9,7 +7,6 @@
 #include "base/basictypes.h"
 #include "ipc/IPCMessageUtils.h"
 #include "ipc/IPCMessageUtilsSpecializations.h"
-#include "mozilla/ArrayUtils.h"
 #include "mozilla/Assertions.h"
 #include "mozilla/ContentEvents.h"
 #include "mozilla/EventStateManager.h"
@@ -17,6 +14,7 @@
 #include "mozilla/PresShell.h"
 #include "mozilla/TextEvents.h"
 #include "nsCOMPtr.h"
+#include "nsCharSeparatedTokenizer.h"
 #include "nsContentUtils.h"
 #include "nsIContent.h"
 #include "nsIDocShell.h"
@@ -134,7 +132,6 @@ nsIntPoint UIEvent::GetLayerPoint() const {
   if (mEvent->mFlags.mIsPositionless) {
     return nsIntPoint(0, 0);
   }
-
   if (!mEvent ||
       (mEvent->mClass != eMouseEventClass &&
        mEvent->mClass != eMouseScrollEventClass &&
@@ -146,14 +143,24 @@ nsIntPoint UIEvent::GetLayerPoint() const {
       !mPresContext || mEventIsInternal) {
     return mLayerPoint;
   }
-  // XXX I'm not really sure this is correct; it's my best shot, though
   nsIFrame* targetFrame = mPresContext->EventStateManager()->GetEventTarget();
-  if (!targetFrame) return mLayerPoint;
+  if (!targetFrame) {
+    return mLayerPoint;
+  }
+  // NOTE(emilio): This matches Blink to my knowledge, but it's generally not
+  // super-well specified, see https://github.com/w3c/uievents/issues/398
+  RelativeTo root{targetFrame->PresShell()->GetRootFrame()};
+  const nsPoint rootPoint =
+      nsLayoutUtils::GetEventCoordinatesRelativeTo(mEvent, root);
   nsIFrame* layer = nsLayoutUtils::GetClosestLayer(targetFrame);
-  nsPoint pt(
-      nsLayoutUtils::GetEventCoordinatesRelativeTo(mEvent, RelativeTo{layer}));
-  return nsIntPoint(nsPresContext::AppUnitsToIntCSSPixels(pt.x),
-                    nsPresContext::AppUnitsToIntCSSPixels(pt.y));
+  nsPoint layerRootPoint{0, 0};
+  if (nsLayoutUtils::TransformPoint(RelativeTo{layer}, RelativeTo{root},
+                                    layerRootPoint) !=
+      nsLayoutUtils::TRANSFORM_SUCCEEDED) {
+    return mLayerPoint;
+  }
+  return RoundedToInt(CSSPoint::FromAppUnits(rootPoint - layerRootPoint))
+      .ToUnknownPoint();
 }
 
 void UIEvent::DuplicatePrivateData() {
@@ -235,9 +242,9 @@ Modifiers UIEvent::ComputeModifierState(const nsAString& aModifiersList) {
   aModifiersList.BeginReading(listStart);
   aModifiersList.EndReading(listEnd);
 
-  for (uint32_t i = 0; i < std::size(kPairs); i++) {
+  for (auto entry : kPairs) {
     nsAString::const_iterator start(listStart), end(listEnd);
-    if (!FindInReadable(NS_ConvertASCIItoUTF16(kPairs[i].name), start, end)) {
+    if (!FindInReadable(NS_ConvertASCIItoUTF16(entry.name), start, end)) {
       continue;
     }
 
@@ -245,7 +252,7 @@ Modifiers UIEvent::ComputeModifierState(const nsAString& aModifiersList) {
         (end != listEnd && !NS_IsAsciiWhitespace(*(end)))) {
       continue;
     }
-    modifiers |= kPairs[i].modifier;
+    modifiers |= entry.modifier;
   }
 
   return modifiers;

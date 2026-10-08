@@ -33,6 +33,15 @@ function run_test() {
 }
 """
 
+SIMPLE_ENVCHECK_TEST = """
+function run_test() {
+  Assert.equal(
+    Services.env.get("FAKE_ENV_VAR_TO_TEST"),
+    "a value with spaces"
+  );
+}
+"""
+
 SIMPLE_UNCAUGHT_REJECTION_TEST = """
 function run_test() {
   Promise.reject(new Error("Test rejection."));
@@ -191,6 +200,14 @@ add_task(async function this_test_will_fail() {
     await Promise.resolve();
   }
   Assert.ok(false);
+});
+"""
+
+ADD_TASK_ABORT_FROM_TEST = """
+function run_test() { run_next_test(); }
+
+add_task(async function test_throws_abort() {
+  throw Components.Exception("", Cr.NS_ERROR_ABORT);
 });
 """
 
@@ -445,7 +462,7 @@ class XPCShellTestsTests(unittest.TestCase):
     """
 
     def __init__(self, name):
-        super(XPCShellTestsTests, self).__init__(name)
+        super().__init__(name)
         from buildconfig import substs
         from mozbuild.base import MozbuildObject
 
@@ -479,10 +496,9 @@ class XPCShellTestsTests(unittest.TestCase):
         self.log = six.StringIO()
         self.tempdir = tempfile.mkdtemp()
         logger = structured.commandline.setup_logging(
-            "selftest%s" % id(self), {}, {"tbpl": self.log}
+            f"selftest{id(self)}", {}, {"tbpl": self.log}
         )
         self.x = XPCShellTests(logger)
-        self.x.harness_timeout = 30 if not mozinfo.info["ccov"] else 60
 
     def tearDown(self):
         mozfile.remove(self.tempdir)
@@ -498,14 +514,15 @@ class XPCShellTestsTests(unittest.TestCase):
             f.write(contents)
         return fullpath
 
-    def writeManifest(self, tests, prefs=[]):
+    def writeManifest(self, tests, prefs=[], environment=[]):
         """
-        Write an xpcshell.ini in the temp directory and set
+        Write an xpcshell.toml in the temp directory and set
         self.manifest to its pathname. |tests| is a list containing
         either strings (for test names), or tuples with a test name
         as the first element and manifest conditions as the following
         elements. |prefs| is an optional list of prefs in the form of
-        "prefname=prefvalue" strings.
+        "prefname=prefvalue" strings. |environment| is an optional list of
+        environment variables in the form of "NAME=value" strings.
         """
         testlines = []
         for t in tests:
@@ -515,7 +532,7 @@ class XPCShellTestsTests(unittest.TestCase):
         prefslines = []
         for p in prefs:
             # Append prefs lines as indented inside "prefs=" manifest option.
-            prefslines.append('  "%s",' % p)
+            prefslines.append(f'  "{p}",')
 
         val = """
 [DEFAULT]
@@ -525,6 +542,10 @@ prefs = [
 """
         val += "\n".join(prefslines)
         val += "]\n"
+        if environment:
+            val += "environment = [\n"
+            val += "\n".join(f'  "{e}",' for e in environment)
+            val += "\n]\n"
         val += "\n".join(testlines)
         self.manifest = self.writeFile("xpcshell.toml", val)
 
@@ -542,37 +563,37 @@ prefs = [
         kwargs["shuffle"] = shuffle
         kwargs["verbose"] = verbose
         kwargs["headless"] = headless
-        kwargs["sequential"] = True
+        kwargs["selfTest"] = True  # Prevent singleFile from forcing sequential=True
         kwargs["testingModulesDir"] = self.testing_modules
         kwargs["utility_path"] = self.utility_path
         kwargs["repeat"] = 0
+        # Don't retry tests that are expected to fail
+        if not expected:
+            kwargs["retry"] = False
+        # Self-tests run sub-processes that include coverage flushing and other
+        # per-test overhead; use a generous factor so slow workers don't spuriously
+        # timeout, especially on ccov builds where flushing gcda files adds ~20s.
+        kwargs["timeoutFactor"] = 2.0 if mozinfo.info.get("ccov") else 1.5
 
-        startup_profiling = os.environ.pop("MOZ_PROFILER_STARTUP", None)
-        try:
-            self.assertEqual(
-                expected,
-                self.x.runTests(kwargs),
-                msg="""Tests should have %s, log:
+        self.assertEqual(
+            expected,
+            self.x.runTests(kwargs),
+            msg="""Tests should have {}, log:
 ========
-%s
+{}
 ========
-"""
-                % ("passed" if expected else "failed", self.log.getvalue()),
-            )
-        finally:
-            if startup_profiling:
-                os.environ["MOZ_PROFILER_STARTUP"] = startup_profiling
+""".format("passed" if expected else "failed", self.log.getvalue()),
+        )
 
     def _assertLog(self, s, expected):
         l = self.log.getvalue()
         self.assertEqual(
             expected,
             s in l,
-            msg="""Value %s %s in log:
+            msg="""Value {} {} in log:
 ========
-%s
-========"""
-            % (s, "expected" if expected else "not expected", l),
+{}
+========""".format(s, "expected" if expected else "not expected", l),
         )
 
     def assertInLog(self, s):
@@ -632,6 +653,22 @@ prefs = [
         self.assertInLog("Per-test extra prefs will be set:")
         self.assertInLog("fake.pref.to.test=true")
 
+    def testEnvironmentInManifest(self):
+        """
+        Check environment variables with spaces in their value are passed
+        through from xpcshell manifests.
+        """
+        self.writeFile("test_env.js", SIMPLE_ENVCHECK_TEST)
+        self.writeManifest(
+            tests=["test_env.js"],
+            environment=["FAKE_ENV_VAR_TO_TEST=a value with spaces"],
+        )
+
+        self.assertTestResult(True)
+        self.assertInLog(TEST_PASS_STRING)
+        self.assertNotInLog(TEST_FAIL_STRING)
+        self.assertEqual(1, self.x.passCount)
+
     def testPrefsInManifestNonVerbose(self):
         """
         Check prefs configuration are not logged in non verbose mode.
@@ -672,13 +709,11 @@ prefs = [
         unknown_pat = r"#\d\d\: \?\?\?\[.* \+0x[a-f0-9]+\]"
         self.assertFalse(
             any(re.search(unknown_pat, line) for line in log_lines),
-            "An stack frame without symbols was found in\n%s"
-            % pprint.pformat(log_lines),
+            f"An stack frame without symbols was found in\n{pprint.pformat(log_lines)}",
         )
         self.assertTrue(
             any(re.search(line_pat, line) for line in log_lines),
-            "No line resembling a stack frame was found in\n%s"
-            % pprint.pformat(log_lines),
+            f"No line resembling a stack frame was found in\n{pprint.pformat(log_lines)}",
         )
 
     def testChildPass(self):
@@ -1149,6 +1184,43 @@ add_test({
         self.assertInLog("run_next_test")
         self.assertInLog("run_test")
 
+    def testAddTaskFailureReportedOnce(self):
+        """
+        A failed assertion inside add_task() reports the single assertion
+        failure and nothing else. The marker the harness throws to unwind must
+        not surface as an extra exception report dumping harness-internal stack
+        frames into the log.
+        """
+        self.writeFile("test_add_task_failure_once.js", ADD_TASK_FAILURE_INSIDE)
+        self.writeManifest(["test_add_task_failure_once.js"])
+
+        self.assertTestResult(False)
+        self.assertEqual(1, self.x.failCount)
+        # A single in-task assertion failure should produce exactly two failure
+        # lines: the assertion itself and the per-file summary. The abort the
+        # harness throws to unwind must not be re-reported as an exception,
+        # which would dump a JS stack trace into the log.
+        log_lines = self.log.getvalue().splitlines()
+        fail_lines = [l for l in log_lines if "TEST-UNEXPECTED-FAIL" in l]
+        stack_lines = [l for l in log_lines if re.search(r"@.+:\d+(:\d+)?$", l)]
+        self.assertEqual(2, len(fail_lines), msg=pprint.pformat(log_lines))
+        self.assertEqual(0, len(stack_lines), msg=pprint.pformat(log_lines))
+
+    def testAddTaskAbortFromTest(self):
+        """
+        An NS_ERROR_ABORT thrown by the test itself (rather than by the harness
+        to unwind after a reported failure) is reported as a failure rather
+        than silently swallowed.
+        """
+        self.writeFile("test_add_task_abort_from_test.js", ADD_TASK_ABORT_FROM_TEST)
+        self.writeManifest(["test_add_task_abort_from_test.js"])
+
+        self.assertTestResult(False)
+        self.assertEqual(1, self.x.testCount)
+        self.assertEqual(0, self.x.passCount)
+        self.assertEqual(1, self.x.failCount)
+        self.assertInLog(TEST_FAIL_STRING)
+
     def testAddTaskSkip(self):
         self.writeFile("test_tasks_skip.js", ADD_TASK_SKIP)
         self.writeManifest(["test_tasks_skip.js"])
@@ -1191,7 +1263,7 @@ add_test({
         """
         manifest = []
         for i in range(0, 10):
-            filename = "test_pass_%d.js" % i
+            filename = f"test_pass_{i}.js"
             self.writeFile(filename, SIMPLE_PASSING_TEST)
             manifest.append(filename)
 
@@ -1491,9 +1563,9 @@ add_test({
         Check that the manifest entry overrides the explicit default.
         """
         self.writeFile("test_notHeadlessWhenFalseInManifest.js", HEADLESS_FALSE)
-        self.writeManifest(
-            [("test_notHeadlessWhenFalseInManifest.js", "headless = false")]
-        )
+        self.writeManifest([
+            ("test_notHeadlessWhenFalseInManifest.js", "headless = false")
+        ])
         self.assertTestResult(True, headless=True)
 
 

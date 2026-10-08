@@ -2,15 +2,24 @@
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
+import os
+import tempfile
+import zipfile
 from unittest import TestCase, mock
 
 import buildconfig
+import mozpack.path as mozpath
 import mozunit
 
 from mozbuild.artifacts import (
+    AndroidArtifactJob,
     ArtifactJob,
     GeckoJobConfiguration,
+    LinuxArtifactJob,
+    MacArtifactJob,
     ThunderbirdJobConfiguration,
+    UnfilteredProjectPackageArtifactJob,
+    WinArtifactJob,
 )
 
 
@@ -74,6 +83,78 @@ class TestArtifactJob(TestCase):
         # `MOZ_APP_VERSION_DISPLAY` won't have any impact.
         buildconfig.substs["MOZ_APP_VERSION_DISPLAY"] = ""
         self.assertEqual(job.candidate_trees, expected_trees)
+
+
+class TestLicensesArtifact(TestCase):
+    def test_only_filtered_jobs_download_licenses_json(self):
+        artifacts = [{"name": "public/build/licenses.json"}]
+        linux = LinuxArtifactJob(download_tests=False)
+        self.assertEqual(
+            list(linux.find_candidate_artifacts(artifacts)),
+            ["public/build/licenses.json"],
+        )
+        unfiltered = UnfilteredProjectPackageArtifactJob(download_tests=False)
+        self.assertEqual(list(unfiltered.find_candidate_artifacts(artifacts)), [])
+
+    def test_licenses_json_is_installed_for_gen_license_html(self):
+        job = FakeArtifactJob(download_tests=False)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            downloaded = os.path.join(tmpdir, "0123456789abcdef-licenses.json")
+            with open(downloaded, "w") as fh:
+                fh.write("{}")
+            job.process_artifact(downloaded, downloaded + ".jar")
+            with zipfile.ZipFile(downloaded + ".jar") as zf:
+                self.assertEqual(zf.namelist(), ["licenses.artifact.json"])
+
+
+class TestTestArtifactPatterns(TestCase):
+    JOB_CLASSES = (
+        ArtifactJob,
+        AndroidArtifactJob,
+        LinuxArtifactJob,
+        MacArtifactJob,
+        WinArtifactJob,
+    )
+
+    def _resolve(self, job_class, entry):
+        """Mimic how `process_tests_*_artifact` maps an archive entry: the first
+        matching pattern wins."""
+        for pattern, (src_prefix, dest_prefix) in job_class.test_artifact_patterns:
+            if mozpath.match(entry, pattern):
+                return mozpath.join(dest_prefix, mozpath.relpath(entry, src_prefix))
+        return None
+
+    def test_patterns_are_ordered(self):
+        # Several patterns overlap, so an unordered container (e.g. a set) makes
+        # the mapping depend on PYTHONHASHSEED.
+        for job_class in self.JOB_CLASSES:
+            self.assertIsInstance(
+                job_class.test_artifact_patterns, (list, tuple), job_class.__name__
+            )
+
+    def test_gmp_plugins_land_in_bin(self):
+        # The fake GMP plugin libraries must end up in dist/bin so that
+        # test_archive.py packages them; landing them in dist/plugins silently
+        # drops them from the test archive and crashes the GMP child process.
+        for job_class in self.JOB_CLASSES:
+            for entry in (
+                "bin/plugins/gmp-fake/1.0/libfake.so",
+                "bin/plugins/gmp-fakeopenh264/1.0/libfakeopenh264.so",
+                "bin/plugins/gmp-clearkey/0.1/libclearkey.so",
+            ):
+                self.assertEqual(
+                    self._resolve(job_class, entry),
+                    mozpath.join("bin", mozpath.relpath(entry, "bin/plugins")),
+                    f"{job_class.__name__}: {entry}",
+                )
+
+    def test_other_plugins_land_in_plugins(self):
+        for job_class in self.JOB_CLASSES:
+            self.assertEqual(
+                self._resolve(job_class, "bin/plugins/libnptest.so"),
+                "plugins/libnptest.so",
+                job_class.__name__,
+            )
 
 
 class TestThunderbirdMixin(TestCase):

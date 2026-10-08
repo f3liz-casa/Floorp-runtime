@@ -15,6 +15,7 @@
 #include "pk11func.h"
 #include "dev3hack.h"
 #include "secerr.h"
+#include "hasht.h"
 
 extern const NSSError NSS_ERROR_NOT_FOUND;
 extern const NSSError NSS_ERROR_INVALID_ARGUMENT;
@@ -28,9 +29,11 @@ nssToken_Destroy(
     NSSToken *tok)
 {
     if (tok) {
-        if (PR_ATOMIC_DECREMENT(&tok->base.refCount) == 0) {
+        PRInt32 refCount = PR_ATOMIC_DECREMENT(&tok->base.refCount);
+        PORT_ReleaseAssert(refCount >= 0);
+        if (refCount == 0) {
             PK11_FreeSlot(tok->pk11slot);
-            PZ_DestroyLock(tok->base.lock);
+            PR_DestroyLock(tok->base.lock);
             nssTokenObjectCache_Destroy(tok->cache);
             (void)nssSlot_Destroy(tok->slot);
             return nssArena_Destroy(tok->base.arena);
@@ -50,7 +53,8 @@ NSS_IMPLEMENT NSSToken *
 nssToken_AddRef(
     NSSToken *tok)
 {
-    PR_ATOMIC_INCREMENT(&tok->base.refCount);
+    PRInt32 refCount = PR_ATOMIC_INCREMENT(&tok->base.refCount);
+    PORT_ReleaseAssert(refCount > 1);
     return tok;
 }
 
@@ -991,6 +995,18 @@ nss_TokenUsePKCS11Trust(NSSToken *tok)
     if ((vers.major == 3) && (vers.minor < 2)) {
         return PR_FALSE;
     }
+    /* force the use of either PKCS11 trust or NSS trust */
+    /* this only affects output, input always accepts both trust
+     * types */
+    char *envp = PR_GetEnvSecure("NSS_TRUST_TYPE");
+    if (envp) {
+        if (PORT_Strcasecmp(envp, "PKCS11") == 0) {
+            return PR_TRUE;
+        }
+        if (PORT_Strcasecmp(envp, "NSS") == 0) {
+            return PR_FALSE;
+        }
+    }
     return PR_TRUE;
 }
 
@@ -1286,8 +1302,8 @@ nssToken_Digest(
     /* XXX the standard says this should work, but it doesn't */
     ckrv = CKAPI(epv)->C_Digest(session->handle, NULL, 0, NULL, &digestLen);
     if (ckrv != CKR_OK) {
-	nssSession_ExitMonitor(session);
-	return NULL;
+        nssSession_ExitMonitor(session);
+        return NULL;
     }
 #endif
     digestLen = 0; /* XXX for now */

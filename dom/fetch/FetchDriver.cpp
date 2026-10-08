@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -19,7 +17,8 @@
 #include "mozilla/StaticPrefs_network.h"
 #include "mozilla/StaticPrefs_privacy.h"
 #include "mozilla/TaskQueue.h"
-#include "mozilla/Unused.h"
+#include "mozilla/dom/BlobURL.h"
+#include "mozilla/dom/BlobURLChannel.h"
 #include "mozilla/dom/BlobURLProtocolHandler.h"
 #include "mozilla/dom/Document.h"
 #include "mozilla/dom/FetchPriority.h"
@@ -31,7 +30,9 @@
 #include "mozilla/dom/UserActivation.h"
 #include "mozilla/dom/WorkerCommon.h"
 #include "mozilla/ipc/PBackgroundSharedTypes.h"
+#include "mozilla/net/ChannelClassifierUtils.h"
 #include "mozilla/net/ContentRange.h"
+#include "mozilla/net/HttpBaseChannel.h"
 #include "mozilla/net/InterceptionInfo.h"
 #include "mozilla/net/NeckoChannelParams.h"
 #include "nsContentPolicyUtils.h"
@@ -57,35 +58,13 @@
 #include "nsNetUtil.h"
 #include "nsPrintfCString.h"
 #include "nsProxyRelease.h"
+#include "nsQueryObject.h"
 #include "nsStreamUtils.h"
 #include "nsStringStream.h"
 
 namespace mozilla::dom {
 
 namespace {
-
-void GetBlobURISpecFromChannel(nsIRequest* aRequest, nsCString& aBlobURISpec) {
-  MOZ_ASSERT(aRequest);
-
-  aBlobURISpec.SetIsVoid(true);
-
-  nsCOMPtr<nsIChannel> channel = do_QueryInterface(aRequest);
-  if (!channel) {
-    return;
-  }
-
-  nsCOMPtr<nsIURI> uri;
-  nsresult rv = NS_GetFinalChannelURI(channel, getter_AddRefs(uri));
-  if (NS_FAILED(rv)) {
-    return;
-  }
-
-  if (!dom::IsBlobURI(uri)) {
-    return;
-  }
-
-  uri->GetSpec(aBlobURISpec);
-}
 
 bool ShouldCheckSRI(const InternalRequest& aRequest,
                     const InternalResponse& aResponse) {
@@ -251,7 +230,8 @@ AlternativeDataStreamListener::OnStartRequest(nsIRequest* aRequest) {
   mStatus = AlternativeDataStreamListener::FALLBACK;
   mAlternativeDataCacheEntryId = 0;
   MOZ_ASSERT(mFetchDriver);
-  return mFetchDriver->OnStartRequest(aRequest);
+  RefPtr<FetchDriver> fetchDriver = mFetchDriver;
+  return fetchDriver->OnStartRequest(aRequest);
 }
 
 NS_IMETHODIMP
@@ -269,15 +249,16 @@ AlternativeDataStreamListener::OnDataAvailable(nsIRequest* aRequest,
   }
   if (mStatus == AlternativeDataStreamListener::FALLBACK) {
     MOZ_ASSERT(mFetchDriver);
-    return mFetchDriver->OnDataAvailable(aRequest, aInputStream, aOffset,
-                                         aCount);
+    RefPtr<FetchDriver> fetchDriver = mFetchDriver;
+    return fetchDriver->OnDataAvailable(aRequest, aInputStream, aOffset,
+                                        aCount);
   }
   return NS_OK;
 }
 
 NS_IMETHODIMP
-AlternativeDataStreamListener::OnStopRequest(nsIRequest* aRequest,
-                                             nsresult aStatusCode) {
+AlternativeDataStreamListener::OnStopRequest(
+    nsIRequest* aRequest, nsresult aStatusCode) MOZ_CAN_RUN_SCRIPT_BOUNDARY {
   AssertIsOnMainThread();
 
   // Alternative data loading is going to finish, breaking the reference cycle
@@ -362,7 +343,7 @@ FetchDriver::FetchDriver(SafeRefPtr<InternalRequest> aRequest,
   MOZ_ASSERT(aPrincipal);
   MOZ_ASSERT(aMainThreadEventTarget);
 
-  mIsTrackingFetch = net::UrlClassifierCommon::IsTrackingClassificationFlag(
+  mIsTrackingFetch = net::ChannelClassifierUtils::IsTrackingClassificationFlag(
       mTrackingFlags.thirdPartyFlags, false);
 }
 
@@ -445,7 +426,7 @@ void FetchDriver::UpdateReferrerInfoFromNewChannel(nsIChannel* aChannel) {
 
   nsAutoCString computedReferrerSpec;
   mRequest->SetReferrerPolicy(referrerInfo->ReferrerPolicy());
-  Unused << referrerInfo->GetComputedReferrerSpec(computedReferrerSpec);
+  (void)referrerInfo->GetComputedReferrerSpec(computedReferrerSpec);
   mRequest->SetReferrer(computedReferrerSpec);
 }
 
@@ -508,11 +489,7 @@ nsresult FetchDriver::HttpFetch(
   nsCOMPtr<nsIIOService> ios = do_GetIOService(&rv);
   NS_ENSURE_SUCCESS(rv, rv);
 
-  nsAutoCString url;
-  mRequest->GetURL(url);
-  nsCOMPtr<nsIURI> uri;
-  rv = NS_NewURI(getter_AddRefs(uri), url);
-  NS_ENSURE_SUCCESS(rv, rv);
+  nsCOMPtr<nsIURI> uri = mRequest->GetURL();
 
   // Unsafe requests aren't allowed with when using no-core mode.
   if (mRequest->Mode() == RequestMode::No_cors && mRequest->UnsafeRequest() &&
@@ -546,11 +523,14 @@ nsresult FetchDriver::HttpFetch(
 
       // Copied from AsyncOnChannelRedirect.
       for (const auto& redirect : fetchPreload->Redirects()) {
+        nsCOMPtr<nsIURI> uriNoFragment = redirect.URINoFragment();
         if (redirect.Flags() & nsIChannelEventSink::REDIRECT_INTERNAL) {
-          mRequest->SetURLForInternalRedirect(redirect.Flags(), redirect.Spec(),
+          mRequest->SetURLForInternalRedirect(redirect.Flags(),
+                                              WrapNotNull(uriNoFragment.get()),
                                               redirect.Fragment());
         } else {
-          mRequest->AddURL(redirect.Spec(), redirect.Fragment());
+          mRequest->AddURL(WrapNotNull(uriNoFragment.get()),
+                           redirect.Fragment());
         }
       }
 
@@ -637,11 +617,11 @@ nsresult FetchDriver::HttpFetch(
                        mLoadGroup, nullptr, /* aCallbacks */
                        loadFlags, ios);
   } else if (mClientInfo.isSome()) {
-    rv = NS_NewChannel(getter_AddRefs(chan), uri, mPrincipal, mClientInfo.ref(),
-                       mController, secFlags, mRequest->ContentPolicyType(),
-                       mCookieJarSettings, mPerformanceStorage, mLoadGroup,
-                       nullptr, /* aCallbacks */
-                       loadFlags, ios);
+    rv = NS_NewChannel(
+        getter_AddRefs(chan), uri, mPrincipal, mClientInfo.ref(), mController,
+        secFlags, mRequest->ContentPolicyType(), mCookieJarSettings,
+        mPerformanceStorage, mLoadGroup, nullptr, /* aCallbacks */
+        loadFlags, ios, /* aSandboxFlags */ 0, mAssociatedBrowsingContextID);
   } else {
     nsCOMPtr<nsIPrincipal> principal = mPrincipal;
     if (principal->IsSystemPrincipal() &&
@@ -662,6 +642,14 @@ nsresult FetchDriver::HttpFetch(
   }
   NS_ENSURE_SUCCESS(rv, rv);
 
+  // https://fetch.spec.whatwg.org/#concept-fetch
+  // MIME sniffing does not apply to fetch requests, only to browsing contexts.
+  // no-cors requests may need sniffing for Opaque Response Blocking (ORB).
+  if (mRequest->Mode() != RequestMode::No_cors) {
+    nsCOMPtr<nsILoadInfo> loadInfo = chan->LoadInfo();
+    loadInfo->SetSkipContentSniffing(true);
+  }
+
   if (mCSPEventListener) {
     nsCOMPtr<nsILoadInfo> loadInfo = chan->LoadInfo();
     rv = loadInfo->SetCspEventListener(mCSPEventListener);
@@ -676,8 +664,7 @@ nsresult FetchDriver::HttpFetch(
 
   if (mAssociatedBrowsingContextID) {
     nsCOMPtr<nsILoadInfo> loadInfo = chan->LoadInfo();
-    rv = loadInfo->SetWorkerAssociatedBrowsingContextID(
-        mAssociatedBrowsingContextID);
+    rv = loadInfo->SetAssociatedBrowsingContextID(mAssociatedBrowsingContextID);
     NS_ENSURE_SUCCESS(rv, rv);
   }
 
@@ -726,14 +713,6 @@ nsresult FetchDriver::HttpFetch(
           principal, mRequest->InterceptionContentPolicyType(), redirectChain,
           mRequest->InterceptionFromThirdParty()));
     }
-  }
-
-  if (mDocument && mDocument->GetEmbedderElement() &&
-      mDocument->GetEmbedderElement()->IsAnyOfHTMLElements(nsGkAtoms::object,
-                                                           nsGkAtoms::embed)) {
-    nsCOMPtr<nsILoadInfo> loadInfo = chan->LoadInfo();
-    rv = loadInfo->SetIsFromObjectOrEmbed(true);
-    NS_ENSURE_SUCCESS(rv, rv);
   }
 
   // Insert ourselves into the notification callbacks chain so we can set
@@ -853,9 +832,32 @@ nsresult FetchDriver::HttpFetch(
     if (bodyStream) {
       nsAutoCString method;
       mRequest->GetMethod(method);
+
+      // Streaming uploads (ReadableStream) require HTTP/2 or HTTP/3.
+      // Since browsers only use HTTP/2 over TLS, reject non-https URLs early.
+      if (mRequest->HasStreamBody()) {
+        bool isHttps = false;
+        rv = uri->SchemeIs("https", &isHttps);
+        if (NS_SUCCEEDED(rv) && !isHttps) {
+          // Reject streaming upload on non-https (which implies HTTP/1.1)
+          FailWithNetworkError(NS_ERROR_DOM_NETWORK_ERR);
+          return NS_ERROR_DOM_NETWORK_ERR;
+        }
+      }
+
+      // Mark the channel as streaming BEFORE calling ExplicitSetUploadStream
+      // so InternalSetUploadStream knows to skip normalization.
+      if (mRequest->HasStreamBody()) {
+        nsCOMPtr<nsIHttpChannel> httpChan = do_QueryInterface(chan);
+        RefPtr<mozilla::net::HttpBaseChannel> baseChan =
+            do_QueryObject(httpChan);
+        if (baseChan) {
+          baseChan->SetUploadStreamIsStreaming(true);
+        }
+      }
+
       rv = uploadChan->ExplicitSetUploadStream(bodyStream, contentType,
-                                               bodyLength, method,
-                                               false /* aStreamHasHeaders */);
+                                               bodyLength, method);
       NS_ENSURE_SUCCESS(rv, rv);
     }
   }
@@ -869,7 +871,9 @@ nsresult FetchDriver::HttpFetch(
     AutoTArray<nsCString, 5> unsafeHeaders;
     mRequest->Headers()->GetUnsafeHeaders(unsafeHeaders);
     nsCOMPtr<nsILoadInfo> loadInfo = chan->LoadInfo();
-    loadInfo->SetCorsPreflightInfo(unsafeHeaders, false);
+    // Request constructor step 39.3: a body with a null source sets the
+    // use-CORS-preflight flag, even with a safelisted method and headers.
+    loadInfo->SetCorsPreflightInfo(unsafeHeaders, mRequest->HasStreamBody());
   }
 
   if (mIsTrackingFetch && StaticPrefs::network_http_tailing_enabled() && cos) {
@@ -909,6 +913,7 @@ nsresult FetchDriver::HttpFetch(
           case RequestDestination::Worker:
           case RequestDestination::Xslt:
           case RequestDestination::Json:
+          case RequestDestination::Text:
             return FETCH_PRIORITY_ADJUSTMENT_FOR(link_preload_script,
                                                  fetchPriority);
           case RequestDestination::Image:
@@ -943,13 +948,14 @@ nsresult FetchDriver::HttpFetch(
 
   // Should set a Content-Range header for blob scheme, and also slice the
   // blob appropriately, so we process the Range header here for later use.
-  if (IsBlobURI(uri)) {
+  RefPtr<BlobURLChannel> blobChan = do_QueryObject(chan);
+  if (blobChan) {
     ErrorResult result;
     nsAutoCString range;
     mRequest->Headers()->Get("Range"_ns, range, result);
     MOZ_ASSERT(!result.Failed());
     if (!range.IsVoid()) {
-      rv = NS_SetChannelContentRangeForBlobURI(chan, uri, range);
+      rv = blobChan->SetRequestContentRangeHeader(range);
       if (NS_FAILED(rv)) {
         return rv;
       }
@@ -995,17 +1001,15 @@ nsresult FetchDriver::HttpFetch(
 
   // Step 4 onwards of "HTTP Fetch" is handled internally by Necko.
 
-  mChannel = chan;
+  mChannel = std::move(chan);
   return NS_OK;
 }
 
 SafeRefPtr<InternalResponse> FetchDriver::BeginAndGetFilteredResponse(
     SafeRefPtr<InternalResponse> aResponse, bool aFoundOpaqueRedirect) {
   MOZ_ASSERT(aResponse);
-  AutoTArray<nsCString, 4> reqURLList;
-  mRequest->GetURLListWithoutFragment(reqURLList);
-  MOZ_ASSERT(!reqURLList.IsEmpty());
-  aResponse->SetURLList(reqURLList);
+  MOZ_ASSERT(!mRequest->GetURLListWithoutFragment().IsEmpty());
+  aResponse->SetURLList(mRequest->GetURLListWithoutFragment());
   SafeRefPtr<InternalResponse> filteredResponse;
   if (aFoundOpaqueRedirect) {
     filteredResponse = aResponse->OpaqueRedirectResponse();
@@ -1069,7 +1073,7 @@ void FetchDriver::FailWithNetworkError(nsresult rv) {
 }
 
 NS_IMETHODIMP
-FetchDriver::OnStartRequest(nsIRequest* aRequest) {
+FetchDriver::OnStartRequest(nsIRequest* aRequest) MOZ_CAN_RUN_SCRIPT_BOUNDARY {
   FETCH_LOG(
       ("FetchDriver::OnStartRequest this=%p, request=%p", this, aRequest));
   AssertIsOnMainThread();
@@ -1124,6 +1128,25 @@ FetchDriver::OnStartRequest(nsIRequest* aRequest) {
                 contentLength == InternalResponse::UNKNOWN_BODY_SIZE);
 
   if (httpChannel) {
+    // Streaming uploads require HTTP/2 or HTTP/3 on the wire. A response
+    // synthesized by a service worker never touched the network, so its
+    // protocol version carries no information about the upload; only check
+    // responses that actually came from the network.
+    if (mRequest->HasStreamBody()) {
+      nsCOMPtr<nsILoadInfo> loadInfo = channel->LoadInfo();
+      bool synthesizedByServiceWorker =
+          loadInfo && loadInfo->GetServiceWorkerTaintingSynthesized();
+      if (!synthesizedByServiceWorker) {
+        nsAutoCString protocolVersion;
+        rv = httpChannel->GetProtocolVersion(protocolVersion);
+        if (NS_SUCCEEDED(rv) && !protocolVersion.EqualsLiteral("h2") &&
+            !protocolVersion.EqualsLiteral("h3")) {
+          FailWithNetworkError(NS_ERROR_DOM_NETWORK_ERR);
+          return NS_ERROR_DOM_NETWORK_ERR;
+        }
+      }
+    }
+
     channel->GetContentType(contentType);
 
     uint32_t responseStatus = 0;
@@ -1177,12 +1200,9 @@ FetchDriver::OnStartRequest(nsIRequest* aRequest) {
     // Should set a Content-Range header for blob scheme
     // (https://fetch.spec.whatwg.org/#scheme-fetch)
     nsAutoCString contentRange(VoidCString());
-    nsCOMPtr<nsIBaseChannel> baseChan = do_QueryInterface(mChannel);
-    if (baseChan) {
-      RefPtr<mozilla::net::ContentRange> range = baseChan->ContentRange();
-      if (range) {
-        range->AsHeader(contentRange);
-      }
+    RefPtr<BlobURLChannel> blobChan = do_QueryObject(mChannel);
+    if (blobChan && blobChan->GetResponseContentRange()) {
+      blobChan->GetResponseContentRange()->AsHeader(contentRange);
     }
 
     response = MakeSafeRefPtr<InternalResponse>(
@@ -1196,6 +1216,7 @@ FetchDriver::OnStartRequest(nsIRequest* aRequest) {
       MOZ_ASSERT(!result.Failed());
     }
 
+    nsCOMPtr<nsIBaseChannel> baseChan = do_QueryInterface(mChannel);
     if (baseChan) {
       RefPtr<CMimeType> fullMimeType(baseChan->FullMimeType());
       if (fullMimeType) {
@@ -1309,6 +1330,15 @@ FetchDriver::OnStartRequest(nsIRequest* aRequest) {
     response->SetBody(pipeInputStream, contentLength);
   }
 
+  RefPtr<mozilla::dom::BlobURLChannel> bc = do_QueryObject(aRequest);
+  if (bc) {
+    RefPtr<mozilla::dom::BlobImpl> blobImpl;
+    rv = bc->GetBackingBlob(getter_AddRefs(blobImpl));
+    if (!NS_WARN_IF(NS_FAILED(rv))) {
+      response->SetBodyBlobImpl(blobImpl);
+    }
+  }
+
   // If the request is a file channel, then remember the local path to
   // that file so we can later create File blobs rather than plain ones.
   nsCOMPtr<nsIFileChannel> fc = do_QueryInterface(aRequest);
@@ -1319,14 +1349,6 @@ FetchDriver::OnStartRequest(nsIRequest* aRequest) {
       nsAutoString path;
       file->GetPath(path);
       response->SetBodyLocalPath(path);
-    }
-  } else {
-    // If the request is a blob URI, then remember that URI so that we
-    // can later just use that blob instance instead of cloning it.
-    nsCString blobURISpec;
-    GetBlobURISpecFromChannel(aRequest, blobURISpec);
-    if (!blobURISpec.IsVoid()) {
-      response->SetBodyBlobURISpec(blobURISpec);
     }
   }
 
@@ -1402,7 +1424,7 @@ FetchDriver::OnStartRequest(nsIRequest* aRequest) {
   if (nsCOMPtr<nsIThreadRetargetableRequest> rr = do_QueryInterface(aRequest)) {
     RefPtr<TaskQueue> queue =
         TaskQueue::Create(sts.forget(), "FetchDriver STS Delivery Queue");
-    Unused << NS_WARN_IF(NS_FAILED(rr->RetargetDeliveryTo(queue)));
+    (void)NS_WARN_IF(NS_FAILED(rr->RetargetDeliveryTo(queue)));
   }
   return NS_OK;
 }
@@ -1421,7 +1443,8 @@ class DataAvailableRunnable final : public Runnable {
 
   NS_IMETHOD
   Run() override {
-    mObserver->OnDataAvailable();
+    RefPtr<FetchDriverObserver> observer = mObserver;
+    observer->OnDataAvailable();
     mObserver = nullptr;
     return NS_OK;
   }
@@ -1435,7 +1458,6 @@ struct SRIVerifierAndOutputHolder {
   SRICheckDataVerifier* mVerifier;
   nsIOutputStream* mOutputStream;
 
- private:
   SRIVerifierAndOutputHolder() = delete;
 };
 
@@ -1549,7 +1571,8 @@ FetchDriver::OnDataAvailable(nsIRequest* aRequest, nsIInputStream* aInputStream,
 }
 
 NS_IMETHODIMP
-FetchDriver::OnStopRequest(nsIRequest* aRequest, nsresult aStatusCode) {
+FetchDriver::OnStopRequest(nsIRequest* aRequest,
+                           nsresult aStatusCode) MOZ_CAN_RUN_SCRIPT_BOUNDARY {
   FETCH_LOG(("FetchDriver::OnStopRequest this=%p, request=%p", this, aRequest));
   AssertIsOnMainThread();
 
@@ -1713,14 +1736,30 @@ FetchDriver::AsyncOnChannelRedirect(nsIChannel* aOldChannel,
                                     nsIAsyncVerifyRedirectCallback* aCallback) {
   nsCOMPtr<nsIHttpChannel> oldHttpChannel = do_QueryInterface(aOldChannel);
   nsCOMPtr<nsIHttpChannel> newHttpChannel = do_QueryInterface(aNewChannel);
+
+  // Streaming uploads can only follow 303 redirects (which change method to
+  // GET) All other redirects fail because the stream is non-rewindable
+  if (mRequest->HasStreamBody() && oldHttpChannel) {
+    uint32_t responseStatus = 0;
+    nsresult rv = oldHttpChannel->GetResponseStatus(&responseStatus);
+    if (NS_SUCCEEDED(rv) && responseStatus != 303) {
+      // Non-303 redirect with streaming body: reject.
+      FailWithNetworkError(NS_ERROR_DOM_NETWORK_ERR);
+      aCallback->OnRedirectVerifyCallback(NS_ERROR_DOM_NETWORK_ERR);
+      return NS_OK;
+    }
+  }
+
   if (oldHttpChannel && newHttpChannel) {
     nsAutoCString method;
     mRequest->GetMethod(method);
 
-    // Fetch 4.4.11
+    // HTTP-redirect fetch, step 12: rewriting to GET drops the request body.
     bool rewriteToGET = false;
-    Unused << oldHttpChannel->ShouldStripRequestBodyHeader(method,
-                                                           &rewriteToGET);
+    (void)oldHttpChannel->ShouldStripRequestBodyHeader(method, &rewriteToGET);
+    if (rewriteToGET) {
+      mRequest->SetHasStreamBody(false);
+    }
 
     // we need to strip Authentication headers for cross-origin requests
     // Ref: https://fetch.spec.whatwg.org/#http-redirect-fetch
@@ -1742,11 +1781,6 @@ FetchDriver::AsyncOnChannelRedirect(nsIChannel* aOldChannel,
   if (NS_WARN_IF(NS_FAILED(rv))) {
     return rv;
   }
-  nsCString spec;
-  rv = uriClone->GetSpec(spec);
-  if (NS_WARN_IF(NS_FAILED(rv))) {
-    return rv;
-  }
   nsCString fragment;
   rv = uri->GetRef(fragment);
   if (NS_WARN_IF(NS_FAILED(rv))) {
@@ -1754,11 +1788,12 @@ FetchDriver::AsyncOnChannelRedirect(nsIChannel* aOldChannel,
   }
 
   if (!(aFlags & nsIChannelEventSink::REDIRECT_INTERNAL)) {
-    mRequest->AddURL(spec, fragment);
+    mRequest->AddURL(WrapNotNull(uriClone.get()), fragment);
   } else {
     // Overwrite the URL only when the request is redirected by a service
     // worker.
-    mRequest->SetURLForInternalRedirect(aFlags, spec, fragment);
+    mRequest->SetURLForInternalRedirect(aFlags, WrapNotNull(uriClone.get()),
+                                        fragment);
   }
 
   // In redirect, httpChannel already took referrer-policy into account, so
@@ -1818,7 +1853,7 @@ void FetchDriver::SetController(
   mController = aController;
 }
 
-PerformanceTimingData* FetchDriver::GetPerformanceTimingData(
+UniquePtr<PerformanceTimingData> FetchDriver::GetPerformanceTimingData(
     nsAString& aInitiatorType, nsAString& aEntryName) {
   MOZ_ASSERT(XRE_IsParentProcess());
   if (!mChannel) {

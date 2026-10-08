@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -7,9 +5,10 @@
 #ifndef CACHED_TABLE_ACCESSIBLE_H
 #define CACHED_TABLE_ACCESSIBLE_H
 
+#include "mozilla/RefPtr.h"
+#include "mozilla/UniquePtr.h"
 #include "mozilla/a11y/TableAccessible.h"
 #include "mozilla/a11y/TableCellAccessible.h"
-#include "mozilla/UniquePtr.h"
 #include "nsTHashMap.h"
 
 namespace mozilla::a11y {
@@ -65,7 +64,7 @@ class CachedTableCellAccessible final : public TableCellAccessible {
   // methods because we can't fetch a document by id. It's okay to use mAcc in
   // these methods because the caller has to hold the Accessible in order to
   // call them.
-  Accessible* mAcc;
+  RefPtr<Accessible> mAcc;
   uint32_t mRowIdx;
   uint32_t mColIdx;
   // The cell index of the previous implicit column header.
@@ -126,7 +125,10 @@ class CachedTableAccessible final : public TableAccessible {
       return 0;
     }
     // Verify that the cell's Accessible is valid.
-    mCells[cellIdx].Acc(mAcc);
+    if (!mCells[cellIdx].Acc(mAcc)) {
+      return 0;
+    }
+
     return mCells[cellIdx].ColExtent();
   }
 
@@ -136,7 +138,10 @@ class CachedTableAccessible final : public TableAccessible {
       return 0;
     }
     // Verify that the cell's Accessible is valid.
-    mCells[cellIdx].Acc(mAcc);
+    if (!mCells[cellIdx].Acc(mAcc)) {
+      return 0;
+    }
+
     return mCells[cellIdx].RowExtent();
   }
 
@@ -183,16 +188,19 @@ class CachedTableAccessible final : public TableAccessible {
       return false;
     }
     // Verify that the cell's Accessible is valid.
-    mCells[cellIdx].Acc(mAcc);
+    if (!mCells[cellIdx].Acc(mAcc)) {
+      return false;
+    }
+
     return mCells[cellIdx].Selected();
   }
 
   virtual uint32_t SelectedCellCount() override {
     uint32_t count = 0;
     for (auto& cell : mCells) {
-      // Verify that the cell's Accessible is valid.
-      cell.Acc(mAcc);
-      if (cell.Selected()) {
+      // Verify that the cell's Accessible is valid and then check if it's
+      // selected.
+      if (cell.Acc(mAcc) && cell.Selected()) {
         ++count;
       }
     }
@@ -223,7 +231,7 @@ class CachedTableAccessible final : public TableAccessible {
     for (auto& cell : mCells) {
       // Verify that the cell's Accessible is valid.
       Accessible* acc = cell.Acc(mAcc);
-      if (cell.Selected()) {
+      if (acc && cell.Selected()) {
         aCells->AppendElement(acc);
       }
     }
@@ -232,9 +240,9 @@ class CachedTableAccessible final : public TableAccessible {
   virtual void SelectedCellIndices(nsTArray<uint32_t>* aCells) override {
     for (uint32_t idx = 0; idx < mCells.Length(); ++idx) {
       CachedTableCellAccessible& cell = mCells[idx];
-      // Verify that the cell's Accessible is valid.
-      cell.Acc(mAcc);
-      if (cell.Selected()) {
+      // Verify that the cell's Accessible is valid and then check if it's
+      // selected.
+      if (cell.Acc(mAcc) && cell.Selected()) {
         aCells->AppendElement(idx);
       }
     }
@@ -272,7 +280,7 @@ class CachedTableAccessible final : public TableAccessible {
   // will be set to kNoCellIdx.
   void EnsureRowCol(uint32_t aRowIdx, uint32_t aColIdx);
 
-  Accessible* mAcc;  // The table Accessible.
+  RefPtr<Accessible> mAcc;
   // We track the column count because it might not be uniform across rows in
   // malformed tables.
   uint32_t mColCount = 0;

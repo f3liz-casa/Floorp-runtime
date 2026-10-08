@@ -1,12 +1,12 @@
-/* -*- Mode: C++; tab-width: 20; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- * This Source Code Form is subject to the terms of the Mozilla Public
+/* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "PrintTargetPDF.h"
 
-#include "cairo.h"
+#include "PrintTargetSkPDF.h"
 #include "cairo-pdf.h"
+#include "cairo.h"
 #include "mozilla/AppShutdown.h"
 #include "mozilla/StaticPrefs_print.h"
 #include "nsContentUtils.h"
@@ -48,10 +48,14 @@ PrintTargetPDF::~PrintTargetPDF() {
 }
 
 /* static */
-already_AddRefed<PrintTargetPDF> PrintTargetPDF::CreateOrNull(
+already_AddRefed<PrintTarget> PrintTargetPDF::CreateOrNull(
     nsIOutputStream* aStream, const IntSize& aSizeInPoints) {
   if (NS_WARN_IF(!aStream)) {
     return nullptr;
+  }
+
+  if (StaticPrefs::print_experimental_skpdf()) {
+    return PrintTargetSkPDF::CreateOrNull(aStream, aSizeInPoints);
   }
 
   cairo_surface_t* surface = cairo_pdf_surface_create_for_stream(
@@ -62,7 +66,7 @@ already_AddRefed<PrintTargetPDF> PrintTargetPDF::CreateOrNull(
 
   nsAutoString creatorName;
   if (NS_SUCCEEDED(nsContentUtils::GetLocalizedString(
-          nsContentUtils::eBRAND_PROPERTIES, "brandFullName", creatorName)) &&
+          PropertiesFile::BRAND_PROPERTIES, "brandFullName", creatorName)) &&
       !creatorName.IsEmpty()) {
     creatorName.Append(u" " MOZILLA_VERSION);
     cairo_pdf_surface_set_metadata(surface, CAIRO_PDF_METADATA_CREATOR,

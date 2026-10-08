@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -17,8 +15,8 @@
 #include "mozilla/dom/Document.h"
 #include "mozilla/dom/Event.h"
 #include "mozilla/dom/EventTarget.h"
-#include "mozilla/dom/FeaturePolicyUtils.h"
 #include "mozilla/dom/Navigator.h"
+#include "mozilla/dom/PermissionsPolicyUtils.h"
 #include "mozilla/dom/Promise.h"
 #include "mozilla/dom/WakeLockBinding.h"
 #include "nsCOMPtr.h"
@@ -65,7 +63,7 @@ WakeLockJS::RequestError WakeLockJS::WakeLockAllowedForDocument(
   }
 
   // Step 2. check policy-controlled feature screen-wake-lock
-  if (!FeaturePolicyUtils::IsFeatureAllowed(aDoc, u"screen-wake-lock"_ns)) {
+  if (!PermissionsPolicyUtils::IsFeatureAllowed(aDoc, u"screen-wake-lock"_ns)) {
     return RequestError::PolicyDisallowed;
   }
 
@@ -121,6 +119,7 @@ NS_IMPL_CYCLE_COLLECTION_UNLINK_BEGIN(WakeLockJS)
   tmp->DetachListeners();
   NS_IMPL_CYCLE_COLLECTION_UNLINK(mWindow)
   NS_IMPL_CYCLE_COLLECTION_UNLINK_PRESERVED_WRAPPER
+  NS_IMPL_CYCLE_COLLECTION_UNLINK_WEAK_REFERENCE
 NS_IMPL_CYCLE_COLLECTION_UNLINK_END
 
 NS_IMPL_CYCLE_COLLECTING_ADDREF(WakeLockJS)

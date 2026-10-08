@@ -14,8 +14,11 @@ ChromeUtils.defineESModuleGetters(lazy, {
   Capabilities: "chrome://remote/content/shared/webdriver/Capabilities.sys.mjs",
   Certificates: "chrome://remote/content/shared/webdriver/Certificates.sys.mjs",
   error: "chrome://remote/content/shared/webdriver/Errors.sys.mjs",
+  FilePickerHandler:
+    "chrome://remote/content/shared/webdriver/FilePickerHandler.sys.mjs",
   generateUUID: "chrome://remote/content/shared/UUID.sys.mjs",
   Log: "chrome://remote/content/shared/Log.sys.mjs",
+  NavigableManager: "chrome://remote/content/shared/NavigableManager.sys.mjs",
   registerProcessDataActor:
     "chrome://remote/content/shared/webdriver/process-actors/WebDriverProcessDataParent.sys.mjs",
   RootMessageHandler:
@@ -25,10 +28,13 @@ ChromeUtils.defineESModuleGetters(lazy, {
   TabManager: "chrome://remote/content/shared/TabManager.sys.mjs",
   unregisterProcessDataActor:
     "chrome://remote/content/shared/webdriver/process-actors/WebDriverProcessDataParent.sys.mjs",
+  UserContextManager:
+    "chrome://remote/content/shared/UserContextManager.sys.mjs",
   WebDriverBiDiConnection:
     "chrome://remote/content/webdriver-bidi/WebDriverBiDiConnection.sys.mjs",
   WebSocketHandshake:
     "chrome://remote/content/server/WebSocketHandshake.sys.mjs",
+  windowManager: "chrome://remote/content/shared/WindowManager.sys.mjs",
 });
 
 ChromeUtils.defineLazyGetter(lazy, "logger", () => lazy.Log.get());
@@ -37,11 +43,14 @@ XPCOMUtils.defineLazyServiceGetter(
   lazy,
   "aomStartup",
   "@mozilla.org/addons/addon-manager-startup;1",
-  "amIAddonManagerStartup"
+  Ci.amIAddonManagerStartup
 );
 
 // Global singleton that holds active WebDriver sessions
 const webDriverSessions = new Map();
+
+// Notification emitted when a session is created or destroyed.
+const NOTIFY_WEBDRIVER_SESSION_CHANGED = "webdriver-session-changed";
 
 /**
  * @typedef {Set} SessionConfigurationFlags
@@ -68,7 +77,9 @@ export class WebDriverSession {
   #http;
   #id;
   #messageHandler;
+  #navigableSeenNodes;
   #path;
+  #userContext;
 
   static SESSION_FLAG_BIDI = "bidi";
   static SESSION_FLAG_HTTP = "http";
@@ -116,6 +127,11 @@ export class WebDriverSession {
    *
    *  <dt><code>moz:webdriverClick</code> (boolean)
    *  <dd>(HTTP only) Use a WebDriver conforming <i>WebDriver::ElementClick</i>.
+   *
+   *  <dt><code>moz:userContext</code> (string)
+   *  <dd>Returned only for sessions which are restricted to a user context.
+   *   The user context id the session is restricted to. This capability can
+   *   only be returned, it is never accepted as an input capability.
    * </dl>
    *
    * <h4>WebAuthn</h4>
@@ -205,14 +221,20 @@ export class WebDriverSession {
    *     above.
    * @param {SessionConfigurationFlags} flags
    *     Session configuration flags.
-   * @param {WebDriverBiDiConnection=} connection
+   * @param {object=} options
+   * @param {WebDriverBiDiConnection=} options.connection
    *     An optional existing WebDriver BiDi connection to associate with the
    *     new session.
+   * @param {boolean=} options.useDedicatedContainer
+   *     True if the session should use a dedicated container (typically for
+   *     dynamically started servers). Defaults to false.
    *
    * @throws {SessionNotCreatedError}
    *     If, for whatever reason, a session could not be created.
    */
-  constructor(capabilities, flags, connection) {
+  constructor(capabilities, flags, options = {}) {
+    const { connection, useDedicatedContainer = false } = options;
+
     // List of handles for registered chrome:// URLs
     this.#chromeProtocolHandles = new Map();
 
@@ -246,6 +268,16 @@ export class WebDriverSession {
       throw new lazy.error.SessionNotCreatedError(e);
     }
 
+    this.#userContext = useDedicatedContainer
+      ? getRemoteControlUserContextId()
+      : null;
+    if (this.#userContext !== null) {
+      this.#capabilities.set("moz:userContext", this.#userContext);
+      lazy.logger.debug(
+        `Session restricted to user context ${this.#userContext}`
+      );
+    }
+
     if (this.proxy.init()) {
       lazy.logger.info(
         `Proxy settings initialized: ${JSON.stringify(this.proxy)}`
@@ -275,21 +307,38 @@ export class WebDriverSession {
 
     // Maps a Navigable (browsing context or content browser for top-level
     // browsing contexts) to a Set of nodeId's.
-    this.navigableSeenNodes = new WeakMap();
+    this.#navigableSeenNodes = new WeakMap();
 
     lazy.registerProcessDataActor();
 
+    // Start the tracking of browsing contexts to create Navigable ids.
+    lazy.NavigableManager.startTracking();
+    lazy.windowManager.startTracking();
+
+    if (this.#shouldDismissFileDialog()) {
+      lazy.FilePickerHandler.dismissFilePickers(this);
+    }
+
     webDriverSessions.set(this.#id, this);
+
+    Services.obs.notifyObservers(null, NOTIFY_WEBDRIVER_SESSION_CHANGED);
   }
 
   destroy() {
     webDriverSessions.delete(this.#id);
 
+    // Stop the tracking of browsing contexts when no WebDriver
+    // session exists anymore.
+    lazy.NavigableManager.stopTracking();
+    lazy.windowManager.stopTracking();
+
     lazy.unregisterProcessDataActor();
 
-    this.navigableSeenNodes = null;
+    this.#navigableSeenNodes = null;
 
-    lazy.Certificates.enableSecurityChecks();
+    if (this.acceptInsecureCerts) {
+      lazy.Certificates.enableSecurityChecks();
+    }
 
     // Close all open connections which unregister themselves.
     this.#connections.forEach(connection => connection.close());
@@ -310,11 +359,19 @@ export class WebDriverSession {
         this._onMessageHandlerProtocolEvent
       );
       this.#messageHandler.destroy();
+
+      // allowFilePickers(this) is safe to call. If there was no call to
+      // dismissFilePickers(this), it will be a no-op.
+      // Only needed if BiDi was enabled (and therefore a messageHandler
+      // instance was created).
+      lazy.FilePickerHandler.allowFilePickers(this);
     }
 
     for (const id of this.#chromeProtocolHandles.keys()) {
       this.unregisterChromeHandler(id);
     }
+
+    Services.obs.notifyObservers(null, NOTIFY_WEBDRIVER_SESSION_CHANGED);
   }
 
   get a11yChecks() {
@@ -331,6 +388,9 @@ export class WebDriverSession {
 
   set bidi(value) {
     this.#bidi = value;
+    if (this.#shouldDismissFileDialog()) {
+      lazy.FilePickerHandler.dismissFilePickers(this);
+    }
   }
 
   get capabilities() {
@@ -360,6 +420,10 @@ export class WebDriverSession {
     return this.#messageHandler;
   }
 
+  get navigableSeenNodes() {
+    return this.#navigableSeenNodes;
+  }
+
   get pageLoadStrategy() {
     return this.#capabilities.get("pageLoadStrategy");
   }
@@ -384,6 +448,18 @@ export class WebDriverSession {
     this.#capabilities.set("timeouts", timeouts);
   }
 
+  /**
+   * The user context id of the container created for this session.
+   * Bug 2072964 to start enforcing this restriction in commands and events.
+   * Used only in tests until then.
+   *
+   * @returns {string|null}
+   *     The user context id, or null if no user context was created.
+   */
+  get userContext() {
+    return this.#userContext;
+  }
+
   get userPromptHandler() {
     return this.#capabilities.get("unhandledPromptBehavior");
   }
@@ -391,6 +467,28 @@ export class WebDriverSession {
   get webSocketUrl() {
     return this.#capabilities.get("webSocketUrl");
   }
+
+  /**
+   * Implements the last steps of https://w3c.github.io/webdriver-bidi/#webdriver-bidi-file-dialog-opened
+   *
+   * Compared to the spec, this is only invoked to setup the FilePickerHandler and
+   * not on each file dialog opened event. This allows to keep the FilePickerHandler
+   * simple and simply cancel the picker.
+   */
+  #shouldDismissFileDialog = () => {
+    // Only relevant for active BiDi sessions.
+    if (!this.bidi) {
+      return false;
+    }
+
+    // Unlike other prompt handlers, the default behavior is to allow the file
+    // dialog to be opened. Only dismiss if the capability was explicitly set.
+    if (this.userPromptHandler.activePromptHandlers === null) {
+      return false;
+    }
+
+    return this.userPromptHandler.getPromptHandler("file").handler !== "ignore";
+  };
 
   async execute(module, command, params) {
     // XXX: At the moment, commands do not describe consistently their destination,
@@ -519,6 +617,37 @@ export class WebDriverSession {
   QueryInterface = ChromeUtils.generateQI(["nsIHttpRequestHandler"]);
 }
 
+const REMOTE_CONTROL_CONTAINER_NAME = "remote-control-container";
+
+/**
+ * Retrieve the user context id for the dedicated container created for sessions
+ * using dynamically started servers.
+ *
+ * @returns {string}
+ *     The user context id.
+ */
+function getRemoteControlUserContextId() {
+  const existingUserContexts = lazy.UserContextManager.getUserContextIdsByName(
+    REMOTE_CONTROL_CONTAINER_NAME
+  );
+
+  // If any container already matches the hardcoded REMOTE_CONTROL_CONTAINER_NAME
+  // pick the first one, users should be able to reuse the same container across
+  // sessions.
+  if (existingUserContexts.length) {
+    return existingUserContexts[0];
+  }
+
+  return lazy.UserContextManager.createContext({
+    // Use a color reminiscent of the color applied to the URL bar.
+    color: "red",
+    // Bug 2074485: Add a new container icon matching the robot icon for the
+    // remote control panel. In the meantime, use a circle as a generic icon.
+    icon: "circle",
+    name: REMOTE_CONTROL_CONTAINER_NAME,
+  });
+}
+
 /**
  * Get the list of seen nodes for the given browsing context unique to a
  * WebDriver session.
@@ -538,7 +667,7 @@ export function getSeenNodesForBrowsingContext(sessionId, browsingContext) {
   }
 
   const navigable =
-    lazy.TabManager.getNavigableForBrowsingContext(browsingContext);
+    lazy.NavigableManager.getNavigableForBrowsingContext(browsingContext);
   const session = getWebDriverSessionById(sessionId);
 
   if (!session.navigableSeenNodes.has(navigable)) {
@@ -559,4 +688,15 @@ export function getSeenNodesForBrowsingContext(sessionId, browsingContext) {
  */
 export function getWebDriverSessionById(sessionId) {
   return webDriverSessions.get(sessionId);
+}
+
+/**
+ * Check if at least one WebDriver session is currently active, which means that
+ * a remote application is connected to this browser instance.
+ *
+ * @returns {boolean}
+ *     True if a WebDriver session is active, false otherwise.
+ */
+export function hasActiveWebDriverSession() {
+  return webDriverSessions.size > 0;
 }

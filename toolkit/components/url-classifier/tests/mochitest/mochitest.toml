@@ -46,9 +46,10 @@ support-files = [
   "sandboxed.html",
   "sandboxed.html^headers^",
 ]
-skip-if = [
-  "http3",
-  "http2",
+# The http2 and http3 variants upgrade every load to https, which leaves the
+# plain-http entries these tests seed the classifier with unmatched.
+run-if = [
+  "!http2 && !http3",
 ]
 
 ["test_annotation_vs_TP.html"]
@@ -56,6 +57,9 @@ skip-if = [
 ["test_bug1254766.html"]
 
 ["test_cachemiss.html"]
+skip-if = [
+  "verify-standalone",
+]
 
 ["test_classifier.html"]
 
@@ -65,8 +69,8 @@ skip-if = [
 
 ["test_classify_by_default.html"]
 skip-if = [
-  "http3",
   "http2",
+  "http3",
 ]
 
 ["test_classify_only_top_context.html"]
@@ -88,6 +92,9 @@ skip-if = [
 ["test_fingerprinting_annotate.html"]
 
 ["test_gethash.html"]
+
+["test_lookup_completion_telemetry.html"]
+support-files = ["telemetryFrame.html"]
 
 ["test_socialtracking.html"]
 

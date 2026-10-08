@@ -38,11 +38,7 @@ let oldDefaultEngine;
 let oldDefaultPrivateEngine;
 
 add_setup(async function () {
-  await SpecialPowers.pushPrefEnv({
-    set: [["test.wait300msAfterTabSwitch", true]],
-  });
-
-  await Services.search.init();
+  await SearchService.init();
 
   for (let [name, search_url] of ENGINE_DATA) {
     let extension = ExtensionTestUtils.loadExtension({
@@ -62,17 +58,14 @@ add_setup(async function () {
     extensions.push(extension);
   }
 
-  engine = await Services.search.getEngineByName(ENGINE_NAME);
+  engine = await SearchService.getEngineByName(ENGINE_NAME);
   Assert.ok(engine, "Got a search engine");
-  oldDefaultEngine = await Services.search.getDefault();
-  await Services.search.setDefault(
-    engine,
-    Ci.nsISearchService.CHANGE_REASON_UNKNOWN
-  );
+  oldDefaultEngine = await SearchService.getDefault();
+  await SearchService.setDefault(engine, SearchService.CHANGE_REASON.UNKNOWN);
 
-  privateEngine = await Services.search.getEngineByName(PRIVATE_ENGINE_NAME);
+  privateEngine = await SearchService.getEngineByName(PRIVATE_ENGINE_NAME);
   Assert.ok(privateEngine, "Got a search engine");
-  oldDefaultPrivateEngine = await Services.search.getDefaultPrivate();
+  oldDefaultPrivateEngine = await SearchService.getDefaultPrivate();
 });
 
 /**
@@ -269,10 +262,10 @@ add_task(async function test() {
  * @param {object} options
  *   Options object.
  * @param {boolean} options.separatePrivateDefault
- *   The value to set for the `separatePrivateDefault` pref.
+ *   The value to set for the `separatePrivateDefault.enabled` pref.
  * @param {boolean} options.separatePrivateDefaultUiEnabled
- *   The value to set for the `separatePrivateDefault.ui.enabled` pref.
- * @param {nsISearchEngine} options.defaultPrivateEngine
+ *   The value to set for the `separatePrivateDefault.featureGate` pref.
+ * @param {SearchEngine} options.defaultPrivateEngine
  *   The engine to set as the default private engine.
  * @param {boolean} options.inPrivateWindow
  *   Whether the test should start in a private window.
@@ -287,7 +280,7 @@ async function computeExpectedAndDoTest({
   inPrivateWindow,
   checkPrivateItem,
 }) {
-  // When `separatePrivateDefault.ui.enabled` is false, `setDefaultPrivate()`
+  // When `separatePrivateDefault.featureGate` is false, `setDefaultPrivate()`
   // will set the non-private default, which would make this test more complex
   // and isn't the point anyway, so avoid that by just not setting the default
   // private engine in that case.
@@ -349,10 +342,10 @@ async function computeExpectedAndDoTest({
  * @param {object} options
  *   Options object.
  * @param {boolean} options.separatePrivateDefault
- *   The value to set for the `separatePrivateDefault` pref.
+ *   The value to set for the `separatePrivateDefault.enabled` pref.
  * @param {boolean} options.separatePrivateDefaultUiEnabled
- *   The value to set for the `separatePrivateDefault.ui.enabled` pref.
- * @param {nsISearchEngine} options.defaultPrivateEngine
+ *   The value to set for the `separatePrivateDefault.featureGate` pref.
+ * @param {SearchEngine} options.defaultPrivateEngine
  *   The engine to set as the default private engine.
  * @param {boolean} options.inPrivateWindow
  *   Whether the test should start in a private window.
@@ -399,18 +392,18 @@ async function doTest({
 
   await SpecialPowers.pushPrefEnv({
     set: [
-      ["browser.search.separatePrivateDefault", separatePrivateDefault],
+      ["browser.search.separatePrivateDefault.enabled", separatePrivateDefault],
       [
-        "browser.search.separatePrivateDefault.ui.enabled",
+        "browser.search.separatePrivateDefault.featureGate",
         separatePrivateDefaultUiEnabled,
       ],
     ],
   });
 
   if (defaultPrivateEngine) {
-    await Services.search.setDefaultPrivate(
+    await SearchService.setDefaultPrivate(
       defaultPrivateEngine,
-      Ci.nsISearchService.CHANGE_REASON_UNKNOWN
+      SearchService.CHANGE_REASON.UNKNOWN
     );
   }
 
@@ -437,16 +430,16 @@ async function doTest({
 // We can't do the unload within registerCleanupFunction as that's too late for
 // the test to be happy. Do it into a cleanup "test" here instead.
 add_task(async function cleanup() {
-  await Services.search.setDefault(
+  await SearchService.setDefault(
     oldDefaultEngine,
-    Ci.nsISearchService.CHANGE_REASON_UNKNOWN
+    SearchService.CHANGE_REASON.UNKNOWN
   );
-  await Services.search.setDefaultPrivate(
+  await SearchService.setDefaultPrivate(
     oldDefaultPrivateEngine,
-    Ci.nsISearchService.CHANGE_REASON_UNKNOWN
+    SearchService.CHANGE_REASON.UNKNOWN
   );
-  await Services.search.removeEngine(engine);
-  await Services.search.removeEngine(privateEngine);
+  await SearchService.removeEngine(engine);
+  await SearchService.removeEngine(privateEngine);
 
   for (let extension of extensions) {
     await extension.unload();

@@ -2,7 +2,7 @@
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
-""" A WebIDL parser. """
+"""A WebIDL parser."""
 
 import copy
 import math
@@ -10,7 +10,7 @@ import os
 import re
 import string
 import traceback
-from collections import OrderedDict, defaultdict
+from collections import defaultdict
 from itertools import chain
 
 from ply import lex, yacc
@@ -540,9 +540,6 @@ class IDLExposureMixins:
         workerScopes = self.parentScope.globalNameMapping["Worker"]
         return len(workerScopes.difference(self.exposureSet)) > 0
 
-    def isExposedInShadowRealms(self):
-        return "ShadowRealmGlobalScope" in self.exposureSet
-
     def getWorkerExposureSet(self):
         workerScopes = self._globalScope.globalNameMapping["Worker"]
         return workerScopes.intersection(self.exposureSet)
@@ -720,14 +717,12 @@ class IDLPartialInterfaceOrNamespace(IDLObject):
                             self._nonPartialInterfaceOrNamespace.location,
                         ],
                     )
-                member.addExtendedAttributes(
-                    [
-                        IDLExtendedAttribute(
-                            self._nonPartialInterfaceOrNamespace.location,
-                            ("SecureContext",),
-                        )
-                    ]
-                )
+                member.addExtendedAttributes([
+                    IDLExtendedAttribute(
+                        self._nonPartialInterfaceOrNamespace.location,
+                        ("SecureContext",),
+                    )
+                ])
         # Need to make sure our non-partial interface or namespace gets
         # finished so it can report cases when we only have partial
         # interfaces/namespaces.
@@ -1013,8 +1008,7 @@ class IDLInterfaceMixin(IDLInterfaceOrInterfaceMixinOrNamespace):
             if member.isAttr():
                 if member.inherit:
                     raise WebIDLError(
-                        "Interface mixin member cannot include "
-                        "an inherited attribute",
+                        "Interface mixin member cannot include an inherited attribute",
                         [member.location, self.location],
                     )
                 if member.isStatic():
@@ -1510,9 +1504,7 @@ class IDLInterfaceOrNamespace(IDLInterfaceOrInterfaceMixinOrNamespace):
                         self.reflectedHTMLAttributesReturningFrozenArray.slotIndex,
                         self.reflectedHTMLAttributesReturningFrozenArray.totalMembersInSlots,
                     )
-                    self.reflectedHTMLAttributesReturningFrozenArray.totalMembersInSlots += (
-                        1
-                    )
+                    self.reflectedHTMLAttributesReturningFrozenArray.totalMembersInSlots += 1
                 else:
                     member.slotIndices[self.identifier.name] = self.totalMembersInSlots
                     self.totalMembersInSlots += 1
@@ -1797,8 +1789,7 @@ class IDLInterfaceOrNamespace(IDLInterfaceOrInterfaceMixinOrNamespace):
                         )
                     if member.isIdentifierLess():
                         raise WebIDLError(
-                            "[Alias] must not be used on an "
-                            "identifierless operation",
+                            "[Alias] must not be used on an identifierless operation",
                             [member.location],
                         )
                     if member.isLegacyUnforgeable():
@@ -2079,9 +2070,9 @@ class IDLInterface(IDLInterfaceOrNamespace):
 
             # Legacy factory functions are always assumed to be able to
             # throw (since there's no way to indicate otherwise).
-            method.addExtendedAttributes(
-                [IDLExtendedAttribute(self.location, ("Throws",))]
-            )
+            method.addExtendedAttributes([
+                IDLExtendedAttribute(self.location, ("Throws",))
+            ])
 
             # We need to detect conflicts for LegacyFactoryFunctions across
             # interfaces. We first call resolve on the parentScope,
@@ -2513,8 +2504,7 @@ class IDLDictionary(IDLObjectWithScope):
                     )
             else:
                 raise WebIDLError(
-                    "[%s] extended attribute not allowed on "
-                    "dictionaries" % identifier,
+                    "[%s] extended attribute not allowed on dictionaries" % identifier,
                     [attr.location],
                 )
 
@@ -2615,6 +2605,7 @@ class IDLType(IDLObject):
         "_clamp",
         "_enforceRange",
         "_allowShared",
+        "_allowLarge",
         "_extendedAttrDict",
     )
 
@@ -2626,6 +2617,7 @@ class IDLType(IDLObject):
         self._clamp = False
         self._enforceRange = False
         self._allowShared = False
+        self._allowLarge = False
         self._extendedAttrDict = {}
 
     def __hash__(self):
@@ -2636,6 +2628,7 @@ class IDLType(IDLObject):
             + hash(self._enforceRange)
             + hash(self.legacyNullToEmptyString)
             + hash(self._allowShared)
+            + hash(self._allowLarge)
         )
 
     def __eq__(self, other):
@@ -2647,6 +2640,7 @@ class IDLType(IDLObject):
             and self._enforceRange == other.hasEnforceRange()
             and self.legacyNullToEmptyString == other.legacyNullToEmptyString
             and self._allowShared == other.hasAllowShared()
+            and self._allowLarge == other.hasAllowLarge()
         )
 
     def __ne__(self, other):
@@ -2777,6 +2771,9 @@ class IDLType(IDLObject):
 
     def hasAllowShared(self):
         return self._allowShared
+
+    def hasAllowLarge(self):
+        return self._allowLarge
 
     def tag(self):
         assert False  # Override me!
@@ -3004,6 +3001,9 @@ class IDLNullableType(IDLParametrizedType):
 
     def hasAllowShared(self):
         return self.inner.hasAllowShared()
+
+    def hasAllowLarge(self):
+        return self.inner.hasAllowLarge()
 
     def isComplete(self):
         return self.name is not None
@@ -3250,8 +3250,7 @@ class IDLObservableArrayType(IDLParametrizedType):
             )
         if self.inner.isSequence():
             raise WebIDLError(
-                "The inner type of an ObservableArray type must not "
-                "be a sequence type",
+                "The inner type of an ObservableArray type must not be a sequence type",
                 [self.location, self.inner.location],
             )
         if self.inner.isRecord():
@@ -3329,9 +3328,13 @@ class IDLUnionType(IDLType):
                 return typeName(type._identifier.object())
             if isinstance(type, IDLObjectWithIdentifier):
                 return typeName(type.identifier)
-            if isinstance(type, IDLBuiltinType) and type.hasAllowShared():
-                assert type.isBufferSource()
-                return "MaybeShared" + type.name
+            if isinstance(type, IDLBuiltinType) and type.isBufferSource():
+                name = type.name
+                if type.hasAllowShared():
+                    name = "MaybeShared" + name
+                if type.hasAllowLarge():
+                    name = "AllowLarge" + name
+                return name
             return type.name
 
         for i, type in enumerate(self.memberTypes):
@@ -3350,8 +3353,7 @@ class IDLUnionType(IDLType):
                     )
                 if self.hasDictionaryType():
                     raise WebIDLError(
-                        "Can't have a nullable type and a "
-                        "dictionary type in a union",
+                        "Can't have a nullable type and a dictionary type in a union",
                         [
                             self._dictionaryType.location,
                             self.flatMemberTypes[i].location,
@@ -3364,8 +3366,7 @@ class IDLUnionType(IDLType):
             if self.flatMemberTypes[i].isDictionary():
                 if self.hasNullableType:
                     raise WebIDLError(
-                        "Can't have a nullable type and a "
-                        "dictionary type in a union",
+                        "Can't have a nullable type and a dictionary type in a union",
                         [nullableType.location, self.flatMemberTypes[i].location],
                     )
                 self._dictionaryType = self.flatMemberTypes[i]
@@ -3951,6 +3952,7 @@ class IDLBuiltinType(IDLType):
         "_rangeEnforced",
         "_withLegacyNullToEmptyString",
         "_withAllowShared",
+        "_withAllowLarge",
     )
 
     def __init__(
@@ -3962,12 +3964,15 @@ class IDLBuiltinType(IDLType):
         enforceRange=False,
         legacyNullToEmptyString=False,
         allowShared=False,
+        allowLarge=False,
         attrLocation=[],
     ):
         """
-        The mutually exclusive clamp/enforceRange/legacyNullToEmptyString/allowShared arguments
-        are used to create instances of this type with the appropriate attributes attached. Use
-        .clamped(), .rangeEnforced(), .withLegacyNullToEmptyString() and .withAllowShared().
+        The mutually exclusive
+        clamp/enforceRange/legacyNullToEmptyString/(allowShared|allowLarge)
+        arguments are used to create instances of this type with the
+        appropriate attributes attached. Use .clamped(), .rangeEnforced(),
+        .withLegacyNullToEmptyString(), .withAllowShared(), .withAllowLarge().
 
         attrLocation is an array of source locations of these attributes for error reporting.
         """
@@ -3978,6 +3983,7 @@ class IDLBuiltinType(IDLType):
         self._rangeEnforced = None
         self._withLegacyNullToEmptyString = None
         self._withAllowShared = None
+        self._withAllowLarge = None
         if self.isInteger():
             if clamp:
                 self._clamp = True
@@ -4004,17 +4010,30 @@ class IDLBuiltinType(IDLType):
             if allowShared:
                 self._allowShared = True
                 self._extendedAttrDict["AllowShared"] = True
-        elif allowShared:
-            raise WebIDLError(
-                "Types that are not buffer source types cannot be [AllowShared]",
-                attrLocation,
-            )
+            if allowLarge:
+                self._allowLarge = True
+                self._extendedAttrDict["AllowLarge"] = True
+        else:
+            if allowShared:
+                raise WebIDLError(
+                    "Types that are not buffer source types cannot be [AllowShared]",
+                    attrLocation,
+                )
+            if allowLarge:
+                raise WebIDLError(
+                    "Types that are not buffer source types cannot be [AllowLarge]",
+                    attrLocation,
+                )
 
     def __str__(self):
+        name = str(self.name)
         if self._allowShared:
             assert self.isBufferSource()
-            return "MaybeShared" + str(self.name)
-        return str(self.name)
+            name = "MaybeShared" + name
+        if self._allowLarge:
+            assert self.isBufferSource()
+            name = "AllowLarge" + name
+        return name
 
     def prettyName(self):
         return IDLBuiltinType.PrettyNames[self._typeTag]
@@ -4059,9 +4078,22 @@ class IDLBuiltinType(IDLType):
                 self.name,
                 self._typeTag,
                 allowShared=True,
+                allowLarge=self._allowLarge,
                 attrLocation=attrLocation,
             )
         return self._withAllowShared
+
+    def withAllowLarge(self, attrLocation):
+        if not self._withAllowLarge:
+            self._withAllowLarge = IDLBuiltinType(
+                self.location,
+                self.name,
+                self._typeTag,
+                allowShared=self._allowShared,
+                allowLarge=True,
+                attrLocation=attrLocation,
+            )
+        return self._withAllowLarge
 
     def isPrimitive(self):
         return self._typeTag <= IDLBuiltinType.Types.double
@@ -4274,9 +4306,10 @@ class IDLBuiltinType(IDLType):
                         "[LegacyNullToEmptyString] must take no identifier argument",
                         [attribute.location],
                     )
-                ret = self.withLegacyNullToEmptyString(
-                    [self.location, attribute.location]
-                )
+                ret = self.withLegacyNullToEmptyString([
+                    self.location,
+                    attribute.location,
+                ])
             elif identifier == "AllowShared":
                 if not attribute.noArguments():
                     raise WebIDLError(
@@ -4287,7 +4320,18 @@ class IDLBuiltinType(IDLType):
                         "[AllowShared] only allowed on buffer source types",
                         [self.location, attribute.location],
                     )
-                ret = self.withAllowShared([self.location, attribute.location])
+                ret = ret.withAllowShared([self.location, attribute.location])
+            elif identifier == "AllowLarge":
+                if not attribute.noArguments():
+                    raise WebIDLError(
+                        "[AllowLarge] must take no arguments", [attribute.location]
+                    )
+                if not self.isBufferSource():
+                    raise WebIDLError(
+                        "[AllowLarge] only allowed on buffer source types",
+                        [self.location, attribute.location],
+                    )
+                ret = ret.withAllowLarge([self.location, attribute.location])
 
             else:
                 raise WebIDLError(
@@ -4976,35 +5020,33 @@ class IDLMaplikeOrSetlikeOrIterableBase(IDLInterfaceMember):
         # We need to be able to throw from declaration methods
         method.addExtendedAttributes([IDLExtendedAttribute(self.location, ("Throws",))])
         if chromeOnly:
-            method.addExtendedAttributes(
-                [IDLExtendedAttribute(self.location, ("ChromeOnly",))]
-            )
+            method.addExtendedAttributes([
+                IDLExtendedAttribute(self.location, ("ChromeOnly",))
+            ])
         if isPure:
-            method.addExtendedAttributes(
-                [IDLExtendedAttribute(self.location, ("Pure",))]
-            )
+            method.addExtendedAttributes([
+                IDLExtendedAttribute(self.location, ("Pure",))
+            ])
         # Following attributes are used for keys/values/entries. Can't mark
         # them pure, since they return a new object each time they are run.
         if affectsNothing:
-            method.addExtendedAttributes(
-                [
-                    IDLExtendedAttribute(self.location, ("DependsOn", "Everything")),
-                    IDLExtendedAttribute(self.location, ("Affects", "Nothing")),
-                ]
-            )
+            method.addExtendedAttributes([
+                IDLExtendedAttribute(self.location, ("DependsOn", "Everything")),
+                IDLExtendedAttribute(self.location, ("Affects", "Nothing")),
+            ])
         if newObject:
-            method.addExtendedAttributes(
-                [IDLExtendedAttribute(self.location, ("NewObject",))]
-            )
+            method.addExtendedAttributes([
+                IDLExtendedAttribute(self.location, ("NewObject",))
+            ])
         if isIteratorAlias:
             if not self.isAsyncIterable():
-                method.addExtendedAttributes(
-                    [IDLExtendedAttribute(self.location, ("Alias", "@@iterator"))]
-                )
+                method.addExtendedAttributes([
+                    IDLExtendedAttribute(self.location, ("Alias", "@@iterator"))
+                ])
             else:
-                method.addExtendedAttributes(
-                    [IDLExtendedAttribute(self.location, ("Alias", "@@asyncIterator"))]
-                )
+                method.addExtendedAttributes([
+                    IDLExtendedAttribute(self.location, ("Alias", "@@asyncIterator"))
+                ])
         members.append(method)
 
     def resolve(self, parentScope):
@@ -5564,10 +5606,11 @@ class IDLAttribute(IDLInterfaceMember):
             self.type.hasClamp()
             or self.type.hasEnforceRange()
             or self.type.hasAllowShared()
+            or self.type.hasAllowLarge()
             or self.type.legacyNullToEmptyString
         ):
             raise WebIDLError(
-                "A readonly attribute cannot be [Clamp] or [EnforceRange] or [AllowShared]",
+                "A readonly attribute cannot be [Clamp] or [EnforceRange] or [AllowShared] or [AllowLarge]",
                 [self.location],
             )
         if self.type.isDictionary() and not self.getExtendedAttribute("Cached"):
@@ -5903,8 +5946,7 @@ class IDLAttribute(IDLInterfaceMember):
                 )
             if self.type.isPromise():
                 raise WebIDLError(
-                    "[LegacyLenientSetter] is not allowed on "
-                    "Promise-typed attributes",
+                    "[LegacyLenientSetter] is not allowed on Promise-typed attributes",
                     [attr.location, self.location],
                 )
             if self.isStatic():
@@ -5993,8 +6035,7 @@ class IDLAttribute(IDLInterfaceMember):
                 and not self.readonly
             ):
                 raise WebIDLError(
-                    "[DependsOn=%s] only allowed on "
-                    "readonly attributes" % attr.value(),
+                    "[DependsOn=%s] only allowed on readonly attributes" % attr.value(),
                     [attr.location, self.location],
                 )
             self._setDependsOn(attr.value())
@@ -6002,6 +6043,11 @@ class IDLAttribute(IDLInterfaceMember):
             if self.stringifier:
                 raise WebIDLError(
                     "[UseCounter] must not be used on a stringifier attribute",
+                    [attr.location, self.location],
+                )
+            if not attr.noArguments():
+                raise WebIDLError(
+                    "[UseCounter] on attributes must not have a value",
                     [attr.location, self.location],
                 )
         elif identifier == "Unscopable":
@@ -6117,9 +6163,9 @@ class IDLAttribute(IDLInterfaceMember):
                         "please file a bug to add support" % key,
                         [self.location],
                     )
-                method.addExtendedAttributes(
-                    [IDLExtendedAttribute(self.location, (key,))]
-                )
+                method.addExtendedAttributes([
+                    IDLExtendedAttribute(self.location, (key,))
+                ])
             elif key not in attributeOnlyExtAttrs:
                 raise WebIDLError(
                     "[%s] is currently unsupported in "
@@ -6179,6 +6225,7 @@ class IDLArgument(IDLObjectWithIdentifier):
                 or identifier == "Clamp"
                 or identifier == "LegacyNullToEmptyString"
                 or identifier == "AllowShared"
+                or identifier == "AllowLarge"
             ):
                 self.type = self.type.withExtendedAttributes([attribute])
             elif identifier == "TreatNonCallableAsNull":
@@ -6360,8 +6407,7 @@ class IDLCallback(IDLObjectWithScope):
             elif attr.identifier() == "LegacyTreatNonObjectAsNull":
                 if self._isConstructor:
                     raise WebIDLError(
-                        "[LegacyTreatNonObjectAsNull] is not supported "
-                        "on constructors",
+                        "[LegacyTreatNonObjectAsNull] is not supported on constructors",
                         [self.location],
                     )
                 self._treatNonObjectAsNull = True
@@ -6580,6 +6626,8 @@ class IDLMethod(IDLInterfaceMember, IDLScope):
             if not self.underlyingAttr:
                 assert (
                     overload.returnType == BuiltinTypes[IDLBuiltinType.Types.domstring]
+                    or overload.returnType
+                    == BuiltinTypes[IDLBuiltinType.Types.utf8string]
                 )
 
     def isStatic(self):
@@ -7073,6 +7121,11 @@ class IDLMethod(IDLInterfaceMember, IDLScope):
                     "[UseCounter] must not be used on a special operation",
                     [attr.location, self.location],
                 )
+            if attr.hasValue() and attr.value() != "PerOverload":
+                raise WebIDLError(
+                    '[UseCounter] value must be "PerOverload" if specified',
+                    [attr.location, self.location],
+                )
         elif identifier == "Unscopable":
             if not attr.noArguments():
                 raise WebIDLError(
@@ -7108,8 +7161,7 @@ class IDLMethod(IDLInterfaceMember, IDLScope):
 
             if self.signatures()[0][0] != BuiltinTypes[IDLBuiltinType.Types.object]:
                 raise WebIDLError(
-                    "The return type of the default toJSON "
-                    "operation must be 'object'",
+                    "The return type of the default toJSON operation must be 'object'",
                     [attr.location, self.location],
                 )
         elif (
@@ -7223,9 +7275,9 @@ class IDLConstructor(IDLMethod):
         self._initExtendedAttrs = []
         # Constructors are always NewObject.  Whether they throw or not is
         # indicated by [Throws] annotations in the usual way.
-        self.addExtendedAttributes(
-            [IDLExtendedAttribute(self.location, ("NewObject",))]
-        )
+        self.addExtendedAttributes([
+            IDLExtendedAttribute(self.location, ("NewObject",))
+        ])
 
 
 class IDLIncludesStatement(IDLObject):
@@ -7782,7 +7834,7 @@ class Parser(Tokenizer):
                 # No members, False for isKnownNonPartial
                 *(nonPartialConstructorArgs),
                 members=[],
-                isKnownNonPartial=False
+                isKnownNonPartial=False,
             )
 
         partialObject = None
@@ -8486,9 +8538,14 @@ class Parser(Tokenizer):
                     "stringifier has wrong number of arguments",
                     [self.getLocation(p, 2)],
                 )
-            if not returnType.isDOMString():
+            if returnType.isDOMString() and not identifier:
                 raise WebIDLError(
-                    "stringifier must have DOMString return type",
+                    "Use `stringifier;` for DOMString unnamed stringifiers",
+                    [self.getLocation(p, 2)],
+                )
+            if not returnType.isDOMString() and not returnType.isUTF8String():
+                raise WebIDLError(
+                    "stringifier must have {DOM,UTF8}String return type",
                     [self.getLocation(p, 2)],
                 )
 
@@ -9457,9 +9514,9 @@ class Parser(Tokenizer):
                     isKnownNonPartial=True,
                     classNameOverride=classNameOverride,
                 )
-                itr_iface.addExtendedAttributes(
-                    [simpleExtendedAttr("LegacyNoInterfaceObject")]
-                )
+                itr_iface.addExtendedAttributes([
+                    simpleExtendedAttr("LegacyNoInterfaceObject")
+                ])
                 # Make sure the exposure set for the iterator interface is the
                 # same as the exposure set for the iterable interface, because
                 # we're going to generate methods on the iterable that return

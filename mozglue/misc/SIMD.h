@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -8,15 +6,16 @@
 #define mozilla_SIMD_h
 
 #include "mozilla/Types.h"
+#include <cstdint>
 
 namespace mozilla {
 // A collection of SIMD-implemented algorithms. Some of these exist in the CRT.
 // However, the quality of the C runtime implementation varies wildly across
 // platforms, so these should at least ensure consistency.
 //
-// NOTE: these are currently only implemented with hand-written SIMD for x86
-// and AMD64 platforms, and fallback to the the C runtime or naive loops on
-// other architectures. Please consider this before switching an already
+// NOTE: these are currently only implemented with hand-written SIMD for x86,
+// AMD64, and arm64 platforms, and fallback to the C runtime or naive loops
+// on other architectures. Please consider this before switching an already
 // optimized loop to these helpers.
 class SIMD {
  public:
