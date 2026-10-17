@@ -108,7 +108,7 @@ class FetchService final : public nsIObserver {
     SafeRefPtr<InternalRequest> mRequest;
     mozilla::ipc::PrincipalInfo mPrincipalInfo;
     nsCString mWorkerScript;
-    Maybe<ClientInfo> mClientInfo;
+    ClientInfo mClientInfo;
     Maybe<ServiceWorkerDescriptor> mController;
     Maybe<net::CookieJarSettingsArgs> mCookieJarSettings;
     bool mNeedOnDataAvailable;
@@ -131,6 +131,7 @@ class FetchService final : public nsIObserver {
   struct MainThreadFetchArgs {
     SafeRefPtr<InternalRequest> mRequest;
     mozilla::ipc::PrincipalInfo mPrincipalInfo;
+    ClientInfo mClientInfo;
     Maybe<net::CookieJarSettingsArgs> mCookieJarSettings;
     bool mNeedOnDataAvailable;
     nsCOMPtr<nsICSPEventListener> mCSPEventListener;
@@ -199,6 +200,11 @@ class FetchService final : public nsIObserver {
     void Cancel(bool aForceAbort);
 
     bool IsLocalHostFetch() const;
+
+    // True when the request must be offered to a service worker's fetch
+    // handler before the network is considered, i.e. the client is controlled
+    // and the request's service-workers mode is "all".
+    bool IsServiceWorkerEligible() const;
 
     /* FetchDriverObserver interface */
     void OnResponseEnd(FetchDriverObserver::EndReason aReason,

@@ -1,11 +1,9 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef nsMixedContentBlocker_h___
-#define nsMixedContentBlocker_h___
+#ifndef nsMixedContentBlocker_h_
+#define nsMixedContentBlocker_h_
 
 #define NS_MIXEDCONTENTBLOCKER_CONTRACTID "@mozilla.org/mixedcontentblocker;1"
 /* daf1461b-bf29-4f88-8d0e-4bcdf332c862 */
@@ -51,6 +49,9 @@ class nsMixedContentBlocker : public nsIContentPolicy,
   static bool IsPotentiallyTrustworthyLoopbackHost(
       const nsACString& aAsciiHost);
   static bool IsPotentiallyTrustworthyLoopbackURL(nsIURI* aURL);
+  // Whether the host was allowlisted as a secure context by the user via
+  // the `dom.securecontext.allowlist` pref.
+  static bool IsPotentiallyTrustworthyAllowlistedHost(const nsACString& aHost);
   static bool IsPotentiallyTrustworthyOnion(nsIURI* aURL);
   static bool IsPotentiallyTrustworthyOrigin(nsIURI* aURI);
 
@@ -88,4 +89,4 @@ class nsMixedContentBlocker : public nsIContentPolicy,
   static nsCString* sSecurecontextAllowlist;
 };
 
-#endif /* nsMixedContentBlocker_h___ */
+#endif /* nsMixedContentBlocker_h_ */

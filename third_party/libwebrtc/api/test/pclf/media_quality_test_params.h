@@ -24,7 +24,7 @@
 #include "api/audio_codecs/audio_decoder_factory.h"
 #include "api/audio_codecs/audio_encoder_factory.h"
 #include "api/fec_controller.h"
-#include "api/field_trials_view.h"
+#include "api/field_trials.h"
 #include "api/ice_transport_interface.h"
 #include "api/neteq/neteq_factory.h"
 #include "api/peer_connection_interface.h"
@@ -34,6 +34,7 @@
 #include "api/transport/bitrate_settings.h"
 #include "api/transport/network_control.h"
 #include "api/units/time_delta.h"
+#include "api/video/timing/video_jitter_timing_factory.h"
 #include "api/video_codecs/video_decoder_factory.h"
 #include "api/video_codecs/video_encoder_factory.h"
 #include "p2p/base/port_allocator.h"
@@ -63,13 +64,14 @@ struct PeerConnectionFactoryComponents {
   std::unique_ptr<FecControllerFactoryInterface> fec_controller_factory;
   std::unique_ptr<NetworkControllerFactoryInterface> network_controller_factory;
   std::unique_ptr<NetEqFactory> neteq_factory;
+  std::unique_ptr<VideoJitterTimingFactory> video_jitter_timing_factory;
 
   std::unique_ptr<VideoEncoderFactory> video_encoder_factory;
   std::unique_ptr<VideoDecoderFactory> video_decoder_factory;
   scoped_refptr<webrtc::AudioEncoderFactory> audio_encoder_factory;
   scoped_refptr<webrtc::AudioDecoderFactory> audio_decoder_factory;
 
-  std::unique_ptr<FieldTrialsView> trials;
+  std::unique_ptr<FieldTrials> field_trials;
 
   std::unique_ptr<AudioProcessingBuilderInterface> audio_processing;
   scoped_refptr<webrtc::AudioMixer> audio_mixer;
@@ -177,9 +179,6 @@ struct RunParams {
   // it will be shut downed.
   TimeDelta run_duration;
 
-  // If set to true peers will be able to use Flex FEC, otherwise they won't
-  // be able to negotiate it even if it's enabled on per peer level.
-  bool enable_flex_fec_support = false;
   // If true will set conference mode in SDP media section for all video
   // tracks for all peers.
   bool use_conference_mode = false;

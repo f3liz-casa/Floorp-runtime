@@ -1,26 +1,27 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "AnimationInfo.h"
-#include "mozilla/LayerAnimationInfo.h"
-#include "mozilla/layers/WebRenderLayerManager.h"
-#include "mozilla/layers/AnimationHelper.h"
-#include "mozilla/layers/CompositorThread.h"
-#include "mozilla/dom/Animation.h"
-#include "mozilla/dom/CSSTransition.h"
-#include "mozilla/dom/KeyframeEffect.h"
+
+#include "PuppetWidget.h"
 #include "mozilla/EffectSet.h"
+#include "mozilla/LayerAnimationInfo.h"
 #include "mozilla/MotionPathUtils.h"
 #include "mozilla/PresShell.h"
 #include "mozilla/ScrollContainerFrame.h"
+#include "mozilla/dom/Animation.h"
+#include "mozilla/dom/CSSTransition.h"
+#include "mozilla/dom/KeyframeEffect.h"
+#include "mozilla/gfx/Matrix.h"
+#include "mozilla/layers/AnimationHelper.h"
+#include "mozilla/layers/AnimationStorageData.h"
+#include "mozilla/layers/CompositorThread.h"
+#include "mozilla/layers/WebRenderLayerManager.h"
 #include "nsIContent.h"
 #include "nsLayoutUtils.h"
 #include "nsRefreshDriver.h"
 #include "nsStyleTransformMatrix.h"
-#include "PuppetWidget.h"
 
 namespace mozilla::layers {
 
@@ -199,27 +200,31 @@ void AnimationInfo::EnumerateGenerationOnFrame(
 }
 
 static StyleTransformOperation ResolveTranslate(
-    TransformReferenceBox& aRefBox, const LengthPercentage& aX,
+    TransformReferenceBox& aRefBox, StyleZoom aEffectiveZoom,
+    const LengthPercentage& aX,
     const LengthPercentage& aY = LengthPercentage::Zero(),
     const Length& aZ = Length{0}) {
-  float x = nsStyleTransformMatrix::ProcessTranslatePart(
-      aX, &aRefBox, &TransformReferenceBox::Width);
-  float y = nsStyleTransformMatrix::ProcessTranslatePart(
-      aY, &aRefBox, &TransformReferenceBox::Height);
+  float x = aEffectiveZoom.Zoom(nsStyleTransformMatrix::ProcessTranslatePart(
+      aX, &aRefBox, &TransformReferenceBox::Width));
+  float y = aEffectiveZoom.Zoom(nsStyleTransformMatrix::ProcessTranslatePart(
+      aY, &aRefBox, &TransformReferenceBox::Height));
   return StyleTransformOperation::Translate3D(
-      LengthPercentage::FromPixels(x), LengthPercentage::FromPixels(y), aZ);
+      LengthPercentage::FromPixels(x), LengthPercentage::FromPixels(y),
+      aZ.ScaledBy(aEffectiveZoom.ToFloat()));
 }
 
 static StyleTranslate ResolveTranslate(const StyleTranslate& aValue,
-                                       TransformReferenceBox& aRefBox) {
+                                       TransformReferenceBox& aRefBox,
+                                       StyleZoom aEffectiveZoom) {
   if (aValue.IsTranslate()) {
     const auto& t = aValue.AsTranslate();
-    float x = nsStyleTransformMatrix::ProcessTranslatePart(
-        t._0, &aRefBox, &TransformReferenceBox::Width);
-    float y = nsStyleTransformMatrix::ProcessTranslatePart(
-        t._1, &aRefBox, &TransformReferenceBox::Height);
+    float x = aEffectiveZoom.Zoom(nsStyleTransformMatrix::ProcessTranslatePart(
+        t._0, &aRefBox, &TransformReferenceBox::Width));
+    float y = aEffectiveZoom.Zoom(nsStyleTransformMatrix::ProcessTranslatePart(
+        t._1, &aRefBox, &TransformReferenceBox::Height));
     return StyleTranslate::Translate(LengthPercentage::FromPixels(x),
-                                     LengthPercentage::FromPixels(y), t._2);
+                                     LengthPercentage::FromPixels(y),
+                                     t._2.ScaledBy(aEffectiveZoom.ToFloat()));
   }
 
   MOZ_ASSERT(aValue.IsNone());
@@ -227,7 +232,10 @@ static StyleTranslate ResolveTranslate(const StyleTranslate& aValue,
 }
 
 static StyleTransform ResolveTransformOperations(
-    const StyleTransform& aTransform, TransformReferenceBox& aRefBox) {
+    const StyleTransform& aTransform, TransformReferenceBox& aRefBox,
+    mozilla::StyleZoom aEffectiveZoom) {
+  // Note that we need to manually apply CSS zoom because animation values are
+  // unzoomed (unlike other computed values).
   auto convertMatrix = [](const gfx::Matrix4x4& aM) {
     return StyleTransformOperation::Matrix3D(StyleGenericMatrix3D<StyleNumber>{
         aM._11, aM._12, aM._13, aM._14, aM._21, aM._22, aM._23, aM._24, aM._31,
@@ -242,39 +250,64 @@ static StyleTransform ResolveTransformOperations(
   for (const StyleTransformOperation& op : aTransform.Operations()) {
     switch (op.tag) {
       case StyleTransformOperation::Tag::TranslateX:
-        result.infallibleAppend(ResolveTranslate(aRefBox, op.AsTranslateX()));
+        result.infallibleAppend(
+            ResolveTranslate(aRefBox, aEffectiveZoom, op.AsTranslateX()));
         break;
       case StyleTransformOperation::Tag::TranslateY:
-        result.infallibleAppend(ResolveTranslate(
-            aRefBox, LengthPercentage::Zero(), op.AsTranslateY()));
+        result.infallibleAppend(ResolveTranslate(aRefBox, aEffectiveZoom,
+                                                 LengthPercentage::Zero(),
+                                                 op.AsTranslateY()));
         break;
       case StyleTransformOperation::Tag::TranslateZ:
         result.infallibleAppend(
-            ResolveTranslate(aRefBox, LengthPercentage::Zero(),
+            ResolveTranslate(aRefBox, aEffectiveZoom, LengthPercentage::Zero(),
                              LengthPercentage::Zero(), op.AsTranslateZ()));
         break;
       case StyleTransformOperation::Tag::Translate: {
         const auto& translate = op.AsTranslate();
-        result.infallibleAppend(
-            ResolveTranslate(aRefBox, translate._0, translate._1));
+        result.infallibleAppend(ResolveTranslate(aRefBox, aEffectiveZoom,
+                                                 translate._0, translate._1));
         break;
       }
       case StyleTransformOperation::Tag::Translate3D: {
         const auto& translate = op.AsTranslate3D();
-        result.infallibleAppend(ResolveTranslate(aRefBox, translate._0,
-                                                 translate._1, translate._2));
+        result.infallibleAppend(ResolveTranslate(
+            aRefBox, aEffectiveZoom, translate._0, translate._1, translate._2));
         break;
       }
       case StyleTransformOperation::Tag::InterpolateMatrix: {
         gfx::Matrix4x4 matrix;
-        nsStyleTransformMatrix::ProcessInterpolateMatrix(matrix, op, aRefBox);
+        nsStyleTransformMatrix::ProcessInterpolateMatrix(
+            matrix, op, aRefBox, aEffectiveZoom,
+            nsStyleTransformMatrix::Zoomed::Yes);
         result.infallibleAppend(convertMatrix(matrix));
         break;
       }
       case StyleTransformOperation::Tag::AccumulateMatrix: {
         gfx::Matrix4x4 matrix;
-        nsStyleTransformMatrix::ProcessAccumulateMatrix(matrix, op, aRefBox);
+        nsStyleTransformMatrix::ProcessAccumulateMatrix(
+            matrix, op, aRefBox, aEffectiveZoom,
+            nsStyleTransformMatrix::Zoomed::Yes);
         result.infallibleAppend(convertMatrix(matrix));
+        break;
+      }
+      case StyleTransformOperation::Tag::Matrix: {
+        auto matrix = op.AsMatrix();
+
+        matrix.e = aEffectiveZoom.Zoom(matrix.e);
+        matrix.f = aEffectiveZoom.Zoom(matrix.f);
+
+        result.infallibleAppend(StyleTransformOperation::Matrix(matrix));
+        break;
+      }
+      case StyleTransformOperation::Tag::Matrix3D: {
+        auto matrix3d = op.AsMatrix3D();
+
+        matrix3d.m41 = aEffectiveZoom.Zoom(matrix3d.m41);
+        matrix3d.m42 = aEffectiveZoom.Zoom(matrix3d.m42);
+        matrix3d.m43 = aEffectiveZoom.Zoom(matrix3d.m43);
+
+        result.infallibleAppend(StyleTransformOperation::Matrix3D(matrix3d));
         break;
       }
       case StyleTransformOperation::Tag::RotateX:
@@ -290,8 +323,6 @@ static StyleTransform ResolveTransformOperations(
       case StyleTransformOperation::Tag::SkewX:
       case StyleTransformOperation::Tag::SkewY:
       case StyleTransformOperation::Tag::Skew:
-      case StyleTransformOperation::Tag::Matrix:
-      case StyleTransformOperation::Tag::Matrix3D:
       case StyleTransformOperation::Tag::Perspective:
         result.infallibleAppend(op);
         break;
@@ -309,25 +340,30 @@ static StyleTransform ResolveTransformOperations(
 }
 
 static Maybe<ScrollTimelineOptions> GetScrollTimelineOptions(
-    dom::AnimationTimeline* aTimeline) {
-  if (!aTimeline || !aTimeline->IsScrollTimeline()) {
+    const dom::Animation* aAnimation) {
+  dom::AnimationTimeline* timeline = aAnimation->GetTimeline();
+  if (!timeline || !timeline->IsScrollTimeline()) {
     return Nothing();
   }
 
-  const dom::ScrollTimeline* timeline = aTimeline->AsScrollTimeline();
-  MOZ_ASSERT(timeline->IsActive(),
+  const dom::ScrollTimeline* scrollTimeline = timeline->AsScrollTimeline();
+  const auto state = scrollTimeline->GetSnapshot();
+  MOZ_ASSERT(state.IsActive(),
              "We send scroll animation to the compositor only if its timeline "
              "is active");
 
   ScrollableLayerGuid::ViewID source = ScrollableLayerGuid::NULL_SCROLL_ID;
   DebugOnly<bool> success =
-      nsLayoutUtils::FindIDFor(timeline->SourceElement(), &source);
+      nsLayoutUtils::FindIDFor(state.SourceElement(), &source);
   MOZ_ASSERT(success, "We should have a valid ViewID for the scroller");
 
-  return Some(ScrollTimelineOptions(source, timeline->Axis()));
+  const auto interval = scrollTimeline->IntervalForAttachmentRange(
+      aAnimation->GetTimelineRange());
+  return Some(ScrollTimelineOptions(source, state.Axis(), interval.first,
+                                    interval.second));
 }
 
-static void SetAnimatable(nsCSSPropertyID aProperty,
+static void SetAnimatable(NonCustomCSSPropertyId aProperty,
                           const AnimationValue& aAnimationValue,
                           nsIFrame* aFrame, TransformReferenceBox& aRefBox,
                           layers::Animatable& aAnimatable) {
@@ -342,9 +378,7 @@ static void SetAnimatable(nsCSSPropertyID aProperty,
     case eCSSProperty_background_color: {
       // We don't support color animation on the compositor yet so that we can
       // resolve currentColor at this moment.
-      nscolor foreground =
-          aFrame->Style()->GetVisitedDependentColor(&nsStyleText::mColor);
-      aAnimatable = aAnimationValue.GetColor(foreground);
+      aAnimatable = aAnimationValue.GetColor(aFrame->StyleText()->mColor);
       break;
     }
     case eCSSProperty_opacity:
@@ -357,12 +391,13 @@ static void SetAnimatable(nsCSSPropertyID aProperty,
       aAnimatable = aAnimationValue.GetScaleProperty();
       break;
     case eCSSProperty_translate:
-      aAnimatable =
-          ResolveTranslate(aAnimationValue.GetTranslateProperty(), aRefBox);
+      aAnimatable = ResolveTranslate(aAnimationValue.GetTranslateProperty(),
+                                     aRefBox, aFrame->Style()->EffectiveZoom());
       break;
     case eCSSProperty_transform:
-      aAnimatable = ResolveTransformOperations(
-          aAnimationValue.GetTransformProperty(), aRefBox);
+      aAnimatable =
+          ResolveTransformOperations(aAnimationValue.GetTransformProperty(),
+                                     aRefBox, aFrame->Style()->EffectiveZoom());
       break;
     case eCSSProperty_offset_path:
       aAnimatable = StyleOffsetPath::None();
@@ -456,12 +491,12 @@ void AnimationInfo::AddAnimationForProperty(
   animation->fillMode() = static_cast<uint8_t>(computedTiming.mFill);
   MOZ_ASSERT(!aProperty.mProperty.IsCustom(),
              "We don't animate custom properties in the compositor");
-  animation->property() = aProperty.mProperty.mID;
+  animation->property() = aProperty.mProperty.mId;
   animation->playbackRate() =
       static_cast<float>(aAnimation->CurrentOrPendingPlaybackRate());
   animation->previousPlaybackRate() =
       aAnimation->HasPendingPlaybackRate()
-          ? static_cast<float>(aAnimation->PlaybackRate())
+          ? static_cast<float>(aAnimation->PlaybackRateInternal())
           : std::numeric_limits<float>::quiet_NaN();
   animation->transformData() = aTransformData;
   animation->easingFunction() = timing.TimingFunction();
@@ -469,8 +504,7 @@ void AnimationInfo::AddAnimationForProperty(
       aAnimation->GetEffect()->AsKeyframeEffect()->IterationComposite());
   animation->isNotPlaying() = !aAnimation->IsPlaying();
   animation->isNotAnimating() = false;
-  animation->scrollTimelineOptions() =
-      GetScrollTimelineOptions(aAnimation->GetTimeline());
+  animation->scrollTimelineOptions() = GetScrollTimelineOptions(aAnimation);
   // We set this flag to let the compositor know that the start value of this
   // transition is replaced. The compositor may replace the start value with its
   // last sampled animation value, instead of using the segment.mFromValue we
@@ -478,7 +512,7 @@ void AnimationInfo::AddAnimationForProperty(
   animation->replacedTransitionId() =
       needReplaceTransition ? Some(GetCompositorAnimationsId()) : Nothing();
 
-  TransformReferenceBox refBox(aFrame);
+  TransformReferenceBox refBox(aFrame, TransformReferenceBox::Unzoomed);
 
   // If the animation is additive or accumulates, we need to pass its base value
   // to the compositor.
@@ -487,7 +521,7 @@ void AnimationInfo::AddAnimationForProperty(
       aAnimation->GetEffect()->AsKeyframeEffect()->BaseStyle(
           aProperty.mProperty);
   if (!baseStyle.IsNull()) {
-    SetAnimatable(aProperty.mProperty.mID, baseStyle, aFrame, refBox,
+    SetAnimatable(aProperty.mProperty.mId, baseStyle, aFrame, refBox,
                   animation->baseStyle());
   } else {
     animation->baseStyle() = null_t();
@@ -495,9 +529,9 @@ void AnimationInfo::AddAnimationForProperty(
 
   for (const AnimationPropertySegment& segment : aProperty.mSegments) {
     AnimationSegment* animSegment = animation->segments().AppendElement();
-    SetAnimatable(aProperty.mProperty.mID, segment.mFromValue, aFrame, refBox,
+    SetAnimatable(aProperty.mProperty.mId, segment.mFromValue, aFrame, refBox,
                   animSegment->startState());
-    SetAnimatable(aProperty.mProperty.mID, segment.mToValue, aFrame, refBox,
+    SetAnimatable(aProperty.mProperty.mId, segment.mToValue, aFrame, refBox,
                   animSegment->endState());
 
     animSegment->startPortion() = segment.mFromKey;
@@ -552,10 +586,11 @@ void AnimationInfo::AddAnimationForProperty(
 // ]
 //
 // And then, for each transaction, we send this list to the compositor thread.
-static HashMap<nsCSSPropertyID, nsTArray<RefPtr<dom::Animation>>>
+static HashMap<NonCustomCSSPropertyId, nsTArray<RefPtr<dom::Animation>>>
 GroupAnimationsByProperty(const nsTArray<RefPtr<dom::Animation>>& aAnimations,
                           const nsCSSPropertyIDSet& aPropertySet) {
-  HashMap<nsCSSPropertyID, nsTArray<RefPtr<dom::Animation>>> groupedAnims;
+  HashMap<NonCustomCSSPropertyId, nsTArray<RefPtr<dom::Animation>>>
+      groupedAnims;
   for (const RefPtr<dom::Animation>& anim : aAnimations) {
     const dom::KeyframeEffect* effect = anim->GetEffect()->AsKeyframeEffect();
     MOZ_ASSERT(effect);
@@ -566,10 +601,10 @@ GroupAnimationsByProperty(const nsTArray<RefPtr<dom::Animation>>& aAnimations,
       }
 
       auto animsForPropertyPtr =
-          groupedAnims.lookupForAdd(property.mProperty.mID);
+          groupedAnims.lookupForAdd(property.mProperty.mId);
       if (!animsForPropertyPtr) {
         DebugOnly<bool> rv =
-            groupedAnims.add(animsForPropertyPtr, property.mProperty.mID,
+            groupedAnims.add(animsForPropertyPtr, property.mProperty.mId,
                              nsTArray<RefPtr<dom::Animation>>());
         MOZ_ASSERT(rv, "Should have enough memory");
       }
@@ -582,8 +617,9 @@ GroupAnimationsByProperty(const nsTArray<RefPtr<dom::Animation>>& aAnimations,
 bool AnimationInfo::AddAnimationsForProperty(
     nsIFrame* aFrame, const EffectSet* aEffects,
     const nsTArray<RefPtr<dom::Animation>>& aCompositorAnimations,
-    const Maybe<TransformData>& aTransformData, nsCSSPropertyID aProperty,
-    Send aSendFlag, WebRenderLayerManager* aLayerManager) {
+    const Maybe<TransformData>& aTransformData,
+    NonCustomCSSPropertyId aProperty, Send aSendFlag,
+    WebRenderLayerManager* aLayerManager) {
   bool addedAny = false;
   // Add from first to last (since last overrides)
   for (dom::Animation* anim : aCompositorAnimations) {
@@ -596,7 +632,7 @@ bool AnimationInfo::AddAnimationsForProperty(
     dom::KeyframeEffect* keyframeEffect = anim->GetEffect()->AsKeyframeEffect();
     const AnimationProperty* property =
         keyframeEffect->GetEffectiveAnimationOfProperty(
-            AnimatedPropertyID(aProperty), *aEffects);
+            CSSPropertyId(aProperty), *aEffects);
     if (!property) {
       continue;
     }
@@ -721,11 +757,13 @@ static PartialPrerenderData GetPartialPrerenderData(
       nsLayoutUtils::AsyncPanZoomEnabled(aFrame)) {
     const bool isInPositionFixed =
         nsLayoutUtils::IsInPositionFixedSubtree(aFrame);
-    const ActiveScrolledRoot* asr = aItem->GetActiveScrolledRoot();
+    // We need to find asynchronously scrollable ASRs, therefore we should
+    // ignore ASRs for pos:sticky display items.
+    const ActiveScrolledRoot* asr = aItem->GetNearestScrollASR();
     if (!isInPositionFixed && asr &&
-        aFrame->PresContext() == asr->mScrollContainerFrame->PresContext()) {
+        aFrame->PresContext() == asr->ScrollFrame()->PresContext()) {
       scrollId = asr->GetViewId();
-      MOZ_ASSERT(clipFrame == asr->mScrollContainerFrame);
+      MOZ_ASSERT(clipFrame == asr->ScrollFrame());
     } else {
       // Use the root scroll id in the same document if the target frame is in
       // position:fixed subtree or there is no ASR or the ASR is in a different
@@ -842,7 +880,7 @@ static Maybe<TransformData> CreateAnimationData(
 void AnimationInfo::AddNonAnimatingTransformLikePropertiesStyles(
     const nsCSSPropertyIDSet& aNonAnimatingProperties, nsIFrame* aFrame,
     Send aSendFlag) {
-  auto appendFakeAnimation = [this, aSendFlag](nsCSSPropertyID aProperty,
+  auto appendFakeAnimation = [this, aSendFlag](NonCustomCSSPropertyId aProperty,
                                                Animatable&& aBaseStyle) {
     layers::Animation* animation = (aSendFlag == Send::NextTransaction)
                                        ? AddAnimationForNextTransaction()
@@ -860,20 +898,22 @@ void AnimationInfo::AddNonAnimatingTransformLikePropertiesStyles(
       !display->mOffsetPath.IsNone() ||
       !aNonAnimatingProperties.HasProperty(eCSSProperty_offset_path);
 
-  for (nsCSSPropertyID id : aNonAnimatingProperties) {
+  for (NonCustomCSSPropertyId id : aNonAnimatingProperties) {
     switch (id) {
       case eCSSProperty_transform:
         if (!display->mTransform.IsNone()) {
-          TransformReferenceBox refBox(aFrame);
+          TransformReferenceBox refBox(aFrame, TransformReferenceBox::Unzoomed);
           appendFakeAnimation(
-              id, ResolveTransformOperations(display->mTransform, refBox));
+              id, ResolveTransformOperations(display->mTransform, refBox,
+                                             aFrame->Style()->EffectiveZoom()));
         }
         break;
       case eCSSProperty_translate:
         if (!display->mTranslate.IsNone()) {
-          TransformReferenceBox refBox(aFrame);
-          appendFakeAnimation(id,
-                              ResolveTranslate(display->mTranslate, refBox));
+          TransformReferenceBox refBox(aFrame, TransformReferenceBox::Unzoomed);
+          appendFakeAnimation(
+              id, ResolveTranslate(display->mTranslate, refBox,
+                                   aFrame->Style()->EffectiveZoom()));
         }
         break;
       case eCSSProperty_rotate:
@@ -954,7 +994,7 @@ void AnimationInfo::AddAnimationsForDisplayItem(
   // If the frame is not prerendered, bail out.
   // Do this check only during layer construction; during updating the
   // caller is required to check it appropriately.
-  if (aItem && !aItem->CanUseAsyncAnimations(aBuilder)) {
+  if (aItem && !aItem->CanUseAsyncAnimations()) {
     // EffectCompositor needs to know that we refused to run this animation
     // asynchronously so that it will not throttle the main thread
     // animation.
@@ -962,7 +1002,7 @@ void AnimationInfo::AddAnimationsForDisplayItem(
     return;
   }
 
-  const HashMap<nsCSSPropertyID, nsTArray<RefPtr<dom::Animation>>>
+  const HashMap<NonCustomCSSPropertyId, nsTArray<RefPtr<dom::Animation>>>
       compositorAnimations =
           GroupAnimationsByProperty(matchedAnimations, propertySet);
   Maybe<TransformData> transformData =

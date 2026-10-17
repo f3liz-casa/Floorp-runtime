@@ -14,22 +14,22 @@ stage-package:
 install::
 	@$(MAKE) -C browser/installer install
 
-source-package::
-	@$(MAKE) -C browser/installer source-package
-
 upload::
 	@$(MAKE) -C browser/installer upload
-
-source-upload::
-	@$(MAKE) -C browser/installer source-upload
-
-hg-bundle::
-	@$(MAKE) -C browser/installer hg-bundle
 
 wget-en-US:
 	@$(MAKE) -C browser/locales $@
 
-merge-% installers-% langpack-% chrome-%:
+ifdef MAKENSISU
+ifndef MOZ_USE_MAKEFILE_INSTALLER_BUILD
+INSTALLER_REPACK_DEPS = browser/installer/windows/nsis-stage.stamp
+endif
+endif
+
+installers-%: $(INSTALLER_REPACK_DEPS)
+	$(MAKE) -C browser/locales $@
+
+merge-% langpack-% chrome-%:
 	$(MAKE) -C browser/locales $@
 
 ifdef ENABLE_TESTS

@@ -3,7 +3,7 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 const { PictureInPicture } = ChromeUtils.importESModule(
-  "resource://gre/modules/PictureInPicture.sys.mjs"
+  "moz-src:///toolkit/components/pictureinpicture/PictureInPicture.sys.mjs"
 );
 const { ShortcutUtils } = ChromeUtils.importESModule(
   "resource://gre/modules/ShortcutUtils.sys.mjs"
@@ -27,8 +27,13 @@ const TEXT_TRACK_FONT_SIZE_PREF =
   "media.videocontrols.picture-in-picture.display-text-tracks.size";
 const IMPROVED_CONTROLS_ENABLED_PREF =
   "media.videocontrols.picture-in-picture.improved-video-controls.enabled";
+const PLAYBACK_SPEED_ENABLED_PREF =
+  "media.videocontrols.picture-in-picture.playback-speed.enabled";
 const SEETHROUGH_MODE_ENABLED_PREF =
   "media.videocontrols.picture-in-picture.seethrough-mode.enabled";
+
+// Tolerance used when comparing playback rates, which are floats.
+const RATE_EPSILON = 0.001;
 
 /**
  * The "showing" attribute means that we intentionally want to show controls
@@ -69,23 +74,27 @@ const BOTTOM_RIGHT_QUADRANT = 4;
  * Public function to be called from PictureInPicture.sys.mjs. This is the main
  * entrypoint for initializing the player window.
  *
- * @param {Number} id
+ * @param {number} id
  *   A unique numeric ID for the window, used for Telemetry Events.
  * @param {WindowGlobalParent} wgp
  *   The WindowGlobalParent that is hosting the originating video.
  * @param {ContentDOMReference} videoRef
  *    A reference to the video element that a Picture-in-Picture window
  *    is being created for
+ * @param {boolean} isPipApiRequest
+ *    True when this PiP window was requested via the PiP web API
+ *    (HTMLVideoElement.requestPictureInPicture()).
+ * @returns {{ actor: PictureInPictureParent, setupPromise: Promise<void> }}
  */
-function setupPlayer(id, wgp, videoRef, autoFocus) {
-  Player.init(id, wgp, videoRef, autoFocus);
+function setupPlayer(id, wgp, videoRef, isPipApiRequest, autoFocus) {
+  return Player.init(id, wgp, videoRef, isPipApiRequest, autoFocus);
 }
 
 /**
  * Public function to be called from PictureInPicture.sys.mjs. This update the
  * controls based on whether or not the video is playing.
  *
- * @param {Boolean} isPlaying
+ * @param {boolean} isPlaying
  *   True if the Picture-in-Picture video is playing.
  */
 function setIsPlayingState(isPlaying) {
@@ -96,7 +105,7 @@ function setIsPlayingState(isPlaying) {
  * Public function to be called from PictureInPicture.sys.mjs. This update the
  * controls based on whether or not the video is muted.
  *
- * @param {Boolean} isMuted
+ * @param {boolean} isMuted
  *   True if the Picture-in-Picture video is muted.
  */
 function setIsMutedState(isMuted) {
@@ -105,7 +114,8 @@ function setIsMutedState(isMuted) {
 
 /**
  * Function to resize and reposition the PiP window
- * @param {Object} rect
+ *
+ * @param {object} rect
  *   An object containing `left`, `top`, `width`, and `height` for the PiP
  *   window
  */
@@ -142,6 +152,10 @@ function setVolume(volume) {
   Player.setVolume(volume);
 }
 
+function setPlaybackRate(playbackRate) {
+  Player.setPlaybackRateState(playbackRate);
+}
+
 function closeFromForeground() {
   Player.closeFromForeground();
 }
@@ -158,6 +172,7 @@ let Player = {
     "command",
     "dblclick",
     "keydown",
+    "mousedown",
     "mouseup",
     "mousemove",
     "MozDOMFullscreen:Entered",
@@ -204,19 +219,36 @@ let Player = {
   deferredResize: null,
 
   /**
+   * Set a shortcut that can be used for unpiping without pausing
+   */
+  isUnpipWithoutPauseShortcut: e => e.shiftKey === true,
+
+  /**
+   * Becomes true once the first Tab press puts focus on the play/pause button
+   * or, for Shift + Tab, on the visible control preceding it.
+   */
+  didTabOverrideControlFocus: false,
+
+  /**
    * Initializes the player browser, and sets up the initial state.
    *
-   * @param {Number} id
+   * @param {number} id
    *   A unique numeric ID for the window, used for Telemetry Events.
    * @param {WindowGlobalParent} wgp
    *   The WindowGlobalParent that is hosting the originating video.
    * @param {ContentDOMReference} videoRef
    *   A reference to the video element that a Picture-in-Picture window
    *   is being created for
+   * @param {boolean} isPipApiRequest
+   *   True when this PiP window was requested via the PiP web API
+   *   (HTMLVideoElement.requestPictureInPicture()).
    * @param {boolean} autoFocus
    *   Autofocus the PiP window
+   * @returns {{ actor: PictureInPictureParent, setupPromise: Promise<void> }}
+   *   Return the actor associated with this and the promise from the request
+   *   of setting up the player in the child.
    */
-  init(id, wgp, videoRef, autoFocus) {
+  init(id, wgp, videoRef, isPipApiRequest, autoFocus) {
     this.id = id;
 
     // State for whether or not we are adjusting the time via the scrubber
@@ -245,10 +277,19 @@ let Player = {
     );
     holder.appendChild(browser);
 
+    // dimensions set on the contentWindow so that web content knows the size when it gets opened
+    // otherwise it'll be reported as 0,0 until first resize.
+    const initDimension = {
+      width: window.innerWidth,
+      height: window.innerHeight,
+    };
+
     this.actor =
       browser.browsingContext.currentWindowGlobal.getActor("PictureInPicture");
-    this.actor.sendAsyncMessage("PictureInPicture:SetupPlayer", {
+    const setupPromise = this.actor.sendQuery("PictureInPicture:SetupPlayer", {
       videoRef,
+      isPipApiRequest,
+      initDimension,
     });
 
     PictureInPicture.weakPipToWin.set(this.actor, window);
@@ -292,6 +333,16 @@ let Player = {
       });
     }
 
+    this.playbackRateSlider.addEventListener("input", event => {
+      this.requestPlaybackRate(parseFloat(event.target.value));
+    });
+
+    for (let preset of document.querySelectorAll(".playback-rate-preset")) {
+      preset.addEventListener("click", () => {
+        this.requestPlaybackRate(parseFloat(preset.dataset.rate));
+      });
+    }
+
     document
       .querySelector("#subtitles-toggle")
       .addEventListener("change", () => {
@@ -328,6 +379,11 @@ let Player = {
 
       this.scrubber.hidden = false;
       this.timestamp.hidden = false;
+
+      if (Services.prefs.getBoolPref(PLAYBACK_SPEED_ENABLED_PREF, false)) {
+        this.playbackRateButton.hidden = false;
+        this.setPlaybackRateState(this._playbackRate);
+      }
 
       const controlsBottomGradient = document.getElementById(
         "controls-bottom-gradient"
@@ -374,6 +430,8 @@ let Player = {
     }
 
     this._isInitialized = true;
+
+    return { actor: this.actor, setupPromise };
   },
 
   uninit() {
@@ -426,6 +484,28 @@ let Player = {
         if (event.keyCode == KeyEvent.DOM_VK_TAB) {
           this.controls.setAttribute(KEYING_ATTRIBUTE, true);
           this.showVideoControls();
+          // Tab order follows DOM order. To ensure Tab lands on primary controls
+          // after opening PiP for the first time, override the default Tab
+          // behaviour and focus on the primary buttons.
+          // Do not override in init() to prevent regressing the "space" play/pause shortcut.
+          if (
+            !this.didTabOverrideControlFocus &&
+            !this.controls.contains(document.activeElement)
+          ) {
+            if (!event.shiftKey) {
+              this.didTabOverrideControlFocus = true;
+              event.preventDefault();
+              // On all window sizes, the play/pause button is always visible.
+              this.playpauseButton.focus();
+            } else {
+              let previousControl = this.getControlBefore(this.playpauseButton);
+              if (previousControl) {
+                this.didTabOverrideControlFocus = true;
+                event.preventDefault();
+                previousControl.focus();
+              }
+            }
+          }
         } else if (event.keyCode == KeyEvent.DOM_VK_ESCAPE) {
           let isSettingsPanelInFocus = this.settingsPanel.contains(
             document.activeElement
@@ -439,23 +519,43 @@ let Player = {
             if (isSettingsPanelInFocus) {
               document.getElementById("closed-caption").focus();
             }
+          } else if (!this.playbackRatePanel.classList.contains("hide")) {
+            // If the playback speed panel is open, let the ESC key close it
+            let isPlaybackRatePanelInFocus = this.playbackRatePanel.contains(
+              document.activeElement
+            );
+            this.togglePlaybackRatePanel({ forceHide: true });
+            if (isPlaybackRatePanelInFocus) {
+              this.playbackRateButton.focus();
+            }
           } else if (this.isFullscreen) {
             // We handle the ESC key, in fullscreen modus as intent to leave only the fullscreen mode
             document.exitFullscreen();
           } else {
             // We handle the ESC key, as an intent to leave the picture-in-picture modus
-            this.onClose();
+            this.onClose(this.isUnpipWithoutPauseShortcut(event));
           }
         } else if (
-          Services.prefs.getBoolPref(KEYBOARD_CONTROLS_ENABLED_PREF, false) &&
-          (event.keyCode != KeyEvent.DOM_VK_SPACE || !event.target.id)
+          (event.key == "<" || event.key == ">") &&
+          Services.prefs.getBoolPref(PLAYBACK_SPEED_ENABLED_PREF, false)
         ) {
-          // Pressing "space" fires a "keydown" event which can also trigger a control
-          // button's "click" event. Handle the "keydown" event only when the event did
-          // not originate from a control button and it is not a "space" keypress.
+          // Same playback speed shortcuts as the YouTube player.
+          this.cyclePlaybackRate(event.key == ">" ? 1 : -1);
+        } else if (
+          Services.prefs.getBoolPref(KEYBOARD_CONTROLS_ENABLED_PREF, false) &&
+          (event.key != " " || !event.target.closest(".control-button, .panel"))
+        ) {
+          // Pressing "space" fires a "keydown" event which can also activate a
+          // focused control. Let "space" toggle playback unless a control that
+          // it would activate has focus.
           this.onKeyDown(event);
         }
 
+        break;
+      }
+
+      case "mousedown": {
+        this.onMouseDown(event);
         break;
       }
 
@@ -545,6 +645,7 @@ let Player = {
 
       case "draggableregionleftmousedown": {
         this.toggleSubtitlesSettingsPanel({ forceHide: true });
+        this.togglePlaybackRatePanel({ forceHide: true });
         break;
       }
     }
@@ -555,6 +656,7 @@ let Player = {
    * because if we get an input event from the keyboard, onKeyDown will set
    * this.preventNextInputEvent to true.
    * This function is called by input events on the scrubber
+   *
    * @param {Event} event The input event
    */
   handleScrubbing(event) {
@@ -580,6 +682,7 @@ let Player = {
   /**
    * This function handles setting the scrubbing state to false and playing
    * the video if we paused it before scrubbing.
+   *
    * @param {Event} event The change event
    */
   handleScrubbingDone(event) {
@@ -598,7 +701,8 @@ let Player = {
    * Set the volume on the video and unmute if the video was muted.
    * If the volume is changed via the keyboard, onKeyDown will set
    * this.preventNextInputEvent to true.
-   * @param {Number} volume A number between 0 and 1 that represents the volume
+   *
+   * @param {number} volume A number between 0 and 1 that represents the volume
    */
   handleAudioScrubbing(volume) {
     // When using the keyboard to adjust the volume, we get both a keydown and
@@ -659,6 +763,138 @@ let Player = {
     this.audioScrubber.value = volume;
   },
 
+  // Rates stepped through by the < and > shortcuts; distinct from the preset
+  // buttons and the slider steps.
+  SHORTCUT_PLAYBACK_RATES: [0.25, 0.5, 0.75, 1, 1.25, 1.5, 1.75, 2],
+
+  _playbackRate: 1,
+
+  /**
+   * Updates the playback rate state, the slider, the value readout, and the
+   * checked preset without affecting the originating video. Called when the
+   * originating video's rate changes.
+   *
+   * @param {number} playbackRate The new playback rate
+   */
+  setPlaybackRateState(playbackRate) {
+    if (!Number.isFinite(playbackRate) || playbackRate <= 0) {
+      return;
+    }
+    this._playbackRate = playbackRate;
+    let rounded = Math.round(playbackRate * 100) / 100;
+    this.playbackRateSlider.value = rounded;
+    document.l10n.setAttributes(
+      document.getElementById("playback-rate-value"),
+      "pictureinpicture-playback-rate-value",
+      { rate: rounded }
+    );
+    for (let preset of document.querySelectorAll(".playback-rate-preset")) {
+      preset.setAttribute(
+        "aria-pressed",
+        Math.abs(parseFloat(preset.dataset.rate) - playbackRate) < RATE_EPSILON
+      );
+    }
+  },
+
+  /**
+   * Applies a playback rate to the originating video and updates the UI.
+   *
+   * @param {number} playbackRate The playback rate to apply
+   */
+  requestPlaybackRate(playbackRate) {
+    this.setPlaybackRateState(playbackRate);
+    this.actor.sendAsyncMessage("PictureInPicture:SetPlaybackRate", {
+      playbackRate,
+    });
+  },
+
+  /**
+   * Steps the originating video's playback rate to the next or previous
+   * rate step, wrapping around at either end.
+   *
+   * @param {number} direction 1 to speed up, -1 to slow down
+   */
+  cyclePlaybackRate(direction) {
+    const rates = this.SHORTCUT_PLAYBACK_RATES;
+    let index;
+    if (direction > 0) {
+      index = rates.findIndex(rate => rate > this._playbackRate + RATE_EPSILON);
+      if (index == -1) {
+        index = 0;
+      }
+    } else {
+      index = rates.findLastIndex(
+        rate => rate < this._playbackRate - RATE_EPSILON
+      );
+      if (index == -1) {
+        index = rates.length - 1;
+      }
+    }
+    this.requestPlaybackRate(rates[index]);
+  },
+
+  /**
+   * Places a panel's arrow under the center of the button that opens the
+   * panel. The buttons live in fr-sized grid cells, so a fixed offset only
+   * lines up at one window size.
+   *
+   * @param {Element} panel The panel containing the arrow
+   * @param {Element} button The button the arrow should point at
+   */
+  alignPanelArrow(panel, button) {
+    let arrow = panel.querySelector(".arrow");
+    let panelRect = panel.getBoundingClientRect();
+    let buttonRect = button.getBoundingClientRect();
+    // getBoundingClientRect() is in physical coordinates, so position the arrow
+    // with the physical `left` property (not `inset-inline-start`, which would
+    // flip in RTL locales and misposition the arrow).
+    let offset =
+      buttonRect.left +
+      buttonRect.width / 2 -
+      panelRect.left -
+      arrow.offsetWidth / 2;
+    arrow.style.left = `${Math.max(0, offset)}px`;
+  },
+
+  /**
+   * Function to toggle the visibility of the playback speed panel. Mirrors
+   * toggleSubtitlesSettingsPanel.
+   *
+   * @param {object} options [optional] Object containing options for the function
+   *   - forceHide: true to force hide the playback speed panel
+   *   - isKeyboard: true if the playback speed button was activated using the
+   *     keyboard to show or hide the playback speed panel
+   */
+  togglePlaybackRatePanel(options) {
+    let panelVisible = !this.playbackRatePanel.classList.contains("hide");
+    if (options?.forceHide || panelVisible) {
+      this.playbackRatePanel.classList.add("hide");
+      this.playbackRateButton.setAttribute("aria-expanded", false);
+      this.controls.removeAttribute(DONTHIDE_ATTRIBUTE);
+
+      if (
+        this.controls.hasAttribute(KEYING_ATTRIBUTE) ||
+        this.isCurrentHover ||
+        this.controls.hasAttribute(SHOWING_ATTRIBUTE)
+      ) {
+        return;
+      }
+
+      this.hideVideoControls();
+    } else {
+      this.toggleSubtitlesSettingsPanel({ forceHide: true });
+      this.playbackRatePanel.classList.remove("hide");
+      this.playbackRateButton.setAttribute("aria-expanded", true);
+      this.alignPanelArrow(this.playbackRatePanel, this.playbackRateButton);
+      this.controls.setAttribute(DONTHIDE_ATTRIBUTE, true);
+      this.showVideoControls();
+
+      if (options?.isKeyboard) {
+        this.playbackRateSlider.focus();
+      }
+    }
+  },
+
   closePipWindow(closeData) {
     // Set the subtitles font size prefs
     Services.prefs.setBoolPref(
@@ -692,7 +928,7 @@ let Player = {
       }
 
       case "close": {
-        this.onClose();
+        this.onClose(this.isUnpipWithoutPauseShortcut(event));
         break;
       }
 
@@ -716,6 +952,16 @@ let Player = {
       case "seekForward": {
         this.actor.sendAsyncMessage("PictureInPicture:SeekForward");
         break;
+      }
+
+      case "playbackRate": {
+        let options = {};
+        if (event.inputSource == MouseEvent.MOZ_SOURCE_KEYBOARD) {
+          options.isKeyboard = true;
+        }
+        this.togglePlaybackRatePanel(options);
+        // Early return to prevent hiding the panel below
+        return;
       }
 
       case "unpip": {
@@ -761,11 +1007,15 @@ let Player = {
     if (!this.settingsPanel.contains(event.target)) {
       this.toggleSubtitlesSettingsPanel({ forceHide: true });
     }
+    if (!this.playbackRatePanel.contains(event.target)) {
+      this.togglePlaybackRatePanel({ forceHide: true });
+    }
   },
 
   /**
    * Function to toggle the visibility of the subtitles settings panel
-   * @param {Object} options [optional] Object containing options for the function
+   *
+   * @param {object} options [optional] Object containing options for the function
    *   - forceHide: true to force hide the subtitles settings panel
    *   - isKeyboard: true if the subtitles button was activated using the keyboard
    *     to show or hide the subtitles settings panel
@@ -787,8 +1037,10 @@ let Player = {
 
       this.hideVideoControls();
     } else {
+      this.togglePlaybackRatePanel({ forceHide: true });
       this.settingsPanel.classList.remove("hide");
       this.closedCaptionButton.setAttribute("aria-expanded", true);
+      this.alignPanelArrow(this.settingsPanel, this.closedCaptionButton);
       this.controls.setAttribute(DONTHIDE_ATTRIBUTE, true);
       this.showVideoControls();
 
@@ -798,10 +1050,15 @@ let Player = {
     }
   },
 
-  onClose() {
-    this.actor.sendAsyncMessage("PictureInPicture:Pause", {
-      reason: "pip-closed",
-    });
+  onClose(bypassPause = false) {
+    // By default, we want to pause the video on close, unless the user
+    // used the assigned isUnpipWithoutPauseShortcut
+    if (!bypassPause) {
+      this.actor.sendAsyncMessage("PictureInPicture:Pause", {
+        reason: "pip-closed",
+      });
+    }
+
     this.closePipWindow({ reason: "CloseButton" });
   },
 
@@ -854,11 +1111,12 @@ let Player = {
 
   onKeyDown(event) {
     // We don't want to send a keydown event if the event target was one of the
-    // font sizes in the settings panel
+    // font sizes in the settings panel or a control in the playback speed panel
     if (
       event.target.parentElement?.parentElement?.classList?.contains(
         "font-size-selection"
-      )
+      ) ||
+      this.playbackRatePanel.contains(event.target)
     ) {
       return;
     }
@@ -1032,6 +1290,21 @@ let Player = {
   },
 
   /**
+   * Event handler for "mousedown" events on the PiP window.
+   *
+   * @param {Event} event
+   *  Event context details
+   */
+  onMouseDown(event) {
+    // Prevent mouse clicks moving focus onto the control buttons.
+    // Otherwise, if focus stays, "space" key presses would act on that button
+    // instead of toggling playback.
+    if (event.target.closest(".control-button")) {
+      event.preventDefault();
+    }
+  },
+
+  /**
    * Event handler for "mouseup" events on the PiP window.
    *
    * @param {Event} event
@@ -1190,6 +1463,7 @@ let Player = {
    */
   onResize() {
     this.toggleSubtitlesSettingsPanel({ forceHide: true });
+    this.togglePlaybackRatePanel({ forceHide: true });
     this.resizeDebouncer.disarm();
     this.resizeDebouncer.arm();
   },
@@ -1204,9 +1478,42 @@ let Player = {
     this.closePipWindow({ reason: "Shortcut" });
   },
 
+  /**
+   * Get the visible control preceding another button, wrapping around
+   * if needed. For example, if the next preceding button is at the top
+   * right corner from the buttom center, return the button from that position.
+   *
+   * @returns {Element|null}
+   *  The preceding control
+   */
+  getControlBefore(control) {
+    let controls = this.focusableControls;
+    let index = controls.indexOf(control);
+    if (index < 0) {
+      return null;
+    }
+    return controls.at(index - 1) ?? null;
+  },
+
   get controls() {
     delete this.controls;
     return (this.controls = document.getElementById("controls"));
+  },
+
+  /**
+   * Get an array of visible controls that can take focus, in DOM order.
+   * Don't store the result, for the layout can change when the window
+   * resizes or metadata loads.
+   *
+   * @returns {Array<Element>}
+   *  Array of focusable, visible controls
+   */
+  get focusableControls() {
+    return [
+      ...this.controls.querySelectorAll(
+        "button.control-item, input.control-item"
+      ),
+    ].filter(control => !control.disabled && control.checkVisibility());
   },
 
   get scrubber() {
@@ -1234,6 +1541,11 @@ let Player = {
     return (this.seekBackward = document.getElementById("seekBackward"));
   },
 
+  get playpauseButton() {
+    delete this.playpauseButton;
+    return (this.playpauseButton = document.getElementById("playpause"));
+  },
+
   get seekForward() {
     delete this.seekForward;
     return (this.seekForward = document.getElementById("seekForward"));
@@ -1243,6 +1555,25 @@ let Player = {
     delete this.closedCaptionButton;
     return (this.closedCaptionButton =
       document.getElementById("closed-caption"));
+  },
+
+  get playbackRateButton() {
+    delete this.playbackRateButton;
+    return (this.playbackRateButton = document.getElementById("playbackRate"));
+  },
+
+  get playbackRatePanel() {
+    delete this.playbackRatePanel;
+    return (this.playbackRatePanel = document.getElementById(
+      "playbackRateSettings"
+    ));
+  },
+
+  get playbackRateSlider() {
+    delete this.playbackRateSlider;
+    return (this.playbackRateSlider = document.getElementById(
+      "playback-rate-slider"
+    ));
   },
 
   get settingsPanel() {
@@ -1257,7 +1588,7 @@ let Player = {
    * SET isPlaying to true if the video is playing, false otherwise. This will
    * update the internal state and displayed controls.
    *
-   * @type {Boolean}
+   * @type {boolean}
    */
   get isPlaying() {
     return this._isPlaying;
@@ -1296,7 +1627,7 @@ let Player = {
    * SET isMuted to true if the video is muted, false otherwise. This will
    * update the internal state and displayed controls.
    *
-   * @type {Boolean}
+   * @type {boolean}
    */
   get isMuted() {
     return this._isMuted;
@@ -1369,7 +1700,7 @@ let Player = {
   /**
    * Makes the player controls visible.
    *
-   * @param {Boolean} revealIndefinitely
+   * @param {boolean} revealIndefinitely
    *   If false, this will hide the controls again after
    *   CONTROLS_FADE_TIMEOUT_MS milliseconds has passed. If true, the controls
    *   will remain visible until revealControls is called again with
@@ -1417,9 +1748,9 @@ let Player = {
    * impose a minimum window size. For other platforms, this function is a
    * no-op.
    *
-   * @param {Number} width
+   * @param {number} width
    *   The width of the video being played.
-   * @param {Number} height
+   * @param {number} height
    *   The height of the video being played.
    */
   computeAndSetMinimumSize(width, height) {

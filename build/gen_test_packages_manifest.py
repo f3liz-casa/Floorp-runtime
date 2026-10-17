@@ -51,6 +51,16 @@ OPTIONAL_PACKAGES = [
     "gtest",
 ]
 
+# Harnesses that load the train-hop NSS/libxul bundle at runtime
+# (see testing/mochitest/runtests.py for the consumer). Other harnesses
+# must not pull this in: on macOS aarch64 the trainhop archive contains
+# x86_64-only dylibs that overwrite the universal libnss3.dylib from
+# target.jsshell.zip and break jit-test (bug 1986386).
+HARNESSES_NEEDING_TRAINHOP = {
+    "mochitest",
+    "trainhop",
+}
+
 
 def parse_args():
     parser = ArgumentParser(
@@ -62,7 +72,7 @@ def parse_args():
         required=True,
         action="store",
         dest="tests_common",
-        help='Name of the "common" archive, a package to be used by all ' "harnesses.",
+        help='Name of the "common" archive, a package to be used by all harnesses.',
     )
     parser.add_argument(
         "--jsshell",
@@ -74,7 +84,7 @@ def parse_args():
     for harness in PACKAGE_SPECIFIED_HARNESSES:
         parser.add_argument(
             "--%s" % harness,
-            required=True,
+            required=False,
             action="store",
             dest=harness,
             help="Name of the %s zip." % harness,
@@ -108,15 +118,28 @@ def generate_package_data(args):
     jsshell = args.jsshell
 
     harness_requirements = dict([(k, [tests_common]) for k in ALL_HARNESSES])
-    harness_requirements["jittest"].append(jsshell)
-    harness_requirements["jsreftest"].append(args.reftest)
-    harness_requirements["common"].append("target.condprof.tests.tar.gz")
+
+    condprof = args.condprof
+    trainhop = args.trainhop
+
+    if args.jittest:
+        harness_requirements["jittest"].append(jsshell)
+
+    if args.jsreftest and args.reftest:
+        harness_requirements["jsreftest"].append(args.reftest)
+
+    if condprof:
+        harness_requirements["common"].append(condprof)
+
     for harness in PACKAGE_SPECIFIED_HARNESSES + OPTIONAL_PACKAGES:
         pkg_name = getattr(args, harness, None)
         if pkg_name is None:
             continue
         harness_requirements[harness].append(pkg_name)
-        harness_requirements[harness].append("target.condprof.tests.tar.gz")
+        if condprof:
+            harness_requirements[harness].append(condprof)
+        if harness in HARNESSES_NEEDING_TRAINHOP and trainhop:
+            harness_requirements[harness].append(trainhop)
     return harness_requirements
 
 

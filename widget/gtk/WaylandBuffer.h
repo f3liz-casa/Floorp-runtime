@@ -1,48 +1,28 @@
-/* -*- Mode: C++; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- *
+/*
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef _MOZILLA_WIDGET_GTK_WAYLAND_BUFFER_H
-#define _MOZILLA_WIDGET_GTK_WAYLAND_BUFFER_H
+#ifndef MOZILLA_WIDGET_GTK_WAYLAND_BUFFER_H
+#define MOZILLA_WIDGET_GTK_WAYLAND_BUFFER_H
 
 #include "DMABufSurface.h"
 #include "GLContext.h"
 #include "MozFramebuffer.h"
-#include "mozilla/ipc/SharedMemoryHandle.h"
-#include "mozilla/ipc/SharedMemoryMapping.h"
-#include "mozilla/gfx/2D.h"
-#include "mozilla/gfx/Types.h"
+#include "WaylandSurface.h"
 #include "mozilla/Mutex.h"
 #include "mozilla/RefPtr.h"
+#include "mozilla/gfx/2D.h"
+#include "mozilla/gfx/Types.h"
+#include "mozilla/ipc/SharedMemoryHandle.h"
+#include "mozilla/ipc/SharedMemoryMapping.h"
 #include "nsTArray.h"
 #include "nsWaylandDisplay.h"
-#include "WaylandSurface.h"
 
 namespace mozilla::widget {
 
 class WaylandBufferDMABUF;
-
-// Allocates and owns shared memory for Wayland drawing surface
-class WaylandShmPool {
- public:
-  NS_INLINE_DECL_THREADSAFE_REFCOUNTING(WaylandShmPool);
-
-  static RefPtr<WaylandShmPool> Create(nsWaylandDisplay* aWaylandDisplay,
-                                       int aSize);
-
-  wl_shm_pool* GetShmPool() { return mShmPool; };
-  void* GetImageData();
-
- private:
-  WaylandShmPool() = default;
-  ~WaylandShmPool();
-
-  wl_shm_pool* mShmPool = nullptr;
-  ipc::MutableSharedMemoryHandle mShmHandle;
-  ipc::SharedMemoryMapping mShm;
-};
+class SHMBufSurface;
 
 class BufferTransaction;
 
@@ -62,10 +42,10 @@ class WaylandBuffer {
     return aSize == mSize;
   }
 
-  bool IsAttached() const;
-
+  bool IsAttached(const WaylandSurfaceLock& aSurfaceLock) const;
   BufferTransaction* GetTransaction(const WaylandSurfaceLock& aSurfaceLock);
-  void RemoveTransaction(RefPtr<BufferTransaction> aTransaction);
+  void RemoveTransaction(const WaylandSurfaceLock& aSurfaceLock,
+                         RefPtr<BufferTransaction> aTransaction);
 
 #ifdef MOZ_LOGGING
   virtual void DumpToFile(const char* aHint) = 0;
@@ -85,11 +65,8 @@ class WaylandBuffer {
   // (for instance WaylandBufferDMABUFHolder)
   // and WaylandBuffer can't destroy it.
   wl_buffer* mExternalWlBuffer = nullptr;
-
   AutoTArray<RefPtr<BufferTransaction>, 3> mBufferTransactions;
-
   LayoutDeviceIntSize mSize;
-
   static gfx::SurfaceFormat sFormat;
 
 #ifdef MOZ_LOGGING
@@ -101,20 +78,17 @@ class WaylandBuffer {
 // Holds actual graphics data for wl_surface
 class WaylandBufferSHM final : public WaylandBuffer {
  public:
-  static RefPtr<WaylandBufferSHM> Create(const LayoutDeviceIntSize& aSize);
+  static RefPtr<WaylandBufferSHM> Create(
+      const LayoutDeviceIntSize& aSize,
+      RefPtr<widget::DRMFormat> aFormat = nullptr);
 
-  void ReleaseWlBuffer();
   already_AddRefed<gfx::DrawTarget> Lock() override;
-  void* GetImageData() override { return mShmPool->GetImageData(); }
+  void* GetImageData() override;
 
-  gfx::SurfaceFormat GetSurfaceFormat() override {
-    return gfx::SurfaceFormat::B8G8R8A8;
-  }
+  gfx::SurfaceFormat GetSurfaceFormat() override;
 
   void Clear();
   size_t GetBufferAge() const { return mBufferAge; };
-  RefPtr<WaylandShmPool> GetShmPool() const { return mShmPool; }
-
   void IncrementBufferAge() { mBufferAge++; };
   void ResetBufferAge() { mBufferAge = 0; };
 
@@ -128,9 +102,8 @@ class WaylandBufferSHM final : public WaylandBuffer {
   explicit WaylandBufferSHM(const LayoutDeviceIntSize& aSize);
   ~WaylandBufferSHM() override;
 
-  // WaylandShmPoolMB provides actual shared memory we draw into
-  RefPtr<WaylandShmPool> mShmPool;
-
+  // SHMBufSurface provides actual shared memory we draw into.
+  RefPtr<SHMBufSurface> mSHMBufSurface;
   size_t mBufferAge = 0;
 };
 
@@ -236,4 +209,4 @@ class BufferTransaction {
 
 }  // namespace mozilla::widget
 
-#endif  // _MOZILLA_WIDGET_GTK_WAYLAND_BUFFER_H
+#endif  // MOZILLA_WIDGET_GTK_WAYLAND_BUFFER_H

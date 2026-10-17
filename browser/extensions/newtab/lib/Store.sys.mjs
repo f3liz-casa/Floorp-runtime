@@ -45,9 +45,16 @@ export class Store {
   _middleware() {
     return next => action => {
       next(action);
-      for (const store of this.feeds.values()) {
+      for (const [name, store] of this.feeds) {
         if (store.onAction) {
-          store.onAction(action);
+          try {
+            store.onAction(action);
+          } catch (e) {
+            // Keep one feed from withholding the action from the others. A
+            // feed with an async onAction already behaves this way, since its
+            // throw becomes a rejection this loop never sees.
+            console.error(`Feed ${name} threw handling ${action.type}:`, e);
+          }
         }
       }
     };
@@ -113,7 +120,7 @@ export class Store {
    *                            to feeds when they're created.
    * @param {Action} uninitAction An optional action for when feeds uninit.
    */
-  async init(feedFactories, initAction, uninitAction) {
+  init(feedFactories, initAction, uninitAction) {
     this._feedFactories = feedFactories;
     this._initAction = initAction;
     this._uninitAction = uninitAction;
@@ -143,8 +150,6 @@ export class Store {
   /**
    * uninit -  Uninitalizes each feed, clears them, and destroys the message
    *           manager channel.
-   *
-   * @return {type}  description
    */
   uninit() {
     if (this._uninitAction) {

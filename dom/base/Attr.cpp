@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -13,7 +11,6 @@
 #include "NodeUbiReporting.h"
 #include "mozAutoDocUpdate.h"
 #include "mozilla/EventDispatcher.h"
-#include "mozilla/InternalMutationEvent.h"
 #include "mozilla/StaticPrefs_dom.h"
 #include "mozilla/dom/AttrBinding.h"
 #include "mozilla/dom/Document.h"
@@ -24,7 +21,6 @@
 #include "nsContentCreatorFunctions.h"
 #include "nsDOMString.h"
 #include "nsError.h"
-#include "nsGkAtoms.h"
 #include "nsIContentInlines.h"
 #include "nsNameSpaceManager.h"
 #include "nsTextNode.h"
@@ -37,7 +33,7 @@ namespace mozilla::dom {
 bool Attr::sInitialized;
 
 Attr::Attr(nsDOMAttributeMap* aAttrMap,
-           already_AddRefed<dom::NodeInfo>&& aNodeInfo, const nsAString& aValue)
+           already_AddRefed<dom::NodeInfo> aNodeInfo, const nsAString& aValue)
     : nsINode(std::move(aNodeInfo)), mAttrMap(aAttrMap), mValue(aValue) {
   MOZ_ASSERT(mNodeInfo, "We must get a nodeinfo here!");
   MOZ_ASSERT(mNodeInfo->NodeType() == ATTRIBUTE_NODE, "Wrong nodeType");
@@ -119,22 +115,6 @@ Element* Attr::GetElement() const {
   return content ? content->AsElement() : nullptr;
 }
 
-nsresult Attr::SetOwnerDocument(Document* aDocument) {
-  NS_ASSERTION(aDocument, "Missing document");
-
-  Document* doc = OwnerDoc();
-  NS_ASSERTION(doc != aDocument, "bad call to Attr::SetOwnerDocument");
-  doc->RemoveAllPropertiesFor(this);
-
-  RefPtr<dom::NodeInfo> newNodeInfo = aDocument->NodeInfoManager()->GetNodeInfo(
-      mNodeInfo->NameAtom(), mNodeInfo->GetPrefixAtom(),
-      mNodeInfo->NamespaceID(), ATTRIBUTE_NODE);
-  NS_ASSERTION(newNodeInfo, "GetNodeInfo lies");
-  mNodeInfo.swap(newNodeInfo);
-
-  return NS_OK;
-}
-
 void Attr::GetName(nsAString& aName) { aName = NodeName(); }
 
 void Attr::GetValue(nsAString& aValue) {
@@ -181,7 +161,8 @@ void Attr::SetValueInternal(const nsAString& aValue, ErrorResult& aRv) {
 
   RefPtr<nsAtom> nameAtom = mNodeInfo->NameAtom();
   aRv = element->SetAttr(mNodeInfo->NamespaceID(), nameAtom,
-                         mNodeInfo->GetPrefixAtom(), aValue, nullptr, true);
+                         mNodeInfo->GetPrefixAtom(), aValue, nullptr, true,
+                         IsKnownNewAttr::No);
 }
 
 bool Attr::Specified() const { return true; }
@@ -195,7 +176,7 @@ void Attr::SetNodeValue(const nsAString& aNodeValue, ErrorResult& aError) {
 void Attr::GetNodeValueInternal(nsAString& aNodeValue) { GetValue(aNodeValue); }
 
 void Attr::SetNodeValueInternal(const nsAString& aNodeValue,
-                                ErrorResult& aError) {
+                                ErrorResult& aError, MutationEffectOnScript) {
   SetValueInternal(aNodeValue, aError);
 }
 
@@ -230,7 +211,7 @@ void Attr::GetTextContentInternal(nsAString& aTextContent,
 
 void Attr::SetTextContentInternal(const nsAString& aTextContent,
                                   nsIPrincipal* aSubjectPrincipal,
-                                  ErrorResult& aError) {
+                                  ErrorResult& aError, MutationEffectOnScript) {
   SetValueInternal(aTextContent, aError);
 }
 

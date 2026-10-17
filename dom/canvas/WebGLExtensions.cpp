@@ -1,4 +1,3 @@
-/* -*- Mode: C++; tab-width: 20; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -666,6 +665,19 @@ void main() {}
   }
 
   return *webgl->mIsSupportedCache_FragDepth;
+}
+
+// -
+
+WebGLExtensionPolygonOffsetClamp::WebGLExtensionPolygonOffsetClamp(
+    WebGLContext* webgl)
+    : WebGLExtensionBase(webgl) {
+  MOZ_ASSERT(IsSupported(webgl), "Don't construct extension if unsupported.");
+}
+
+bool WebGLExtensionPolygonOffsetClamp::IsSupported(
+    const WebGLContext* const webgl) {
+  return webgl->GL()->IsSupported(gl::GLFeature::polygon_offset_clamp);
 }
 
 // -

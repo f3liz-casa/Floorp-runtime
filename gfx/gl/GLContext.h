@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -7,9 +5,9 @@
 #ifndef GLCONTEXT_H_
 #define GLCONTEXT_H_
 
-#include <bitset>
 #include <stdint.h>
-#include <stdio.h>
+
+#include <bitset>
 #include <stack>
 #include <vector>
 
@@ -27,23 +25,23 @@
 #  define MOZ_GL_DEBUG_BUILD 1
 #endif
 
-#include "mozilla/IntegerRange.h"
-#include "mozilla/RefPtr.h"
-#include "mozilla/UniquePtr.h"
-#include "mozilla/ThreadLocal.h"
-
-#include "MozFramebuffer.h"
-#include "nsTArray.h"
 #include "GLConsts.h"
+#include "GLContextSymbols.h"
+#include "GLContextTypes.h"
 #include "GLDefs.h"
 #include "GLTypes.h"
-#include "nsRegionFwd.h"
-#include "nsString.h"
-#include "GLContextTypes.h"
-#include "GLContextSymbols.h"
+#include "MozFramebuffer.h"
 #include "base/platform_thread.h"  // for PlatformThreadId
 #include "mozilla/GenericRefCounted.h"
+#include "mozilla/IntegerRange.h"
+#include "mozilla/RefPtr.h"
+#include "mozilla/ThreadLocal.h"
+#include "mozilla/UniquePtr.h"
 #include "mozilla/WeakPtr.h"
+#include "mozilla/gfx/Point.h"
+#include "nsRegionFwd.h"
+#include "nsString.h"
+#include "nsTArray.h"
 
 template <class ElemT, class... More>
 constexpr inline std::array<ElemT, 1 + sizeof...(More)> make_array(
@@ -83,6 +81,8 @@ enum class GLFeature {
   blend_minmax,
   clear_buffers,
   copy_buffer,
+  copy_image,
+  debug,
   depth_clamp,
   depth_texture,
   draw_buffers,
@@ -113,6 +113,7 @@ enum class GLFeature {
   occlusion_query_boolean,
   occlusion_query2,
   packed_depth_stencil,
+  polygon_offset_clamp,
   prim_restart,
   prim_restart_fixed,
   provoking_vertex,
@@ -177,7 +178,6 @@ enum class GLRenderer {
   Tegra,
   AndroidEmulator,
   GalliumLlvmpipe,
-  IntelHD3000,
   MicrosoftBasicRenderDriver,
   SamsungXclipse,
   Other
@@ -232,6 +232,12 @@ class GLContext : public GenericAtomicRefCounted, public SupportsWeakPtr {
    * for an ANGLE implementation.
    */
   virtual bool IsWARP() const { return false; }
+
+  /**
+   * Returns true if the context is using ANGLE's D3D backend. This should only
+   * be overridden for an ANGLE implementation.
+   */
+  virtual bool IsD3DANGLE() const { return false; }
 
   virtual void GetWSIInfo(nsCString* const out) const = 0;
 
@@ -288,6 +294,13 @@ class GLContext : public GenericAtomicRefCounted, public SupportsWeakPtr {
   GLRenderer Renderer() const { return mRenderer; }
   bool IsMesa() const { return mIsMesa; }
 
+  const nsCString& VendorString() const { return mVendorString; }
+  const nsCString& RendererString() const { return mRendererString; }
+  const nsCString& VersionString() const { return mVersionString; }
+  const nsTArray<nsCString>& ExtensionStrings() const {
+    return mExtensionStrings;
+  }
+
   bool IsContextLost() const { return mContextLost; }
 
   bool CheckContextLost() const {
@@ -343,6 +356,11 @@ class GLContext : public GenericAtomicRefCounted, public SupportsWeakPtr {
   GLRenderer mRenderer = GLRenderer::Other;
   bool mIsMesa = false;
 
+  nsCString mVendorString;
+  nsCString mRendererString;
+  nsCString mVersionString;
+  nsTArray<nsCString> mExtensionStrings;
+
   // -----------------------------------------------------------------------------
   // Extensions management
   /**
@@ -382,6 +400,7 @@ class GLContext : public GenericAtomicRefCounted, public SupportsWeakPtr {
     ARB_color_buffer_float,
     ARB_compatibility,
     ARB_copy_buffer,
+    ARB_copy_image,
     ARB_depth_clamp,
     ARB_depth_texture,
     ARB_draw_buffers,
@@ -396,6 +415,7 @@ class GLContext : public GenericAtomicRefCounted, public SupportsWeakPtr {
     ARB_map_buffer_range,
     ARB_occlusion_query2,
     ARB_pixel_buffer_object,
+    ARB_polygon_offset_clamp,
     ARB_provoking_vertex,
     ARB_robust_buffer_access_behavior,
     ARB_robustness,
@@ -439,6 +459,7 @@ class GLContext : public GenericAtomicRefCounted, public SupportsWeakPtr {
     EXT_multisampled_render_to_texture,
     EXT_occlusion_query_boolean,
     EXT_packed_depth_stencil,
+    EXT_polygon_offset_clamp,
     EXT_provoking_vertex,
     EXT_read_format_bgra,
     EXT_robustness,
@@ -514,11 +535,11 @@ class GLContext : public GenericAtomicRefCounted, public SupportsWeakPtr {
 
  protected:
   void MarkExtensionUnsupported(GLExtensions aKnownExtension) {
-    mAvailableExtensions[aKnownExtension] = 0;
+    mAvailableExtensions[aKnownExtension] = false;
   }
 
   void MarkExtensionSupported(GLExtensions aKnownExtension) {
-    mAvailableExtensions[aKnownExtension] = 1;
+    mAvailableExtensions[aKnownExtension] = true;
   }
 
   std::bitset<Extensions_Max> mAvailableExtensions;
@@ -812,8 +833,14 @@ class GLContext : public GenericAtomicRefCounted, public SupportsWeakPtr {
   }
 
   void InvalidateFramebuffer(GLenum target) {
+#ifdef XP_IOS
+    // LOCAL_GL_DEPTH_STENCIL_ATTACHMENT cannot be invalidated on iOS.
+    constexpr auto ATTACHMENTS = make_array(GLenum{LOCAL_GL_COLOR_ATTACHMENT0});
+#else
     constexpr auto ATTACHMENTS = make_array(GLenum{LOCAL_GL_COLOR_ATTACHMENT0},
                                             LOCAL_GL_DEPTH_STENCIL_ATTACHMENT);
+#endif
+
     fInvalidateFramebuffer(target, ATTACHMENTS.size(), ATTACHMENTS.data());
   }
 
@@ -900,7 +927,18 @@ class GLContext : public GenericAtomicRefCounted, public SupportsWeakPtr {
  public:
   void fBufferData(GLenum target, GLsizeiptr size, const GLvoid* data,
                    GLenum usage) {
-    raw_fBufferData(target, size, data, usage);
+    if (WorkAroundDriverBugs() && target == LOCAL_GL_ARRAY_BUFFER &&
+        mVertexBufferExtraPadding) {
+      // Some drivers require extra padding at the end of array buffers.
+      // See bug 1983036.
+      raw_fBufferData(target, size + *mVertexBufferExtraPadding, nullptr,
+                      usage);
+      if (data) {
+        fBufferSubData(target, 0, size, data);
+      }
+    } else {
+      raw_fBufferData(target, size, data, usage);
+    }
 
     // bug 744888
     if (WorkAroundDriverBugs() && !data && Vendor() == GLVendor::NVIDIA) {
@@ -1567,6 +1605,13 @@ class GLContext : public GenericAtomicRefCounted, public SupportsWeakPtr {
   void fPolygonOffset(GLfloat factor, GLfloat bias) {
     BEFORE_GL_CALL;
     mSymbols.fPolygonOffset(factor, bias);
+    AFTER_GL_CALL;
+  }
+
+  void fPolygonOffsetClamp(GLfloat factor, GLfloat units, GLfloat clamp) {
+    BEFORE_GL_CALL;
+    ASSERT_SYMBOL_PRESENT(fPolygonOffsetClamp);
+    mSymbols.fPolygonOffsetClamp(factor, units, clamp);
     AFTER_GL_CALL;
   }
 
@@ -2420,7 +2465,7 @@ class GLContext : public GenericAtomicRefCounted, public SupportsWeakPtr {
   // Extension ARB_sync (GL)
  public:
   GLsync fFenceSync(GLenum condition, GLbitfield flags) {
-    GLsync ret = 0;
+    GLsync ret = nullptr;
     BEFORE_GL_CALL;
     ASSERT_SYMBOL_PRESENT(fFenceSync);
     ret = mSymbols.fFenceSync(condition, flags);
@@ -3080,6 +3125,20 @@ class GLContext : public GenericAtomicRefCounted, public SupportsWeakPtr {
     ASSERT_SYMBOL_PRESENT(fCopyBufferSubData);
     mSymbols.fCopyBufferSubData(readtarget, writetarget, readoffset,
                                 writeoffset, size);
+    AFTER_GL_CALL;
+  }
+
+  // Core GL & Extension ARB_copy_image
+ public:
+  void fCopyImageSubData(GLuint srcName, GLenum srcTarget, GLint srcLevel,
+                         GLint srcX, GLint srcY, GLint srcZ, GLuint dstName,
+                         GLenum dstTarget, GLint dstLevel, GLint dstX,
+                         GLint dstY, GLint dstZ, GLsizei srcWidth,
+                         GLsizei srcHeight, GLsizei srcDepth) {
+    BEFORE_GL_CALL;
+    mSymbols.fCopyImageSubData(srcName, srcTarget, srcLevel, srcX, srcY, srcZ,
+                               dstName, dstTarget, dstLevel, dstX, dstY, dstZ,
+                               srcWidth, srcHeight, srcDepth);
     AFTER_GL_CALL;
   }
 
@@ -3809,6 +3868,11 @@ class GLContext : public GenericAtomicRefCounted, public SupportsWeakPtr {
 #endif
   }
 
+  // Returns the texture target Mac IOSurfaces should be bound to
+  virtual GLenum GetPreferredMacIOSurfaceTextureTarget() const {
+    MOZ_CRASH("unimplemented");
+  }
+
   virtual bool RenewSurface(widget::CompositorWidget* aWidget) { return false; }
 
   // Shared code for GL extensions and GLX extensions.
@@ -3914,6 +3978,9 @@ class GLContext : public GenericAtomicRefCounted, public SupportsWeakPtr {
   bool mNeedsTextureSizeChecks = false;
   bool mNeedsFlushBeforeDeleteFB = false;
   bool mTextureAllocCrashesOnMapFailure = false;
+  // Amount of additional padding bytes that must be allocated for
+  // GL_ARRAY_BUFFER buffers to work around driver bugs. See bug 1983036.
+  Maybe<GLint> mVertexBufferExtraPadding;
   const bool mWorkAroundDriverBugs;
   mutable uint64_t mSyncGLCallCount = 0;
 
@@ -3980,10 +4047,7 @@ class GLContext : public GenericAtomicRefCounted, public SupportsWeakPtr {
       if (name < aOther.name) return true;
       return false;
     }
-    bool operator==(const NamedResource& aOther) const {
-      return origin == aOther.origin && name == aOther.name &&
-             originDeleted == aOther.originDeleted;
-    }
+    bool operator==(const NamedResource& aOther) const = default;
   };
 
   nsTArray<NamedResource> mTrackedPrograms;
@@ -4054,15 +4118,15 @@ bool MarkBitfieldByString(const nsACString& str,
 }
 
 template <size_t N>
-void MarkBitfieldByStrings(const std::vector<nsCString>& strList,
-                           bool dumpStrings,
+void MarkBitfieldByStrings(Span<const nsCString> strList, bool dumpStrings,
                            const char* const (&markStrList)[N],
                            std::bitset<N>* const out_markList) {
   for (auto itr = strList.begin(); itr != strList.end(); ++itr) {
     const nsACString& str = *itr;
     const bool wasMarked = MarkBitfieldByString(str, markStrList, out_markList);
     if (dumpStrings)
-      printf_stderr("  %s%s\n", str.BeginReading(), wasMarked ? "(*)" : "");
+      printf_stderr("  %s%s\n", PromiseFlatCString(str).get(),
+                    wasMarked ? "(*)" : "");
   }
 }
 

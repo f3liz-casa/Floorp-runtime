@@ -3,6 +3,7 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 import { getFilename } from "chrome://browser/content/screenshots/fileHelpers.mjs";
+import { SELECTION_MODES } from "moz-src:///browser/components/screenshots/ScreenshotsSelectionModes.sys.mjs";
 import { XPCOMUtils } from "resource://gre/modules/XPCOMUtils.sys.mjs";
 
 const SCREENSHOTS_LAST_SCREENSHOT_METHOD_PREF =
@@ -14,16 +15,19 @@ const SCREENSHOTS_ENABLED_PREF = "screenshots.browser.component.enabled";
 const lazy = {};
 
 ChromeUtils.defineESModuleGetters(lazy, {
+  BrowserUtils: "resource://gre/modules/BrowserUtils.sys.mjs",
   CustomizableUI:
     "moz-src:///browser/components/customizableui/CustomizableUI.sys.mjs",
   Downloads: "resource://gre/modules/Downloads.sys.mjs",
   FileUtils: "resource://gre/modules/FileUtils.sys.mjs",
+  MiniWindowManager:
+    "moz-src:///browser/components/miniwindow/MiniWindowManager.sys.mjs",
   PrivateBrowsingUtils: "resource://gre/modules/PrivateBrowsingUtils.sys.mjs",
   NimbusFeatures: "resource://nimbus/ExperimentAPI.sys.mjs",
 });
 
 XPCOMUtils.defineLazyServiceGetters(lazy, {
-  AlertsService: ["@mozilla.org/alerts-service;1", "nsIAlertsService"],
+  AlertsService: ["@mozilla.org/alerts-service;1", Ci.nsIAlertsService],
 });
 
 XPCOMUtils.defineLazyPreferenceGetter(
@@ -52,12 +56,47 @@ ChromeUtils.defineLazyGetter(lazy, "screenshotsLocalization", () => {
   return new Localization(["browser/screenshots.ftl"], true);
 });
 
+const AlertNotification = Components.Constructor(
+  "@mozilla.org/alert-notification;1",
+  "nsIAlertNotification",
+  "initWithObject"
+);
+
 // The max dimension for a canvas is 32,767 https://searchfox.org/mozilla-central/rev/f40d29a11f2eb4685256b59934e637012ea6fb78/gfx/cairo/cairo/src/cairo-image-surface.c#62.
 // The max number of pixels for a canvas is 472,907,776 pixels (i.e., 22,528 x 20,992) https://developer.mozilla.org/en-US/docs/Web/HTML/Element/canvas#maximum_canvas_size
 // We have to limit screenshots to these dimensions otherwise it will cause an error.
 export const MAX_CAPTURE_DIMENSION = 32766;
 export const MAX_CAPTURE_AREA = 472907776;
 export const MAX_SNAPSHOT_DIMENSION = 1024;
+
+/**
+ * Clamps dimensions to fit within MAX_CAPTURE_DIMENSION and MAX_CAPTURE_AREA constraints.
+ *
+ * @param {number} width - The width to potentially crop
+ * @param {number} height - The height to potentially crop
+ * @returns {object} Object with:
+ *   - width: The cropped width
+ *   - height: The cropped height
+ *   - cropped: Boolean indicating if any cropping occurred
+ */
+export function clampDimensionsIfNeeded(width, height) {
+  let cropped = false;
+
+  if (width > MAX_CAPTURE_DIMENSION) {
+    width = MAX_CAPTURE_DIMENSION;
+    cropped = true;
+  }
+  if (height > MAX_CAPTURE_DIMENSION) {
+    height = MAX_CAPTURE_DIMENSION;
+    cropped = true;
+  }
+  if (width * height > MAX_CAPTURE_AREA) {
+    height = Math.floor(MAX_CAPTURE_AREA / width);
+    cropped = true;
+  }
+
+  return { width, height, cropped };
+}
 
 export class ScreenshotsComponentParent extends JSWindowActorParent {
   async receiveMessage(message) {
@@ -100,6 +139,12 @@ export class ScreenshotsComponentParent extends JSWindowActorParent {
         );
         ScreenshotsUtils.exit(browser);
         break;
+      case "Screenshots:MiniWindowCropSelection":
+        // Exit the Screenshots UI/state first, while `browser` is still in
+        // its origin window.
+        ScreenshotsUtils.exit(browser);
+        await ScreenshotsUtils.miniWindowFromRegion(message.data, browser);
+        break;
       case "Screenshots:OverlaySelection":
         ScreenshotsUtils.setPerBrowserState(browser, {
           hasOverlaySelection: message.data.hasSelection,
@@ -129,10 +174,26 @@ export class ScreenshotsComponentParent extends JSWindowActorParent {
 
 export class ScreenshotsHelperParent extends JSWindowActorParent {
   receiveMessage(message) {
+    let browser = this.browsingContext.topFrameElement;
+    if (ScreenshotsUtils.getUIPhase(browser) !== UIPhases.INITIAL) {
+      return null;
+    }
+
     switch (message.name) {
       case "ScreenshotsHelper:GetElementRectFromPoint": {
-        let cxt = BrowsingContext.get(message.data.bcId);
-        return cxt.currentWindowGlobal
+        let bc = message.data.bc;
+        if (
+          bc.isDiscarded ||
+          bc.parentWindowContext !== this.manager ||
+          !bc.isActive
+        ) {
+          console.error(
+            "Tried to screenshot a browsing context that is not accessible"
+          );
+          return null;
+        }
+
+        return bc.currentWindowGlobal
           .getActor("ScreenshotsHelper")
           .sendQuery("ScreenshotsHelper:GetElementRectFromPoint", message.data);
       }
@@ -150,11 +211,13 @@ export const UIPhases = {
 
 export var ScreenshotsUtils = {
   browserToScreenshotsState: new WeakMap(),
+  tabContainerToScreenshotsCount: new WeakMap(),
   initialized: false,
   methodsUsed: {},
 
   /**
    * Figures out which of various states the screenshots UI is in, for the given browser.
+   *
    * @param browser The selected browser
    * @returns One of the `UIPhases` constants
    */
@@ -163,12 +226,22 @@ export var ScreenshotsUtils = {
     if (perBrowserState?.previewDialog) {
       return UIPhases.PREVIEW;
     }
+    if (perBrowserState?.hasOverlaySelection) {
+      return UIPhases.OVERLAYSELECTION;
+    }
     const buttonsPanel = this.panelForBrowser(browser);
     if (buttonsPanel && !buttonsPanel.hidden) {
       return UIPhases.INITIAL;
     }
-    if (perBrowserState?.hasOverlaySelection) {
-      return UIPhases.OVERLAYSELECTION;
+    // Mini-window mode deliberately suppresses the buttons panel, so the check
+    // above can't see a session that is already up and has nothing selected
+    // yet. Reporting CLOSED there would let a second toolbar click re-run
+    // start()'s CLOSED branch.
+    if (
+      perBrowserState?.mode === SELECTION_MODES.MINI_WINDOW &&
+      perBrowserState?.overlayShowing
+    ) {
+      return UIPhases.INITIAL;
     }
     return UIPhases.CLOSED;
   },
@@ -278,15 +351,22 @@ export var ScreenshotsUtils = {
     let newBrowser = event.detail;
 
     const currentUIPhase = this.getUIPhase(oldBrowser);
+    const previousState = this.browserToScreenshotsState.get(oldBrowser) || {};
+
+    this.browserToScreenshotsState.delete(oldBrowser);
+
     if (currentUIPhase === UIPhases.OVERLAYSELECTION) {
       newBrowser.addEventListener("SwapDocShells", this);
       newBrowser.addEventListener("EndSwapDocShells", this);
       oldBrowser.removeEventListener("SwapDocShells", this);
 
-      let perBrowserState =
-        this.browserToScreenshotsState.get(oldBrowser) || {};
-      this.browserToScreenshotsState.set(newBrowser, perBrowserState);
-      this.browserToScreenshotsState.delete(oldBrowser);
+      // We only keep interaction state and remove element references which will be
+      // invalid in the new document.
+      this.browserToScreenshotsState.set(newBrowser, {
+        hasOverlaySelection: previousState.hasOverlaySelection,
+        overlayState: previousState.overlayState,
+        exitOnPreviewClose: previousState.exitOnPreviewClose,
+      });
 
       this.getActor(oldBrowser).sendAsyncMessage(
         "Screenshots:RemoveEventListeners"
@@ -332,6 +412,7 @@ export var ScreenshotsUtils = {
   /**
    * If the overlay state is crosshairs or dragging, move the native cursor
    * respective to the arrow key pressed.
+   *
    * @param {Event} event A keydown event
    * @param {Browser} browser The selected browser
    * @returns
@@ -370,12 +451,12 @@ export var ScreenshotsUtils = {
 
     // Clear and move focus to browser so the child actor can capture events
     this.clearContentFocus(browser);
-    Services.focus.clearFocus(browser.ownerGlobal);
+    Services.focus.clearFocus(browser.documentGlobal);
     Services.focus.setFocus(browser, 0);
 
     let x = {};
     let y = {};
-    let win = browser.ownerGlobal;
+    let win = browser.documentGlobal;
     win.windowUtils.getLastOverWindowPointerLocationInCSSPixels(x, y);
 
     this.moveCursor(
@@ -390,12 +471,13 @@ export var ScreenshotsUtils = {
   /**
    * Move the native cursor to the given position. Clamp the position to the
    * window just in case.
-   * @param {Object} position An object containing the left and top position
+   *
+   * @param {object} position An object containing the left and top position
    * @param {Browser} browser The selected browser
    */
   moveCursor(position, browser) {
     let { left, top } = position;
-    let win = browser.ownerGlobal;
+    let win = browser.documentGlobal;
 
     const windowLeft = win.mozInnerScreenX * win.devicePixelRatio;
     const windowTop = win.mozInnerScreenY * win.devicePixelRatio;
@@ -430,30 +512,42 @@ export var ScreenshotsUtils = {
 
   observe(subj, topic, data) {
     let { gBrowser } = subj;
-    let browser = gBrowser.selectedBrowser;
+    this.toggle(gBrowser.selectedBrowser, data);
+  },
 
-    switch (topic) {
-      case "menuitem-screenshot": {
-        const uiPhase = this.getUIPhase(browser);
-        if (uiPhase !== UIPhases.CLOSED) {
-          // toggle from already-open to closed
-          this.cancel(browser, data);
-          return;
-        }
-        this.start(browser, data);
-        break;
-      }
+  /**
+   * Act on an entry point asking for the selection overlay in a given mode.
+   * It opens the overlay, hands one the other mode opened over to this mode,
+   * or closes an overlay that is already in this mode.
+   *
+   * @param browser The current browser.
+   * @param reason [string] Optional reason string passed along when recording telemetry events
+   * @param {object} [options]
+   * @param {string} [options.mode] Which overlay mode to run; see SELECTION_MODES.
+   */
+  toggle(browser, reason = "", { mode = SELECTION_MODES.SCREENSHOTS } = {}) {
+    if (
+      this.getUIPhase(browser) !== UIPhases.CLOSED &&
+      this.browserToScreenshotsState.get(browser)?.mode === mode
+    ) {
+      // toggle from already-open to closed
+      this.cancel(browser, reason);
+      return;
     }
+    // Either nothing is showing, or the other mode's overlay is and start()
+    // hands it over.
+    this.start(browser, reason, { mode });
   },
 
   /**
    * Notify screenshots when screenshot command is used.
+   *
    * @param window The current window the screenshot command was used.
    * @param type The type of screenshot taken. Used for telemetry.
    */
   notify(window, type) {
     Services.obs.notifyObservers(
-      window.event.currentTarget.ownerGlobal,
+      window.event.currentTarget.documentGlobal,
       "menuitem-screenshot",
       type
     );
@@ -474,10 +568,15 @@ export var ScreenshotsUtils = {
 
   /**
    * Show the Screenshots UI and start the capture flow
+   *
    * @param browser The current browser.
    * @param reason [string] Optional reason string passed along when recording telemetry events
+   * @param {object} [options]
+   * @param {string} [options.mode] Which overlay mode to run; see SELECTION_MODES.
    */
-  start(browser, reason = "") {
+  start(browser, reason = "", { mode = SELECTION_MODES.SCREENSHOTS } = {}) {
+    const previousMode = this.browserToScreenshotsState.get(browser)?.mode;
+    this.setPerBrowserState(browser, { mode });
     const uiPhase = this.getUIPhase(browser);
     switch (uiPhase) {
       case UIPhases.CLOSED: {
@@ -485,12 +584,25 @@ export var ScreenshotsUtils = {
         this.showPanelAndOverlay(browser, reason);
         browser.addEventListener("SwapDocShells", this);
         let gBrowser = browser.getTabBrowser();
-        gBrowser.tabContainer.addEventListener("TabSelect", this);
-        browser.ownerDocument.addEventListener("keydown", this);
+        let count =
+          this.tabContainerToScreenshotsCount.get(gBrowser.tabContainer) ?? 0;
+        if (!count) {
+          gBrowser.tabContainer.addEventListener("TabSelect", this);
+          browser.ownerDocument.addEventListener("keydown", this);
+        }
+        this.tabContainerToScreenshotsCount.set(
+          gBrowser.tabContainer,
+          count + 1
+        );
         break;
       }
       case UIPhases.INITIAL:
-        // nothing to do, panel & overlay are already open
+      case UIPhases.OVERLAYSELECTION:
+        // The panel & overlay are already open, so the only thing left to do is
+        // hand them over when another entry point asks for its own mode.
+        if (previousMode && previousMode !== mode) {
+          this.switchMode(browser, reason);
+        }
         break;
       case UIPhases.PREVIEW: {
         this.closeDialogBox(browser);
@@ -501,8 +613,24 @@ export var ScreenshotsUtils = {
   },
 
   /**
+   * Hand a showing overlay over to a different selection mode, as though this
+   * mode had opened it. The child rebuilds the overlay for the new mode, so any
+   * selection the user had made goes with it and they start again from
+   * crosshairs.
+   *
+   * @param browser The current browser.
+   * @param reason [string] Optional reason string passed along when recording telemetry events
+   */
+  switchMode(browser, reason = "") {
+    this.closePanel(browser);
+    this.setPerBrowserState(browser, { hasOverlaySelection: false });
+    this.showPanelAndOverlay(browser, reason);
+  },
+
+  /**
    * Exit the Screenshots UI for the given browser
    * Closes any of open UI elements (preview dialog, panel, overlay) and cleans up internal state.
+   *
    * @param browser The current browser.
    */
   exit(browser) {
@@ -511,14 +639,28 @@ export var ScreenshotsUtils = {
     this.closePanel(browser);
     this.closeOverlay(browser);
     this.resetMethodsUsed();
-    this.attemptToRestoreFocus(browser);
+
+    const gBrowser = browser.getTabBrowser();
+    // Only attempt to restore focus if we're exiting to the same browser.
+    if (gBrowser.selectedBrowser == browser) {
+      this.attemptToRestoreFocus(browser);
+    }
 
     this.revokeBlobURL(browser);
 
     browser.removeEventListener("SwapDocShells", this);
-    const gBrowser = browser.getTabBrowser();
-    gBrowser.tabContainer.removeEventListener("TabSelect", this);
-    browser.ownerDocument.removeEventListener("keydown", this);
+    if (this.browserToScreenshotsState.has(browser)) {
+      let count =
+        this.tabContainerToScreenshotsCount.get(gBrowser.tabContainer) ?? 0;
+      if (count > 0) {
+        count -= 1;
+        this.tabContainerToScreenshotsCount.set(gBrowser.tabContainer, count);
+        if (!count) {
+          gBrowser.tabContainer.removeEventListener("TabSelect", this);
+          browser.ownerDocument.removeEventListener("keydown", this);
+        }
+      }
+    }
 
     this.browserToScreenshotsState.delete(browser);
     if (Cu.isInAutomation) {
@@ -532,7 +674,12 @@ export var ScreenshotsUtils = {
    * @param browser The current browser.
    */
   cancel(browser, reason) {
-    this.recordTelemetryEvent("canceled" + reason);
+    if (
+      this.browserToScreenshotsState.get(browser)?.mode !==
+      SELECTION_MODES.MINI_WINDOW
+    ) {
+      this.recordTelemetryEvent("canceled" + reason);
+    }
     this.exit(browser);
   },
 
@@ -544,7 +691,6 @@ export var ScreenshotsUtils = {
    */
   setPerBrowserState(browser, nameValues = {}) {
     if (!this.browserToScreenshotsState.has(browser)) {
-      // we should really have this state already, created when the preview dialog was opened
       this.browserToScreenshotsState.set(browser, {});
     }
     let perBrowserState = this.browserToScreenshotsState.get(browser);
@@ -608,7 +754,7 @@ export var ScreenshotsUtils = {
    */
   attemptToRestoreFocus(browser) {
     const document = browser.ownerDocument;
-    const window = browser.ownerGlobal;
+    const window = browser.documentGlobal;
 
     const doFocus = () => {
       // Move focus it back to where it was previously.
@@ -713,7 +859,7 @@ export var ScreenshotsUtils = {
    * @param browser The current browser
    */
   async openPreviewDialog(browser) {
-    let dialogBox = browser.ownerGlobal.gBrowser.getTabDialogBox(browser);
+    let dialogBox = browser.documentGlobal.gBrowser.getTabDialogBox(browser);
     let { dialog, closedPromise } = await dialogBox.open(
       `chrome://browser/content/screenshots/screenshots-preview.html?browsingContextId=${browser.browsingContext.id}`,
       {
@@ -760,41 +906,75 @@ export var ScreenshotsUtils = {
   /**
    * Returns the buttons panel for the given browser if the panel exists.
    * Otherwise creates the buttons panel and returns the buttons panel.
+   *
    * @param browser The current browser
    * @returns The buttons panel
    */
   panelForBrowser(browser) {
-    let buttonsPanel = browser.ownerDocument.getElementById(
-      "screenshotsPagePanel"
-    );
-    if (!buttonsPanel) {
-      let doc = browser.ownerDocument;
-      let template = doc.getElementById("screenshotsPagePanelTemplate");
-      let fragmentClone = template.content.cloneNode(true);
-      buttonsPanel = fragmentClone.firstElementChild;
-      template.replaceWith(buttonsPanel);
-      browser.closest("#tabbrowser-tabbox").prepend(buttonsPanel);
-    }
+    let perBrowserState = this.browserToScreenshotsState.get(browser);
+    // We store the buttons panel element as a weakref to allow it to get destroyed along
+    // with the <browser> if the tab closes
+    return perBrowserState?.buttonsPanel
+      ? perBrowserState.buttonsPanel.get()
+      : null;
+  },
 
-    return (
-      buttonsPanel ??
-      browser.ownerDocument.getElementById("screenshotsPagePanel")
-    );
+  createPanel(browser, containerElem) {
+    const doc = browser.ownerDocument;
+    const template = doc.getElementById("screenshotsPagePanelTemplate");
+    const fragmentClone = doc.importNode(template.content, true);
+
+    return containerElem.appendChild(fragmentClone.firstElementChild);
   },
 
   /**
    * Open the buttons panel.
+   *
    * @param browser The current browser
    */
   openPanel(browser) {
-    let buttonsPanel = this.panelForBrowser(browser);
-    if (!buttonsPanel.hidden) {
+    if (
+      this.browserToScreenshotsState.get(browser)?.mode ===
+      SELECTION_MODES.MINI_WINDOW
+    ) {
       return null;
     }
+    let buttonsPanel = this.panelForBrowser(browser);
+    if (buttonsPanel && !buttonsPanel.hidden) {
+      return null;
+    }
+    const { gBrowser } = browser.documentGlobal;
+    const browserWrapper = gBrowser.getPanel(browser);
+    // The element may exist but be associated with a different browser
+    if (!buttonsPanel) {
+      buttonsPanel = gBrowser.tabpanels.querySelector(".screenshotsPagePanel");
+    }
+    if (!buttonsPanel) {
+      buttonsPanel = this.createPanel(browser, browserWrapper);
+    }
+    if (buttonsPanel.parentElement !== browserWrapper) {
+      browserWrapper.appendChild(buttonsPanel);
+    }
+    this.setPerBrowserState(browser, {
+      buttonsPanel: Cu.getWeakReference(buttonsPanel),
+    });
+
     buttonsPanel.hidden = false;
 
+    const tab = gBrowser.getTabForBrowser(browser);
+    if (tab?.splitview) {
+      for (const siblingTab of tab.splitview.tabs) {
+        if (
+          siblingTab !== tab &&
+          this.getUIPhase(siblingTab.linkedBrowser) === UIPhases.INITIAL
+        ) {
+          this.cancel(siblingTab.linkedBrowser, "Navigation");
+        }
+      }
+    }
+
     return new Promise(resolve => {
-      browser.ownerGlobal.requestAnimationFrame(() => {
+      browser.documentGlobal.requestAnimationFrame(() => {
         buttonsPanel
           .querySelector("screenshots-buttons")
           .focusButton(lazy.SCREENSHOTS_LAST_SCREENSHOT_METHOD);
@@ -805,6 +985,7 @@ export var ScreenshotsUtils = {
 
   /**
    * Close the panel
+   *
    * @param browser The current browser
    */
   closePanel(browser) {
@@ -819,18 +1000,27 @@ export var ScreenshotsUtils = {
    * If the buttons panel exists and is open we will hide both the panel
    * and the overlay. If the overlay is showing, we will hide the overlay.
    * Otherwise create or display the buttons.
+   *
    * @param browser The current browser.
    */
-  async showPanelAndOverlay(browser, data) {
+  showPanelAndOverlay(browser, data) {
     let actor = this.getActor(browser);
-    actor.sendAsyncMessage("Screenshots:ShowOverlay");
+    let mode =
+      this.browserToScreenshotsState.get(browser)?.mode ||
+      SELECTION_MODES.SCREENSHOTS;
+    actor.sendAsyncMessage("Screenshots:ShowOverlay", { mode });
+    this.setPerBrowserState(browser, { overlayShowing: true });
+    if (mode === SELECTION_MODES.MINI_WINDOW) {
+      return null;
+    }
     this.recordTelemetryEvent("started" + data);
-    this.openPanel(browser);
+    return this.openPanel(browser);
   },
 
   /**
    * Close the overlay UI, and clear out internal state if there was an overlay selection
    * The overlay lives in the child document; so although closing is actually async, we assume success.
+   *
    * @param browser The current browser.
    */
   closeOverlay(browser, options = {}) {
@@ -845,12 +1035,14 @@ export var ScreenshotsUtils = {
     if (this.browserToScreenshotsState.has(browser)) {
       this.setPerBrowserState(browser, {
         hasOverlaySelection: false,
+        overlayShowing: false,
       });
     }
   },
 
   /**
    * Gets the screenshots dialog box
+   *
    * @param browser The selected browser
    * @returns Screenshots dialog box if it exists otherwise null
    */
@@ -878,6 +1070,7 @@ export var ScreenshotsUtils = {
 
   /**
    * Closes the dialog box it it exists
+   *
    * @param browser The selected browser
    */
   closeDialogBox(browser) {
@@ -892,6 +1085,7 @@ export var ScreenshotsUtils = {
   /**
    * Callback fired when the preview dialog window closes
    * Will exit the screenshots UI if the `exitOnPreviewClose` flag is set for this browser
+   *
    * @param browser The associated browser
    */
   onDialogClose(browser) {
@@ -909,11 +1103,12 @@ export var ScreenshotsUtils = {
    * Gets the screenshots button if it is visible, otherwise it will get the
    * element that the screenshots button is nested under. If the screenshots
    * button doesn't exist then we will default to the navigator toolbox.
+   *
    * @param browser The selected browser
    * @returns The anchor element for the ConfirmationHint
    */
   getWidgetAnchor(browser) {
-    let window = browser.ownerGlobal;
+    let window = browser.documentGlobal;
     let widgetGroup = window.CustomizableUI.getWidget("screenshot-button");
     let widget = widgetGroup?.forWindow(window);
     let anchor = widget?.anchor;
@@ -932,12 +1127,13 @@ export var ScreenshotsUtils = {
 
   /**
    * Indicate that the screenshot has been copied via ConfirmationHint.
+   *
    * @param browser The selected browser
    */
   showCopiedConfirmationHint(browser) {
     let anchor = this.getWidgetAnchor(browser);
 
-    browser.ownerGlobal.ConfirmationHint.show(
+    browser.documentGlobal.ConfirmationHint.show(
       anchor,
       "confirmation-hint-screenshot-copied"
     );
@@ -945,6 +1141,7 @@ export var ScreenshotsUtils = {
 
   /**
    * Gets the full page bounds from the screenshots child actor.
+   *
    * @param browser The current browser.
    * @returns { object }
    *    Contains the full page bounds from the screenshots child actor.
@@ -956,6 +1153,7 @@ export var ScreenshotsUtils = {
 
   /**
    * Gets the visible bounds from the screenshots child actor.
+   *
    * @param browser The current browser.
    * @returns { object }
    *    Contains the visible bounds from the screenshots child actor.
@@ -966,7 +1164,9 @@ export var ScreenshotsUtils = {
   },
 
   showAlertMessage(title, message) {
-    lazy.AlertsService.showAlertNotification(null, title, message);
+    lazy.AlertsService.showAlert(
+      new AlertNotification({ title, text: message })
+    );
   },
 
   /**
@@ -1000,33 +1200,22 @@ export var ScreenshotsUtils = {
    * 124925329. If the width or height is greater or equal to 32766 we will crop the
    * screenshot to the max width. If the area is still too large for the canvas
    * we will adjust the height so we can successfully capture the screenshot.
-   * @param {Object} rect The dimensions of the screenshot. The rect will be
+   *
+   * @param {object} rect The dimensions of the screenshot. The rect will be
    * modified in place
    */
   cropScreenshotRectIfNeeded(rect) {
-    let cropped = false;
-    let width = rect.width * rect.devicePixelRatio;
-    let height = rect.height * rect.devicePixelRatio;
+    const width = rect.width * rect.devicePixelRatio;
+    const height = rect.height * rect.devicePixelRatio;
 
-    if (width > MAX_CAPTURE_DIMENSION) {
-      width = MAX_CAPTURE_DIMENSION;
-      cropped = true;
-    }
-    if (height > MAX_CAPTURE_DIMENSION) {
-      height = MAX_CAPTURE_DIMENSION;
-      cropped = true;
-    }
-    if (width * height > MAX_CAPTURE_AREA) {
-      height = Math.floor(MAX_CAPTURE_AREA / width);
-      cropped = true;
-    }
+    const result = clampDimensionsIfNeeded(width, height);
 
-    rect.width = Math.floor(width / rect.devicePixelRatio);
-    rect.height = Math.floor(height / rect.devicePixelRatio);
+    rect.width = Math.floor(result.width / rect.devicePixelRatio);
+    rect.height = Math.floor(result.height / rect.devicePixelRatio);
     rect.right = rect.left + rect.width;
     rect.bottom = rect.top + rect.height;
 
-    if (cropped) {
+    if (result.cropped) {
       let [errorTitle, errorMessage] =
         lazy.screenshotsLocalization.formatMessagesSync([
           { id: "screenshots-too-large-error-title" },
@@ -1040,6 +1229,7 @@ export var ScreenshotsUtils = {
   /**
    * Take the screenshot, then open and add the screenshot-ui element to the
    * dialog box.
+   *
    * @param browser The current browser.
    * @param type The type of screenshot taken.
    */
@@ -1091,6 +1281,7 @@ export var ScreenshotsUtils = {
 
   /**
    * Creates a canvas and draws a snapshot of the screenshot on the canvas
+   *
    * @param region The bounds of screenshots
    * @param browser The current browser
    * @returns The canvas
@@ -1114,6 +1305,12 @@ export var ScreenshotsUtils = {
       region.height * devicePixelRatio
     );
     let context = canvas.getContext("2d");
+
+    // Fill with the same background color used by drawSnapshot so that any
+    // device pixel rows the renderer doesn't cover (due to rounding) get
+    // the expected background instead of remaining transparent.
+    context.fillStyle = "rgb(255,255,255)";
+    context.fillRect(0, 0, canvas.width, canvas.height);
 
     const snapshotSize = Math.floor(MAX_SNAPSHOT_DIMENSION * devicePixelRatio);
 
@@ -1168,6 +1365,7 @@ export var ScreenshotsUtils = {
 
   /**
    * Copy the screenshot
+   *
    * @param region The bounds of the screenshots
    * @param browser The current browser
    */
@@ -1186,6 +1384,7 @@ export var ScreenshotsUtils = {
   /**
    * Copy the image to the clipboard
    * This is called from the preview dialog
+   *
    * @param blob The image data
    * @param browser The current browser
    * @param eventName For telemetry
@@ -1196,43 +1395,8 @@ export var ScreenshotsUtils = {
       return;
     }
 
-    const imageTools = Cc["@mozilla.org/image/tools;1"].getService(
-      Ci.imgITools
-    );
-
     let buffer = await blob.arrayBuffer();
-    const imgDecoded = imageTools.decodeImageFromArrayBuffer(
-      buffer,
-      "image/png"
-    );
-
-    const transferable = Cc[
-      "@mozilla.org/widget/transferable;1"
-    ].createInstance(Ci.nsITransferable);
-    transferable.init(null);
-    // Internal consumers expect the image data to be stored as a
-    // nsIInputStream. On Linux and Windows, pasted data is directly
-    // retrieved from the system's native clipboard, and made available
-    // as a nsIInputStream.
-    //
-    // On macOS, nsClipboard::GetNativeClipboardData (nsClipboard.mm) uses
-    // a cached copy of nsITransferable if available, e.g. when the copy
-    // was initiated by the same browser instance. To make sure that a
-    // nsIInputStream is returned instead of the cached imgIContainer,
-    // the image is exported as as `kNativeImageMime`. Data associated
-    // with this type is converted to a platform-specific image format
-    // when written to the clipboard. The type is not used when images
-    // are read from the clipboard (on all platforms, not just macOS).
-    // This forces nsClipboard::GetNativeClipboardData to fall back to
-    // the native clipboard, and return the image as a nsITransferable.
-    transferable.addDataFlavor("application/x-moz-nativeimage");
-    transferable.setTransferData("application/x-moz-nativeimage", imgDecoded);
-
-    Services.clipboard.setData(
-      transferable,
-      null,
-      Services.clipboard.kGlobalClipboard
-    );
+    lazy.BrowserUtils.copyImageToClipboard(buffer);
 
     this.showCopiedConfirmationHint(browser);
 
@@ -1250,6 +1414,7 @@ export var ScreenshotsUtils = {
 
   /**
    * Download the screenshot
+   *
    * @param title The title of the current page
    * @param region The bounds of the screenshot
    * @param browser The current browser
@@ -1264,8 +1429,47 @@ export var ScreenshotsUtils = {
   },
 
   /**
+   * Convert a Screenshots overlay region selection into a Mini Window cropInfo object
+   * and pop it into an always-on-top window.
+   *
+   * @param {object} data
+   * @param {object} data.region Page-absolute {left, top, width, height} (or
+   *   {left, top, right, bottom}) selection dimensions.
+   * @param {number} [data.viewportWidth] Content viewport width.
+   * @param {number} [data.viewportHeight] Content viewport height.
+   * @param browser The current browser.
+   */
+  async miniWindowFromRegion(data, browser) {
+    if (!Services.prefs.getBoolPref("browser.mini-window.enabled", false)) {
+      return;
+    }
+
+    let tab = browser.getTabBrowser()?.getTabForBrowser(browser);
+    if (!tab) {
+      return;
+    }
+
+    let { region, viewportWidth, viewportHeight } = data;
+    let width = region.width ?? region.right - region.left;
+    let height = region.height ?? region.bottom - region.top;
+
+    let cropInfo = {
+      left: region.left,
+      top: region.top,
+      width,
+      height,
+      viewportWidth: viewportWidth ?? browser.clientWidth,
+      viewportHeight: viewportHeight ?? browser.clientHeight,
+      fullZoom: browser.fullZoom,
+    };
+
+    await lazy.MiniWindowManager.popRegion(tab, cropInfo);
+  },
+
+  /**
    * Download the screenshot
    * This is called from the preview dialog
+   *
    * @param title The title of the current page or null and getFilename will get the title
    * @param blobURL The image data
    * @param browser The current browser
@@ -1286,15 +1490,12 @@ export var ScreenshotsUtils = {
     const targetFile = new lazy.FileUtils.File(filename);
 
     // Create download and track its progress.
+    let isPrivate = lazy.PrivateBrowsingUtils.isBrowserPrivate(browser);
     try {
       const download = await lazy.Downloads.createDownload({
-        source: blobURL,
+        source: { url: blobURL, isPrivate },
         target: targetFile,
       });
-
-      let isPrivate = lazy.PrivateBrowsingUtils.isWindowPrivate(
-        browser.ownerGlobal
-      );
       const list = await lazy.Downloads.getList(
         isPrivate ? lazy.Downloads.PRIVATE : lazy.Downloads.PUBLIC
       );
@@ -1345,7 +1546,7 @@ export const ScreenshotsCustomizableWidget = {
       l10nId: "screenshot-toolbar-button",
       onCommand(aEvent) {
         Services.obs.notifyObservers(
-          aEvent.currentTarget.ownerGlobal,
+          aEvent.currentTarget.documentGlobal,
           "menuitem-screenshot",
           "ToolbarButton"
         );

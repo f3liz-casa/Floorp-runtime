@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=4 sw=2 et tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -18,6 +16,7 @@
 #include "mozilla/SourceLocation.h"
 #include "mozilla/TextUtils.h"
 #include "mozilla/dom/AutoEntryScript.h"
+#include "mozilla/dom/ContentChild.h"
 #include "mozilla/dom/DOMSecurityMonitor.h"
 #include "mozilla/dom/Document.h"
 #include "mozilla/dom/JSExecutionUtils.h"  // mozilla::dom::Compile, mozilla::dom::EvaluationExceptionToNSResult
@@ -51,6 +50,7 @@
 #include "nsJSUtils.h"
 #include "nsNetUtil.h"
 #include "nsPIDOMWindow.h"
+#include "nsQueryObject.h"
 #include "nsReadableUtils.h"
 #include "nsSandboxFlags.h"
 #include "nsString.h"
@@ -59,7 +59,9 @@
 #include "nsThreadUtils.h"
 
 using mozilla::IsAscii;
+using mozilla::Maybe;
 using mozilla::dom::AutoEntryScript;
+using mozilla::dom::PermissionsPolicyInfo;
 
 static NS_DEFINE_CID(kJSURICID, NS_JSURI_CID);
 
@@ -334,6 +336,30 @@ nsresult JSURLInputStream::EvaluateScript(
         return NS_ERROR_DOM_RETVAL_UNDEFINED;
       }
     }
+
+    // https://html.spec.whatwg.org/#evaluate-a-javascript:-url
+    // Step 12. Let policyContainer be targetNavigable's active document's
+    //          policy container.
+    //
+    // A document created from the string this script evaluates to inherits the
+    // target document's policy container, not the initiating document's one
+    // that docshell stored on the loadinfo for the check above. Store an actual
+    // copy so that modifications done by the new document (such as its meta
+    // CSP) don't propagate back into the target document.
+    RefPtr policyContainerToInherit = mozilla::MakeRefPtr<PolicyContainer>();
+    policyContainerToInherit->InitFromOther(
+        PolicyContainer::Cast(targetDoc->GetPolicyContainer()));
+    loadInfo->SetPolicyContainerToInherit(policyContainerToInherit);
+
+    // If the original channel's nsILoadInfo has a PermissionsPolicyInfo,
+    // copy it to the new channel.
+    if (nsCOMPtr<nsIChannel> originalChannel = targetDoc->GetChannel()) {
+      nsCOMPtr<nsILoadInfo> originalLoadInfo = originalChannel->LoadInfo();
+      if (Maybe<PermissionsPolicyInfo> containerPolicy =
+              originalLoadInfo->GetContainerPermissionsPolicyInfo()) {
+        loadInfo->SetContainerPermissionsPolicyInfo(*containerPolicy);
+      }
+    }
   }
 
   // Push our popup control state
@@ -537,6 +563,9 @@ nsresult nsJSChannel::Init(nsIURI* aURI, nsILoadInfo* aLoadInfo) {
   RefPtr<nsJSURI> jsURI;
   nsresult rv = aURI->QueryInterface(kJSURICID, getter_AddRefs(jsURI));
   NS_ENSURE_SUCCESS(rv, rv);
+
+  // Defensively mark the current process as untrusted.
+  mozilla::dom::ContentChild::MaybeBecomeUntrusted();
 
   // Create the nsIStreamIO layer used by the nsIStreamIOChannel.
   mJSURIStream = new JSURLInputStream();
@@ -880,6 +909,8 @@ void nsJSChannel::EvaluateScript() {
           // return from the javascript: URL...
           mStatus = NS_ERROR_DOM_RETVAL_UNDEFINED;
         }
+        // Note: `docShell` may have been destroyed in `PermitUnload`, so don't
+        // add uses of `docShell` later in this method!
       }
     }
 
@@ -919,8 +950,9 @@ void nsJSChannel::EvaluateScript() {
 }
 
 void nsJSChannel::NotifyListener() {
-  mListener->OnStartRequest(this);
-  mListener->OnStopRequest(this, mStatus);
+  nsCOMPtr<nsIStreamListener> listener = mListener;
+  listener->OnStartRequest(this);
+  listener->OnStopRequest(this, mStatus);
 
   CleanupStrongRefs();
 }
@@ -1050,6 +1082,18 @@ nsJSChannel::SetLoadInfo(nsILoadInfo* aLoadInfo) {
 }
 
 NS_IMETHODIMP
+nsJSChannel::GetParentProcessChannelHandle(
+    mozilla::dom::ParentProcessChannelHandle** aValue) {
+  return mStreamChannel->GetParentProcessChannelHandle(aValue);
+}
+
+NS_IMETHODIMP
+nsJSChannel::SetParentProcessChannelHandle(
+    mozilla::dom::ParentProcessChannelHandle* aValue) {
+  return mStreamChannel->SetParentProcessChannelHandle(aValue);
+}
+
+NS_IMETHODIMP
 nsJSChannel::GetNotificationCallbacks(nsIInterfaceRequestor** aCallbacks) {
   return mStreamChannel->GetNotificationCallbacks(aCallbacks);
 }
@@ -1128,7 +1172,8 @@ NS_IMETHODIMP
 nsJSChannel::OnStartRequest(nsIRequest* aRequest) {
   NS_ENSURE_TRUE(aRequest == mStreamChannel, NS_ERROR_UNEXPECTED);
 
-  return mListener->OnStartRequest(this);
+  nsCOMPtr<nsIStreamListener> listener = mListener;
+  return listener->OnStartRequest(this);
 }
 
 NS_IMETHODIMP
@@ -1136,7 +1181,8 @@ nsJSChannel::OnDataAvailable(nsIRequest* aRequest, nsIInputStream* aInputStream,
                              uint64_t aOffset, uint32_t aCount) {
   NS_ENSURE_TRUE(aRequest == mStreamChannel, NS_ERROR_UNEXPECTED);
 
-  return mListener->OnDataAvailable(this, aInputStream, aOffset, aCount);
+  nsCOMPtr<nsIStreamListener> listener = mListener;
+  return listener->OnDataAvailable(this, aInputStream, aOffset, aCount);
 }
 
 NS_IMETHODIMP
@@ -1322,8 +1368,6 @@ nsJSProtocolHandler::AllowPort(int32_t port, const char* scheme,
 
 ////////////////////////////////////////////////////////////
 // nsJSURI implementation
-static NS_DEFINE_CID(kThisSimpleURIImplementationCID,
-                     NS_THIS_SIMPLEURI_IMPLEMENTATION_CID);
 
 NS_IMPL_ADDREF_INHERITED(nsJSURI, mozilla::net::nsSimpleURI)
 NS_IMPL_RELEASE_INHERITED(nsJSURI, mozilla::net::nsSimpleURI)
@@ -1333,16 +1377,16 @@ NS_IMPL_CLASSINFO(nsJSURI, nullptr, nsIClassInfo::THREADSAFE, NS_JSURI_CID);
 NS_IMPL_CI_INTERFACE_GETTER0(nsJSURI)
 
 NS_INTERFACE_MAP_BEGIN(nsJSURI)
-  if (aIID.Equals(kJSURICID))
-    foundInterface = static_cast<nsIURI*>(this);
-  else if (aIID.Equals(kThisSimpleURIImplementationCID)) {
+  if (aIID.Equals(NS_GET_IID(nsSimpleURI))) {
     // Need to return explicitly here, because if we just set foundInterface
     // to null the NS_INTERFACE_MAP_END_INHERITING will end up calling into
-    // nsSimplURI::QueryInterface and finding something for this CID.
+    // nsSimpleURI::QueryInterface and finding something for this CID.
     *aInstancePtr = nullptr;
     return NS_NOINTERFACE;
-  } else
-    NS_IMPL_QUERY_CLASSINFO(nsJSURI)
+  }
+
+  NS_IMPL_QUERY_CLASSINFO(nsJSURI)
+  NS_INTERFACE_MAP_ENTRY_CONCRETE(nsJSURI)
 NS_INTERFACE_MAP_END_INHERITING(mozilla::net::nsSimpleURI)
 
 // nsISerializable methods:
@@ -1387,7 +1431,7 @@ nsJSURI::Write(nsIObjectOutputStream* aStream) {
   return NS_OK;
 }
 
-NS_IMETHODIMP_(void) nsJSURI::Serialize(mozilla::ipc::URIParams& aParams) {
+void nsJSURI::Serialize(mozilla::ipc::URIParams& aParams) {
   using namespace mozilla::ipc;
 
   JSURIParams jsParams;
@@ -1414,7 +1458,9 @@ bool nsJSURI::Deserialize(const mozilla::ipc::URIParams& aParams) {
   }
 
   const JSURIParams& jsParams = aParams.get_JSURIParams();
-  mozilla::net::nsSimpleURI::Deserialize(jsParams.simpleParams());
+  if (!mozilla::net::nsSimpleURI::Deserialize(jsParams.simpleParams())) {
+    return false;
+  }
 
   if (jsParams.baseURI().isSome()) {
     mBaseURI = DeserializeURI(jsParams.baseURI().ref());
@@ -1453,9 +1499,8 @@ nsresult nsJSURI::EqualsInternal(
   NS_ENSURE_ARG_POINTER(aOther);
   MOZ_ASSERT(aResult, "null pointer for outparam");
 
-  RefPtr<nsJSURI> otherJSURI;
-  nsresult rv = aOther->QueryInterface(kJSURICID, getter_AddRefs(otherJSURI));
-  if (NS_FAILED(rv)) {
+  RefPtr<nsJSURI> otherJSURI = do_QueryObject(aOther);
+  if (!otherJSURI) {
     *aResult = false;  // aOther is not a nsJSURI --> not equal.
     return NS_OK;
   }

@@ -1,24 +1,28 @@
-from tests.support.asserts import assert_success
+# META: timeout=long
 
+# Longer timeout required due to a large number of navigation, frame, or browser lifecycle subtests.
 
-def navigate_to(session, url):
-    return session.transport.send(
-        "POST", "session/{session_id}/url".format(**vars(session)),
-        {"url": url})
+from pathlib import Path
+
+from tests.support.classic.asserts import assert_success
+
+from . import navigate_to
 
 
 def test_file_protocol(session, target_platform, server_config):
     # tests that the browsing context remains the same
     # when navigated privileged documents
-    path = server_config["doc_root"]
-    if target_platform == "windows":
-        # Convert the path into the format eg. /c:/foo/bar
-        path = "/{}".format(path.replace("\\", "/"))
-    url = u"file://{}".format(path)
+    path = Path(server_config["doc_root"]) / "common" / "blank.html"
+
+    # not all borwsers support "loading" file URLs which aren't files,
+    # so check this is one
+    assert path.is_file()
+
+    # and then create the file URL
+    url = path.as_uri()
+    assert url.startswith("file://")
 
     response = navigate_to(session, url)
     assert_success(response)
 
-    if session.url.endswith('/'):
-        url += '/'
     assert session.url == url

@@ -1,4 +1,3 @@
-/* -*- Mode: C++; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -137,7 +136,9 @@ Maybe<double> WebGLContext::GetParameter(const GLenum pname) {
         if (Has64BitTimestamps()) {
           gl->fGetInteger64v(pname, (GLint64*)&val);
         } else {
-          gl->fGetIntegerv(pname, (GLint*)&val);
+          GLint val32 = 0;
+          gl->fGetIntegerv(pname, &val32);
+          val = val32;
         }
         // TODO: JS doesn't support 64-bit integers. Be lossy and
         // cast to double (53 bits)
@@ -399,6 +400,15 @@ Maybe<double> WebGLContext::GetParameter(const GLenum pname) {
     case LOCAL_GL_POLYGON_OFFSET_FACTOR:
     case LOCAL_GL_POLYGON_OFFSET_UNITS:
     case LOCAL_GL_SAMPLE_COVERAGE_VALUE: {
+      GLfloat f = 0.f;
+      gl->fGetFloatv(pname, &f);
+      return Some(f);
+    }
+
+    case LOCAL_GL_POLYGON_OFFSET_CLAMP_EXT: {
+      if (!IsExtensionEnabled(WebGLExtensionID::EXT_polygon_offset_clamp)) {
+        break;
+      }
       GLfloat f = 0.f;
       gl->fGetFloatv(pname, &f);
       return Some(f);

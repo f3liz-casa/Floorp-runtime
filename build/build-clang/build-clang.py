@@ -234,6 +234,11 @@ def build_one_stage(
         if bolt:
             ldflags.append("-Wl,--emit-relocs,-znow")
 
+        # libxml2 2.13+ Windows builds introduced a hard dependency on bcrypt
+        # which must also be specified or else LibXml2 detection fails.
+        if is_windows(target) and is_final_stage:
+            ldflags.append("/DEFAULTLIB:bcrypt")
+
         cmake_args = [
             "-GNinja",
             "-DCMAKE_C_COMPILER=%s" % slashify_path(cc[0]),
@@ -252,6 +257,9 @@ def build_one_stage(
             "-DLLVM_ENABLE_ASSERTIONS=%s" % ("ON" if assertions else "OFF"),
             "-DLLVM_ENABLE_BINDINGS=OFF",
             "-DLLVM_ENABLE_CURL=OFF",
+            # Don't autodetect the system libzstd: it's absent from the sysroots
+            # we link against.
+            "-DLLVM_ENABLE_ZSTD=OFF",
             "-DLLVM_INCLUDE_TESTS=OFF",
             "-DLLVM_HOST_TRIPLE=%s" % target,
             "-DCMAKE_C_COMPILER_TARGET=%s" % target,
@@ -661,7 +669,7 @@ def main():
 
     if is_darwin(target):
         os.environ["MACOSX_DEPLOYMENT_TARGET"] = (
-            "11.0" if target.startswith("aarch64") else "10.12"
+            "11.0" if target.startswith("aarch64") else "10.15"
         )
 
     if is_windows(target):

@@ -1,14 +1,9 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #ifndef mozilla_dom_serviceworkerprivate_h
 #define mozilla_dom_serviceworkerprivate_h
-
-#include <functional>
-#include <type_traits>
 
 #include "mozilla/Attributes.h"
 #include "mozilla/Maybe.h"
@@ -48,7 +43,6 @@ namespace dom {
 
 class PostMessageSource;
 class RemoteWorkerControllerChild;
-class ServiceWorkerCloneData;
 class ServiceWorkerInfo;
 class ServiceWorkerPrivate;
 class ServiceWorkerRegistrationInfo;
@@ -94,7 +88,7 @@ class ServiceWorkerPrivate final : public RemoteWorkerObserver {
   Maybe<ClientInfo> GetClientInfo() { return mClientInfo; }
 
   nsresult SendMessageEvent(
-      RefPtr<ServiceWorkerCloneData>&& aData,
+      ipc::StructuredCloneData* aData,
       const ServiceWorkerLifetimeExtension& aLifetimeExtension,
       const PostMessageSource& aSource);
 
@@ -272,11 +266,9 @@ class ServiceWorkerPrivate final : public RemoteWorkerObserver {
   RefPtr<GenericNonExclusivePromise> ShutdownInternal(
       uint32_t aShutdownStateId);
 
-  nsresult ExecServiceWorkerOp(
+  RefPtr<ServiceWorkerOpPromise> ExecServiceWorkerOp(
       ServiceWorkerOpArgs&& aArgs,
-      const ServiceWorkerLifetimeExtension& aLifetimeExtension,
-      std::function<void(ServiceWorkerOpResult&&)>&& aSuccessCallback,
-      std::function<void()>&& aFailureCallback = [] {});
+      const ServiceWorkerLifetimeExtension& aLifetimeExtension);
 
   class PendingFunctionalEvent {
    public:
