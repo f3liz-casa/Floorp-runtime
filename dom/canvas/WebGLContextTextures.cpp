@@ -1,9 +1,6 @@
-/* -*- Mode: C++; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
-
-#include <algorithm>
 
 #include "CanvasUtils.h"
 #include "GLContext.h"
@@ -23,8 +20,6 @@
 #include "gfxPlatform.h"
 #include "gfxUtils.h"
 #include "jsfriendapi.h"
-#include "mozilla/DebugOnly.h"
-#include "mozilla/EndianUtils.h"
 #include "mozilla/dom/BindingUtils.h"
 #include "mozilla/dom/ImageData.h"
 #include "nsContentUtils.h"
@@ -203,7 +198,7 @@ void WebGLContext::TexImage(uint32_t level, GLenum respecFormat, uvec3 offset,
 void WebGLContext::CompressedTexImage(bool sub, GLenum imageTarget,
                                       uint32_t level, GLenum format,
                                       uvec3 offset, uvec3 size,
-                                      const Range<const uint8_t>& src,
+                                      const mozilla::Range<const uint8_t>& src,
                                       const uint32_t pboImageSize,
                                       const Maybe<uint64_t>& pboOffset) const {
   const WebGLContext::FuncScope funcScope(

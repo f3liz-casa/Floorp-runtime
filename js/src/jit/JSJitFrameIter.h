@@ -1,6 +1,4 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- * vim: set ts=8 sts=2 et sw=2 tw=80:
- * This Source Code Form is subject to the terms of the Mozilla Public
+/* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
@@ -14,6 +12,7 @@
 #include "jit/JitCode.h"
 #include "jit/MachineState.h"
 #include "jit/Snapshots.h"
+#include "js/Exception.h"
 #include "js/ProfilingFrameIterator.h"
 #include "vm/JSFunction.h"
 #include "vm/JSScript.h"
@@ -21,6 +20,7 @@
 namespace js {
 
 class ArgumentsObject;
+class SavedFrame;
 
 namespace jit {
 
@@ -45,10 +45,6 @@ enum class FrameType {
   // so that external profilers can identify which function is being
   // interpreted. Only used under the --emit-interpreter-entry option.
   BaselineInterpreterEntry,
-
-  // A rectifier frame sits in between two JS frames, adapting argc != nargs
-  // mismatches in calls.
-  Rectifier,
 
   // Ion IC calling a scripted getter/setter or a VMFunction.
   IonICCall,
@@ -94,7 +90,6 @@ class OsiIndex;
 
 // Iterate over the JIT stack to assert that all invariants are respected.
 //  - Check that all entry frames are aligned on JitStackAlignment.
-//  - Check that all rectifier frames keep the JitStackAlignment.
 
 void AssertJitStackInvariants(JSContext* cx);
 
@@ -170,7 +165,6 @@ class JSJitFrameIter {
   bool isBaselineInterpreterEntry() const {
     return type_ == FrameType::BaselineInterpreterEntry;
   }
-  bool isRectifier() const { return type_ == FrameType::Rectifier; }
   bool isTrampolineNative() const {
     return type_ == FrameType::TrampolineNative;
   }
@@ -278,7 +272,7 @@ class JSJitProfilingFrameIterator {
 
   const char* baselineInterpreterLabel() const;
   void baselineInterpreterScriptPC(JSScript** script, jsbytecode** pc,
-                                   uint64_t* realmID) const;
+                                   uint64_t* realmID, uint32_t* sourceId) const;
 
   void* fp() const {
     MOZ_ASSERT(!done());
@@ -317,17 +311,27 @@ class RInstructionResults {
   // avoid evaluating the recover instruction twice.
   bool initialized_;
 
+  // Set if computing the results failed. Later attempts to run the recover
+  // instructions will report the same failure.
+  mozilla::Maybe<JS::ExceptionStatus> failureStatus_;
+  HeapPtr<Value> exception_;
+  HeapPtr<SavedFrame*> exceptionStack_;
+
  public:
   explicit RInstructionResults(JitFrameLayout* fp);
   RInstructionResults(RInstructionResults&& src);
 
   RInstructionResults& operator=(RInstructionResults&& rhs);
 
-  ~RInstructionResults();
+  ~RInstructionResults() = default;
 
   [[nodiscard]] bool init(JSContext* cx, uint32_t numResults);
   bool isInitialized() const;
   size_t length() const;
+
+  bool hasFailure() const { return failureStatus_.isSome(); }
+  void saveFailure(JSContext* cx);
+  void restoreFailure(JSContext* cx) const;
 
   JitFrameLayout* frame() const;
 
@@ -394,7 +398,11 @@ class SnapshotIterator {
   uintptr_t fromStack(int32_t offset) const;
 
   bool hasInstructionResult(uint32_t index) const {
-    return instructionResults_;
+    if (!instructionResults_) {
+      return false;
+    }
+    MOZ_RELEASE_ASSERT(index < instructionResults_->length());
+    return true;
   }
   bool hasInstructionResults() const { return instructionResults_; }
   Value fromInstructionResult(uint32_t index) const;
@@ -409,10 +417,13 @@ class SnapshotIterator {
  public:
   // Handle iterating over RValueAllocations of the snapshots.
   inline RValueAllocation readAllocation() {
-    MOZ_ASSERT(moreAllocations());
+    MOZ_RELEASE_ASSERT(moreAllocations());
     return snapshot_.readAllocation();
   }
-  void skip() { snapshot_.skipAllocation(); }
+  void skip() {
+    MOZ_RELEASE_ASSERT(moreAllocations());
+    snapshot_.skipAllocation();
+  }
 
   const RResumePoint* resumePoint() const;
   const RInstruction* instruction() const { return recover_.instruction(); }
@@ -446,7 +457,7 @@ class SnapshotIterator {
   // Read the next instruction available and get ready to either skip it or
   // evaluate it.
   inline void nextInstruction() {
-    MOZ_ASSERT(snapshot_.numAllocationsRead() == numAllocations());
+    MOZ_RELEASE_ASSERT(snapshot_.numAllocationsRead() == numAllocations());
     recover_.nextInstruction();
     snapshot_.resetNumAllocationsRead();
   }
@@ -660,6 +671,9 @@ class InlineFrameIterator {
   InlineFrameIterator(JSContext* cx, const JSJitFrameIter* iter);
   InlineFrameIterator(JSContext* cx, const InlineFrameIterator* iter);
 
+  InlineFrameIterator() = delete;
+  InlineFrameIterator(const InlineFrameIterator& iter) = delete;
+
   bool more() const { return frame_ && framesRead_ < frameCount_; }
 
   // Due to optimizations, we are not always capable of reading the callee of
@@ -843,10 +857,6 @@ class InlineFrameIterator {
     MOZ_ASSERT(frameCount_ != UINT32_MAX);
     return frameCount_;
   }
-
- private:
-  InlineFrameIterator() = delete;
-  InlineFrameIterator(const InlineFrameIterator& iter) = delete;
 };
 
 }  // namespace jit

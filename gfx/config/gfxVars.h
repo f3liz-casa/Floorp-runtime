@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -7,6 +5,8 @@
 #define mozilla_gfx_config_gfxVars_h
 
 #include <stdint.h>
+
+#include "MediaCodecsSupport.h"
 #include "mozilla/Assertions.h"
 #include "mozilla/StaticPtr.h"
 #include "mozilla/gfx/GraphicsMessages.h"
@@ -20,13 +20,24 @@ namespace mozilla::gfx {
 class gfxVarReceiver;
 class MOZ_STACK_CLASS gfxVarsCollectUpdates;
 
+#ifdef MOZ_WIDGET_ANDROID
+#  define GFX_VARS_LIST_ANDROID(_)                               \
+    _(PlatformMediaCodecsSupported, MediaCodecsSupported,        \
+      MediaCodecsSupported())                                    \
+    _(PlatformUnmappedSwDecodeMimeTypes, nsCString, nsCString()) \
+    _(PlatformUnmappedHwDecodeMimeTypes, nsCString, nsCString()) \
+    _(WidevineSupport, DrmSchemeSupport, DrmSchemeSupport::Unknown)
+#else
+#  define GFX_VARS_LIST_ANDROID(_)
+#endif
+
 // Generator for graphics vars.
 #define GFX_VARS_LIST(_)                                           \
   /* C++ Name,                  Data Type,        Default Value */ \
   _(AllowEglRbab, bool, true)                                      \
+  _(AllowWebGL, bool, true)                                        \
   _(AllowWebgl2, bool, true)                                       \
   _(AllowWebglAccelAngle, bool, true)                              \
-  _(AllowWebglOop, bool, true)                                     \
   _(BrowserTabsRemoteAutostart, bool, false)                       \
   _(ContentBackend, BackendType, BackendType::NONE)                \
   _(SoftwareBackend, BackendType, BackendType::NONE)               \
@@ -47,6 +58,7 @@ class MOZ_STACK_CLASS gfxVarsCollectUpdates;
   _(UseWebRenderTripleBufferingWin, bool, false)                   \
   _(UseWebRenderCompositor, bool, false)                           \
   _(UseWebRenderProgramBinaryDisk, bool, false)                    \
+  _(ShouldWarmUpWebRenderProgramBinaries, bool, false)             \
   _(UseWebRenderOptimizedShaders, bool, false)                     \
   _(UseWebRenderScissoredCacheClears, bool, true)                  \
   _(WebRenderProfilerUI, nsCString, nsCString())                   \
@@ -75,7 +87,6 @@ class MOZ_STACK_CLASS gfxVarsCollectUpdates;
   _(SystemTextRenderingMode, int32_t, 0)                           \
   _(SystemGDIGamma, float, 1.4f)                                   \
   _(LayersWindowRecordingPath, nsCString, nsCString())             \
-  _(RemoteCanvasEnabled, bool, false)                              \
   _(UseDoubleBufferingWithCompositor, bool, false)                 \
   _(UseGLSwizzle, bool, true)                                      \
   _(ForceSubpixelAAWherePossible, bool, false)                     \
@@ -99,6 +110,7 @@ class MOZ_STACK_CLASS gfxVarsCollectUpdates;
   _(UseAV1HwEncode, bool, false)                                   \
   _(UseH264HwDecode, bool, false)                                  \
   _(UseH264HwEncode, bool, false)                                  \
+  _(HasWebrtcH264Hw, bool, false)                                  \
   _(UseHEVCHwDecode, bool, false)                                  \
   _(UseHEVCHwEncode, bool, false)                                  \
   _(HwDecodedVideoZeroCopy, bool, false)                           \
@@ -117,8 +129,18 @@ class MOZ_STACK_CLASS gfxVarsCollectUpdates;
   _(GPUProcessEnabled, bool, false)                                \
   _(DMABufModifiersP010, ArrayOfuint64_t, nsTArray<uint64_t>())    \
   _(DMABufModifiersNV12, ArrayOfuint64_t, nsTArray<uint64_t>())    \
-  _(AllowGLNorm16Textures, bool, false)
-
+  _(AllowGLNorm16Textures, bool, false)                            \
+  _(WebRenderLayerCompositorDCompTexture, bool, false)             \
+  _(WebRenderOverlayHDR, bool, false)                              \
+  _(UseWebRenderDCompositionTextureOverlayWin, bool, false)        \
+  _(VideoHDR, bool, false)                                         \
+  _(AdapterVendorID, nsCString, nsCString())                       \
+  _(AdapterDeviceID, nsCString, nsCString())                       \
+  _(AdapterDriverVersion, nsCString, nsCString())                  \
+  _(UseAImageReaderVideoGpuProcessAndroid, bool, false)            \
+  _(AllowMetalAngleWebGL, bool, false)                             \
+  _(CanUseVulkanHardwareVideoDecoding, bool, false)                \
+  GFX_VARS_LIST_ANDROID(_)                                         \
 /* Add new entries above this line. */
 
 // Some graphics settings are computed on the UI process and must be
@@ -220,6 +242,15 @@ class gfxVars final {
     }
 
     void SetListener(const std::function<void()>& aListener) {
+      // Each gfxVar exposes a single-slot listener: a second registration
+      // would silently overwrite the first, breaking whatever consumer the
+      // first listener belonged to. Catch an accidental second consumer in
+      // diagnostic builds (debug / Nightly) rather than producing silent
+      // misbehaviour. If a future use case legitimately needs more than one
+      // listener per variable, change this storage to a list.
+      MOZ_DIAGNOSTIC_ASSERT(!mListener,
+                            "gfxVar already has a listener; only one "
+                            "consumer is supported per variable.");
       mListener = aListener;
     }
 
@@ -255,6 +286,8 @@ class gfxVars final {
   }
 
   using ArrayOfuint64_t = nsTArray<uint64_t>;
+  using MediaCodecsSupported = media::MediaCodecsSupported;
+  using DrmSchemeSupport = media::DrmSchemeSupport;
 
   GFX_VARS_LIST(GFX_VAR_DECL)
 #undef GFX_VAR_DECL
@@ -269,6 +302,7 @@ class gfxVars final {
 };
 
 #undef GFX_VARS_LIST
+#undef GFX_VARS_LIST_ANDROID
 
 // Helper class that batches changes to gfxVars into a single update to minimize
 // churn for receivers. This is particularly useful for the media processes

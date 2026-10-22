@@ -21,18 +21,16 @@ class TestSessionRestore(SessionStoreTestCase):
     """
 
     def setUp(self):
-        super(TestSessionRestore, self).setUp(
+        super().setUp(
             startup_page=1,
             include_private=False,
             restore_on_demand=True,
-            test_windows=set(
-                [
-                    (
-                        inline("lorem ipsom"),
-                        inline("dolor"),
-                    ),
-                ]
-            ),
+            test_windows=set([
+                (
+                    inline("lorem ipsom"),
+                    inline("dolor"),
+                ),
+            ]),
         )
 
     def test_restore_sidebar_open(self):
@@ -99,7 +97,7 @@ class TestSessionRestore(SessionStoreTestCase):
                 """
                 const lazy = {};
                 ChromeUtils.defineESModuleGetters(lazy, {
-                    SessionStore: "resource:///modules/sessionstore/SessionStore.sys.mjs",
+                    SessionStore: "moz-src:///browser/components/sessionstore/SessionStore.sys.mjs",
                 });
                 let state = SessionStore.getCurrentState();
                 return state.windows[0].sidebar.command;
@@ -197,7 +195,7 @@ class TestSessionRestore(SessionStoreTestCase):
         self.marionette.execute_async_script(
             """
             let resolve = arguments[0];
-            let { BrowserInitState } = ChromeUtils.importESModule("resource:///modules/BrowserGlue.sys.mjs");
+            let { BrowserInitState } = ChromeUtils.importESModule("moz-src:///browser/components/BrowserGlue.sys.mjs");
             BrowserInitState.startupIdleTaskPromise.then(resolve);
             """
         )
@@ -273,7 +271,7 @@ class TestSessionRestore(SessionStoreTestCase):
         self.marionette.execute_async_script(
             """
             let resolve = arguments[0];
-            let { BrowserInitState } = ChromeUtils.importESModule("resource:///modules/BrowserGlue.sys.mjs");
+            let { BrowserInitState } = ChromeUtils.importESModule("moz-src:///browser/components/BrowserGlue.sys.mjs");
             BrowserInitState.startupIdleTaskPromise.then(resolve);
             """
         )

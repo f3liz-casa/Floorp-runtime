@@ -2,7 +2,7 @@
  * http://creativecommons.org/publicdomain/zero/1.0/ */
 
 const { GenAI } = ChromeUtils.importESModule(
-  "resource:///modules/GenAI.sys.mjs"
+  "moz-src:///browser/components/genai/GenAI.sys.mjs"
 );
 const { sinon } = ChromeUtils.importESModule(
   "resource://testing-common/Sinon.sys.mjs"
@@ -20,7 +20,7 @@ registerCleanupFunction(() => {
 // Bug 1895789 to standarize contextmenu helpers in BrowserTestUtils
 async function openContextMenu({ menuId, browser }) {
   const tab = gBrowser.getTabForBrowser(browser);
-  const win = tab.ownerGlobal;
+  const win = tab.documentGlobal;
 
   const contextMenu = win.document.getElementById(menuId);
   if (!contextMenu) {
@@ -44,7 +44,7 @@ async function openContextMenu({ menuId, browser }) {
     EventUtils.synthesizeMouseAtCenter(
       aichatEl,
       { type: "contextmenu", button: 2 },
-      aichatEl.ownerGlobal
+      aichatEl.documentGlobal
     );
   } else {
     BrowserTestUtils.synthesizeMouse(
@@ -69,6 +69,7 @@ async function runContextMenuTest({
   menuId,
   targetId,
   expectedLabel,
+  expectedDisabled = false,
   expectedDescription,
   stub,
   browser,
@@ -84,14 +85,17 @@ async function runContextMenuTest({
     return menuItems[0]?.label === expectedLabel;
   }, expectedDescription);
 
-  menuItems[0].click();
+  if (expectedDisabled) {
+    Assert.ok(menuItems[0].disabled, "Menu item is disabled");
+  } else {
+    menuItems[0].click();
+  }
   await hideContextMenu(menuId);
 
   if (stub) {
     assertContextMenuStubResult(stub);
+    stub.resetHistory();
   }
-
-  stub.resetHistory();
 }
 
 function assertContextMenuStubResult(stub) {
@@ -105,24 +109,8 @@ function assertContextMenuStubResult(stub) {
   );
 }
 
-async function ensureSidebarLauncherIsVisible() {
-  await TestUtils.waitForTick();
-  // Show the sidebar launcher if its hidden
-  if (SidebarController.sidebarContainer.hidden) {
-    document.getElementById("sidebar-button").doCommand();
-  }
-  await TestUtils.waitForTick();
-  Assert.ok(
-    BrowserTestUtils.isVisible(SidebarController.sidebarMain),
-    "Sidebar launcher is visible"
-  );
-}
-
-add_setup(async function () {
-  await SpecialPowers.pushPrefEnv({
-    set: [["test.wait300msAfterTabSwitch", true]],
-  });
-});
+// Schedule reset to the initial sidebar state after the test.
+SidebarTestUtils.restoreStateAtCleanup(window);
 
 /**
  * Check page, tab, and tool context menu have summarize prompt
@@ -136,9 +124,12 @@ add_task(async function test_page_and_tab_menu_prompt() {
       ["browser.ml.chat.page", true],
       ["browser.ml.chat.page.menuBadge", true],
       ["sidebar.revamp", true],
+      // Right-clicking text selects the word under the cursor on macOS, which
+      // would offer the selection prompts instead of the page ones.
+      ["ui.mouse.right_click.select_under_cursor", false],
     ],
   });
-  await ensureSidebarLauncherIsVisible();
+  await SidebarTestUtils.ensureLauncherVisible(window);
 
   await BrowserTestUtils.withNewTab("https://example.com", async browser => {
     await runContextMenuTest({
@@ -172,7 +163,7 @@ add_task(async function test_page_and_tab_menu_prompt() {
   });
 
   sandbox.restore();
-  SidebarController.hide();
+  SidebarTestUtils.closePanel(window);
 });
 
 /**
@@ -249,7 +240,7 @@ add_task(async function test_page_menu_no_chatbot() {
         ["sidebar.main.tools", "history"],
       ],
     });
-    await ensureSidebarLauncherIsVisible();
+    await SidebarTestUtils.ensureLauncherVisible(window);
     await openContextMenu({ menuId: CONTENT_AREA_CONTEXT_MENU, browser });
 
     Assert.ok(
@@ -522,7 +513,10 @@ add_task(async function test_click_summarize_button() {
   const sandbox = sinon.createSandbox();
   const stub = sandbox.stub(GenAI, "summarizeCurrentPage");
 
-  summarizeButton.click();
+  await BrowserTestUtils.withNewTab("https://example.com", async () => {
+    Assert.ok(!summarizeButton.disabled, "Summarize button enabled");
+    summarizeButton.click();
+  });
 
   Assert.equal(
     Services.prefs.getBoolPref("browser.ml.chat.page.footerBadge"),
@@ -531,14 +525,48 @@ add_task(async function test_click_summarize_button() {
   Assert.equal(stub.callCount, 1);
 
   sandbox.restore();
-  SidebarController.hide();
+  SidebarTestUtils.closePanel(window);
+});
+
+/**
+ * Check the summarize button is only enabled for pages with a web URL
+ */
+add_task(async function test_summarize_button_disabled_without_url() {
+  await SpecialPowers.pushPrefEnv({
+    set: [
+      ["browser.ml.chat.provider", "http://localhost:8080"],
+      ["browser.ml.chat.sidebar", true],
+      ["browser.ml.chat.page", true],
+    ],
+  });
+  await SidebarController.show("viewGenaiChatSidebar");
+  const { browserPromise, document } = SidebarController.browser.contentWindow;
+  await browserPromise;
+  const summarizeButton = document.getElementById("summarize-button");
+
+  await BrowserTestUtils.withNewTab("about:blank", async browser => {
+    Assert.ok(summarizeButton.disabled, "Disabled for about:blank");
+
+    BrowserTestUtils.startLoadingURIString(browser, "https://example.com");
+    await BrowserTestUtils.browserLoaded(browser);
+    Assert.ok(!summarizeButton.disabled, "Enabled after loading web page");
+
+    const aboutTab = await BrowserTestUtils.openNewForegroundTab(
+      gBrowser,
+      "about:robots"
+    );
+    Assert.ok(summarizeButton.disabled, "Disabled after switching tabs");
+    BrowserTestUtils.removeTab(aboutTab);
+  });
+
+  SidebarTestUtils.closePanel(window);
+  await SpecialPowers.popPrefEnv();
 });
 
 /**
  * Test provider-less summarization - onboarding then summarize
  */
 add_task(async function test_provider_less_summarization() {
-  const origTabs = gBrowser.tabs.length;
   await SpecialPowers.pushPrefEnv({
     set: [
       ["browser.ml.chat.provider", ""],
@@ -546,75 +574,73 @@ add_task(async function test_provider_less_summarization() {
     ],
   });
 
-  await GenAI.summarizeCurrentPage(window, "test");
+  await BrowserTestUtils.withNewTab("https://example.com", async () => {
+    const origTabs = gBrowser.tabs.length;
+    await GenAI.summarizeCurrentPage(window, "test");
 
-  await TestUtils.waitForCondition(
-    () => SidebarController.isOpen,
-    "Sidebar opened for onboarding"
-  );
-  Assert.equal(gBrowser.tabs.length, origTabs, "No tabs opened");
+    await TestUtils.waitForCondition(
+      () => SidebarController.isOpen,
+      "Sidebar opened for onboarding"
+    );
+    Assert.equal(gBrowser.tabs.length, origTabs, "No tabs opened");
 
-  // Mock selecting a provider with onboarding
+    // Mock selecting a provider with onboarding
+    await SpecialPowers.pushPrefEnv({
+      set: [["browser.ml.chat.provider", "http://localhost:8080"]],
+    });
+    const resolve = await TestUtils.waitForCondition(
+      () => SidebarController.browser.contentWindow.showOnboarding?.resolve,
+      "Chat loaded ready for onboarding"
+    );
+    resolve();
+
+    await TestUtils.waitForCondition(
+      () => gBrowser.tabs.length == origTabs + 1,
+      "Chat opened tab for summarize"
+    );
+
+    SidebarTestUtils.closePanel(window);
+    gBrowser.removeTab(gBrowser.selectedTab);
+  });
+});
+
+add_task(async function test_tab_menu_on_unloaded() {
+  const sandbox = sinon.createSandbox();
   await SpecialPowers.pushPrefEnv({
     set: [["browser.ml.chat.provider", "http://localhost:8080"]],
   });
-  const resolve = await TestUtils.waitForCondition(
-    () => SidebarController.browser.contentWindow.showOnboarding?.resolve,
-    "Chat loaded ready for onboarding"
-  );
-  resolve();
 
-  await TestUtils.waitForCondition(
-    () => gBrowser.tabs.length == origTabs + 1,
-    "Chat opened tab for summarize"
+  const tab1 = await BrowserTestUtils.openNewForegroundTab(
+    gBrowser,
+    "https://example.com"
   );
 
-  SidebarController.hide();
-  gBrowser.removeTab(gBrowser.selectedTab);
-});
+  const tab2 = await BrowserTestUtils.openNewForegroundTab(
+    gBrowser,
+    "https://example.com"
+  );
 
-add_task(async function test_show_warning_when_text_is_long() {
-  await SpecialPowers.pushPrefEnv({
-    set: [
-      ["browser.ml.chat.sidebar", true],
-      ["browser.ml.chat.page", true],
-      ["browser.ml.chat.provider", "http://localhost:8080"],
-    ],
+  await gBrowser.explicitUnloadTabs([tab1]);
+
+  // Unloaded tabs can be summarized as only the page URL is needed
+  await openContextMenu({
+    menuId: TAB_CONTEXT_MENU,
+    browser: tab1.linkedBrowser,
   });
-
-  await BrowserTestUtils.withNewTab(
-    "data:text/plain,hi".repeat(10000),
-    async () => {
-      await SidebarController.show("viewGenaiChatSidebar");
-
-      const { document } = SidebarController.browser.contentWindow;
-      const messageContainer = document.getElementById("message-container");
-      const summarizeButton = document.getElementById("summarize-button");
-
-      summarizeButton.click();
-      await TestUtils.waitForCondition(() => {
-        return messageContainer.hasChildNodes();
-      }, "Warning message shows because text is too long");
-
-      let events = Glean.genaiChatbot.lengthDisclaimer.testGetValue();
-      Assert.equal(events.length, 1, "Warning message is shown");
-      Assert.equal(events[0].extra.type, "page_summarization", "Page type");
-      Assert.equal(events[0].extra.length, 179984, "Has selection length");
-      Assert.equal(events[0].extra.provider, "localhost", "With localhost");
-
-      const warningElement = messageContainer.querySelector("moz-message-bar");
-      warningElement.shadowRoot.querySelector(".close").click();
-      await TestUtils.waitForCondition(() => {
-        return !messageContainer.hasChildNodes();
-      }, "Warning message is dismissed");
-
-      events = Glean.genaiChatbot.lengthDisclaimerDismissed.testGetValue();
-      Assert.equal(events.length, 1, "Warning message is dismissed");
-      Assert.equal(events[0].extra.type, "page_summarization", "Page type");
-      Assert.equal(events[0].extra.provider, "localhost", "With localhost");
-
-      SidebarController.hide();
-      await SpecialPowers.popPrefEnv();
-    }
+  const menu = document.getElementById("context_askChat");
+  const summarizeItem = await BrowserTestUtils.waitForMutationCondition(
+    menu,
+    { childList: true, subtree: true },
+    () =>
+      [...menu.querySelectorAll("menuitem")].find(
+        item => !item.hidden && item.label === "Summarize Page"
+      )
   );
+  Assert.ok(!summarizeItem.disabled, "Summarize Page is enabled");
+  await hideContextMenu(TAB_CONTEXT_MENU);
+
+  BrowserTestUtils.removeTab(tab1);
+  BrowserTestUtils.removeTab(tab2);
+
+  sandbox.restore();
 });

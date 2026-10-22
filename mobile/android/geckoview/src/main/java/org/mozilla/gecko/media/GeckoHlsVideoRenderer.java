@@ -4,51 +4,46 @@
 
 package org.mozilla.gecko.media;
 
+import android.content.Context;
 import android.media.MediaCodec;
 import android.media.MediaCodec.BufferInfo;
 import android.media.MediaCodec.CryptoInfo;
 import android.util.Log;
+import androidx.annotation.NonNull;
+import androidx.annotation.OptIn;
+import androidx.media3.common.C;
+import androidx.media3.common.Format;
+import androidx.media3.common.MimeTypes;
+import androidx.media3.common.util.UnstableApi;
+import androidx.media3.decoder.DecoderInputBuffer;
+import androidx.media3.exoplayer.ExoPlaybackException;
+import androidx.media3.exoplayer.RendererCapabilities;
+import androidx.media3.exoplayer.mediacodec.MediaCodecInfo;
+import androidx.media3.exoplayer.mediacodec.MediaCodecSelector;
+import androidx.media3.exoplayer.mediacodec.MediaCodecUtil;
 import java.nio.ByteBuffer;
 import java.util.List;
+import java.util.Optional;
 import java.util.concurrent.ConcurrentLinkedQueue;
+import org.mozilla.gecko.GeckoAppShell;
 import org.mozilla.geckoview.BuildConfig;
-import org.mozilla.thirdparty.com.google.android.exoplayer2.C;
-import org.mozilla.thirdparty.com.google.android.exoplayer2.ExoPlaybackException;
-import org.mozilla.thirdparty.com.google.android.exoplayer2.Format;
-import org.mozilla.thirdparty.com.google.android.exoplayer2.RendererCapabilities;
-import org.mozilla.thirdparty.com.google.android.exoplayer2.decoder.DecoderInputBuffer;
-import org.mozilla.thirdparty.com.google.android.exoplayer2.mediacodec.MediaCodecInfo;
-import org.mozilla.thirdparty.com.google.android.exoplayer2.mediacodec.MediaCodecSelector;
-import org.mozilla.thirdparty.com.google.android.exoplayer2.mediacodec.MediaCodecUtil;
-import org.mozilla.thirdparty.com.google.android.exoplayer2.util.MimeTypes;
 
+@OptIn(markerClass = UnstableApi.class)
 public class GeckoHlsVideoRenderer extends GeckoHlsRendererBase {
-  /*
-   * By configuring these states, initialization data is provided for
-   * ExoPlayer's HlsMediaSource to parse HLS bitstream and then provide samples
-   * starting with an Access Unit Delimiter including SPS/PPS for TS,
-   * and provide samples starting with an AUD without SPS/PPS for FMP4.
-   */
-  private enum RECONFIGURATION_STATE {
-    NONE,
-    WRITE_PENDING,
-    QUEUE_PENDING
+  @NonNull
+  @Override
+  public String getName() {
+    return "GeckoHlsVideoRenderer";
   }
 
-  private boolean mRendererReconfigured;
-  private RECONFIGURATION_STATE mRendererReconfigurationState = RECONFIGURATION_STATE.NONE;
-
-  // A list of the formats which may be included in the bitstream.
-  private Format[] mStreamFormats;
   // The max width/height/inputBufferSize for specific codec format.
   private CodecMaxValues mCodecMaxValues;
   // A temporary queue for samples whose duration is not calculated yet.
   private ConcurrentLinkedQueue<GeckoHLSSample> mDemuxedNoDurationSamples =
       new ConcurrentLinkedQueue<>();
 
-  // Contain CSD-0(SPS)/CSD-1(PPS) information (in AnnexB format) for
-  // prepending each keyframe. When video format changes, this information
-  // changes accordingly.
+  // Codec initialization data for the current format. H.264/H.265 CSD is in
+  // Annex B format and is prepended to keyframes.
   private byte[] mCSDInfo = null;
 
   public GeckoHlsVideoRenderer(final GeckoHlsPlayer.ComponentEventDispatcher eventDispatcher) {
@@ -86,7 +81,7 @@ public class GeckoHlsVideoRenderer extends GeckoHlsRendererBase {
      */
     final String mimeType = format.sampleMimeType;
     if (!MimeTypes.isVideo(mimeType)) {
-      return RendererCapabilities.create(FORMAT_UNSUPPORTED_TYPE);
+      return RendererCapabilities.create(C.FORMAT_UNSUPPORTED_TYPE);
     }
 
     List<MediaCodecInfo> decoderInfos = null;
@@ -97,34 +92,31 @@ public class GeckoHlsVideoRenderer extends GeckoHlsRendererBase {
       Log.e(LOGTAG, e.getMessage());
     }
     if (decoderInfos == null || decoderInfos.isEmpty()) {
-      return RendererCapabilities.create(FORMAT_UNSUPPORTED_SUBTYPE);
+      return RendererCapabilities.create(C.FORMAT_UNSUPPORTED_SUBTYPE);
     }
 
-    boolean decoderCapable = false;
-    MediaCodecInfo info = null;
-    for (final MediaCodecInfo i : decoderInfos) {
-      if (i.isCodecSupported(format)) {
-        decoderCapable = true;
-        info = i;
-      }
-    }
-    if (decoderCapable && format.width > 0 && format.height > 0) {
-      decoderCapable =
-          info.isVideoSizeAndRateSupportedV21(format.width, format.height, format.frameRate);
-    }
+    final Context ctx = GeckoAppShell.getApplicationContext();
+    final Optional<MediaCodecInfo> info =
+        decoderInfos.stream().filter(i -> i.isFormatSupported(ctx, format)).findFirst();
 
     return RendererCapabilities.create(
-        decoderCapable ? FORMAT_HANDLED : FORMAT_EXCEEDS_CAPABILITIES,
-        info != null && info.adaptive ? ADAPTIVE_SEAMLESS : ADAPTIVE_NOT_SEAMLESS,
-        TUNNELING_NOT_SUPPORTED);
+        info.isPresent() ? C.FORMAT_HANDLED : C.FORMAT_EXCEEDS_CAPABILITIES,
+        info.isPresent() && info.get().adaptive
+            ? RendererCapabilities.ADAPTIVE_SEAMLESS
+            : RendererCapabilities.ADAPTIVE_NOT_SEAMLESS,
+        RendererCapabilities.TUNNELING_NOT_SUPPORTED);
   }
 
   @Override
   protected final void createInputBuffer() throws ExoPlaybackException {
-    assertTrue(mFormats.size() > 0);
     // Calculate maximum size which might be used for target format.
-    final Format currentFormat = mFormats.get(mFormats.size() - 1);
-    mCodecMaxValues = getCodecMaxValues(currentFormat, mStreamFormats);
+    final Format currentFormat = getCurrentFormat();
+    assertTrue(currentFormat != null);
+    mCodecMaxValues = getCodecMaxValues(currentFormat, getStreamFormats());
+    if (mCodecMaxValues.inputSize == Format.NO_VALUE) {
+      mInputBuffer = null;
+      return;
+    }
     // Create a buffer with maximal size for reading source.
     // Note : Though we are able to dynamically enlarge buffer size by
     // creating DecoderInputBuffer with specific BufferReplacementMode, we
@@ -136,9 +128,13 @@ public class GeckoHlsVideoRenderer extends GeckoHlsRendererBase {
       Log.e(LOGTAG, "cannot allocate input buffer of size " + mCodecMaxValues.inputSize, e);
       throw ExoPlaybackException.createForRenderer(
           new Exception(e),
+          getName(),
           getIndex(),
-          mFormats.isEmpty() ? null : getFormat(mFormats.size() - 1),
-          RendererCapabilities.FORMAT_HANDLED);
+          currentFormat,
+          C.FORMAT_HANDLED,
+          null,
+          false,
+          ExoPlaybackException.ERROR_CODE_DECODER_INIT_FAILED);
     }
   }
 
@@ -148,8 +144,6 @@ public class GeckoHlsVideoRenderer extends GeckoHlsRendererBase {
       Log.d(LOGTAG, "[resetRenderer] mInitialized = " + mInitialized);
     }
     if (mInitialized) {
-      mRendererReconfigured = false;
-      mRendererReconfigurationState = RECONFIGURATION_STATE.NONE;
       mInputBuffer = null;
       mCSDInfo = null;
       mInitialized = false;
@@ -157,57 +151,7 @@ public class GeckoHlsVideoRenderer extends GeckoHlsRendererBase {
   }
 
   @Override
-  protected void handleReconfiguration(final DecoderInputBuffer bufferForRead) {
-    // For adaptive reconfiguration OMX decoders expect all reconfiguration
-    // data to be supplied at the start of the buffer that also contains
-    // the first frame in the new format.
-    assertTrue(mFormats.size() > 0);
-    if (mRendererReconfigurationState == RECONFIGURATION_STATE.WRITE_PENDING) {
-      if (bufferForRead.data == null) {
-        if (DEBUG) {
-          Log.d(LOGTAG, "[feedInput][WRITE_PENDING] bufferForRead.data is not initialized.");
-        }
-        return;
-      }
-      if (DEBUG) {
-        Log.d(LOGTAG, "[feedInput][WRITE_PENDING] put initialization data");
-      }
-      final Format currentFormat = mFormats.get(mFormats.size() - 1);
-      for (int i = 0; i < currentFormat.initializationData.size(); i++) {
-        final byte[] data = currentFormat.initializationData.get(i);
-        bufferForRead.data.put(data);
-      }
-      mRendererReconfigurationState = RECONFIGURATION_STATE.QUEUE_PENDING;
-    }
-  }
-
-  @Override
-  protected void handleFormatRead(final DecoderInputBuffer bufferForRead)
-      throws ExoPlaybackException {
-    if (mRendererReconfigurationState == RECONFIGURATION_STATE.QUEUE_PENDING) {
-      if (DEBUG) {
-        Log.d(LOGTAG, "[feedInput][QUEUE_PENDING] 2 formats in a row.");
-      }
-      // We received two formats in a row. Clear the current buffer of any reconfiguration data
-      // associated with the first format.
-      bufferForRead.clear();
-      mRendererReconfigurationState = RECONFIGURATION_STATE.WRITE_PENDING;
-    }
-    onInputFormatChanged(mFormatHolder.format);
-  }
-
-  @Override
   protected void handleEndOfStream(final DecoderInputBuffer bufferForRead) {
-    if (mRendererReconfigurationState == RECONFIGURATION_STATE.QUEUE_PENDING) {
-      if (DEBUG) {
-        Log.d(LOGTAG, "[feedInput][QUEUE_PENDING] isEndOfStream.");
-      }
-      // We received a new format immediately before the end of the stream. We need to clear
-      // the corresponding reconfiguration data from the current buffer, but re-write it into
-      // a subsequent buffer if there are any (e.g. if the user seeks backwards).
-      bufferForRead.clear();
-      mRendererReconfigurationState = RECONFIGURATION_STATE.WRITE_PENDING;
-    }
     mInputStreamEnded = true;
     final GeckoHLSSample sample = GeckoHLSSample.EOS;
     calculatDuration(sample);
@@ -215,12 +159,20 @@ public class GeckoHlsVideoRenderer extends GeckoHlsRendererBase {
 
   @Override
   protected void handleSamplePreparation(final DecoderInputBuffer bufferForRead) {
-    final int csdInfoSize = mCSDInfo != null ? mCSDInfo.length : 0;
+    final Format currentFormat = getCurrentFormat();
+    assertTrue(currentFormat != null);
+    final String sampleMimeType = currentFormat.sampleMimeType;
+    // Only prepend CSD to H.264/H.265 keyframes: their Annex B parameter sets
+    // are valid in-band data.
+    final boolean prependCsdInfo =
+        bufferForRead.isKeyFrame()
+            && (MimeTypes.VIDEO_H264.equals(sampleMimeType)
+                || MimeTypes.VIDEO_H265.equals(sampleMimeType));
+    final int csdInfoSize = prependCsdInfo && mCSDInfo != null ? mCSDInfo.length : 0;
     final int dataSize = bufferForRead.data.limit();
-    final int size = bufferForRead.isKeyFrame() ? csdInfoSize + dataSize : dataSize;
+    final int size = csdInfoSize + dataSize;
     final byte[] realData = new byte[size];
-    if (bufferForRead.isKeyFrame()) {
-      // Prepend the CSD information to the sample if it's a key frame.
+    if (csdInfoSize > 0) {
       System.arraycopy(mCSDInfo, 0, realData, 0, csdInfoSize);
       bufferForRead.data.get(realData, csdInfoSize, dataSize);
     } else {
@@ -231,7 +183,7 @@ public class GeckoHlsVideoRenderer extends GeckoHlsRendererBase {
     mInputBuffer.clear();
 
     final CryptoInfo cryptoInfo =
-        bufferForRead.isEncrypted() ? bufferForRead.cryptoInfo.getFrameworkCryptoInfoV16() : null;
+        bufferForRead.isEncrypted() ? bufferForRead.cryptoInfo.getFrameworkCryptoInfo() : null;
     final BufferInfo bufferInfo = new BufferInfo();
     // Flags in DecoderInputBuffer are synced with MediaCodec Buffer flags.
     int flags = 0;
@@ -239,7 +191,6 @@ public class GeckoHlsVideoRenderer extends GeckoHlsRendererBase {
     flags |= bufferForRead.isEndOfStream() ? MediaCodec.BUFFER_FLAG_END_OF_STREAM : 0;
     bufferInfo.set(0, size, bufferForRead.timeUs, flags);
 
-    assertTrue(mFormats.size() > 0);
     // We add a new format in the list once format changes, so the formatIndex
     // should indicate to the last(latest) format.
     final GeckoHLSSample sample =
@@ -248,21 +199,6 @@ public class GeckoHlsVideoRenderer extends GeckoHlsRendererBase {
     // There's no duration information from the ExoPlayer's sample, we need
     // to calculate it.
     calculatDuration(sample);
-    mRendererReconfigurationState = RECONFIGURATION_STATE.NONE;
-  }
-
-  @Override
-  protected void onPositionReset(final long positionUs, final boolean joining) {
-    super.onPositionReset(positionUs, joining);
-    if (mInitialized && mRendererReconfigured && mFormats.size() != 0) {
-      if (DEBUG) {
-        Log.d(LOGTAG, "[onPositionReset] WRITE_PENDING");
-      }
-      // Any reconfiguration data that we put shortly before the reset
-      // may be invalid. We avoid this issue by sending reconfiguration
-      // data following every position reset.
-      mRendererReconfigurationState = RECONFIGURATION_STATE.WRITE_PENDING;
-    }
   }
 
   @Override
@@ -286,15 +222,6 @@ public class GeckoHlsVideoRenderer extends GeckoHlsRendererBase {
       Log.d(LOGTAG, "[canReconfigure] : " + canReconfig);
     }
     return canReconfig;
-  }
-
-  @Override
-  protected void prepareReconfiguration() {
-    if (DEBUG) {
-      Log.d(LOGTAG, "[onInputFormatChanged] starting reconfiguration !");
-    }
-    mRendererReconfigured = true;
-    mRendererReconfigurationState = RECONFIGURATION_STATE.WRITE_PENDING;
   }
 
   @Override
@@ -431,11 +358,6 @@ public class GeckoHlsVideoRenderer extends GeckoHlsRendererBase {
     return nextKeyFrameTime;
   }
 
-  @Override
-  protected void onStreamChanged(final Format[] formats, final long offsetUs) {
-    mStreamFormats = formats;
-  }
-
   private static CodecMaxValues getCodecMaxValues(
       final Format format, final Format[] streamFormats) {
     int maxWidth = format.width;
@@ -470,6 +392,11 @@ public class GeckoHlsVideoRenderer extends GeckoHlsRendererBase {
         // Round up width/height to an integer number of macroblocks.
         maxPixels = ((format.width + 15) / 16) * ((format.height + 15) / 16) * 16 * 16;
         minCompressionRatio = 2;
+        break;
+      // See Exoplayer MediaCodecVideoRenderer.getCodecMaxInputSize().
+      case MimeTypes.VIDEO_H265:
+        maxPixels = format.width * format.height;
+        minCompressionRatio = 4;
         break;
       default:
         // Leave the default max input size.

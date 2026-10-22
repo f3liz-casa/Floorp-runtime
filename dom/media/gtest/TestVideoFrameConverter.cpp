@@ -1,4 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -159,14 +158,17 @@ MATCHER_P(
   return multiples > 0 && remainder == 0;
 }
 
-VideoChunk GenerateChunk(int32_t aWidth, int32_t aHeight, TimeStamp aTime) {
+VideoChunk GenerateChunk(int32_t aWidth, int32_t aHeight, TimeStamp aTime,
+                         VideoRotation aRotation = VideoRotation::kDegree_0) {
   YUVBufferGenerator generator;
   generator.Init(gfx::IntSize(aWidth, aHeight));
-  VideoFrame f(generator.GenerateI420Image(), gfx::IntSize(aWidth, aHeight));
+  mozilla::VideoFrame f(generator.GenerateI420Image(),
+                        gfx::IntSize(aWidth, aHeight));
   VideoChunk c;
   c.mFrame.TakeFrom(&f);
   c.mTimeStamp = aTime;
   c.mDuration = 0;
+  c.mRotation = aRotation;
   return c;
 }
 
@@ -183,6 +185,23 @@ TEST_F(VideoFrameConverterTest, BasicConversion) {
   EXPECT_EQ(frame.height(), 480);
   EXPECT_THAT(frame, Not(IsFrameBlack()));
   EXPECT_GT(conversionTime - now, TimeDuration::FromMilliseconds(0));
+}
+
+TEST_F(VideoFrameConverterTest, PropagatesRotation) {
+  auto framesPromise = TakeNConvertedFrames(2);
+  TimeStamp now = TimeStamp::Now();
+  TimeStamp future = now + TimeDuration::FromMilliseconds(100);
+  VideoChunk chunk = GenerateChunk(640, 480, now, VideoRotation::kDegree_90);
+  mConverter->SetActive(true);
+  mConverter->QueueVideoChunk(chunk, false);
+  chunk = GenerateChunk(640, 480, future, VideoRotation::kDegree_270);
+  mConverter->QueueVideoChunk(chunk, false);
+  auto frames = WaitFor(framesPromise).unwrap();
+  ASSERT_EQ(frames.size(), 2U);
+  const auto& [frame0, conversionTime0] = frames[0];
+  EXPECT_EQ(frame0.rotation(), webrtc::kVideoRotation_90);
+  const auto& [frame1, conversionTime1] = frames[1];
+  EXPECT_EQ(frame1.rotation(), webrtc::kVideoRotation_270);
 }
 
 TEST_F(VideoFrameConverterTest, BasicPacing) {
@@ -460,7 +479,7 @@ TEST_F(VideoFrameConverterTest, ClearFutureFramesOnJumpingBack) {
   TimeStamp future3 = step1 + TimeDuration::FromMilliseconds(10);
   mConverter->QueueVideoChunk(GenerateChunk(800, 600, future2), false);
   VideoChunk nullChunk;
-  nullChunk.mFrame = VideoFrame(nullptr, gfx::IntSize(800, 600));
+  nullChunk.mFrame = mozilla::VideoFrame(nullptr, gfx::IntSize(800, 600));
   nullChunk.mTimeStamp = step1;
   mConverter->QueueVideoChunk(nullChunk, false);
 
@@ -511,7 +530,7 @@ TEST_F(VideoFrameConverterTest, NoConversionsWhileInactive) {
   auto frames = WaitFor(framesPromise).unwrap();
   ASSERT_EQ(frames.size(), 1U);
   const auto& [frame, conversionTime] = frames[0];
-  Unused << conversionTime;
+  (void)conversionTime;
   EXPECT_EQ(frame.width(), 800);
   EXPECT_EQ(frame.height(), 600);
   EXPECT_GT(frame.timestamp_us(), dom::RTCStatsTimestamp::FromMozTime(
@@ -573,7 +592,7 @@ TEST_F(VideoFrameConverterTest, IgnoreOldFrames) {
   framesPromise = TakeNConvertedFrames(2);
 
   mConverter->SetIdleFrameDuplicationInterval(duplicationInterval);
-  Unused << WaitFor(InvokeAsync(mConverter->mTarget, __func__, [&] {
+  (void)WaitFor(InvokeAsync(mConverter->mTarget, __func__, [&] {
     // Time is now ~t1. This processes an extra frame similar to what
     // `SetActive(false); SetActive(true);` (using t=now()) would do.
     mConverter->mLastFrameQueuedForProcessing.mTime = now + d2;
@@ -586,7 +605,7 @@ TEST_F(VideoFrameConverterTest, IgnoreOldFrames) {
     // to get ignored.
     mConverter->QueueForProcessing(
         GenerateChunk(800, 600, now + d3).mFrame.GetImage(), now + d3,
-        gfx::IntSize(800, 600), false);
+        gfx::IntSize(800, 600), false, VideoRotation::kDegree_0);
     return GenericPromise::CreateAndResolve(true, __func__);
   }));
 

@@ -1,6 +1,4 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- * vim: set ts=8 sts=2 et sw=2 tw=80:
- * This Source Code Form is subject to the terms of the Mozilla Public
+/* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
@@ -23,8 +21,34 @@ using JS::ToInt32;
 using mozilla::CheckedInt;
 using mozilla::IsFloat32Representable;
 
+MInstruction* jit::NewWasmDefaultConstant(TempAllocator& alloc,
+                                          wasm::ValType type) {
+  MOZ_ASSERT(type.isDefaultable());
+  switch (type.kind()) {
+    case wasm::ValType::I32:
+      return MConstant::NewInt32(alloc, 0);
+    case wasm::ValType::I64:
+      return MConstant::NewInt64(alloc, 0);
+    case wasm::ValType::F32:
+      return MWasmFloatConstant::NewFloat32(alloc, 0.0);
+    case wasm::ValType::F64:
+      return MWasmFloatConstant::NewDouble(alloc, 0.0);
+    case wasm::ValType::V128:
+#ifdef ENABLE_JIT_SIMD
+      return MWasmFloatConstant::NewSimd128(alloc, SimdConstant::Zero());
+#else
+      MOZ_CRASH();
+#endif
+    case wasm::ValType::Ref:
+      MOZ_ASSERT(type.isNullable());
+      return MWasmNullConstant::New(alloc, wasm::MaybeRefType(type.refType()));
+    default:
+      MOZ_CRASH("NYI");
+  }
+}
+
 HashNumber MWasmFloatConstant::valueHash() const {
-#ifdef ENABLE_WASM_SIMD
+#ifdef ENABLE_JIT_SIMD
   return ConstantValueHash(type(), u.bits_[0] ^ u.bits_[1]);
 #else
   return ConstantValueHash(type(), u.bits_[0]);
@@ -33,7 +57,7 @@ HashNumber MWasmFloatConstant::valueHash() const {
 
 bool MWasmFloatConstant::congruentTo(const MDefinition* ins) const {
   return ins->isWasmFloatConstant() && type() == ins->type() &&
-#ifdef ENABLE_WASM_SIMD
+#ifdef ENABLE_JIT_SIMD
          u.bits_[1] == ins->toWasmFloatConstant()->u.bits_[1] &&
 #endif
          u.bits_[0] == ins->toWasmFloatConstant()->u.bits_[0];
@@ -283,33 +307,6 @@ bool MWasmAlignmentCheck::congruentTo(const MDefinition* ins) const {
   return byteSize_ == check->byteSize() && congruentIfOperandsEqual(check);
 }
 
-MDefinition::AliasType MAsmJSLoadHeap::mightAlias(
-    const MDefinition* def) const {
-  if (def->isAsmJSStoreHeap()) {
-    const MAsmJSStoreHeap* store = def->toAsmJSStoreHeap();
-    if (store->accessType() != accessType()) {
-      return AliasType::MayAlias;
-    }
-    if (!base()->isConstant() || !store->base()->isConstant()) {
-      return AliasType::MayAlias;
-    }
-    const MConstant* otherBase = store->base()->toConstant();
-    if (base()->toConstant()->equals(otherBase)) {
-      return AliasType::MayAlias;
-    }
-    return AliasType::NoAlias;
-  }
-  return AliasType::MayAlias;
-}
-
-bool MAsmJSLoadHeap::congruentTo(const MDefinition* ins) const {
-  if (!ins->isAsmJSLoadHeap()) {
-    return false;
-  }
-  const MAsmJSLoadHeap* load = ins->toAsmJSLoadHeap();
-  return load->accessType() == accessType() && congruentIfOperandsEqual(load);
-}
-
 MDefinition::AliasType MWasmLoadInstanceDataField::mightAlias(
     const MDefinition* def) const {
   if (def->isWasmStoreInstanceDataField()) {
@@ -343,7 +340,7 @@ MDefinition::AliasType MWasmLoadGlobalCell::mightAlias(
 
 HashNumber MWasmLoadInstanceDataField::valueHash() const {
   // Same comment as in MWasmLoadInstanceDataField::congruentTo() applies here.
-  HashNumber hash = MDefinition::valueHash();
+  HashNumber hash = MUnaryInstruction::valueHash();
   hash = addU32ToHash(hash, instanceDataOffset_);
   return hash;
 }
@@ -404,7 +401,7 @@ bool MWasmLoadGlobalCell::congruentTo(const MDefinition* ins) const {
   return congruentIfOperandsEqual(other);
 }
 
-#ifdef ENABLE_WASM_SIMD
+#ifdef ENABLE_JIT_SIMD
 MDefinition* MWasmTernarySimd128::foldsTo(TempAllocator& alloc) {
   if (simdOp() == wasm::SimdOp::V128Bitselect) {
     if (v2()->op() == MDefinition::Opcode::WasmFloatConstant) {
@@ -519,6 +516,62 @@ static bool MatchPmaddubswSequence(MWasmBinarySimd128* lhs,
   return true;
 }
 
+static bool IsZeroSimd128(MDefinition* def) {
+  return def->isWasmFloatConstant() &&
+         def->toWasmFloatConstant()->toSimd128().isZeroBits();
+}
+
+static wasm::SimdOp TestBitsOp(wasm::SimdOp op) {
+  switch (op) {
+    case wasm::SimdOp::I8x16Ne:
+      return wasm::SimdOp::MozI8x16TestBits;
+    case wasm::SimdOp::I16x8Ne:
+      return wasm::SimdOp::MozI16x8TestBits;
+    case wasm::SimdOp::I32x4Ne:
+      return wasm::SimdOp::MozI32x4TestBits;
+    case wasm::SimdOp::I64x2Ne:
+      return wasm::SimdOp::MozI64x2TestBits;
+    default:
+      return wasm::SimdOp::Limit;
+  }
+}
+
+// Match ne(and(a, b), 0) where the and has no other use.
+static MWasmBinarySimd128* MatchTestBitsSequence(MWasmBinarySimd128* ins) {
+  MDefinition* bits;
+  if (IsZeroSimd128(ins->rhs())) {
+    bits = ins->lhs();
+  } else if (IsZeroSimd128(ins->lhs())) {
+    bits = ins->rhs();
+  } else {
+    return nullptr;
+  }
+  if (!bits->isWasmBinarySimd128() ||
+      bits->toWasmBinarySimd128()->simdOp() != wasm::SimdOp::V128And ||
+      !bits->hasOneUse()) {
+    return nullptr;
+  }
+  return bits->toWasmBinarySimd128();
+}
+
+// GVN merges equal constants, so a zero is often shared. Specializing each use
+// of a shared zero is still a win on ARM64, which has compare-against-zero
+// forms that need no register.
+static bool CanSpecializeConstantOperand(MDefinition* constant,
+                                         wasm::SimdOp op) {
+  if (constant->hasOneUse()) {
+    return true;
+  }
+#  if defined(JS_CODEGEN_ARM64)
+  return constant->toWasmFloatConstant()->toSimd128().isZeroBits();
+#  elif defined(JS_CODEGEN_LOONG64)
+  return AssemblerLOONG64::CanEncodeSimdCompareImmediateFor(
+      op, constant->toWasmFloatConstant()->toSimd128());
+#  else
+  return false;
+#  endif
+}
+
 MDefinition* MWasmBinarySimd128::foldsTo(TempAllocator& alloc) {
   if (simdOp() == wasm::SimdOp::I8x16Swizzle && rhs()->isWasmFloatConstant()) {
     // Specialize swizzle(v, constant) as shuffle(mask, v, zero) to trigger all
@@ -526,11 +579,11 @@ MDefinition* MWasmBinarySimd128::foldsTo(TempAllocator& alloc) {
     // will be overwritten by the subsequent shuffle analysis.
     int8_t shuffleMask[16];
     memcpy(shuffleMask, rhs()->toWasmFloatConstant()->toSimd128().bytes(), 16);
-    for (int i = 0; i < 16; i++) {
+    for (signed char& i : shuffleMask) {
       // Out-of-bounds lanes reference the zero vector; in many cases, the zero
       // vector is removed by subsequent optimizations.
-      if (shuffleMask[i] < 0 || shuffleMask[i] > 15) {
-        shuffleMask[i] = 16;
+      if (i < 0 || i > 15) {
+        i = 16;
       }
     }
     MWasmFloatConstant* zero =
@@ -540,6 +593,16 @@ MDefinition* MWasmBinarySimd128::foldsTo(TempAllocator& alloc) {
     }
     block()->insertBefore(this, zero);
     return BuildWasmShuffleSimd128(alloc, shuffleMask, lhs(), zero);
+  }
+
+  // Fold ne(and(a, b), 0) into one test-bits operation. This has to come
+  // before the constant specialization below, which would take the zero.
+  if (canTestBits() && TestBitsOp(simdOp()) != wasm::SimdOp::Limit) {
+    if (MWasmBinarySimd128* bitAnd = MatchTestBitsSequence(this)) {
+      return MWasmBinarySimd128::New(alloc, bitAnd->lhs(), bitAnd->rhs(),
+                                     /* commutative = */ true,
+                                     TestBitsOp(simdOp()));
+    }
   }
 
   // Specialize var OP const / const OP var when possible.
@@ -555,12 +618,14 @@ MDefinition* MWasmBinarySimd128::foldsTo(TempAllocator& alloc) {
 
   if (lhs()->isWasmFloatConstant() != rhs()->isWasmFloatConstant() &&
       specializeForConstantRhs()) {
-    if (isCommutative() && lhs()->isWasmFloatConstant() && lhs()->hasOneUse()) {
+    if (isCommutative() && lhs()->isWasmFloatConstant() &&
+        CanSpecializeConstantOperand(lhs(), simdOp())) {
       return MWasmBinarySimd128WithConstant::New(
           alloc, rhs(), lhs()->toWasmFloatConstant()->toSimd128(), simdOp());
     }
 
-    if (rhs()->isWasmFloatConstant() && rhs()->hasOneUse()) {
+    if (rhs()->isWasmFloatConstant() &&
+        CanSpecializeConstantOperand(rhs(), simdOp())) {
       return MWasmBinarySimd128WithConstant::New(
           alloc, lhs(), rhs()->toWasmFloatConstant()->toSimd128(), simdOp());
     }
@@ -747,27 +812,7 @@ MDefinition* MWasmReduceSimd128::foldsTo(TempAllocator& alloc) {
 #  endif
   return this;
 }
-#endif  // ENABLE_WASM_SIMD
-
-MDefinition* MWasmUnsignedToDouble::foldsTo(TempAllocator& alloc) {
-  if (input()->isConstant()) {
-    return MConstant::NewDouble(alloc,
-                                uint32_t(input()->toConstant()->toInt32()));
-  }
-
-  return this;
-}
-
-MDefinition* MWasmUnsignedToFloat32::foldsTo(TempAllocator& alloc) {
-  if (input()->isConstant()) {
-    double dval = double(uint32_t(input()->toConstant()->toInt32()));
-    if (IsFloat32Representable(dval)) {
-      return MConstant::NewFloat32(alloc, float(dval));
-    }
-  }
-
-  return this;
-}
+#endif  // ENABLE_JIT_SIMD
 
 MWasmCallCatchable* MWasmCallCatchable::New(
     TempAllocator& alloc, const wasm::CallSiteDesc& desc,
@@ -861,6 +906,36 @@ MWasmReturnCall* MWasmReturnCall::New(TempAllocator& alloc,
   return call;
 }
 
+#ifdef ENABLE_WASM_JSPI
+bool MWasmResume::init(MBasicBlock* fallthroughBlock, MBasicBlock* prePadBlock,
+                       size_t numHandlers) {
+  MOZ_ASSERT(hasTryNote() == !!prePadBlock);
+
+  size_t numSuccessors = 1 + (hasTryNote() ? 1 : 0) + numHandlers;
+  if (!successors_.resize(numSuccessors)) {
+    return false;
+  }
+  successors_[FallthroughBranchIndex] = fallthroughBlock;
+  if (hasTryNote()) {
+    successors_[prePadBranchIndex()] = prePadBlock;
+  }
+
+  return handlers_.resize(numHandlers);
+}
+
+bool MWasmResume::initHandler(size_t index, uint32_t tagInstanceDataOffset,
+                              uint32_t resultsAreaOffset, MBasicBlock* target) {
+  successors_[handlerBranchIndex(index)] = target;
+  handlers_[index].tagInstanceDataOffset = tagInstanceDataOffset;
+  handlers_[index].resultsAreaOffset = resultsAreaOffset;
+  return true;
+}
+
+AliasSet MWasmSuspend::getAliasSet() const {
+  return MWasmCallBase::wasmCallAliasSet();
+}
+#endif  // ENABLE_WASM_JSPI
+
 MIonToWasmCall* MIonToWasmCall::New(TempAllocator& alloc,
                                     WasmInstanceObject* instanceObj,
                                     const wasm::FuncExport& funcExport) {
@@ -891,14 +966,6 @@ bool MIonToWasmCall::isConsistentFloat32Use(MUse* use) const {
 }
 #endif
 
-bool MWasmShiftSimd128::congruentTo(const MDefinition* ins) const {
-  if (!ins->isWasmShiftSimd128()) {
-    return false;
-  }
-  return ins->toWasmShiftSimd128()->simdOp() == simdOp_ &&
-         congruentIfOperandsEqual(ins);
-}
-
 bool MWasmShuffleSimd128::congruentTo(const MDefinition* ins) const {
   if (!ins->isWasmShuffleSimd128()) {
     return false;
@@ -907,15 +974,7 @@ bool MWasmShuffleSimd128::congruentTo(const MDefinition* ins) const {
          congruentIfOperandsEqual(ins);
 }
 
-bool MWasmUnarySimd128::congruentTo(const MDefinition* ins) const {
-  if (!ins->isWasmUnarySimd128()) {
-    return false;
-  }
-  return ins->toWasmUnarySimd128()->simdOp() == simdOp_ &&
-         congruentIfOperandsEqual(ins);
-}
-
-#ifdef ENABLE_WASM_SIMD
+#ifdef ENABLE_JIT_SIMD
 MWasmShuffleSimd128* jit::BuildWasmShuffleSimd128(TempAllocator& alloc,
                                                   const int8_t* control,
                                                   MDefinition* lhs,
@@ -938,11 +997,16 @@ MWasmShuffleSimd128* jit::BuildWasmShuffleSimd128(TempAllocator& alloc,
   }
   return MWasmShuffleSimd128::New(alloc, lhs, rhs, s);
 }
-#endif  // ENABLE_WASM_SIMD
+#endif  // ENABLE_JIT_SIMD
 
 static MDefinition* FoldTrivialWasmTests(TempAllocator& alloc,
                                          wasm::RefType sourceType,
                                          wasm::RefType destType) {
+  // Ignore everything involving uninhabitable types, because they are weird.
+  if (!sourceType.isInhabitable() || !destType.isInhabitable()) {
+    return nullptr;
+  }
+
   // Upcasts are trivially valid.
   if (wasm::RefType::isSubTypeOf(sourceType, destType)) {
     return MConstant::NewInt32(alloc, 1);
@@ -950,7 +1014,7 @@ static MDefinition* FoldTrivialWasmTests(TempAllocator& alloc,
 
   // If two types are completely disjoint, then all casts between them are
   // impossible.
-  if (!wasm::RefType::castPossible(destType, sourceType)) {
+  if (!wasm::RefType::valuesInCommon(destType, sourceType)) {
     return MConstant::NewInt32(alloc, 0);
   }
 
@@ -960,6 +1024,11 @@ static MDefinition* FoldTrivialWasmTests(TempAllocator& alloc,
 static MDefinition* FoldTrivialWasmCasts(MDefinition* ref,
                                          wasm::RefType sourceType,
                                          wasm::RefType destType) {
+  // Ignore everything involving uninhabitable types, because they are weird.
+  if (!sourceType.isInhabitable() || !destType.isInhabitable()) {
+    return nullptr;
+  }
+
   // Upcasts are trivially valid.
   if (wasm::RefType::isSubTypeOf(sourceType, destType)) {
     return ref;
@@ -1032,16 +1101,43 @@ MDefinition* MWasmRefAsNonNull::foldsTo(TempAllocator& alloc) {
   return this;
 }
 
-bool MWasmStructState::init() {
+bool MWasmStructState::init(TempAllocator& alloc) {
   // Reserve the size for the number of fields.
-  return fields_.resize(
-      wasmStruct_->toWasmNewStructObject()->structType().fields_.length());
+  const wasm::StructType& structType =
+      wasmStruct_->toWasmNewStructObject()->structType();
+  if (!fields_.reserve(structType.fields_.length())) {
+    return false;
+  }
+
+  for (uint32_t fieldIndex = 0; fieldIndex < structType.fields_.length();
+       fieldIndex++) {
+    wasm::StorageType storageType = structType.fields_[fieldIndex].type;
+
+    // If we were to 'struct.get' a field, it would be widened.
+    wasm::ValType valType = storageType.widenToValType();
+
+    MInstruction* defaultValue = nullptr;
+
+    // Defaultable fields start with a default value, otherwise the default
+    // value will be provided by a struct write after the allocation.
+    if (valType.isDefaultable()) {
+      defaultValue = NewWasmDefaultConstant(alloc, valType);
+      if (!defaultValue) {
+        return false;
+      }
+      wasmStruct_->block()->insertBefore(wasmStruct_, defaultValue);
+    }
+
+    fields_.infallibleAppend(defaultValue);
+  }
+
+  return true;
 }
 
 MWasmStructState* MWasmStructState::New(TempAllocator& alloc,
-                                        MDefinition* structObject) {
+                                        MWasmNewStructObject* structObject) {
   MWasmStructState* state = new (alloc) MWasmStructState(alloc, structObject);
-  if (!state->init()) {
+  if (!state->init(alloc)) {
     return nullptr;
   }
   return state;
@@ -1049,13 +1145,54 @@ MWasmStructState* MWasmStructState::New(TempAllocator& alloc,
 
 MWasmStructState* MWasmStructState::Copy(TempAllocator& alloc,
                                          MWasmStructState* state) {
-  MDefinition* newWasmStruct = state->wasmStruct();
+  MWasmNewStructObject* newWasmStruct = state->wasmStruct();
   MWasmStructState* res = new (alloc) MWasmStructState(alloc, newWasmStruct);
-  if (!res || !res->init()) {
+  if (!res || !res->fields_.appendAll(state->fields_)) {
     return nullptr;
   }
-  for (size_t i = 0; i < state->numFields(); i++) {
-    res->setField(i, state->getField(i));
-  }
   return res;
+}
+
+MDefinition* MWasmAddSubI128HI64::foldsTo(TempAllocator& alloc) {
+  MDefinition* mLhsLo = lhsLo();
+  MDefinition* mLhsHi = lhsHi();
+  MDefinition* mRhsLo = rhsLo();
+  MDefinition* mRhsHi = rhsHi();
+  MOZ_ASSERT(mLhsLo->type() == MIRType::Int64);
+  MOZ_ASSERT(mLhsHi->type() == MIRType::Int64);
+  MOZ_ASSERT(mRhsLo->type() == MIRType::Int64);
+  MOZ_ASSERT(mRhsHi->type() == MIRType::Int64);
+
+  bool lhsLoIsConst = mLhsLo->isConstant();
+  int64_t lhsLoImm = lhsLoIsConst ? mLhsLo->toConstant()->toInt64() : 0;
+
+  bool lhsHiIsConst = mLhsHi->isConstant();
+  int64_t lhsHiImm = lhsHiIsConst ? mLhsHi->toConstant()->toInt64() : 0;
+
+  bool rhsLoIsConst = mRhsLo->isConstant();
+  int64_t rhsLoImm = rhsLoIsConst ? mRhsLo->toConstant()->toInt64() : 0;
+
+  bool rhsHiIsConst = mRhsHi->isConstant();
+  int64_t rhsHiImm = rhsHiIsConst ? mRhsHi->toConstant()->toInt64() : 0;
+
+  if (isAdd()) {
+    // addHI 0:0 x:y --> x
+    if (lhsHiIsConst && lhsHiImm == 0 && lhsLoIsConst && lhsLoImm == 0) {
+      return mRhsHi;
+    }
+    // addHI x:y 0:0 --> x
+    if (rhsHiIsConst && rhsHiImm == 0 && rhsLoIsConst && rhsLoImm == 0) {
+      return mLhsHi;
+    }
+  }
+
+  // There are other folding opportunities, but none of them look particularly
+  // interesting.  In particular:
+  //
+  //   addHI 0:x 0:y = carry bit out of x +64 y
+  //
+  // This isn't helpful because we don't have a way to compute the carry bit
+  // that is cheaper than doing the full 128-bit add.
+
+  return this;
 }

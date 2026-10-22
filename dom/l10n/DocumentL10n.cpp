@@ -1,11 +1,10 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim:set ts=2 sw=2 sts=2 et cindent: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "DocumentL10n.h"
 
+#include "mozilla/ScopeExit.h"
 #include "mozilla/dom/AutoEntryScript.h"
 #include "mozilla/dom/Document.h"
 #include "mozilla/dom/DocumentL10nBinding.h"
@@ -48,8 +47,30 @@ RefPtr<DocumentL10n> DocumentL10n::Create(Document* aDocument, bool aSync) {
   return l10n.forget();
 }
 
+RefPtr<DocumentL10n> DocumentL10n::Create(Document* aDocument, bool aSync,
+                                          const nsTArray<nsCString>& aLocales) {
+  RefPtr<DocumentL10n> l10n = new DocumentL10n(aDocument, aSync, aLocales);
+
+  IgnoredErrorResult rv;
+  l10n->mReady = Promise::Create(l10n->mGlobal, rv);
+  if (NS_WARN_IF(rv.Failed())) {
+    return nullptr;
+  }
+
+  return l10n.forget();
+}
+
 DocumentL10n::DocumentL10n(Document* aDocument, bool aSync)
     : DOMLocalization(aDocument->GetScopeObject(), aSync),
+      mDocument(aDocument),
+      mState(DocumentL10nState::Constructed) {
+  mContentSink = do_QueryInterface(aDocument->GetCurrentContentSink());
+  mIsDocumentL10n = true;
+}
+
+DocumentL10n::DocumentL10n(Document* aDocument, bool aSync,
+                           const nsTArray<nsCString>& aLocales)
+    : DOMLocalization(aDocument->GetScopeObject(), aSync, aLocales),
       mDocument(aDocument),
       mState(DocumentL10nState::Constructed) {
   mContentSink = do_QueryInterface(aDocument->GetCurrentContentSink());
@@ -62,7 +83,7 @@ JSObject* DocumentL10n::WrapObject(JSContext* aCx,
 
 class L10nReadyHandler final : public PromiseNativeHandler {
  public:
-  NS_DECL_CYCLE_COLLECTING_ISUPPORTS
+  NS_DECL_CYCLE_COLLECTING_ISUPPORTS_FINAL
   NS_DECL_CYCLE_COLLECTION_CLASS(L10nReadyHandler)
 
   explicit L10nReadyHandler(Promise* aPromise, DocumentL10n* aDocumentL10n)
@@ -133,23 +154,26 @@ void DocumentL10n::TriggerInitialTranslation() {
     return;
   }
 
-  AutoAllowLegacyScriptExecution exemption;
-
-  nsTArray<RefPtr<Promise>> promises;
-
-  ErrorResult rv;
-  promises.AppendElement(TranslateDocument(rv));
-  if (NS_WARN_IF(rv.Failed())) {
-    rv.SuppressException();
+  auto errorExit = MakeScopeExit([&] {
     InitialTranslationCompleted(false);
     mReady->MaybeRejectWithUndefined();
+  });
+
+  AutoAllowLegacyScriptExecution exemption;
+
+  AutoTArray<RefPtr<Promise>, 2> promises;
+
+  IgnoredErrorResult rv;
+  promises.AppendElement(TranslateDocument(rv));
+  if (NS_WARN_IF(rv.Failed())) {
     return;
   }
   promises.AppendElement(TranslateRoots(rv));
+  if (NS_WARN_IF(rv.Failed())) {
+    return;
+  }
   Element* documentElement = mDocument->GetDocumentElement();
   if (!documentElement) {
-    InitialTranslationCompleted(false);
-    mReady->MaybeRejectWithUndefined();
     return;
   }
 
@@ -157,6 +181,11 @@ void DocumentL10n::TriggerInitialTranslation() {
 
   AutoEntryScript aes(mGlobal, "DocumentL10n InitialTranslation");
   RefPtr<Promise> promise = Promise::All(aes.cx(), promises, rv);
+  if (NS_WARN_IF(rv.Failed())) {
+    return;
+  }
+
+  errorExit.release();
 
   if (promise->State() == Promise::PromiseState::Resolved) {
     // If the promise is already resolved, we can fast-track

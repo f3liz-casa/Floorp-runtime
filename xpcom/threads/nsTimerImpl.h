@@ -1,24 +1,21 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef nsTimerImpl_h___
-#define nsTimerImpl_h___
+#ifndef nsTimerImpl_h_
+#define nsTimerImpl_h_
 
-#include "nsITimer.h"
-#include "nsIEventTarget.h"
-#include "nsIObserver.h"
-
-#include "nsCOMPtr.h"
-
-#include "mozilla/Attributes.h"
+#include "mozilla/Logging.h"
 #include "mozilla/Mutex.h"
 #include "mozilla/StaticMutex.h"
+#include "mozilla/ThreadSafeWeakPtr.h"
 #include "mozilla/TimeStamp.h"
 #include "mozilla/Variant.h"
-#include "mozilla/Logging.h"
+#include "nsCOMPtr.h"
+#include "nsIEventTarget.h"
+#include "nsIObserver.h"
+#include "nsITimer.h"
+#include "nsString.h"
 
 extern mozilla::LogModule* GetTimerLog();
 
@@ -30,6 +27,7 @@ extern mozilla::LogModule* GetTimerLog();
    {0x84, 0x27, 0xfb, 0xab, 0x44, 0xf2, 0x9b, 0xc8}}
 
 class nsIObserver;
+class nsTimer;
 
 namespace mozilla {
 class LogModule;
@@ -48,10 +46,9 @@ class nsTimerImpl {
     // and used the timer.
     //
     // Further, note that this should never fail even with a misbehaving user,
-    // because nsTimer::Release checks for a refcount of 1 with an armed timer
-    // (a timer whose only reference is from the timer thread) and when it hits
-    // this will remove the timer from the timer thread and thus destroy the
-    // last reference, preventing this situation from occurring.
+    // because nsTimer's destructor cancels the timer, which removes it from the
+    // timer thread and drops the callback, preventing this situation from
+    // occurring.
     MOZ_ASSERT(
         mCallback.is<UnknownCallback>() || mEventTarget->IsOnCurrentThread(),
         "Must not release mCallback off-target without canceling");
@@ -60,7 +57,7 @@ class nsTimerImpl {
  public:
   typedef mozilla::TimeStamp TimeStamp;
 
-  nsTimerImpl(nsITimer* aTimer, nsIEventTarget* aTarget);
+  nsTimerImpl(nsTimer* aTimer, nsIEventTarget* aTarget);
   NS_INLINE_DECL_THREADSAFE_REFCOUNTING(nsTimerImpl)
   NS_DECL_NON_VIRTUAL_NSITIMER
 
@@ -68,7 +65,6 @@ class nsTimerImpl {
   static void Shutdown();
 
   void SetDelayInternal(uint32_t aDelay, TimeStamp aBase = TimeStamp::Now());
-  void CancelImpl(bool aClearITimer);
 
   void Fire(uint64_t aTimerSeq);
 
@@ -78,26 +74,20 @@ class nsTimerImpl {
 
   using ObserverCallback = nsCOMPtr<nsIObserver>;
 
-  /// A raw function pointer and its closed-over state, along with its name for
-  /// logging purposes.
+  /// A raw function pointer and its closed-over state.
   struct FuncCallback {
     nsTimerCallbackFunc mFunc;
     void* mClosure;
-    const char* mName;
   };
 
-  /// A callback defined by an owned closure and its name for logging purposes.
-  struct ClosureCallback {
-    std::function<void(nsITimer*)> mFunc;
-    const char* mName;
-  };
+  using ClosureCallback = std::function<void(nsITimer*)>;
 
   using Callback =
       mozilla::Variant<UnknownCallback, InterfaceCallback, ObserverCallback,
                        FuncCallback, ClosureCallback>;
 
   nsresult InitCommon(const mozilla::TimeDuration& aDelay, uint32_t aType,
-                      Callback&& newCallback,
+                      const nsACString& aName, Callback&& newCallback,
                       const mozilla::MutexAutoLock& aProofOfLock)
       MOZ_REQUIRES(mMutex);
 
@@ -129,8 +119,8 @@ class nsTimerImpl {
            mType == nsITimer::TYPE_REPEATING_SLACK_LOW_PRIORITY;
   }
 
-  void GetName(nsACString& aName, const mozilla::MutexAutoLock& aProofOfLock)
-      MOZ_REQUIRES(mMutex);
+  // How much later than its deadline this timer accepts to fire.
+  mozilla::TimeDuration AcceptableFiringDelay() const MOZ_REQUIRES(mMutex);
 
   // Caution: Only call this when you hold TimerThread's monitor!
   bool IsInTimerThread() const { return mIsInTimerThread; }
@@ -146,7 +136,8 @@ class nsTimerImpl {
 
   nsresult InitWithClosureCallback(std::function<void(nsITimer*)>&& aCallback,
                                    const mozilla::TimeDuration& aDelay,
-                                   uint32_t aType, const char* aNameString);
+                                   uint32_t aType,
+                                   const nsACString& aNameString);
 
   // Is this timer currently referenced from a TimerThread::Entry in the list?
   // ALL accesses to mIsInTimerThread are under the TimerThread's Monitor lock,
@@ -169,8 +160,9 @@ class nsTimerImpl {
   // been removed from the TimerThread's list.
   mozilla::TimeStamp mTimeout MOZ_GUARDED_BY(mMutex);
 
-  RefPtr<nsITimer> mITimer MOZ_GUARDED_BY(mMutex);
+  const mozilla::ThreadSafeWeakPtr<nsTimer> mITimer;
   mozilla::Mutex mMutex;
+  nsCString mName MOZ_GUARDED_BY(mMutex);
   Callback mCallback MOZ_GUARDED_BY(mMutex);
   // Counter because in rare cases we can Fire reentrantly
   unsigned int mFiring MOZ_GUARDED_BY(mMutex);
@@ -181,24 +173,29 @@ class nsTimerImpl {
   static double sDeltaNum MOZ_GUARDED_BY(sDeltaMutex);
 };
 
-class nsTimer final : public nsITimer {
+class nsTimer final : public mozilla::SupportsThreadSafeWeakPtr<nsTimer>,
+                      public nsITimer {
   explicit nsTimer(nsIEventTarget* aTarget)
       : mImpl(new nsTimerImpl(this, aTarget)) {}
 
   virtual ~nsTimer();
 
+  friend class mozilla::SupportsThreadSafeWeakPtr<nsTimer>;
+
  public:
   friend class TimerThread;
   friend class nsTimerEvent;
 
-  NS_DECL_THREADSAFE_ISUPPORTS
+  MOZ_DECLARE_REFCOUNTED_TYPENAME(nsTimer)
+  NS_DECL_ISUPPORTS_INHERITED
   NS_FORWARD_SAFE_NSITIMER(mImpl);
 
   // NOTE: This constructor is not exposed on `nsITimer` as NS_FORWARD_SAFE_
   // does not support forwarding rvalue references.
   nsresult InitWithClosureCallback(std::function<void(nsITimer*)>&& aCallback,
                                    const mozilla::TimeDuration& aDelay,
-                                   uint32_t aType, const char* aNameString) {
+                                   uint32_t aType,
+                                   const nsACString& aNameString) {
     return mImpl ? mImpl->InitWithClosureCallback(std::move(aCallback), aDelay,
                                                   aType, aNameString)
                  : NS_ERROR_NULL_POINTER;
@@ -211,8 +208,6 @@ class nsTimer final : public nsITimer {
   static nsresult XPCOMConstructor(REFNSIID aIID, void** aResult);
 
  private:
-  // nsTimerImpl holds a strong ref to us. When our refcount goes to 1, we will
-  // null this to break the cycle.
   RefPtr<nsTimerImpl> mImpl;
 };
 
@@ -224,4 +219,4 @@ class nsTimerManager final : public nsITimerManager {
   ~nsTimerManager() = default;
 };
 
-#endif /* nsTimerImpl_h___ */
+#endif /* nsTimerImpl_h_ */

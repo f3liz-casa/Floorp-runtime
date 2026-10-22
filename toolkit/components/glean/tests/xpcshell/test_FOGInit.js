@@ -14,6 +14,9 @@ add_setup(
     // FOG needs a profile directory to put its data in.
     do_get_profile();
 
+    // We need to ensure we're not artificially decelerating early pings.
+    Services.prefs.clearUserPref("telemetry.fog.test.decelerate_early_events");
+
     // We need to initialize it once, otherwise operations will be stuck in the pre-init queue.
     Services.fog.initializeFOG();
   }
@@ -40,58 +43,19 @@ add_task(function test_fog_initialized_with_correct_rate_limit() {
 });
 
 add_task(
-  {
-    skip_if: () => !AppConstants.NIGHTLY_BUILD,
-  },
-  function test_fog_gathers_dir_info_on_startup() {
-    Assert.deepEqual(
-      Glean.fog.dataDirectoryInfo.testGetValue(),
-      [
-        {
-          dir_name: "db",
-          dir_exists: false,
-        },
-        {
-          dir_name: "events",
-          dir_exists: false,
-        },
-        {
-          dir_name: "pending_pings",
-          dir_exists: false,
-        },
-      ],
-      "Directory info was collected on first startup."
-    );
-
-    // Startup again to make sure we collect the directory info when the dirs exist.
-    Services.fog.initializeFOG();
-
-    // Record an event to ensure that the directory info is updated with the next startup.
-    Glean.testOnly.anEvent.record();
-
-    let dir_info = Glean.fog.dataDirectoryInfo.testGetValue();
-    Assert.equal(dir_info[0].dir_name, "db");
-    Assert.equal(dir_info[0].dir_exists, true);
-    // There should be at most 2 files in the db directory, data.safe.bin and maybe data.safe.tmp
-    Assert.lessOrEqual(dir_info[0].files.length, 2);
-    Assert.greater(dir_info[0].files[0].file_size, 0);
-    Assert.equal(dir_info[1].dir_name, "events");
-    Assert.equal(dir_info[1].dir_exists, true);
-    Assert.equal(dir_info[2].dir_name, "pending_pings");
-    Assert.equal(dir_info[2].dir_exists, true);
-
-    Services.fog.initializeFOG();
-
-    let new_dir_info = Glean.fog.dataDirectoryInfo.testGetValue();
-    Assert.equal(new_dir_info[1].dir_name, "events");
-    Assert.equal(new_dir_info[1].dir_exists, true);
-    Assert.equal(new_dir_info[1].file_count, 1);
-    Assert.equal(new_dir_info[1].files[0].file_name, "test-ping");
-    Assert.greater(new_dir_info[1].files[0].file_size, 0);
-
-    console.log(
-      "Directory info collected on startup: ",
-      Glean.fog.dataDirectoryInfo.testGetValue()
+  /* on Android we can't unset telemetry.fog.test.decelerate_early_events before init */
+  { skip_if: () => AppConstants.platform == "android" },
+  function test_fog_inits_with_early_event_acceleration() {
+    // Record far fewer than FOG's configured max event threshold (500),
+    // but more than FOG's configured accelerated early events ping (20).
+    const numEvents = 100;
+    for (let i = 0; i < numEvents; i++) {
+      Glean.testOnly.eventPingEvent.record();
+    }
+    Assert.less(
+      Glean.testOnly.eventPingEvent.testGetValue()?.length || 0,
+      numEvents,
+      "At least one 'events' ping must've been sent early."
     );
   }
 );

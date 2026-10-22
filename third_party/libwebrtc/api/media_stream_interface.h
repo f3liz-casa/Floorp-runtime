@@ -37,6 +37,8 @@
 
 namespace webrtc {
 
+class RtpPacketInfos;
+
 // Generic observer interface.
 class ObserverInterface {
  public:
@@ -56,7 +58,7 @@ class NotifierInterface {
 
 // Base class for sources. A MediaStreamTrack has an underlying source that
 // provides media. A source can be shared by multiple tracks.
-class RTC_EXPORT MediaSourceInterface : public webrtc::RefCountInterface,
+class RTC_EXPORT MediaSourceInterface : public RefCountInterface,
                                         public NotifierInterface {
  public:
   enum SourceState { kInitializing, kLive, kEnded, kMuted };
@@ -71,7 +73,7 @@ class RTC_EXPORT MediaSourceInterface : public webrtc::RefCountInterface,
 
 // C++ version of MediaStreamTrack.
 // See: https://www.w3.org/TR/mediacapture-streams/#mediastreamtrack
-class RTC_EXPORT MediaStreamTrackInterface : public webrtc::RefCountInterface,
+class RTC_EXPORT MediaStreamTrackInterface : public RefCountInterface,
                                              public NotifierInterface {
  public:
   enum TrackState {
@@ -106,7 +108,7 @@ class RTC_EXPORT MediaStreamTrackInterface : public webrtc::RefCountInterface,
 // VideoTrackSourceInterface is a reference counted source used for
 // VideoTracks. The same source can be used by multiple VideoTracks.
 // VideoTrackSourceInterface is designed to be invoked on the signaling thread
-// except for webrtc::VideoSourceInterface<VideoFrame> methods that will be
+// except for VideoSourceInterface<VideoFrame> methods that will be
 // invoked on the worker thread via a VideoTrack. A custom implementation of a
 // source can inherit AdaptedVideoTrackSource instead of directly implementing
 // this interface.
@@ -161,14 +163,18 @@ class VideoTrackSourceInterface : public MediaSourceInterface,
   // The call is expected to happen on the network thread.
   // TODO(crbug/1255737): make pure virtual once downstream project adapts.
   virtual void ProcessConstraints(
-      const webrtc::VideoTrackSourceConstraints& /* constraints */) {}
+      const VideoTrackSourceConstraints& /* constraints */) {}
+
+  // Returns true if zero-hertz mode should be allowed for non-screenshare
+  // modes.
+  virtual bool allow_zero_hertz_video() const { return false; }
 
  protected:
   ~VideoTrackSourceInterface() override = default;
 };
 
 // VideoTrackInterface is designed to be invoked on the signaling thread except
-// for webrtc::VideoSourceInterface<VideoFrame> methods that must be invoked
+// for VideoSourceInterface<VideoFrame> methods that must be invoked
 // on the worker thread.
 // PeerConnectionFactory::CreateVideoTrack can be used for creating a VideoTrack
 // that ensures thread safety and that all methods are called on the right
@@ -199,6 +205,7 @@ class RTC_EXPORT VideoTrackInterface : public MediaStreamTrackInterface,
 // Interface for receiving audio data from a AudioTrack.
 class AudioTrackSinkInterface {
  public:
+  // Deprecated: Implement the 7-parameter version instead.
   virtual void OnData(const void* /* audio_data */,
                       int /* bits_per_sample */,
                       int /* sample_rate */,
@@ -210,7 +217,7 @@ class AudioTrackSinkInterface {
   // In this method, `absolute_capture_timestamp_ms`, when available, is
   // supposed to deliver the timestamp when this audio frame was originally
   // captured. This timestamp MUST be based on the same clock as
-  // webrtc::TimeMillis().
+  // TimeMillis().
   virtual void OnData(
       const void* audio_data,
       int bits_per_sample,
@@ -222,6 +229,20 @@ class AudioTrackSinkInterface {
     // pure virtual.
     return OnData(audio_data, bits_per_sample, sample_rate, number_of_channels,
                   number_of_frames);
+  }
+
+  // In this method, `packet_infos` delivers information about the packets
+  // used to assemble this audio frame (such as contributing sources/CSRC,
+  // audio levels, etc.).
+  virtual void OnData(const void* audio_data,
+                      int bits_per_sample,
+                      int sample_rate,
+                      size_t number_of_channels,
+                      size_t number_of_frames,
+                      std::optional<int64_t> absolute_capture_timestamp_ms,
+                      const RtpPacketInfos& /* packet_infos */) {
+    OnData(audio_data, bits_per_sample, sample_rate, number_of_channels,
+           number_of_frames, absolute_capture_timestamp_ms);
   }
 
   // Returns the number of channels encoded by the sink. This can be less than
@@ -269,7 +290,7 @@ class RTC_EXPORT AudioSourceInterface : public MediaSourceInterface {
 
 // Interface of the audio processor used by the audio track to collect
 // statistics.
-class AudioProcessorInterface : public webrtc::RefCountInterface {
+class AudioProcessorInterface : public RefCountInterface {
  public:
   struct AudioProcessorStatistics {
     bool typing_noise_detected = false;
@@ -323,7 +344,7 @@ typedef std::vector<scoped_refptr<VideoTrackInterface> > VideoTrackVector;
 // must be pushed down.
 //
 // Thus, this interface acts as simply a container for tracks.
-class MediaStreamInterface : public webrtc::RefCountInterface,
+class MediaStreamInterface : public RefCountInterface,
                              public NotifierInterface {
  public:
   virtual std::string id() const = 0;

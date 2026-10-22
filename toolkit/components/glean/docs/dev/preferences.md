@@ -1,14 +1,17 @@
-# Preferences and Defines
+# Glean Preferences and Defines
 
 ## User Preferences
 
 `datareporting.healthreport.uploadEnabled`
 
-This determines whether the Glean SDK is enabled.
+This determines whether the Glean SDK has `collection_enabled` set.
 It can be controlled by users via `about:preferences#privacy`.
 If this is set to false from true, we send a
-["deletion-request" ping](https://mozilla.github.io/glean/book/user/pings/deletion_request.html)
-and no data collections will be persisted or reported from that point.
+["deletion-request" ping](https://mozilla.github.io/glean/book/user/pings/deletion_request.html),
+and the only data collection that can happen are for
+[pings that set `follows_collection_enabled: false`](https://searchfox.org/firefox-main/search?q=follows_collection_enabled%3A%20false&path=).
+More information can be found in
+[this support article](https://support.mozilla.org/kb/technical-and-interaction-data).
 
 ## Test-only Preferences
 
@@ -39,6 +42,15 @@ Their values are integer seconds.
 The value `-1` is treated as no limit (never trigger (in)activity).
 Defaults to 120 (activity), 1200 (inactivity).
 
+`telemetry.fog.test.decelerate_early_events`
+
+When set to `true`, removes early "events" ping acceleration.
+Defaults to `false` except in tests where we set it to `true`.
+
+FOG accelerates the first few "events" pings each session.
+This makes it tricky to write instrumentation tests of flows of `event`
+metrics longer than just a few records.
+
 ## Internal Preferences
 
 `telemetry.fog.artifact_build`
@@ -53,6 +65,12 @@ Controls whether Glean initializes on shutdown if it hasn't been initialized, in
 In case a policy modal needs to be shown to the user, which will delay Glean initialization,
 it's set to `false` until the user has dealt with the modal. It's turned back to `true` afterwards.
 This ensures we don't capture data until the user had the chance to make an explicit choice.
+
+`telemetry.fog.enable_fog_transport`
+
+Defaults to `false`.
+Controls whether the Glean IPC tooling uses the existing PContent child/parent structure, or the new PFOGTransport child/parent structure.
+It is set to `false`, and can be set to `true` using Nimbus.
 
 ## Defines
 

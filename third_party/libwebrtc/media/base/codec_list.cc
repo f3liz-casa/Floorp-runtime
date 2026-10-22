@@ -12,8 +12,9 @@
 
 #include <cstddef>
 #include <map>
-#include <vector>
+#include <span>
 
+#include "api/payload_type.h"
 #include "api/rtc_error.h"
 #include "media/base/codec.h"
 #include "media/base/media_constants.h"
@@ -23,27 +24,27 @@
 
 namespace webrtc {
 
-using webrtc::RTCError;
-using webrtc::RTCErrorOr;
-using webrtc::RTCErrorType;
 
 namespace {
 
-RTCError CheckInputConsistency(const std::vector<Codec>& codecs) {
+RTCError CheckInputConsistency(std::span<const Codec> codecs) {
   std::map<int, int> pt_to_index;
   // Create a map of payload type to index, and ensure
   // that there are no duplicates.
   for (size_t i = 0; i < codecs.size(); i++) {
     const Codec& codec = codecs[i];
-    if (codec.id != Codec::kIdNotSet) {
-      bool inserted = pt_to_index.insert({codec.id, i}).second;
-      if (!inserted) {
-        LOG_AND_RETURN_ERROR(RTCErrorType::INVALID_PARAMETER,
-                             "Duplicate payload type in codec list");
+    if (codec.id != PayloadType::NotSet()) {
+      auto [it, success] = pt_to_index.insert({codec.id, static_cast<int>(i)});
+      if (!success) {
+        RTC_LOG(LS_ERROR) << "Duplicate payload type in codec list, " << codec
+                          << " and " << codecs[it->second]
+                          << " have the same ID";
+        return RTC_LOG_ERROR(RTCError(RTCErrorType::INVALID_PARAMETER)
+                             << "Duplicate payload type in codec list");
       }
     }
   }
-  for (const webrtc::Codec& codec : codecs) {
+  for (const Codec& codec : codecs) {
     switch (codec.GetResiliencyType()) {
       case Codec::ResiliencyType::kRed:
         // Check that the target codec exists
@@ -56,7 +57,7 @@ RTCError CheckInputConsistency(const std::vector<Codec>& codecs) {
         // TODO: https://issues.webrtc.org/384756622 - reject codec earlier and
         // enable check. RTC_DCHECK(apt_it != codec.params.end()); Until that is
         // fixed:
-        if (codec.id == Codec::kIdNotSet) {
+        if (codec.id == PayloadType::NotSet()) {
           // Should not have an apt parameter.
           if (apt_it != codec.params.end()) {
             RTC_LOG(LS_WARNING) << "Surprising condition: RTX codec without "
@@ -71,21 +72,21 @@ RTCError CheckInputConsistency(const std::vector<Codec>& codecs) {
           break;
         }
         int associated_pt;
-        if (!(webrtc::FromString(apt_it->second, &associated_pt))) {
+        if (!(FromString(apt_it->second, &associated_pt))) {
           RTC_LOG(LS_ERROR) << "Non-numeric argument to rtx apt: " << codec
                             << " apt=" << apt_it->second;
-          LOG_AND_RETURN_ERROR(RTCErrorType::INVALID_PARAMETER,
-                               "Non-numeric argument to rtx apt parameter");
+          return RTC_LOG_ERROR(RTCError(RTCErrorType::INVALID_PARAMETER)
+                               << "Non-numeric argument to rtx apt parameter");
         }
-        if (codec.id != Codec::kIdNotSet &&
+        if (codec.id != PayloadType::NotSet() &&
             pt_to_index.count(associated_pt) != 1) {
           RTC_LOG(LS_WARNING)
               << "Surprising condition: RTX codec APT not found: " << codec
               << " points to a PT that occurs "
               << pt_to_index.count(associated_pt) << " times";
-          LOG_AND_RETURN_ERROR(
-              RTCErrorType::INVALID_PARAMETER,
-              "PT pointed to by rtx apt parameter does not exist");
+          return RTC_LOG_ERROR(
+              RTCError(RTCErrorType::INVALID_PARAMETER)
+              << "PT pointed to by rtx apt parameter does not exist");
         }
         // const Codec& referred_codec = codecs[pt_to_index[associated_pt]];
         // Not true:
@@ -109,12 +110,23 @@ RTCError CheckInputConsistency(const std::vector<Codec>& codecs) {
 }  // namespace
 
 // static
-RTCErrorOr<CodecList> CodecList::Create(const std::vector<Codec>& codecs) {
+RTCErrorOr<CodecList> CodecList::Create(std::span<const Codec> codecs) {
   RTCError error = CheckInputConsistency(codecs);
   if (!error.ok()) {
     return error;
   }
   return CodecList(codecs);
+}
+
+bool CodecList::PushIfNotPresent(const Codec& codec) {
+  for (const Codec& present_codec : codecs_) {
+    if (present_codec.id == codec.id) {
+      RTC_DCHECK(present_codec == codec);
+      return false;
+    }
+  }
+  push_back(codec);
+  return true;
 }
 
 void CodecList::CheckConsistency() {

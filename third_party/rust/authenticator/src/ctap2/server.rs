@@ -12,6 +12,7 @@ use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::convert::{Into, TryFrom};
 use std::fmt;
+use std::str::FromStr;
 
 #[derive(Serialize, Deserialize, PartialEq, Eq, Clone)]
 pub struct RpIdHash(pub [u8; 32]);
@@ -302,6 +303,20 @@ pub enum UserVerificationRequirement {
     Required,
 }
 
+impl FromStr for UserVerificationRequirement {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        // https://www.w3.org/TR/webauthn-3/#enumdef-userverificationrequirement
+        match s {
+            "required" => Ok(Self::Required),
+            "preferred" => Ok(Self::Preferred),
+            "discouraged" => Ok(Self::Discouraged),
+            s => Err(s.to_string()),
+        }
+    }
+}
+
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum CredentialProtectionPolicy {
     UserVerificationOptional = 1,
@@ -354,6 +369,35 @@ impl<'de> Deserialize<'de> for CredentialProtectionPolicy {
     }
 }
 
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum AuthenticatorExtensionsCredBlob {
+    /// Used in GetAssertion-requests to request the stored blob,
+    /// and in MakeCredential-responses to signify if the
+    /// storing worked.
+    AsBool(bool),
+    /// Used in MakeCredential-requests to store a new credBlob,
+    /// and in GetAssertion-responses when retrieving the
+    /// stored blob.
+    #[serde(serialize_with = "vec_to_bytebuf", deserialize_with = "bytebuf_to_vec")]
+    AsBytes(Vec<u8>),
+}
+
+fn vec_to_bytebuf<S>(data: &[u8], s: S) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    ByteBuf::from(data).serialize(s)
+}
+
+fn bytebuf_to_vec<'de, D>(deserializer: D) -> Result<Vec<u8>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let bytes = <ByteBuf>::deserialize(deserializer)?;
+    Ok(bytes.to_vec())
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct AuthenticationExtensionsClientInputs {
     pub app_id: Option<String>,
@@ -364,6 +408,12 @@ pub struct AuthenticationExtensionsClientInputs {
     pub hmac_get_secret: Option<HMACGetSecretInput>,
     pub min_pin_length: Option<bool>,
     pub prf: Option<AuthenticationExtensionsPRFInputs>,
+    /// MakeCredential-requests use AsBytes
+    /// GetAssertion-requests use AsBool
+    pub cred_blob: Option<AuthenticatorExtensionsCredBlob>,
+    pub large_blob_key: Option<bool>,
+    // CTAP 2.2
+    pub third_party_payment: Option<bool>,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -495,6 +545,9 @@ pub struct AuthenticationExtensionsClientOutputs {
     pub hmac_create_secret: Option<bool>,
     pub hmac_get_secret: Option<HMACGetSecretOutput>,
     pub prf: Option<AuthenticationExtensionsPRFOutputs>,
+    /// MakeCredential-responses use AsBool
+    /// GetAssertion-responses use AsBytes
+    pub cred_blob: Option<AuthenticatorExtensionsCredBlob>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

@@ -1,114 +1,57 @@
-From: Michael Froman <mfroman@mozilla.com>
-Date: Thu, 10 Oct 2024 13:42:00 +0000
-Subject: Bug 1921707 - abseil-cpp preprocessor, .json, .gni, and *.gn changes
- r=ng
+From: Ryan VanderMeulen <rvandermeulen@mozilla.com>
+Date: Mon, 05 Oct 2026 09:49:04 -0400
+Subject: Bug 2068902 - Use __builtin_prefetch for absl::PrefetchToLocalCacheForWrite on x86-64.
 
-Differential Revision: https://phabricator.services.mozilla.com/D224077
-Mercurial Revision: https://hg.mozilla.org/mozilla-central/rev/6207cac8e337488d54927a5a09e574afec9b432d
+The prefetchw fallbacks assume CPUs lacking PRFCHW treat the opcode as a no-op. 64-bit NetBurst CPUs
+(Pentium 4 / Xeon family 15) raise #UD instead. Let the compiler pick the instruction: prefetcht0 by
+default, prefetchw when the target guarantees it.
 ---
- abseil-cpp/.gn                           | 10 ++++++++++
- abseil-cpp/absl.gni                      | 15 ++++++++-------
- abseil-cpp/absl/random/internal/BUILD.gn |  2 ++
- abseil-cpp/build_overrides/build.gni     |  4 ++++
- 4 files changed, 24 insertions(+), 7 deletions(-)
- create mode 100644 abseil-cpp/.gn
- create mode 100644 abseil-cpp/build_overrides/build.gni
+ abseil-cpp/absl/base/prefetch.h | 20 +++++---------------
+ 1 file changed, 5 insertions(+), 15 deletions(-)
 
-diff --git a/abseil-cpp/.gn b/abseil-cpp/.gn
-new file mode 100644
-index 00000000000..648423a128f
---- /dev/null
-+++ b/abseil-cpp/.gn
-@@ -0,0 +1,10 @@
-+# The location of the build configuration file.
-+buildconfig = "//build/config/BUILDCONFIG.gn"
-+script_executable = "python3"
-+secondary_source = "//abseil-cpp/"
-+
-+default_args = {
-+use_custom_libcxx = false
-+is_component_build = false
-+}
-+
-diff --git a/abseil-cpp/absl.gni b/abseil-cpp/absl.gni
-index b19ac75675a..ff2ff91cfa4 100644
---- a/abseil-cpp/absl.gni
-+++ b/abseil-cpp/absl.gni
-@@ -34,8 +34,8 @@ template("absl_source_set") {
-       configs += [
-         "//build/config/compiler:no_chromium_code",
-         "//build/config/compiler:prevent_unsafe_narrowing",
--        "//third_party/abseil-cpp:absl_default_cflags_cc",
--        "//third_party/abseil-cpp:absl_define_config",
-+        "//abseil-cpp:absl_default_cflags_cc",
-+        "//abseil-cpp:absl_define_config",
-       ]
+diff --git a/abseil-cpp/absl/base/prefetch.h b/abseil-cpp/absl/base/prefetch.h
+index 482cde3a0166..96ee28d3e6a3 100644
+--- a/abseil-cpp/absl/base/prefetch.h
++++ b/abseil-cpp/absl/base/prefetch.h
+@@ -117,7 +117,9 @@ void PrefetchToLocalCacheNta(const void* addr);
+ // This function is similar to `PrefetchToLocalCache()` except that it
+ // prefetches cachelines with an 'intent to modify' This typically includes
+ // invalidating cache entries for this address in all other cache tiers, and an
+-// exclusive access intent.
++// exclusive access intent. On targets where the compiler cannot assume a
++// write-prefetch instruction (e.g. x86-64 without PRFCHW), this is equivalent
++// to `PrefetchToLocalCache()`.
+ //
+ // Incorrect or gratuitous use of this function can degrade performance. As this
+ // function can invalidate cached cachelines on other caches and computer cores,
+@@ -154,15 +156,7 @@ ABSL_ATTRIBUTE_ALWAYS_INLINE inline void PrefetchToLocalCacheNta(
  
-       if (!defined(defines)) {
-@@ -52,7 +52,7 @@ template("absl_source_set") {
-       if (!defined(public_configs)) {
-         public_configs = []
-       }
--      public_configs += [ "//third_party/abseil-cpp:absl_include_config" ]
-+      public_configs += [ "//abseil-cpp:absl_include_config" ]
- 
-       if (!defined(visibility)) {
-         # Within Chromium builds, restrict direct visibility of Abseil sources, so
-@@ -80,6 +80,7 @@ template("absl_source_set") {
-         }
-       }
-     }
-+    visibility += [ "//abseil-cpp/*" ]
-   }
+ ABSL_ATTRIBUTE_ALWAYS_INLINE inline void PrefetchToLocalCacheForWrite(
+     const void* addr) {
+-  // [x86] gcc/clang don't generate PREFETCHW for __builtin_prefetch(.., 1)
+-  // unless -march=broadwell or newer; this is not generally the default, so we
+-  // manually emit prefetchw. PREFETCHW is recognized as a no-op on older Intel
+-  // processors and has been present on AMD processors since the K6-2.
+-#if defined(__x86_64__) && !defined(__PRFCHW__)
+-  asm("prefetchw %0" : : "m"(*reinterpret_cast<const char*>(addr)));
+-#else
+   __builtin_prefetch(addr, 1, 3);
+-#endif
  }
  
-@@ -93,15 +94,15 @@ template("absl_test") {
-       configs -= [ "//build/config/compiler:chromium_code" ]
-       configs += [
-         "//build/config/compiler:no_chromium_code",
--        "//third_party/abseil-cpp:absl_default_cflags_cc",
--        "//third_party/abseil-cpp:absl_define_config",
--        "//third_party/abseil-cpp:absl_test_config",
-+        "//abseil-cpp:absl_default_cflags_cc",
-+        "//abseil-cpp:absl_define_config",
-+        "//abseil-cpp:absl_test_config",
-       ]
- 
-       if (!defined(public_configs)) {
-         public_configs = []
-       }
--      public_configs += [ "//third_party/abseil-cpp:absl_include_config" ]
-+      public_configs += [ "//abseil-cpp:absl_include_config" ]
- 
-       visibility = [ "//third_party/abseil-cpp/:*" ]
-       deps += [
-diff --git a/abseil-cpp/absl/random/internal/BUILD.gn b/abseil-cpp/absl/random/internal/BUILD.gn
-index 46dcff5a887..2aef8a1aa9d 100644
---- a/abseil-cpp/absl/random/internal/BUILD.gn
-+++ b/abseil-cpp/absl/random/internal/BUILD.gn
-@@ -242,6 +242,7 @@ absl_source_set("randen_hwaes_impl") {
-   visibility = [ "//third_party/abseil-cpp/absl/random/*" ]
+ #elif defined(ABSL_INTERNAL_HAVE_SSE)
+@@ -183,12 +177,8 @@ ABSL_ATTRIBUTE_ALWAYS_INLINE inline void PrefetchToLocalCacheForWrite(
+     const void* addr) {
+ #if defined(_MM_HINT_ET0)
+   _mm_prefetch(reinterpret_cast<const char*>(addr), _MM_HINT_ET0);
+-#elif !defined(_MSC_VER) && defined(__x86_64__)
+-  // _MM_HINT_ET0 is not universally supported. As we commented further
+-  // up, PREFETCHW is recognized as a no-op on older Intel processors
+-  // and has been present on AMD processors since the K6-2. We have this
+-  // disabled for MSVC compilers as this miscompiles on older MSVC compilers.
+-  asm("prefetchw %0" : : "m"(*reinterpret_cast<const char*>(addr)));
++#else
++  _mm_prefetch(reinterpret_cast<const char*>(addr), _MM_HINT_T0);
+ #endif
  }
  
-+if (!moz_webrtc_build) {
- executable("gaussian_distribution_gentables") {
-   sources = [ "gaussian_distribution_gentables.cc" ]
-   deps = [
-@@ -250,6 +251,7 @@ executable("gaussian_distribution_gentables") {
-   ]
-   visibility = [ "//third_party/abseil-cpp/absl/random/*" ]
- }
-+}
- 
- absl_source_set("distribution_test_util") {
-   testonly = true
-diff --git a/abseil-cpp/build_overrides/build.gni b/abseil-cpp/build_overrides/build.gni
-new file mode 100644
-index 00000000000..3ec49896ece
---- /dev/null
-+++ b/abseil-cpp/build_overrides/build.gni
-@@ -0,0 +1,4 @@
-+build_with_chromium = false
-+ignore_elf32_limitations = true
-+use_system_xcode = false
-+xcode_version = "10.15"

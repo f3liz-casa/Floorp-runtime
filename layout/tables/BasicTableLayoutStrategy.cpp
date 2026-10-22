@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-// vim:cindent:ts=2:et:sw=2:
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -14,6 +12,7 @@
 #include <algorithm>
 
 #include "SpanningCellSorter.h"
+#include "mozilla/ReflowInput.h"
 #include "nsGkAtoms.h"
 #include "nsIContent.h"
 #include "nsLayoutUtils.h"
@@ -99,15 +98,17 @@ static CellISizeInfo GetISizeInfo(gfxContext* aRenderingContext,
     // specified block size. See nsTableFrame::Reflow() and
     // ReflowInput::Flags::mSpecialBSizeReflow.
     const nscoord cbBSize = NS_UNCONSTRAINEDSIZE;
+    const auto bSizeOffsets = aFrame->IntrinsicBSizeOffsets();
     const nscoord contentEdgeToBoxSizingBSize =
-        stylePos->mBoxSizing == StyleBoxSizing::Border
-            ? aFrame->IntrinsicBSizeOffsets().BorderPadding()
+        stylePos->mBoxSizing == StyleBoxSizing::BorderBox
+            ? bSizeOffsets.BorderPadding()
             : 0;
     const nscoord cellBSize = nsIFrame::ComputeBSizeValueAsPercentageBasis(
         *stylePos->BSize(aWM, anchorResolutionParams),
         *stylePos->MinBSize(aWM, anchorResolutionParams),
         *stylePos->MaxBSize(aWM, anchorResolutionParams), cbBSize,
-        contentEdgeToBoxSizingBSize);
+        contentEdgeToBoxSizingBSize, bSizeOffsets.margin,
+        bSizeOffsets.BorderPadding());
 
     const IntrinsicSizeInput input(
         aRenderingContext, Nothing(),
@@ -123,10 +124,10 @@ static CellISizeInfo GetISizeInfo(gfxContext* aRenderingContext,
 
     // XXX Should we ignore percentage padding?
     nsIFrame::IntrinsicSizeOffsetData offsets = aFrame->IntrinsicISizeOffsets();
-    if (stylePos->mBoxSizing == StyleBoxSizing::Content) {
+    if (stylePos->mBoxSizing == StyleBoxSizing::ContentBox) {
       boxSizingToBorderEdge = offsets.padding + offsets.border;
     } else {
-      // StyleBoxSizing::Border
+      // StyleBoxSizing::BorderBox
       minCoord += offsets.padding + offsets.border;
       prefCoord += offsets.padding + offsets.border;
     }
@@ -196,8 +197,8 @@ static CellISizeInfo GetISizeInfo(gfxContext* aRenderingContext,
   if (maxISize->ConvertsToLength() || nsIFrame::ToExtremumLength(*maxISize)) {
     nscoord c =
         aFrame
-            ->ComputeISizeValue(aRenderingContext, aWM, zeroSize, zeroSize, 0,
-                                *maxISize,
+            ->ComputeISizeValue(aRenderingContext, aWM, zeroSize, zeroSize,
+                                zeroSize, *maxISize,
                                 *stylePos->BSize(aWM, anchorResolutionParams),
                                 aFrame->GetAspectRatio())
             .mISize;
@@ -224,8 +225,8 @@ static CellISizeInfo GetISizeInfo(gfxContext* aRenderingContext,
   if (minISize->ConvertsToLength() || nsIFrame::ToExtremumLength(*minISize)) {
     nscoord c =
         aFrame
-            ->ComputeISizeValue(aRenderingContext, aWM, zeroSize, zeroSize, 0,
-                                *minISize,
+            ->ComputeISizeValue(aRenderingContext, aWM, zeroSize, zeroSize,
+                                zeroSize, *minISize,
                                 *stylePos->BSize(aWM, anchorResolutionParams),
                                 aFrame->GetAspectRatio())
             .mISize;

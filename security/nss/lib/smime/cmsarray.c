@@ -22,17 +22,6 @@
  */
 
 /*
- * NSS_CMSArray_Alloc - allocate an array in an arena
- *
- * This allocates space for the array of pointers
- */
-void **
-NSS_CMSArray_Alloc(PLArenaPool *poolp, int n)
-{
-    return (void **)PORT_ArenaZAlloc(poolp, n * sizeof(void *));
-}
-
-/*
  * NSS_CMSArray_Add - add an element to the end of an array
  *
  * The array of pointers is either created (if array was empty before) or grown.
@@ -119,6 +108,12 @@ NSS_CMSArray_Sort(void **primary, int (*compare)(void *, void *), void **seconda
 
     PORT_Assert(secondary == NULL || NSS_CMSArray_Count(secondary) == n);
     PORT_Assert(tertiary == NULL || NSS_CMSArray_Count(tertiary) == n);
+    /* Companion arrays must have the same length as primary; if they don't,
+     * ignore them rather than swapping past their NULL terminator (OOB). */
+    if (secondary && NSS_CMSArray_Count(secondary) != n)
+        secondary = NULL;
+    if (tertiary && NSS_CMSArray_Count(tertiary) != n)
+        tertiary = NULL;
 
     if (n <= 1) /* ordering is fine */
         return;
