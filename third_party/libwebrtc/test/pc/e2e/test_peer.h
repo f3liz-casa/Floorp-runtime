@@ -37,7 +37,6 @@
 #include "pc/test/mock_peer_connection_observers.h"
 #include "rtc_base/checks.h"
 #include "rtc_base/synchronization/mutex.h"
-#include "rtc_base/thread.h"
 #include "rtc_base/thread_annotations.h"
 #include "test/pc/e2e/stats_provider.h"
 
@@ -151,8 +150,7 @@ class TestPeer final : public StatsProvider {
   }
 
   // Adds provided `candidates` to the owned peer connection.
-  bool AddIceCandidates(
-      std::vector<std::unique_ptr<IceCandidateInterface>> candidates);
+  bool AddIceCandidates(std::vector<std::unique_ptr<IceCandidate>> candidates);
 
   // Closes underlying peer connection and destroys all related objects freeing
   // up related resources.
@@ -165,8 +163,7 @@ class TestPeer final : public StatsProvider {
            std::unique_ptr<MockPeerConnectionObserver> observer,
            Params params,
            ConfigurableParams configurable_params,
-           std::vector<PeerConfigurer::VideoSource> video_sources,
-           std::unique_ptr<Thread> worker_thread);
+           std::vector<PeerConfigurer::VideoSource> video_sources);
 
  private:
   const Params params_;
@@ -178,14 +175,10 @@ class TestPeer final : public StatsProvider {
   // executed after `wrapper_` object is destructed.
   scoped_refptr<PendingTaskSafetyFlag> signaling_thread_task_safety_ = nullptr;
 
-  // Keeps ownership of worker thread. It has to be destroyed after `wrapper_`.
-  // `worker_thread_`can be null if the Peer use only one thread as both the
-  // worker thread and network thread.
-  std::unique_ptr<Thread> worker_thread_;
   std::unique_ptr<PeerConnectionWrapper> wrapper_;
   std::vector<PeerConfigurer::VideoSource> video_sources_;
 
-  std::vector<std::unique_ptr<IceCandidateInterface>> remote_ice_candidates_;
+  std::vector<std::unique_ptr<IceCandidate>> remote_ice_candidates_;
 };
 
 }  // namespace webrtc_pc_e2e

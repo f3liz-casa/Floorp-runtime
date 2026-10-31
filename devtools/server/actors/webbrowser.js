@@ -55,6 +55,12 @@ loader.lazyGetter(lazy, "AddonManager", () => {
     { global: "shared" }
   ).AddonManager;
 });
+loader.lazyGetter(lazy, "isBlockedSystemPrincipalDocument", () => {
+  return ChromeUtils.importESModule(
+    "resource://devtools/server/actors/watcher/browsing-context-helpers.sys.mjs",
+    { global: "contextual" }
+  ).isBlockedSystemPrincipalDocument;
+});
 
 /**
  * Browser-specific actors.
@@ -222,6 +228,7 @@ function BrowserTabList(connection) {
   this._testing = false;
 
   this._onPageTitleChangedEvent = this._onPageTitleChangedEvent.bind(this);
+  this._onDOMContentLoaded = this._onDOMContentLoaded.bind(this);
 }
 
 BrowserTabList.prototype.constructor = BrowserTabList;
@@ -233,6 +240,7 @@ BrowserTabList.prototype.destroy = function () {
 
 /**
  * Get the selected browser for the given navigator:browser window.
+ *
  * @private
  * @param window nsIChromeWindow
  *        The navigator:browser window for which you want the selected browser.
@@ -330,7 +338,7 @@ BrowserTabList.prototype._getActorForBrowser = async function (browser) {
  * - for the tab matching a browserId if one is passed
  * - OR the currently selected tab if no browserId is passed.
  *
- * @param {Number} browserId: use to match any tab
+ * @param {number} browserId: use to match any tab
  */
 BrowserTabList.prototype.getTab = function ({ browserId }) {
   if (typeof browserId == "number") {
@@ -346,6 +354,14 @@ BrowserTabList.prototype.getTab = function ({ browserId }) {
       return Promise.reject({
         error: "noTab",
         message: `Unable to find tab with browserId '${browserId}' (no embedder element)`,
+      });
+    }
+    if (
+      lazy.isBlockedSystemPrincipalDocument(browsingContext.currentWindowGlobal)
+    ) {
+      return Promise.reject({
+        error: "chromeDebuggingDisabled",
+        message: `Unable to debug tab with browserId '${browserId}' while devtools.chrome.enabled is locked to false`,
       });
     }
     return this._getActorForBrowser(browser);
@@ -449,6 +465,14 @@ BrowserTabList.prototype._checkListening = function () {
     ["TabClose"]
   );
 
+  /* Tabs navigating to a blocked system principal document must be closed. */
+  this._listenForEventsIf(
+    this._actorByBrowser.size > 0,
+    "_listeningForDocumentLoad",
+    ["DOMContentLoaded"],
+    this._onDOMContentLoaded
+  );
+
   /*
    * We must listen to the window mediator in either case, since that's the
    * only way to find out about tabs that come and go when top-level windows
@@ -469,7 +493,7 @@ BrowserTabList.prototype._checkListening = function () {
   );
 };
 
-/*
+/**
  * Add or remove event listeners for all XUL windows.
  *
  * @param shouldListen boolean
@@ -545,7 +569,18 @@ BrowserTabList.prototype.handleEvent = DevToolsUtils.makeInfallible(function (
     case "TabClose": {
       const actor = this._actorByBrowser.get(browser);
       if (actor) {
-        this._handleActorClose(actor, browser);
+        // When we are moving the Tab to another top level window,
+        // `adoptedBy` will refer to the new Tab. Otherwise this attribute will be null.
+        // Ignore TabClose in this condition.
+        const { adoptedBy } = event.detail;
+        if (adoptedBy) {
+          actor.swapBrowser(adoptedBy.linkedBrowser);
+          // Also swap the browsers the our internal Map
+          this._actorByBrowser.delete(browser);
+          this._actorByBrowser.set(adoptedBy.linkedBrowser, actor);
+        } else {
+          this._handleActorClose(actor, browser);
+        }
       }
       break;
     }
@@ -569,6 +604,25 @@ BrowserTabList.prototype.handleEvent = DevToolsUtils.makeInfallible(function (
     }
   }
 }, "BrowserTabList.prototype.handleEvent");
+
+/*
+ * Event listener for DOMContentLoaded event, which only reaches the chrome
+ * window for documents loaded in the parent process.
+ */
+BrowserTabList.prototype._onDOMContentLoaded = function (event) {
+  const browsingContext = event.target.defaultView?.browsingContext;
+  if (!browsingContext || browsingContext.parent) {
+    return;
+  }
+  const browser = browsingContext.embedderElement;
+  const actor = this._actorByBrowser.get(browser);
+  if (
+    actor &&
+    lazy.isBlockedSystemPrincipalDocument(browsingContext.currentWindowGlobal)
+  ) {
+    this._handleActorClose(actor, browser);
+  }
+};
 
 /*
  * If |shouldListen| is true, ensure we've registered a listener with the
@@ -610,6 +664,9 @@ BrowserTabList.prototype.onOpenWindow = DevToolsUtils.makeInfallible(function (
     }
     if (this._listeningForTabClose) {
       window.addEventListener("TabClose", this);
+    }
+    if (this._listeningForDocumentLoad) {
+      window.addEventListener("DOMContentLoaded", this._onDOMContentLoaded);
     }
     if (this._listeningForTitleChange) {
       window.messageManager.addMessageListener("DOMTitleChanged", this);
@@ -657,8 +714,7 @@ BrowserTabList.prototype.onCloseWindow = DevToolsUtils.makeInfallible(function (
        * top-level window, and exit them.
        */
       for (const [browser, actor] of this._actorByBrowser) {
-        /* The browser document of a closed window has no default view. */
-        if (!browser.ownerGlobal) {
+        if (!browser.ownerDocument.isActive()) {
           this._handleActorClose(actor, browser);
         }
       }

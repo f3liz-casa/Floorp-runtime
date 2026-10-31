@@ -45,6 +45,26 @@
         <div>heading icon test content</div>
       </moz-card>
       <hr />
+
+      <moz-card id="cover-image-card" data-l10n-id="test-id-4">
+        <div>basic cover image test content</div>
+        <img src="/path/to/image.png" alt slot="cover-image" />
+      </moz-card>
+      <hr />
+
+      <moz-card id="custom-cover-image-card" data-l10n-id="test-id-5">
+        <div>custom cover image test content</div>
+        <picture slot="cover-image">
+          <img src="/path/to/image.png" alt class="custom-cover-image" />
+        </picture>
+      </moz-card>
+      <hr />
+
+      <moz-card id="empty-cover-image-card" data-l10n-id="test-id-6">
+        <div>empty cover image test content</div>
+        <div slot="cover-image"></div>
+      </moz-card>
+      <hr />
     </div>
     <pre id="test"></pre>
     <script>
@@ -141,6 +161,14 @@
         );
       }
 
+      function assertCoverImageCardDisplay(card, expectedDisplayValue) {
+        let coverImage = card.shadowRoot.querySelector("#cover-image");
+        ok(
+          getComputedStyle(coverImage).display === expectedDisplayValue,
+          `The cover image should have display: ${expectedDisplayValue}`
+        );
+      }
+
       async function generateCard(values) {
         let card = document.createElement("moz-card");
         for (let [key, value] of Object.entries(values)) {
@@ -172,6 +200,8 @@
           contentText: generatedSlotText,
           heading: testHeading,
         });
+
+        assertCoverImageCardDisplay(defaultCard, "none");
       });
 
       add_task(async function testAccordionCard() {
@@ -207,6 +237,8 @@
           contentText: generatedSlotText,
         });
 
+        assertCoverImageCardDisplay(accordionCard, "none");
+
         accordionCard = await generateCard({
           type: "accordion",
           id: "expanded-accordion-card",
@@ -226,6 +258,34 @@
         );
       });
 
+      add_task(async function testCardRole() {
+        let card = await generateCard({
+          id: "generated-role-card",
+          role: "presentation",
+        });
+
+        let article = card.shadowRoot.querySelector("article");
+        is(
+          article.getAttribute("role"),
+          "presentation",
+          "The role should be mapped to the inner article element"
+        );
+        ok(
+          !card.hasAttribute("role"),
+          "The role attribute should be removed from the host element"
+        );
+
+        let cardWithoutRole = await generateCard({
+          id: "generated-no-role-card",
+        });
+        let articleWithoutRole =
+          cardWithoutRole.shadowRoot.querySelector("article");
+        ok(
+          !articleWithoutRole.hasAttribute("role"),
+          "The article should not have a role when none is provided"
+        );
+      });
+
       add_task(async function testHeadingIconCard() {
         assertBasicProperties(document.getElementById("heading-icon-card"), {
           "data-l10n-id": "test-id-3",
@@ -239,6 +299,11 @@
             contentText: "heading icon test content",
             headingText: "heading with icon",
           }
+        );
+
+        assertCoverImageCardDisplay(
+          document.getElementById("heading-icon-card"),
+          "none"
         );
 
         let headingIconCard = await generateCard({
@@ -260,6 +325,39 @@
           headingText: testHeading,
           contentText: generatedSlotText,
         });
+      });
+
+      add_task(async function testBasicCoverImageCard() {
+        let card = document.getElementById("cover-image-card");
+
+        assertBasicProperties(card, {
+          "data-l10n-id": "test-id-4",
+          contentText: "basic cover image test content",
+        });
+
+        assertCoverImageCardDisplay(card, "block");
+      });
+
+      add_task(async function testCustomCoverImageCard() {
+        let card = document.getElementById("custom-cover-image-card");
+
+        assertBasicProperties(card, {
+          "data-l10n-id": "test-id-5",
+          contentText: "custom cover image test content",
+        });
+
+        assertCoverImageCardDisplay(card, "block");
+      });
+
+      add_task(async function testEmptyCoverImageCard() {
+        let card = document.getElementById("empty-cover-image-card");
+
+        assertBasicProperties(card, {
+          "data-l10n-id": "test-id-6",
+          contentText: "empty cover image test content",
+        });
+
+        assertCoverImageCardDisplay(card, "none");
       });
     </script>
   </body>

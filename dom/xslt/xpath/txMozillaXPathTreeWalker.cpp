@@ -1,4 +1,3 @@
-/* -*- Mode: C++; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -267,18 +266,21 @@ already_AddRefed<nsAtom> txXPathNodeUtils::getLocalName(
   return localName.forget();
 }
 
-nsAtom* txXPathNodeUtils::getPrefix(const txXPathNode& aNode) {
+already_AddRefed<nsAtom> txXPathNodeUtils::getPrefix(const txXPathNode& aNode) {
   if (aNode.isDocument()) {
     return nullptr;
   }
 
+  RefPtr<nsAtom> prefix;
   if (aNode.isContent()) {
     // All other nsIContent node types but elements have a null prefix
     // which is what we want here.
-    return aNode.Content()->NodeInfo()->GetPrefixAtom();
+    prefix = aNode.Content()->NodeInfo()->GetPrefixAtom();
+  } else {
+    prefix =
+        aNode.Content()->AsElement()->GetAttrNameAt(aNode.mIndex)->GetPrefix();
   }
-
-  return aNode.Content()->AsElement()->GetAttrNameAt(aNode.mIndex)->GetPrefix();
+  return prefix.forget();
 }
 
 /* static */

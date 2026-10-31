@@ -5,8 +5,9 @@
 task-defaults:
     tags:
         android-stuff: "true"
+    run-on-repo-type: [hg]
     run:
-        mozconfig-variant: null
+        clone-with: hg
 
 android-geckoview-docs/opt:
     description: "Android GeckoView docs"
@@ -17,9 +18,9 @@ android-geckoview-docs/opt:
         platform: android-4-1-armv7/opt
         kind: build
         tier: 2
-        symbol: A(gv-docs)
+        symbol: android(gv-docs)
     run-on-projects: [mozilla-central-only]
-    worker-type: b-linux-amd
+    worker-type: b-linux-docker-amd
     worker:
         docker-image: {in-tree: android-build}
         env:
@@ -31,6 +32,9 @@ android-geckoview-docs/opt:
               path: /builds/worker/workspace/obj-build/mobile/android/geckoview/docs/javadoc/debug/geckoview-javadoc.jar
               type: file
         max-run-time: 7200
+    mozconfig:
+        variant: nightly-android-lints
+        platform: android-arm
     run:
         using: mozharness
         actions: [get-secrets, build]
@@ -44,6 +48,8 @@ android-geckoview-docs/opt:
         toolchain:
             - android-gradle-dependencies
             - android-sdk-linux
+            - linux64-embedded-uniffi-bindgen
+            - linux64-nimbus-fml
             - linux64-jdk
             - linux64-node
     optimization:

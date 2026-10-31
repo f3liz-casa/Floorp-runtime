@@ -1,4 +1,3 @@
-/* -*- indent-tabs-mode: nil; js-indent-level: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -14,7 +13,7 @@ const lazy = {};
 XPCOMUtils.defineLazyServiceGetters(lazy, {
   ExternalProtocolService: [
     "@mozilla.org/uriloader/external-protocol-service;1",
-    "nsIExternalProtocolService",
+    Ci.nsIExternalProtocolService,
   ],
 });
 
@@ -90,12 +89,12 @@ WebProtocolHandlerRegistrar.prototype = {
     }
   },
 
-  /* This function can be called multiple times and (re-)initializes the cache
+  /**
+   * This function can be called multiple times and (re-)initializes the cache
    * if the feature is toggled on. If called with the feature off it will also
    * unregister the observers.
    *
    * @param {boolean} firstInit
-   *
    */
   init(firstInit = false) {
     if (firstInit) {
@@ -285,7 +284,8 @@ WebProtocolHandlerRegistrar.prototype = {
     return xreDirProvider.getInstallHash();
   },
 
-  /* Private method to check if we are already the default protocolhandler
+  /**
+   * Private method to check if we are already the default protocolhandler
    * for `protocol`.
    *
    * @param {string} protocol name, e.g. mailto (without ://)
@@ -415,65 +415,6 @@ WebProtocolHandlerRegistrar.prototype = {
     return handler;
   },
 
-  /*
-   * Function to store a value associated to a domain using the content pref
-   * service.
-   *
-   * @param {string} domain: the domain for this setting
-   * @param {string} setting: the name of the setting
-   * @param {string} value: the actual setting to be stored
-   * @param {string} context (optional): private window or not
-   * @returns {string} the stored preference (see: nsIContentPrefService2.idl)
-   */
-  async _saveSiteSpecificSetting(domain, setting, value, context = null) {
-    const gContentPrefs = Cc["@mozilla.org/content-pref/service;1"].getService(
-      Ci.nsIContentPrefService2
-    );
-
-    return new Promise((resolve, reject) => {
-      gContentPrefs.set(domain, setting, value, context, {
-        handleResult(pref) {
-          resolve(pref);
-        },
-        handleCompletion() {},
-        handleError(err) {
-          reject(err);
-        },
-      });
-    });
-  },
-
-  /*
-   * Function to return a stored value from the content pref service. Returns
-   * a promise, so await can be used to synchonize the retrieval.
-   *
-   * @param {string} domain: the domain for this setting
-   * @param {string} setting: the name of the setting
-   * @param {string} context (optional): private window or not
-   * @param {string} def (optional): the default value to return
-   * @returns {string} either stored value or ""
-   */
-  async _getSiteSpecificSetting(domain, setting, context = null, def = null) {
-    const gContentPrefs = Cc["@mozilla.org/content-pref/service;1"].getService(
-      Ci.nsIContentPrefService2
-    );
-
-    return await new Promise((resolve, reject) => {
-      gContentPrefs.getByDomainAndName(domain, setting, context, {
-        _result: def,
-        handleResult(pref) {
-          this._result = pref.value;
-        },
-        handleCompletion(_) {
-          resolve(this._result);
-        },
-        handleError(err) {
-          reject(err);
-        },
-      });
-    });
-  },
-
   /**
    * See nsIWebProtocolHandlerRegistrar
    */
@@ -497,7 +438,7 @@ WebProtocolHandlerRegistrar.prototype = {
       browser = rootDocShell.QueryInterface(Ci.nsIDocShell).chromeEventHandler;
     }
 
-    let browserWindow = browser.ownerGlobal;
+    let browserWindow = browser.documentGlobal;
     try {
       browserWindow.navigator.checkProtocolHandlerAllowed(
         aProtocol,
@@ -580,7 +521,7 @@ WebProtocolHandlerRegistrar.prototype = {
     );
   },
 
-  /*
+  /**
    * Special implementation for mailto: A prompt (notificationbox.js) is only
    * shown if there is a realistic chance that we can really set the OS default,
    * e.g. if we have been properly installed and the current page is not already
@@ -595,7 +536,7 @@ WebProtocolHandlerRegistrar.prototype = {
     let notificationId = "OS Protocol Registration: " + aProtocol;
 
     // guard: we do not want to reconfigure settings in private browsing mode
-    if (lazy.PrivateBrowsingUtils.isWindowPrivate(browser.ownerGlobal)) {
+    if (lazy.PrivateBrowsingUtils.isWindowPrivate(browser.documentGlobal)) {
       lazy.log.debug("prompt not shown, because this is a private window.");
       return;
     }
@@ -641,7 +582,7 @@ WebProtocolHandlerRegistrar.prototype = {
       .getNotificationBox(browser);
 
     if (!osDefaultNotificationBox.getNotificationWithValue(notificationId)) {
-      let win = browser.ownerGlobal;
+      let win = browser.documentGlobal;
       win.MozXULElement.insertFTLIfNeeded("browser/webProtocolHandler.ftl");
 
       let notification = await osDefaultNotificationBox.appendNotification(
@@ -668,7 +609,6 @@ WebProtocolHandlerRegistrar.prototype = {
                   1000 +
                   Date.now()
               );
-              Glean.protocolhandlerMailto.promptClicked.dismiss_os_default.add();
             }
           },
         },
@@ -683,11 +623,9 @@ WebProtocolHandlerRegistrar.prototype = {
                 aURI.spec
               );
               this._setProtocolHandlerDefault(aProtocol, currentHandler);
-              Glean.protocolhandlerMailto.promptClicked.set_local_default.add();
 
               if (this._canSetOSDefault(aProtocol)) {
                 if (this._setOSDefault(aProtocol)) {
-                  Glean.protocolhandlerMailto.promptClicked.set_os_default.add();
                   newitem.messageL10nId =
                     "protocolhandler-mailto-handler-confirm";
                   newitem.removeChild(newitem.buttonContainer);
@@ -696,16 +634,12 @@ WebProtocolHandlerRegistrar.prototype = {
                   return true; // `true` does not hide the bar
                 }
 
-                // if anything goes wrong with setting the OS default, we want
-                // to be informed so that we can fix it.
-                Glean.protocolhandlerMailto.promptClicked.set_os_default_error.add();
                 return false;
               }
 
               // if the installation does not have an install hash, we cannot
               // set the OS default, but mailto links from within the browser
               // should still work.
-              Glean.protocolhandlerMailto.promptClicked.set_os_default_impossible.add();
               return false;
             },
           },
@@ -726,14 +660,12 @@ WebProtocolHandlerRegistrar.prototype = {
                   1000 +
                   Date.now()
               );
-              Glean.protocolhandlerMailto.promptClicked.dismiss_os_default.add();
               return false;
             },
           },
         ]
       );
 
-      Glean.protocolhandlerMailto.handlerPromptShown.os_default.add();
       // remove the icon from the infobar, which is automatically assigned
       // after its priority, because the priority is also an indicator which
       // type of bar it is, e.g. a warning or error:

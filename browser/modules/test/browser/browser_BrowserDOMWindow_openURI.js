@@ -5,8 +5,9 @@ http://creativecommons.org/publicdomain/zero/1.0/ */
 
 ChromeUtils.defineESModuleGetters(this, {
   sinon: "resource://testing-common/Sinon.sys.mjs",
-  TaskbarTabs: "resource:///modules/taskbartabs/TaskbarTabs.sys.mjs",
-  TaskbarTabsPin: "resource:///modules/taskbartabs/TaskbarTabsPin.sys.mjs",
+  TaskbarTabs: "moz-src:///browser/components/taskbartabs/TaskbarTabs.sys.mjs",
+  TaskbarTabsPin:
+    "moz-src:///browser/components/taskbartabs/TaskbarTabsPin.sys.mjs",
 });
 
 sinon.stub(TaskbarTabsPin, "pinTaskbarTab");
@@ -56,7 +57,7 @@ add_task(async function test_taskbarTabWindowOpensNewTabsInParent() {
   }
 
   const uri = Services.io.newURI(BASE_URL);
-  const taskbarTab = await TaskbarTabs.findOrCreateTaskbarTab(uri, 0);
+  const { taskbarTab } = await TaskbarTabs.findOrCreateTaskbarTab(uri, 0);
   const win = await TaskbarTabs.openWindow(taskbarTab);
 
   const context = win.browserDOMWindow.openURI(

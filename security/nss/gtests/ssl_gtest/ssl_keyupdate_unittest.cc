@@ -229,6 +229,10 @@ class TLSKeyUpdateDamager : public TlsRecordFilter {
       return KEEP;
     }
 
+    if (plaintext.data() == NULL || plaintext.len() == 0) {
+      return KEEP;
+    }
+
     if (inner_content_type != ssl_ct_handshake) {
       return KEEP;
     }
@@ -289,8 +293,8 @@ TEST_F(TlsConnectStreamTls13, TLSKeyUpdateWrongValueForUpdateRequested) {
   SSL_KeyUpdate(client_->ssl_fd(), PR_FALSE);
   filter->Disable();
 
-  ExpectAlert(server_, kTlsAlertDecodeError);
-  client_->ExpectReceiveAlert(kTlsAlertDecodeError);
+  ExpectAlert(server_, kTlsAlertIllegalParameter);
+  client_->ExpectReceiveAlert(kTlsAlertIllegalParameter);
 
   server_->ExpectReadWriteError();
   client_->ExpectReadWriteError();
@@ -298,7 +302,7 @@ TEST_F(TlsConnectStreamTls13, TLSKeyUpdateWrongValueForUpdateRequested) {
   client_->ReadBytes();
 
   server_->CheckErrorCode(SSL_ERROR_RX_MALFORMED_KEY_UPDATE);
-  client_->CheckErrorCode(SSL_ERROR_DECODE_ERROR_ALERT);
+  client_->CheckErrorCode(SSL_ERROR_ILLEGAL_PARAMETER_ALERT);
 
   // Even if the client has updated his writing key,
   client_->CheckEpochs(3, 4);
@@ -1162,8 +1166,8 @@ TEST_F(TlsConnectDatagram13, DTLSKU_WrongValueForUpdateRequested) {
   SSL_KeyUpdate(client_->ssl_fd(), PR_FALSE);
   filter->Disable();
 
-  ExpectAlert(server_, kTlsAlertDecodeError);
-  client_->ExpectReceiveAlert(kTlsAlertDecodeError);
+  ExpectAlert(server_, kTlsAlertIllegalParameter);
+  client_->ExpectReceiveAlert(kTlsAlertIllegalParameter);
 
   server_->ExpectReadWriteError();
   client_->ExpectReadWriteError();
@@ -1172,7 +1176,7 @@ TEST_F(TlsConnectDatagram13, DTLSKU_WrongValueForUpdateRequested) {
   client_->ReadBytes();
 
   server_->CheckErrorCode(SSL_ERROR_RX_MALFORMED_KEY_UPDATE);
-  client_->CheckErrorCode(SSL_ERROR_DECODE_ERROR_ALERT);
+  client_->CheckErrorCode(SSL_ERROR_ILLEGAL_PARAMETER_ALERT);
 
   // No KeyUpdate happened.
   CheckEpochs(3, 3);

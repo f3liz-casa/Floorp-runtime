@@ -1,12 +1,8 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
-#include "mozilla/ArrayUtils.h"
 #include "mozilla/Attributes.h"
-#include "mozilla/BinarySearch.h"
 #include "mozilla/NativeNt.h"
 #include "mozilla/Types.h"
 #include "mozilla/WindowsDllBlocklist.h"
@@ -192,6 +188,11 @@ static BlockAction CheckBlockInfo(const DllBlockInfo* aInfo,
 
   if ((aInfo->mFlags & DllBlockInfoFlags::GMPLUGIN_PROCESSES_ONLY) &&
       !(gBlocklistInitFlags & eDllBlocklistInitFlagIsGMPluginProcess)) {
+    return BlockAction::Allow;
+  }
+
+  if ((aInfo->mFlags & DllBlockInfoFlags::RDD_PROCESSES_ONLY) &&
+      !(gBlocklistInitFlags & eDllBlocklistInitFlagIsRDDProcess)) {
     return BlockAction::Allow;
   }
 
@@ -399,11 +400,74 @@ NTSTATUS NTAPI patched_LdrLoadDll(PWCHAR aDllPath, PULONG aFlags,
 CrossProcessDllInterceptor::FuncHookType<NtMapViewOfSectionPtr>
     stub_NtMapViewOfSection;
 
+CrossProcessDllInterceptor::FuncHookType<NtCreateSectionPtr>
+    stub_NtCreateSection;
+
+// The file handle taken by patched_NtCreateSection on this thread, until
+// patched_NtMapViewOfSection claims it.
+static SafeThreadLocal<HANDLE> sPendingFileHandle;
+
+static nt::AutoHandle TakePendingFileHandle() {
+  HANDLE pending = sPendingFileHandle.get();
+  if (pending) {
+    sPendingFileHandle.set(nullptr);
+  }
+  return nt::AutoHandle(pending);
+}
+
+// To preserve compatibility with third-parties, this must not use checked stack
+// buffers, for the same reason as patched_NtMapViewOfSection (see bug 1733532).
+NTSTATUS NTAPI patched_NtCreateSection(PHANDLE aSectionHandle,
+                                       ACCESS_MASK aDesiredAccess,
+                                       POBJECT_ATTRIBUTES aObjectAttributes,
+                                       PLARGE_INTEGER aMaximumSize,
+                                       ULONG aSectionPageProtection,
+                                       ULONG aAllocationAttributes,
+                                       HANDLE aFileHandle) {
+  NTSTATUS stubStatus = stub_NtCreateSection(
+      aSectionHandle, aDesiredAccess, aObjectAttributes, aMaximumSize,
+      aSectionPageProtection, aAllocationAttributes, aFileHandle);
+  if (!NT_SUCCESS(stubStatus)) {
+    return stubStatus;
+  }
+
+  // We only care about sections created the way the loader creates one for a
+  // DLL.
+  if (!(aDesiredAccess & SECTION_MAP_EXECUTE) || aObjectAttributes ||
+      aMaximumSize || aSectionPageProtection != PAGE_EXECUTE ||
+      aAllocationAttributes != SEC_IMAGE || !aFileHandle) {
+    return stubStatus;
+  }
+
+  // Duplicate the file handle for the parent process, which only uses it to
+  // identify the file.  Asking for any access the loader's handle lacks would
+  // fail.
+  // DuplicateHandle is in kernel32 and this intercepted function can run
+  // before that is loaded, so use ntdll's equivalent.
+  HANDLE duplicate = nullptr;
+  if (!NT_SUCCESS(::NtDuplicateObject(nt::kCurrentProcess, aFileHandle,
+                                      nt::kCurrentProcess, &duplicate,
+                                      SYNCHRONIZE, 0, 0))) {
+    // Not fatal: the load proceeds and the parent simply cannot evaluate
+    // this module.
+    return stubStatus;
+  }
+
+  // Drop any handle still pending, since its section was never mapped.
+  nt::AutoHandle stale(TakePendingFileHandle());
+  if (!sPendingFileHandle.set(duplicate)) {
+    // This thread is not main and has no TLS yet, so we can't track this.
+    ::NtClose(duplicate);
+  }
+  return stubStatus;
+}
+
 // All the code for patched_NtMapViewOfSection that relies on checked stack
 // buffers (e.g. mbi, sectionFileName) should be put in this helper function
 // (see bug 1733532).
 MOZ_NEVER_INLINE NTSTATUS AfterMapViewOfExecutableSection(
-    HANDLE aProcess, PVOID* aBaseAddress, NTSTATUS aStubStatus) {
+    HANDLE aProcess, PVOID* aBaseAddress, NTSTATUS aStubStatus,
+    nt::AutoHandle&& aFileHandle) {
   // We don't care about mappings that aren't MEM_IMAGE.
   MEMORY_BASIC_INFORMATION mbi;
   NTSTATUS ntStatus =
@@ -457,7 +521,7 @@ MOZ_NEVER_INLINE NTSTATUS AfterMapViewOfExecutableSection(
       // use it to bypass CIG.  In a sandbox process, this addition fails
       // because we cannot map the section to a writable region, but it's
       // ignorable because the paths have been added by the browser process.
-      Unused << SharedSection::AddDependentModule(sectionFileName);
+      (void)SharedSection::AddDependentModule(sectionFileName);
 
       bool attemptToBlockViaRedirect;
 #if defined(NIGHTLY_BUILD)
@@ -526,7 +590,7 @@ MOZ_NEVER_INLINE NTSTATUS AfterMapViewOfExecutableSection(
   if (nt::RtlGetProcessHeap()) {
     ModuleLoadFrame::NotifySectionMap(
         nt::AllocatedUnicodeString(sectionFileName), *aBaseAddress, aStubStatus,
-        loadStatus, isInjectedDependent);
+        loadStatus, isInjectedDependent, std::move(aFileHandle));
   }
 
   if (loadStatus == ModuleLoadInfo::Status::Loaded ||
@@ -569,6 +633,10 @@ NTSTATUS NTAPI patched_NtMapViewOfSection(
         if (aViewSize) *aViewSize = viewSize;
       };
 
+  // Claim the pending file handle on every path, so that a later, unrelated
+  // mapping cannot.
+  nt::AutoHandle fileHandle(TakePendingFileHandle());
+
   // We always map first, then we check for additional info after.
   NTSTATUS stubStatus = stub_NtMapViewOfSection(
       aSection, aProcess, aBaseAddress, aZeroBits, aCommitSize, aSectionOffset,
@@ -603,8 +671,8 @@ NTSTATUS NTAPI patched_NtMapViewOfSection(
     return stubStatus;
   }
 
-  NTSTATUS rv =
-      AfterMapViewOfExecutableSection(aProcess, aBaseAddress, stubStatus);
+  NTSTATUS rv = AfterMapViewOfExecutableSection(
+      aProcess, aBaseAddress, stubStatus, std::move(fileHandle));
   if (FAILED(rv)) {
     rollback();
   }

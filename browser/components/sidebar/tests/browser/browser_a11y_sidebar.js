@@ -6,7 +6,7 @@
 const lazy = {};
 
 ChromeUtils.defineESModuleGetters(lazy, {
-  GenAI: "resource:///modules/GenAI.sys.mjs",
+  GenAI: "moz-src:///browser/components/genai/GenAI.sys.mjs",
 });
 
 async function focusAndActivateElement(elem, activateMethod) {
@@ -55,6 +55,7 @@ function isActiveElement(el) {
 
 add_task(async function test_keyboard_navigation() {
   const sidebar = document.querySelector("sidebar-main");
+  let promisePanelFocused;
   info("Waiting for tool buttons to be present");
   await BrowserTestUtils.waitForMutationCondition(
     sidebar,
@@ -63,7 +64,7 @@ add_task(async function test_keyboard_navigation() {
   );
 
   const toolButtons = sidebar.toolButtons;
-  await BrowserTestUtils.waitForCondition(
+  await TestUtils.waitForCondition(
     () => BrowserTestUtils.isVisible(toolButtons[0]),
     "The first toolbutton is rendered"
   );
@@ -85,54 +86,84 @@ add_task(async function test_keyboard_navigation() {
   );
   ok(isActiveElement(toolButtons[1]), "Second tool button is focused.");
 
-  info("Press Arrow Up key.");
-  EventUtils.synthesizeKey("KEY_ArrowUp", {});
-  ok(isActiveElement(toolButtons[0]), "First tool button is focused.");
+  info("Press Arrow Down key.");
+  EventUtils.synthesizeKey("KEY_ArrowDown", {});
+  ok(isActiveElement(toolButtons[2]), "Third tool button is focused.");
 
+  // 3rd tool is history, which is a less-moving target than the chat panel
   info("Press Enter key.");
+  promisePanelFocused = BrowserTestUtils.waitForEvent(window, "SidebarFocused");
   EventUtils.synthesizeKey("KEY_Enter", {});
-  await sidebar.updateComplete;
+  await promisePanelFocused;
+  await SidebarController.waitUntilStable();
+
   ok(sidebar.open, "Sidebar is open.");
+  ok(
+    isActiveElement(SidebarController.browser),
+    "The focus moved to the sidebar panel browser"
+  );
+
+  info("selectedView is:" + sidebar.selectedView);
   is(
     sidebar.selectedView,
-    toolButtons[0].getAttribute("view"),
-    "Sidebar is showing the first tool."
+    toolButtons[2].getAttribute("view"),
+    "Sidebar is showing the 3rd tool."
   );
+  // Moz-button is passing an "aria-selected" attribute to the actual buttonEl:
   is(
-    toolButtons[0].getAttribute("aria-pressed"),
+    toolButtons[2].buttonEl.getAttribute("aria-selected"),
     "true",
-    "aria-pressed is true for the active tool button."
+    "aria-selected is true for the active tool button."
   );
   is(
-    toolButtons[1].getAttribute("aria-pressed"),
+    toolButtons[0].buttonEl.getAttribute("aria-selected"),
     "false",
-    "aria-pressed is false for the inactive tool button."
+    "aria-selected is false for the inactive tool button."
   );
 
-  info("Press Enter key again.");
-  EventUtils.synthesizeKey("KEY_Enter", {});
-  await sidebar.updateComplete;
-  ok(!sidebar.open, "Sidebar is closed.");
-  is(
-    toolButtons[0].getAttribute("aria-pressed"),
-    "false",
-    "Tool is no longer active, aria-pressed becomes false."
+  info("Press Shift+tab to move focus to the close button in the panel");
+  EventUtils.synthesizeKey("KEY_Tab", { shiftKey: true }, window);
+
+  info("Press Enter key to click the panel close button.");
+  let panelClosedPromise = BrowserTestUtils.waitForEvent(
+    SidebarController._box,
+    "sidebar-hide"
   );
+  EventUtils.synthesizeKey("KEY_Enter", {});
+  await panelClosedPromise;
+  await SidebarController.waitUntilStable();
+  ok(
+    isActiveElement(gBrowser.selectedBrowser),
+    "The focus moved to the selected browser when the panel closed"
+  );
+
+  ok(!sidebar.open, "Sidebar panel is closed.");
+  is(
+    toolButtons[2].buttonEl.getAttribute("aria-selected"),
+    "false",
+    "Tool is no longer active, aria-selected becomes false."
+  );
+
+  // We seem to need to wait here before re-focusing the tool button
+  await waitForRepaint();
+  info("Re-focus the first tool button");
+  sidebar.buttonGroup.activeChild = toolButtons[0];
+  toolButtons[0].focus();
+  await SidebarController.waitUntilStable();
 
   const customizeButton = sidebar.customizeButton;
-  toolButtons[0].focus();
 
-  info("Press Tab key.");
+  info(
+    "Press Tab key to the next control group - which should be the customize button"
+  );
   EventUtils.synthesizeKey("KEY_Tab", {});
   ok(isActiveElement(customizeButton), "Customize button is focused.");
-  info("Press Enter key again.");
-  const promiseFocused = BrowserTestUtils.waitForEvent(
-    window,
-    "SidebarFocused"
-  );
+
+  info("Press Enter key to open the customize panel");
+  promisePanelFocused = BrowserTestUtils.waitForEvent(window, "SidebarFocused");
   EventUtils.synthesizeKey("KEY_Enter", {});
-  await promiseFocused;
-  await sidebar.updateComplete;
+  await promisePanelFocused;
+  await SidebarController.waitUntilStable();
   ok(sidebar.open, "Sidebar is open.");
 
   let customizeDocument = SidebarController.browser.contentDocument;
@@ -172,7 +203,7 @@ add_task(async function test_menu_items_labeled() {
   const allButtons = sidebar.allButtons;
   const dynamicTooltips = Object.keys(SidebarController.sidebarMain.tooltips);
 
-  await SidebarController.initializeUIState({ launcherExpanded: false });
+  await SidebarController.updateUIState({ launcherExpanded: false });
   await sidebar.updateComplete;
   for (const button of allButtons) {
     const view = button.getAttribute("view");
@@ -196,7 +227,7 @@ add_task(async function test_genai_chat_sidebar_tooltip() {
     .querySelector("sidebar-main")
     .shadowRoot.querySelector("[view=viewGenaiChatSidebar]");
 
-  await SidebarController.initializeUIState({ launcherExpanded: false });
+  await SidebarController.updateUIState({ launcherExpanded: false });
 
   const view = chatbotButton.getAttribute("view");
   ok(
@@ -224,16 +255,24 @@ add_task(async function test_genai_chat_sidebar_tooltip() {
 });
 
 add_task(async function test_keyboard_navigation_vertical_tabs() {
-  SpecialPowers.pushPrefEnv({
+  await SpecialPowers.pushPrefEnv({
     set: [[VERTICAL_TABS_PREF, true]],
   });
-  await waitForTabstripOrientation("vertical");
+  await SidebarTestUtils.waitForTabstripOrientation(window, "vertical");
+  await SidebarController.updateUIState({ launcherExpanded: false });
   const sidebar = document.querySelector("sidebar-main");
-  info("Waiting for tool buttons to be present");
-  await BrowserTestUtils.waitForMutationCondition(
-    sidebar,
-    { subTree: true, childList: true },
-    () => !!sidebar.toolButtons.length
+  const syncedTabsButton = await BrowserTestUtils.waitForMutationCondition(
+    sidebar.shadowRoot,
+    { childList: true, subtree: true },
+    () => sidebar.shadowRoot.querySelector("moz-button[view=viewTabsSidebar]"),
+    { msg: "Waiting for Synced Tabs button to be present." }
+  );
+  await SidebarTestUtils.showPanel(window, "viewTabsSidebar");
+  await sidebar.updateComplete;
+  Assert.equal(
+    sidebar.buttonGroup.activeChild,
+    syncedTabsButton,
+    "Synced Tabs button is active."
   );
   const newTabButton = sidebar.querySelector("#tabs-newtab-button");
 
@@ -257,8 +296,13 @@ add_task(async function test_keyboard_navigation_vertical_tabs() {
   ok(isActiveElement(newTabButton), "New tab button is focused again.");
 
   info("Tab to get to tools.");
+  await BrowserTestUtils.waitForMutationCondition(
+    syncedTabsButton,
+    { attributes: true },
+    () => BrowserTestUtils.isVisible(syncedTabsButton)
+  );
   EventUtils.synthesizeKey("KEY_Tab", {});
-  ok(isActiveElement(sidebar.toolButtons[0]), "First tool button is focused.");
+  ok(isActiveElement(syncedTabsButton), "Synced tabs tool button is focused.");
 
   info("Shift+Tab back to new tab button.");
   EventUtils.synthesizeKey("KEY_Tab", { shiftKey: true }, window);

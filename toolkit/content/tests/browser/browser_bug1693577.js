@@ -15,7 +15,15 @@ add_task(async function test_search_input_popupshowing() {
   SidebarController.toggle("viewBookmarksSidebar");
   await loadPromise;
 
-  let inputField = sidebar.contentDocument.getElementById("search-box");
+  const isUpdatedBookmarks = Services.prefs.getBoolPref(
+    "sidebar.updatedBookmarks.enabled"
+  );
+  const bookmarksComponent = isUpdatedBookmarks
+    ? sidebar.contentDocument.querySelector("sidebar-bookmarks")
+    : null;
+  const inputField = isUpdatedBookmarks
+    ? bookmarksComponent.searchInput.inputEl
+    : sidebar.contentDocument.getElementById("search-box");
   const popupshowing = BrowserTestUtils.waitForEvent(
     sidebar.contentWindow,
     "popupshowing"
@@ -31,11 +39,19 @@ add_task(async function test_search_input_popupshowing() {
   );
   let popupshowingEvent = await popupshowing;
 
-  Assert.equal(
-    popupshowingEvent.target.triggerNode?.id,
-    "search-box",
-    "Popupshowing event for the search input includes triggernode."
-  );
+  if (isUpdatedBookmarks) {
+    Assert.equal(
+      popupshowingEvent.target.triggerNode?.localName,
+      "sidebar-bookmarks",
+      "Popupshowing event for the search input includes triggernode."
+    );
+  } else {
+    Assert.equal(
+      popupshowingEvent.target.triggerNode?.id,
+      "search-box",
+      "Popupshowing event for the search input includes triggernode."
+    );
+  }
 
   const popup = popupshowingEvent.target;
   await BrowserTestUtils.waitForEvent(popup, "popupshown");

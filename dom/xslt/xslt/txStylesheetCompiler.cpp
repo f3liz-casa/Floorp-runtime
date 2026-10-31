@@ -1,4 +1,3 @@
-/* -*- Mode: C++; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -7,9 +6,7 @@
 
 #include <utility>
 
-#include "mozilla/ArrayUtils.h"
 #include "mozilla/UniquePtr.h"
-#include "mozilla/UniquePtrExtensions.h"
 #include "nsGkAtoms.h"
 #include "nsServiceManagerUtils.h"
 #include "nsTArray.h"
@@ -346,11 +343,9 @@ void txStylesheetCompiler::cancel(nsresult aError, const char16_t* aErrorText,
     mStatus = aError;
   }
 
-  if (mObserver) {
-    mObserver->onDoneCompiling(this, mStatus, aErrorText, aParam);
-    // This will ensure that we don't call onDoneCompiling twice. Also
-    // ensures that we don't keep the observer alive longer then necessary.
-    mObserver = nullptr;
+  // Clear mObserver before notifying in case of re-entry.
+  if (RefPtr<txACompileObserver> observer = std::move(mObserver)) {
+    observer->onDoneCompiling(this, mStatus, aErrorText, aParam);
   }
 }
 
@@ -432,11 +427,9 @@ nsresult txStylesheetCompiler::maybeDoneCompiling() {
     }
   }
 
-  if (mObserver) {
-    mObserver->onDoneCompiling(this, mStatus);
-    // This will ensure that we don't call onDoneCompiling twice. Also
-    // ensures that we don't keep the observer alive longer then necessary.
-    mObserver = nullptr;
+  // Clear mObserver before notifying in case of re-entry.
+  if (RefPtr<txACompileObserver> observer = std::move(mObserver)) {
+    observer->onDoneCompiling(this, mStatus);
   }
 
   return NS_OK;
@@ -595,7 +588,7 @@ nsresult txStylesheetCompilerState::openInstructionContainer(
 void txStylesheetCompilerState::closeInstructionContainer() {
   NS_ASSERTION(mGotoTargetPointers.IsEmpty(),
                "GotoTargets still exists, did you forget to add txReturn?");
-  mNextInstrPtr = 0;
+  mNextInstrPtr = nullptr;
 }
 
 txInstruction* txStylesheetCompilerState::addInstruction(

@@ -1,11 +1,9 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef nsIWeakReferenceUtils_h__
-#define nsIWeakReferenceUtils_h__
+#ifndef nsIWeakReferenceUtils_h_
+#define nsIWeakReferenceUtils_h_
 
 #include "nsCOMPtr.h"
 #include "nsIWeakReference.h"
@@ -28,7 +26,7 @@ inline nsresult CallQueryReferent(T* aSource, DestinationType** aDestination) {
 }
 
 inline const nsQueryReferent do_QueryReferent(nsIWeakReference* aRawPtr,
-                                              nsresult* aError = 0) {
+                                              nsresult* aError = nullptr) {
   return nsQueryReferent(aRawPtr, aError);
 }
 
@@ -36,9 +34,9 @@ inline const nsQueryReferent do_QueryReferent(nsIWeakReference* aRawPtr,
  * Deprecated, use |do_GetWeakReference| instead.
  */
 extern nsIWeakReference* NS_GetWeakReference(nsISupports*,
-                                             nsresult* aResult = 0);
+                                             nsresult* aResult = nullptr);
 extern nsIWeakReference* NS_GetWeakReference(nsISupportsWeakReference*,
-                                             nsresult* aResult = 0);
+                                             nsresult* aResult = nullptr);
 
 /**
  * |do_GetWeakReference| is a convenience function that bundles up all the work
@@ -49,17 +47,17 @@ extern nsIWeakReference* NS_GetWeakReference(nsISupportsWeakReference*,
  * do_GetWeakReference(aPtr);|.
  */
 inline already_AddRefed<nsIWeakReference> do_GetWeakReference(
-    nsISupports* aRawPtr, nsresult* aError = 0) {
+    nsISupports* aRawPtr, nsresult* aError = nullptr) {
   return dont_AddRef(NS_GetWeakReference(aRawPtr, aError));
 }
 
 inline already_AddRefed<nsIWeakReference> do_GetWeakReference(
-    nsISupportsWeakReference* aRawPtr, nsresult* aError = 0) {
+    nsISupportsWeakReference* aRawPtr, nsresult* aError = nullptr) {
   return dont_AddRef(NS_GetWeakReference(aRawPtr, aError));
 }
 
 inline void do_GetWeakReference(nsIWeakReference* aRawPtr,
-                                nsresult* aError = 0) {
+                                nsresult* aError = nullptr) {
   // This signature exists solely to _stop_ you from doing a bad thing.
   //  Saying |do_GetWeakReference()| on a weak reference itself,
   //  is very likely to be a programmer error.

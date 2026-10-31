@@ -9,9 +9,16 @@
  */
 #include "common_video/include/video_frame_buffer.h"
 
+#include <cstdint>
+#include <functional>
+#include <utility>
+
 #include "api/make_ref_counted.h"
+#include "api/scoped_refptr.h"
 #include "api/video/i420_buffer.h"
+#include "api/video/video_frame_buffer.h"
 #include "rtc_base/checks.h"
+#include "rtc_base/ref_counted_object.h"
 #include "third_party/libyuv/include/libyuv/convert.h"
 
 namespace webrtc {
@@ -39,7 +46,7 @@ class WrappedYuvBuffer : public Base {
         y_stride_(y_stride),
         u_stride_(u_stride),
         v_stride_(v_stride),
-        no_longer_used_cb_(no_longer_used) {}
+        no_longer_used_cb_(std::move(no_longer_used)) {}
 
   ~WrappedYuvBuffer() override { no_longer_used_cb_(); }
 
@@ -96,7 +103,7 @@ class WrappedYuvaBuffer : public WrappedYuvBuffer<BaseWithA> {
                                     u_stride,
                                     v_plane,
                                     v_stride,
-                                    no_longer_used),
+                                    std::move(no_longer_used)),
         a_plane_(a_plane),
         a_stride_(a_stride) {}
 
@@ -159,7 +166,7 @@ class WrappedYuv16BBuffer : public Base {
         y_stride_(y_stride),
         u_stride_(u_stride),
         v_stride_(v_stride),
-        no_longer_used_cb_(no_longer_used) {}
+        no_longer_used_cb_(std::move(no_longer_used)) {}
 
   ~WrappedYuv16BBuffer() override { no_longer_used_cb_(); }
 
@@ -253,7 +260,7 @@ scoped_refptr<I420BufferInterface> WrapI420Buffer(
   return scoped_refptr<I420BufferInterface>(
       make_ref_counted<WrappedYuvBuffer<I420BufferInterface>>(
           width, height, y_plane, y_stride, u_plane, u_stride, v_plane,
-          v_stride, no_longer_used));
+          v_stride, std::move(no_longer_used)));
 }
 
 scoped_refptr<I420ABufferInterface> WrapI420ABuffer(
@@ -271,7 +278,7 @@ scoped_refptr<I420ABufferInterface> WrapI420ABuffer(
   return scoped_refptr<I420ABufferInterface>(
       make_ref_counted<WrappedYuvaBuffer<I420ABufferInterface>>(
           width, height, y_plane, y_stride, u_plane, u_stride, v_plane,
-          v_stride, a_plane, a_stride, no_longer_used));
+          v_stride, a_plane, a_stride, std::move(no_longer_used)));
 }
 
 scoped_refptr<I422BufferInterface> WrapI422Buffer(
@@ -287,7 +294,7 @@ scoped_refptr<I422BufferInterface> WrapI422Buffer(
   return scoped_refptr<I422BufferBase>(
       make_ref_counted<WrappedYuvBuffer<I422BufferBase>>(
           width, height, y_plane, y_stride, u_plane, u_stride, v_plane,
-          v_stride, no_longer_used));
+          v_stride, std::move(no_longer_used)));
 }
 
 scoped_refptr<I444BufferInterface> WrapI444Buffer(
@@ -303,7 +310,7 @@ scoped_refptr<I444BufferInterface> WrapI444Buffer(
   return scoped_refptr<I444BufferInterface>(
       make_ref_counted<WrappedYuvBuffer<I444BufferBase>>(
           width, height, y_plane, y_stride, u_plane, u_stride, v_plane,
-          v_stride, no_longer_used));
+          v_stride, std::move(no_longer_used)));
 }
 
 scoped_refptr<PlanarYuvBuffer> WrapYuvBuffer(
@@ -320,13 +327,13 @@ scoped_refptr<PlanarYuvBuffer> WrapYuvBuffer(
   switch (type) {
     case VideoFrameBuffer::Type::kI420:
       return WrapI420Buffer(width, height, y_plane, y_stride, u_plane, u_stride,
-                            v_plane, v_stride, no_longer_used);
+                            v_plane, v_stride, std::move(no_longer_used));
     case VideoFrameBuffer::Type::kI422:
       return WrapI422Buffer(width, height, y_plane, y_stride, u_plane, u_stride,
-                            v_plane, v_stride, no_longer_used);
+                            v_plane, v_stride, std::move(no_longer_used));
     case VideoFrameBuffer::Type::kI444:
       return WrapI444Buffer(width, height, y_plane, y_stride, u_plane, u_stride,
-                            v_plane, v_stride, no_longer_used);
+                            v_plane, v_stride, std::move(no_longer_used));
     default:
       RTC_CHECK_NOTREACHED();
   }
@@ -345,7 +352,7 @@ scoped_refptr<I010BufferInterface> WrapI010Buffer(
   return scoped_refptr<I010BufferInterface>(
       make_ref_counted<WrappedYuv16BBuffer<I010BufferBase>>(
           width, height, y_plane, y_stride, u_plane, u_stride, v_plane,
-          v_stride, no_longer_used));
+          v_stride, std::move(no_longer_used)));
 }
 
 scoped_refptr<I210BufferInterface> WrapI210Buffer(
@@ -361,7 +368,7 @@ scoped_refptr<I210BufferInterface> WrapI210Buffer(
   return scoped_refptr<I210BufferInterface>(
       make_ref_counted<WrappedYuv16BBuffer<I210BufferBase>>(
           width, height, y_plane, y_stride, u_plane, u_stride, v_plane,
-          v_stride, no_longer_used));
+          v_stride, std::move(no_longer_used)));
 }
 
 scoped_refptr<I410BufferInterface> WrapI410Buffer(
@@ -377,7 +384,7 @@ scoped_refptr<I410BufferInterface> WrapI410Buffer(
   return scoped_refptr<I410BufferInterface>(
       make_ref_counted<WrappedYuv16BBuffer<I410BufferBase>>(
           width, height, y_plane, y_stride, u_plane, u_stride, v_plane,
-          v_stride, no_longer_used));
+          v_stride, std::move(no_longer_used)));
 }
 
 }  // namespace webrtc

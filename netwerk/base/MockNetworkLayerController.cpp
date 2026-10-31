@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -25,6 +23,30 @@ bool FindNetAddrOverride(const NetAddr& aInput, NetAddr& aOutput) {
   aInput.ToAddrPortString(addrPort);
   AutoReadLock lock(controller->mLock);
   return controller->mNetAddrOverrides.Get(addrPort, &aOutput);
+}
+
+bool FindBlockedTCPConnect(const NetAddr& aInput) {
+  RefPtr<MockNetworkLayerController> controller = gController;
+  if (!controller) {
+    return false;
+  }
+
+  nsAutoCString addrPort;
+  aInput.ToAddrPortString(addrPort);
+  AutoReadLock lock(controller->mLock);
+  return controller->mBlockedTCPConnects.Contains(addrPort);
+}
+
+bool FindPausedTCPConnect(const NetAddr& aInput) {
+  RefPtr<MockNetworkLayerController> controller = gController;
+  if (!controller) {
+    return false;
+  }
+
+  nsAutoCString addrPort;
+  aInput.ToAddrPortString(addrPort);
+  AutoReadLock lock(controller->mLock);
+  return controller->mPausedTCPConnects.Contains(addrPort);
 }
 
 bool FindBlockedUDPAddr(const NetAddr& aInput) {
@@ -84,7 +106,7 @@ NS_IMETHODIMP MockNetworkLayerController::AddNetAddrOverride(nsINetAddr* aFrom,
   if (nsIOService::UseSocketProcess()) {
     RefPtr<SocketProcessParent> parent = SocketProcessParent::GetSingleton();
     if (parent) {
-      Unused << parent->SendAddNetAddrOverride(fromAddr, toAddr);
+      (void)parent->SendAddNetAddrOverride(fromAddr, toAddr);
     }
   }
   return NS_OK;
@@ -99,9 +121,55 @@ NS_IMETHODIMP MockNetworkLayerController::ClearNetAddrOverrides() {
   if (nsIOService::UseSocketProcess()) {
     RefPtr<SocketProcessParent> parent = SocketProcessParent::GetSingleton();
     if (parent) {
-      Unused << parent->SendClearNetAddrOverrides();
+      (void)parent->SendClearNetAddrOverrides();
     }
   }
+  return NS_OK;
+}
+
+NS_IMETHODIMP MockNetworkLayerController::BlockTCPConnect(nsINetAddr* aAddr) {
+  MOZ_ASSERT(NS_IsMainThread());
+
+  NetAddr addr;
+  aAddr->GetNetAddr(&addr);
+  nsAutoCString addrPort;
+  addr.ToAddrPortString(addrPort);
+  {
+    AutoWriteLock lock(mLock);
+    mBlockedTCPConnects.Insert(addrPort);
+  }
+
+  return NS_OK;
+}
+
+NS_IMETHODIMP MockNetworkLayerController::ClearBlockedTCPConnect() {
+  MOZ_ASSERT(NS_IsMainThread());
+
+  AutoWriteLock lock(mLock);
+  mBlockedTCPConnects.Clear();
+  return NS_OK;
+}
+
+NS_IMETHODIMP MockNetworkLayerController::PauseTCPConnect(nsINetAddr* aAddr) {
+  MOZ_ASSERT(NS_IsMainThread());
+
+  NetAddr addr;
+  aAddr->GetNetAddr(&addr);
+  nsAutoCString addrPort;
+  addr.ToAddrPortString(addrPort);
+  {
+    AutoWriteLock lock(mLock);
+    mPausedTCPConnects.Insert(addrPort);
+  }
+
+  return NS_OK;
+}
+
+NS_IMETHODIMP MockNetworkLayerController::ClearPausedTCPConnect() {
+  MOZ_ASSERT(NS_IsMainThread());
+
+  AutoWriteLock lock(mLock);
+  mPausedTCPConnects.Clear();
   return NS_OK;
 }
 
@@ -128,4 +196,94 @@ NS_IMETHODIMP MockNetworkLayerController::ClearBlockedUDPAddr() {
   return NS_OK;
 }
 
+bool FindFailedUDPAddr(const NetAddr& aInput) {
+  RefPtr<MockNetworkLayerController> controller = gController;
+  if (!controller) {
+    return false;
+  }
+
+  nsAutoCString addrPort;
+  aInput.ToAddrPortString(addrPort);
+  AutoReadLock lock(controller->mLock);
+  return controller->mFailedUDPAddresses.Contains(addrPort);
+}
+
+NS_IMETHODIMP MockNetworkLayerController::FailUDPAddrIO(nsINetAddr* aAddr) {
+  MOZ_ASSERT(NS_IsMainThread());
+
+  NetAddr addr;
+  aAddr->GetNetAddr(&addr);
+  nsAutoCString addrPort;
+  addr.ToAddrPortString(addrPort);
+  {
+    AutoWriteLock lock(mLock);
+    mFailedUDPAddresses.Insert(addrPort);
+  }
+
+  return NS_OK;
+}
+
+NS_IMETHODIMP MockNetworkLayerController::ClearFailedUDPAddr() {
+  MOZ_ASSERT(NS_IsMainThread());
+
+  AutoWriteLock lock(mLock);
+  mFailedUDPAddresses.Clear();
+  return NS_OK;
+}
+
+bool FindWouldBlockUDPAddr(const NetAddr& aInput) {
+  RefPtr<MockNetworkLayerController> controller = gController;
+  if (!controller) {
+    return false;
+  }
+
+  nsAutoCString addrPort;
+  aInput.ToAddrPortString(addrPort);
+  AutoReadLock lock(controller->mLock);
+  return controller->mWouldBlockUDPAddresses.Contains(addrPort);
+}
+
+NS_IMETHODIMP MockNetworkLayerController::WouldBlockUDPAddrIO(
+    nsINetAddr* aAddr) {
+  MOZ_ASSERT(NS_IsMainThread());
+
+  NetAddr addr;
+  aAddr->GetNetAddr(&addr);
+  nsAutoCString addrPort;
+  addr.ToAddrPortString(addrPort);
+  {
+    AutoWriteLock lock(mLock);
+    mWouldBlockUDPAddresses.Insert(addrPort);
+  }
+
+  return NS_OK;
+}
+
+NS_IMETHODIMP MockNetworkLayerController::ClearWouldBlockUDPAddr() {
+  MOZ_ASSERT(NS_IsMainThread());
+
+  AutoWriteLock lock(mLock);
+  mWouldBlockUDPAddresses.Clear();
+  return NS_OK;
+}
+
 }  // namespace mozilla::net
+
+// Lets neqo_glue apply the mock UDP would-block list when it does its own I/O.
+extern "C" bool moz_mock_network_udp_send_would_block(uint16_t aFamily,
+                                                      const uint8_t* aAddr,
+                                                      uint16_t aPort) {
+  mozilla::net::NetAddr addr;
+  if (aFamily == AF_INET) {
+    addr.inet.family = AF_INET;
+    addr.inet.port = htons(aPort);
+    memcpy(&addr.inet.ip, aAddr, 4);
+  } else if (aFamily == AF_INET6) {
+    addr.inet6.family = AF_INET6;
+    addr.inet6.port = htons(aPort);
+    memcpy(&addr.inet6.ip.u8, aAddr, 16);
+  } else {
+    return false;
+  }
+  return mozilla::net::FindWouldBlockUDPAddr(addr);
+}

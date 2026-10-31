@@ -62,6 +62,7 @@ fedcm/support/${manifest_filename}`;
       providers: [{
         configURL: manifest_path,
         clientId: '1',
+        // TODO(crbug.com/441895082): Move nonce to params when FedCmNonceInParams is enabled by default
         nonce: '2'
       }]
     },
@@ -144,6 +145,28 @@ export function fedcm_test(test_func, test_name) {
       // Failure is not critical; it just might slow down tests.
     }
 
+    // Reset cooldown in case a previous test triggered it.
+    try {
+      await test_driver.reset_fedcm_cooldown();
+    } catch (e) {
+      // Failure is not critical.
+    }
+
+    t.add_cleanup(async () => {
+      // A fedcm_test may affect the connected account set from the IDPs, so invoke
+      // disconnect as a cleanup.
+      try {
+        await IdentityCredential.disconnect(disconnect_options(""));
+      } catch (ex) {
+        // Failure is not critical, test state is reset.
+      }
+      try {
+        await IdentityCredential.disconnect(alt_disconnect_options(""));
+      } catch (ex) {
+        // Failure is not critical, test state is reset.
+      }
+    });
+
     await mark_signed_in();
     await mark_signed_in(alt_manifest_origin);
     await set_fedcm_cookie();
@@ -194,16 +217,16 @@ export function fedcm_get_dialog_type_promise(t) {
   return new Promise((resolve, reject) => {
     async function helper() {
       // Try to get the dialog type. If the UI is not up yet, we'll catch a 'no such alert'
-      // exception and try again in 100ms. Other exceptions will be rejected.
+      // exception and try again in 10ms. Other exceptions will be rejected.
       try {
         const type = await window.test_driver.get_fedcm_dialog_type();
         resolve(type);
       } catch (ex) {
         if (String(ex).includes("no such alert")) {
           if (t) {
-            t.step_timeout(helper, 100);
+            t.step_timeout(helper, 10);
           } else{
-            window.setTimeout(helper, 100);
+            window.setTimeout(helper, 10);
           }
         } else {
           reject(ex);
@@ -240,12 +263,12 @@ export function fedcm_get_title_promise(t) {
   return new Promise(resolve => {
     async function helper() {
       // Try to get the title. If the UI is not up yet, we'll catch an exception
-      // and try again in 100ms.
+      // and try again in 10ms.
       try {
         const title = await window.test_driver.get_fedcm_dialog_title();
         resolve(title);
       } catch (ex) {
-        t.step_timeout(helper, 100);
+        t.step_timeout(helper, 10);
       }
     }
     helper();
@@ -275,14 +298,14 @@ export function fedcm_error_dialog_dismiss(t) {
   return new Promise(resolve => {
     async function helper() {
       // Try to select the account. If the UI is not up yet, we'll catch an exception
-      // and try again in 100ms.
+      // and try again in 10ms.
       try {
         let type = await fedcm_get_dialog_type_promise(t);
         assert_equals(type, "Error");
         await window.test_driver.cancel_fedcm_dialog();
         resolve();
       } catch (ex) {
-        t.step_timeout(helper, 100);
+        t.step_timeout(helper, 10);
       }
     }
     helper();
@@ -293,14 +316,14 @@ export function fedcm_error_dialog_click_button(t, button) {
   return new Promise(resolve => {
     async function helper() {
       // Try to select the account. If the UI is not up yet, we'll catch an exception
-      // and try again in 100ms.
+      // and try again in 10ms.
       try {
         let type = await fedcm_get_dialog_type_promise(t);
         assert_equals(type, "Error");
         await window.test_driver.click_fedcm_dialog_button(button);
         resolve();
       } catch (ex) {
-        t.step_timeout(helper, 100);
+        t.step_timeout(helper, 10);
       }
     }
     helper();
@@ -331,4 +354,171 @@ fedcm/support/${manifest_filename}`;
       clientId: '1',
       accountHint: accountHint
   };
+}
+
+export async function fedcm_get_flexible_tokens_credential(t, type) {
+  const options = request_options_with_mediation_required(`manifest_flexible_tokens.json`);
+  options.identity.providers[0].params = {
+      "token_type": type
+  };
+  await select_manifest(t, options);
+  return await fedcm_get_and_select_first_account(t, options);
+}
+
+export function set_well_known_format(format_type) {
+  const url_query = `?format=${encodeURIComponent(format_type)}`;
+
+  return new Promise(resolve => {
+    const img = document.createElement('img');
+    img.addEventListener('error', resolve);
+    img.src = `/fedcm/support/set-well-known-format.py${url_query}`;
+    document.body.appendChild(img);
+  });
+}
+
+// Sets up the IdP session state and cookies for EVT / EVP delegation.
+export async function setup_evt_endpoints(origin = manifest_origin) {
+  await mark_signed_in(origin);
+  await set_fedcm_cookie(origin);
+  await set_well_known_format('direct');
+  try {
+    await fetch('/fedcm/support/delegation-issuance.py?clear_error=1');
+  } catch (e) {
+    // Ignored if endpoint not reachable
+  }
+}
+
+// Wrapper for EVT / EVP delegation tests that handles pre-setup and cooldown
+// reset.
+export function evt_test(test_func, test_name) {
+  promise_test(async t => {
+    try {
+      await test_driver.set_fedcm_delay_enabled(false);
+    } catch (e) {
+      // Ignored if testdriver does not support this action.
+    }
+
+    try {
+      await test_driver.reset_fedcm_cooldown();
+    } catch (e) {
+      // Ignored if testdriver does not support this action.
+    }
+
+    await setup_evt_endpoints();
+    await test_func(t);
+  }, test_name);
+}
+
+// Common helper to populate email, blur field, and submit the EVT form.
+async function trigger_evt_submission(t, options = {}) {
+  const email = options.email || 'john_doe@idp.example';
+
+  const tokenField =
+      document.querySelector('input[autocomplete~="email-verification-token"]');
+  assert_true(
+      !!tokenField,
+      'Token field with autocomplete=\'email-verification-token\' must be present');
+
+  const emailField = document.querySelector(
+      'input[type="email"], input[autocomplete~="email"]');
+  assert_true(!!emailField, 'Email field must be present');
+
+  // Prevent form submission from navigating the page during tests
+  const form = tokenField.form;
+  if (form) {
+    form.addEventListener('submit', (e) => e.preventDefault());
+  }
+
+  // Reset values
+  tokenField.value = '';
+  emailField.value = '';
+
+  // Type email via test_driver to simulate authentic user input
+  if (window.test_driver && test_driver.send_keys) {
+    await test_driver.send_keys(emailField, email);
+  } else {
+    emailField.value = email;
+    emailField.dispatchEvent(new Event('input', {bubbles: true}));
+    emailField.dispatchEvent(new Event('change', {bubbles: true}));
+  }
+
+  // Blur email field to trigger OnFieldLostFocus in browser
+  emailField.blur();
+
+  // Allow asynchronous background verification pipeline to run
+  await new Promise(resolve => t.step_timeout(resolve, 50));
+
+  // Submit the form to populate the token field via WillSendSubmitEvent
+  const submitButton =
+      document.querySelector('button[type="submit"], input[type="submit"]');
+  if (submitButton && window.test_driver && test_driver.click) {
+    await test_driver.click(submitButton);
+  } else if (form) {
+    form.requestSubmit();
+  }
+
+  return {tokenField, form};
+}
+
+// Executes the EVT verification flow and asserts success.
+export async function assert_evt_success(t, options = {}) {
+  const {tokenField} = await trigger_evt_submission(t, options);
+  assert_true(tokenField.hasAttribute('nonce'),
+              'Token field must have a nonce attribute');
+
+  assert_true(
+      !!tokenField.value,
+      'Token field must be populated by the browser during form submission');
+  return tokenField.value;
+}
+
+// Parses and decodes a base64url-encoded JWT part.
+export function parse_jwt(jwtString) {
+  const parts = jwtString.split('.');
+  assert_true(parts.length >= 2,
+              `JWT must have at least 2 parts, got: ${jwtString}`);
+  const b64 = parts[1].replace(/-/g, '+').replace(/_/g, '/');
+  return JSON.parse(atob(b64));
+}
+
+// Validates that an EVT SD-JWT token is well-formed and contains required
+// claims.
+export function validate_evt_token(token, expected = {}) {
+  assert_true(typeof token === 'string' && token.length > 0,
+              'Token must be a non-empty string');
+  assert_true(
+      token.includes('~'),
+      'Token must be formatted as an SD-JWT with disclosure separator \'~\'');
+
+  const sdJwt = token.split('~')[0];
+  const payload = parse_jwt(sdJwt);
+
+  if (expected.email) {
+    assert_equals(payload.email.toLowerCase(), expected.email.toLowerCase(),
+                  'Token email claim must match expected email');
+  }
+  assert_true(payload.email_verified === true,
+              'Token email_verified claim must be true');
+  assert_true(typeof payload.iss === 'string' && payload.iss.length > 0,
+              'Token iss claim must be present');
+  assert_true(typeof payload.iat === 'number' && payload.iat > 0,
+              'Token iat claim must be a valid timestamp');
+  assert_true(typeof payload.cnf === 'object' && !!payload.cnf.jwk,
+              'Token cnf holder key must be present in payload');
+
+  return payload;
+}
+
+// Executes the EVT verification flow and asserts that the token remains empty
+// on failure.
+export async function assert_evt_failure(t, options = {}) {
+  if (options.endpoint && options.endpoint.includes('error=500')) {
+    await fetch('/fedcm/support/delegation-issuance.py?set_error=500');
+  }
+
+  const {tokenField} = await trigger_evt_submission(t, options);
+
+  assert_equals(tokenField.value, '',
+                'Token must remain empty when verification fails');
+  return tokenField.value;
 }

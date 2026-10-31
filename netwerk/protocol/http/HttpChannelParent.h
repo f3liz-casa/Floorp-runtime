@@ -1,6 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set sw=2 ts=8 et tw=80 : */
-
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -9,18 +6,18 @@
 #define mozilla_net_HttpChannelParent_h
 
 #include "HttpBaseChannel.h"
-#include "nsHttp.h"
-#include "mozilla/net/PHttpChannelParent.h"
+#include "mozilla/MozPromise.h"
+#include "mozilla/dom/ipc/IdType.h"
 #include "mozilla/net/NeckoCommon.h"
 #include "mozilla/net/NeckoParent.h"
-#include "mozilla/MozPromise.h"
+#include "mozilla/net/PHttpChannelParent.h"
+#include "nsHttp.h"
+#include "nsHttpChannel.h"
+#include "nsIChannelEventSink.h"
+#include "nsIMultiPartChannel.h"
 #include "nsIParentRedirectingChannel.h"
 #include "nsIProgressEventSink.h"
-#include "nsIChannelEventSink.h"
 #include "nsIRedirectResultListener.h"
-#include "nsHttpChannel.h"
-#include "mozilla/dom/ipc/IdType.h"
-#include "nsIMultiPartChannel.h"
 #include "nsIURI.h"
 
 class nsICacheEntry;
@@ -39,6 +36,7 @@ namespace net {
 class HttpBackgroundChannelParent;
 class ParentChannelListener;
 class ChannelEventQueue;
+class CacheEntryWriteHandleParent;
 
 class HttpChannelParent final : public nsIInterfaceRequestor,
                                 public PHttpChannelParent,
@@ -83,6 +81,8 @@ class HttpChannelParent final : public nsIInterfaceRequestor,
       const nsACString& type, int64_t predictedSize,
       nsIAsyncOutputStream** _retval);
 
+  [[nodiscard]] CacheEntryWriteHandleParent* AllocCacheEntryWriteHandle();
+
   // Callbacks for each asynchronous tasks required in AsyncOpen
   // procedure, will call InvokeAsyncOpen when all the expected
   // tasks is finished successfully or when any failure happened.
@@ -95,6 +95,17 @@ class HttpChannelParent final : public nsIInterfaceRequestor,
 
   // Calls SendSetPriority if mIPCClosed is false.
   void DoSendSetPriority(int16_t aValue);
+
+  // Calls SendReportLNAToConsole if mIPCClosed is false.
+  void DoSendReportLNAToConsole(const NetAddr& aPeerAddr,
+                                const nsACString& aMessageType,
+                                const nsACString& aPromptAction,
+                                const nsACString& aTopLevelSite);
+
+  // The content process this channel parent belongs to. Used by
+  // BackgroundChannelRegistrar to ensure a background channel is only linked
+  // to a channel from the same process.
+  dom::ContentParentId GetContentParentId() const;
 
   // Callback while background channel is ready.
   void OnBackgroundParentReady(HttpBackgroundChannelParent* aBgParent);
@@ -134,12 +145,11 @@ class HttpChannelParent final : public nsIInterfaceRequestor,
 
   [[nodiscard]] bool DoAsyncOpen(
       nsIURI* uri, nsIURI* originalUri, nsIURI* docUri,
-      nsIReferrerInfo* aReferrerInfo, nsIURI* aAPIRedirectToURI,
-      nsIURI* topWindowUri, const uint32_t& loadFlags,
-      const RequestHeaderTuples& requestHeaders, const nsCString& requestMethod,
-      const Maybe<IPCStream>& uploadStream, const bool& uploadStreamHasHeaders,
-      const int16_t& priority, const ClassOfService& classOfService,
-      const uint8_t& redirectionLimit, const bool& allowSTS,
+      nsIReferrerInfo* aReferrerInfo, nsIURI* topWindowUri,
+      const uint32_t& loadFlags, const RequestHeaderTuples& requestHeaders,
+      const nsCString& requestMethod, const Maybe<IPCStream>& uploadStream,
+      const bool& uploadStreamIsStreaming, const int16_t& priority,
+      const ClassOfService& classOfService, const uint8_t& redirectionLimit,
       const uint32_t& thirdPartyFlags, const bool& doResumeAt,
       const uint64_t& startPos, const nsCString& entityID,
       const bool& allowSpdy, const bool& allowHttp3, const bool& allowAltSvc,
@@ -182,17 +192,12 @@ class HttpChannelParent final : public nsIInterfaceRequestor,
       const uint32_t& aSourceRequestBlockingReason,
       const Maybe<ChildLoadInfoForwarderArgs>& aTargetLoadInfoForwarder,
       const uint32_t& loadFlags, nsIReferrerInfo* aReferrerInfo,
-      nsIURI* apiRedirectUri,
       const Maybe<CorsPreflightArgs>& aCorsPreflightArgs) override;
   virtual mozilla::ipc::IPCResult RecvDocumentChannelCleanup(
       const bool& clearCacheEntry) override;
   virtual mozilla::ipc::IPCResult RecvRemoveCorsPreflightCacheEntry(
       nsIURI* uri, const mozilla::ipc::PrincipalInfo& requestingPrincipal,
       const OriginAttributes& originAttributes) override;
-  virtual mozilla::ipc::IPCResult RecvSetCookies(
-      const nsACString& aBaseDomain, const OriginAttributes& aOriginAttributes,
-      nsIURI* aHost, const bool& aFromHttp, const bool& aIsThirdParty,
-      nsTArray<CookieStruct>&& aCookies) override;
   virtual mozilla::ipc::IPCResult RecvBytesRead(const int32_t& aCount) override;
   virtual mozilla::ipc::IPCResult RecvOpenOriginalCacheInputStream() override;
   virtual void ActorDestroy(ActorDestroyReason why) override;
@@ -243,7 +248,17 @@ class HttpChannelParent final : public nsIInterfaceRequestor,
   // consumed quickly enough. Otherwise, memory explosion could happen.
   bool NeedFlowControl();
 
+  // Get the appropriate event target for background parent operations based on
+  // channel's class of service flags: synchronous event target for urgent
+  // channels, queued for others to balance responsiveness and prevent
+  // head-of-line blocking.
+  nsCOMPtr<nsISerialEventTarget> GetEventTargetForBgParentWait();
+
   bool IsRedirectDueToAuthRetry(uint32_t redirectFlags);
+
+  // Sets mAltDataBindingOrigin from aChannel's principal, or clears it if the
+  // principal is not one the content process could have loaded.
+  void UpdateAltDataBindingOrigin(HttpBaseChannel* aChannel);
 
   int32_t mSendWindowSize;
 
@@ -253,6 +268,10 @@ class HttpChannelParent final : public nsIInterfaceRequestor,
 
   RefPtr<HttpBaseChannel> mChannel;
   nsCOMPtr<nsICacheEntry> mCacheEntry;
+  // Origin of the load's principal, captured while the channel is still alive
+  // (mChannel is cleared on document channel cleanup, before alt-data is
+  // written). Used to bind child-written alt-data to the producing principal.
+  nsCString mAltDataBindingOrigin;
 
   nsCOMPtr<nsIChannel> mRedirectChannel;
   nsCOMPtr<nsIAsyncVerifyRedirectCallback> mRedirectCallback;

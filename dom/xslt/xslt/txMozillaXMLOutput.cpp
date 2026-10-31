@@ -1,4 +1,3 @@
-/* -*- Mode: C++; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -17,7 +16,7 @@
 #include "mozilla/dom/DocumentFragment.h"
 #include "mozilla/dom/DocumentType.h"
 #include "mozilla/dom/Element.h"
-#include "mozilla/dom/FeaturePolicy.h"
+#include "mozilla/dom/PermissionsPolicy.h"
 #include "mozilla/dom/ProcessingInstruction.h"
 #include "mozilla/dom/ScriptLoader.h"
 #include "nsCharsetSource.h"
@@ -191,24 +190,13 @@ nsresult txMozillaXMLOutput::comment(const nsString& aData) {
   return error.StealNSResult();
 }
 
-nsresult txMozillaXMLOutput::endDocument(nsresult aResult) {
+nsresult txMozillaXMLOutput::endDocument(nsresult aResult)
+    MOZ_CAN_RUN_SCRIPT_BOUNDARY {
   TX_ENSURE_CURRENTNODE;
 
-  if (NS_FAILED(aResult)) {
-    if (mNotifier) {
-      mNotifier->OnTransformEnd(aResult);
-    }
-
-    return NS_OK;
-  }
-
-  nsresult rv = closePrevious(true);
-  if (NS_FAILED(rv)) {
-    if (mNotifier) {
-      mNotifier->OnTransformEnd(rv);
-    }
-
-    return rv;
+  nsresult rv = NS_OK;
+  if (NS_SUCCEEDED(aResult)) {
+    rv = closePrevious(true);
   }
 
   if (mCreatingNewDocument) {
@@ -216,19 +204,19 @@ nsresult txMozillaXMLOutput::endDocument(nsresult aResult) {
     MOZ_ASSERT(mDocument->GetReadyStateEnum() == Document::READYSTATE_LOADING,
                "Bad readyState");
     mDocument->SetReadyStateInternal(Document::READYSTATE_INTERACTIVE);
-    if (ScriptLoader* loader = mDocument->ScriptLoader()) {
+    if (const RefPtr<ScriptLoader> loader = mDocument->GetScriptLoader()) {
       loader->ParsingComplete(false);
     }
   }
 
   if (mNotifier) {
-    mNotifier->OnTransformEnd();
+    mNotifier->OnTransformEnd(NS_FAILED(aResult) ? aResult : rv);
   }
 
-  return NS_OK;
+  return rv;
 }
 
-nsresult txMozillaXMLOutput::endElement() {
+nsresult txMozillaXMLOutput::endElement() MOZ_CAN_RUN_SCRIPT_BOUNDARY {
   TX_ENSURE_CURRENTNODE;
 
   if (mBadChildLevel) {
@@ -270,7 +258,7 @@ nsresult txMozillaXMLOutput::endElement() {
         {
           nsAutoMicroTask mt;
         }
-        bool block = sele->AttemptToExecute();
+        bool block = sele->AttemptToExecute(nullptr /* aParser */);
         // If the act of insertion evaluated the script, we're fine.
         // Else, add this script element to the array of loading scripts.
         if (block) {
@@ -284,6 +272,7 @@ nsresult txMozillaXMLOutput::endElement() {
     } else if (nsIContent::RequiresDoneAddingChildren(
                    element->NodeInfo()->NamespaceID(),
                    element->NodeInfo()->NameAtom())) {
+      nsAutoScriptBlocker scriptBlocker;
       element->DoneAddingChildren(true);
     }
   }
@@ -324,7 +313,7 @@ nsresult txMozillaXMLOutput::endElement() {
     mNonAddedNode = nullptr;
   }
 
-  mCurrentNode = parent;
+  mCurrentNode = std::move(parent);
 
   mTableState =
       static_cast<TableState>(NS_PTR_TO_INT32(mTableStateStack.pop()));
@@ -382,7 +371,7 @@ nsresult txMozillaXMLOutput::startDocument() {
   }
 
   if (mCreatingNewDocument) {
-    ScriptLoader* loader = mDocument->ScriptLoader();
+    ScriptLoader* loader = mDocument->GetScriptLoader();
     if (loader) {
       loader->BeginDeferringScripts();
     }
@@ -513,7 +502,7 @@ nsresult txMozillaXMLOutput::closePrevious(bool aFlushText) {
     }
 
     ErrorResult error;
-    mCurrentNode->AppendChildTo(mOpenedElement, true, error);
+    mCurrentNode->AppendChild(*mOpenedElement, error);
     if (error.Failed()) {
       return error.StealNSResult();
     }
@@ -521,7 +510,7 @@ nsresult txMozillaXMLOutput::closePrevious(bool aFlushText) {
     if (currentIsDoc) {
       mRootContentCreated = true;
       nsContentUtils::AddScriptRunner(
-          new nsDocElementCreatedNotificationRunner(mDocument));
+          MakeAndAddRef<nsDocElementCreatedNotificationRunner>(mDocument));
     }
 
     mCurrentNode = mOpenedElement;
@@ -589,10 +578,8 @@ nsresult txMozillaXMLOutput::createTxWrapper() {
       ++j;
 #endif
     } else {
-      mDocument->RemoveChildNode(childContent, true);
-
       ErrorResult error;
-      wrapper->AppendChildTo(childContent, true, error);
+      wrapper->AppendChild(*childContent, error);
       if (error.Failed()) {
         return error.StealNSResult();
       }
@@ -606,7 +593,7 @@ nsresult txMozillaXMLOutput::createTxWrapper() {
   NS_ASSERTION(rootLocation == mDocument->GetChildCount(),
                "Incorrect root location");
   ErrorResult error;
-  mDocument->AppendChildTo(wrapper, true, error);
+  mDocument->AppendChild(*wrapper, error);
   return error.StealNSResult();
 }
 
@@ -690,13 +677,15 @@ nsresult txMozillaXMLOutput::createResultDocument(const nsAString& aName,
                                                   bool aLoadedAsData) {
   // Create the document
   if (mOutputFormat.mMethod == eHTMLOutput) {
-    MOZ_TRY(NS_NewHTMLDocument(getter_AddRefs(mDocument), nullptr, nullptr,
-                               aLoadedAsData));
+    MOZ_TRY(NS_NewHTMLDocument(
+        getter_AddRefs(mDocument), nullptr, nullptr,
+        aLoadedAsData ? LoadedAsData::AsData : LoadedAsData::No));
   } else {
     // We should check the root name/namespace here and create the
     // appropriate document
-    MOZ_TRY(NS_NewXMLDocument(getter_AddRefs(mDocument), nullptr, nullptr,
-                              aLoadedAsData));
+    MOZ_TRY(NS_NewXMLDocument(
+        getter_AddRefs(mDocument), nullptr, nullptr,
+        aLoadedAsData ? LoadedAsData::AsData : LoadedAsData::No));
   }
   // This should really be handled by Document::BeginLoad
   MOZ_ASSERT(
@@ -758,17 +747,19 @@ nsresult txMozillaXMLOutput::createResultDocument(const nsAString& aName,
   }
 
   // Set up script loader of the result document.
-  ScriptLoader* loader = mDocument->ScriptLoader();
-  if (mNotifier) {
-    loader->AddObserver(mNotifier);
-  } else {
-    // Don't load scripts, we can't notify the caller when they're loaded.
-    loader->SetEnabled(false);
+  ScriptLoader* loader = mDocument->GetScriptLoader();
+  if (loader) {
+    if (mNotifier) {
+      loader->AddObserver(mNotifier);
+    } else {
+      // Don't load scripts, we can't notify the caller when they're loaded.
+      loader->SetEnabled(false);
+    }
   }
 
   if (mNotifier) {
     MOZ_TRY(mNotifier->SetOutputDocument(mDocument));
-    MOZ_TRY(mDocument->InitFeaturePolicy(mDocument->GetChannel()));
+    MOZ_TRY(mDocument->InitPermissionsPolicy(mDocument->GetChannel()));
   }
 
   // Do this after calling OnDocumentCreated to ensure that the
@@ -920,12 +911,16 @@ void txTransformNotifier::SignalTransformEnd(nsresult aResult) {
   nsCOMPtr<nsIScriptLoaderObserver> kungFuDeathGrip(this);
 
   if (mDocument) {
-    mDocument->ScriptLoader()->DeferCheckpointReached();
-    mDocument->ScriptLoader()->RemoveObserver(this);
-    // XXX Maybe we want to cancel script loads if NS_FAILED(rv)?
-
+    if (const RefPtr<dom::ScriptLoader> scriptLoader =
+            mDocument->GetScriptLoader()) {
+      scriptLoader->DeferCheckpointReached();
+      scriptLoader->RemoveObserver(this);
+      // XXX Maybe we want to cancel script loads if NS_FAILED(rv)?
+    }
     if (NS_FAILED(aResult)) {
-      mDocument->CSSLoader()->Stop();
+      if (css::Loader* cssLoader = mDocument->GetExistingCSSLoader()) {
+        cssLoader->Stop();
+      }
     }
   }
 

@@ -1,6 +1,4 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- * vim: set ts=8 sts=2 et sw=2 tw=80:
- * This Source Code Form is subject to the terms of the Mozilla Public
+/* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
@@ -23,8 +21,10 @@
 
 #ifdef XP_WIN
 
+// clang-format off
 #  include "util/WindowsWrapper.h"
 #  include <psapi.h>
+// clang-format on
 
 #else
 
@@ -285,6 +285,7 @@ static inline void* MapMemory(size_t length) {
   return MapInternal<commit, retry>(nullptr, length);
 }
 
+#ifdef JS_64BIT
 /*
  * Attempts to map memory at the given address, but allows the system
  * to return a different address that may still be suitable.
@@ -298,6 +299,7 @@ static inline void* MapMemoryAtFuzzy(void* desired, size_t length) {
   // returned address might not match the requested address.
   return MapInternal<commit>(desired, length);
 }
+#endif
 
 /*
  * Attempts to map memory at the given address, returning nullptr if
@@ -324,9 +326,15 @@ static inline void* MapMemoryAt(void* desired, size_t length) {
 
 #ifdef JS_64BIT
 
-/* Returns a random number in the given range. */
+/* Returns a random number in the range from |minNum| to |maxNum| inclusive. */
 static inline uint64_t GetNumberInRange(uint64_t minNum, uint64_t maxNum) {
   const uint64_t MaxRand = UINT64_C(0xffffffffffffffff);
+
+  MOZ_ASSERT(minNum <= maxNum);
+  if (minNum == maxNum) {
+    return minNum;
+  }
+
   maxNum -= minNum;
   uint64_t binSize = 1 + (MaxRand - maxNum) / (maxNum + 1);
 
@@ -526,6 +534,30 @@ void MapStack(size_t stackSize) {
 #endif
 }
 
+void* MapAlignedPagesAsStack(size_t length, size_t alignment,
+                             StallAndRetry stallAndRetry) {
+  void* region = MapAlignedPages(length, alignment, stallAndRetry);
+  if (!region) {
+    return nullptr;
+  }
+
+#ifdef __OpenBSD__
+  // OpenBSD kills the process if the stack pointer points into memory not
+  // mapped with MAP_STACK. That flag can only be set at mmap() time, so remap
+  // the region in place. The pages are freshly mapped and untouched, so
+  // discarding their contents here is fine.
+  void* result = MozTaggedAnonymousMmap(
+      region, length, int(PageAccess::ReadWrite),
+      MAP_PRIVATE | MAP_ANON | MAP_FIXED | MAP_STACK, -1, 0, "js-gc-stack");
+  if (result != region) {
+    UnmapPages(region, length);
+    return nullptr;
+  }
+#endif
+
+  return region;
+}
+
 void CheckMemorySubsystemOnShutDown() {
   MOZ_ASSERT(gMappedMemorySizeBytes == 0);
 }
@@ -567,12 +599,12 @@ void* MapAlignedPages(size_t length, size_t alignment,
   // Use the scattershot allocator if the address range is large enough.
   if (UsingScattershotAllocator()) {
     void* region = MapAlignedPagesRandom(length, alignment);
-
-    MOZ_RELEASE_ASSERT(!IsInvalidRegion(region, length));
-    MOZ_ASSERT(OffsetFromAligned(region, alignment) == 0);
-
-    RecordMemoryAlloc(length);
-    return region;
+    if (region) {
+      MOZ_RELEASE_ASSERT(!IsInvalidRegion(region, length));
+      MOZ_ASSERT(OffsetFromAligned(region, alignment) == 0);
+      RecordMemoryAlloc(length);
+      return region;
+    }
   }
 #  endif
 
@@ -654,6 +686,11 @@ void* MapAlignedPages(size_t length, size_t alignment,
  * and the other for regular (usually chunk sized) allocations.
  */
 static void* MapAlignedPagesRandom(size_t length, size_t alignment) {
+  MOZ_ASSERT(length != 0);
+  if (length - 1 > maxValidAddress) {
+    return nullptr;
+  }
+
   uint64_t minNum, maxNum;
   if (length < HugeAllocationSize) {
     // Use the lower half of the range.
@@ -663,6 +700,10 @@ static void* MapAlignedPagesRandom(size_t length, size_t alignment) {
     // Use the upper half of the range.
     minNum = (hugeSplit + 1 + alignment - 1) / alignment;
     maxNum = (maxValidAddress - (length - 1)) / alignment;
+  }
+
+  if (minNum > maxNum) {
+    return nullptr;
   }
 
   // Try to allocate in random aligned locations.
@@ -798,7 +839,7 @@ static void* MapAlignedPagesLastDitch(size_t length, size_t alignment,
       break;  // We ran out of memory, so give up.
     }
   }
-  if (OffsetFromAligned(region, alignment)) {
+  if (region && OffsetFromAligned(region, alignment) != 0) {
     UnmapInternal(region, length);
     region = nullptr;
   }
@@ -965,7 +1006,10 @@ bool MarkPagesUnusedSoft(void* region, size_t length) {
   int status;
   do {
 #  if defined(XP_DARWIN)
-    status = madvise(region, length, MADV_FREE_REUSABLE);
+    // Note: we use MADV_FREE instead of MADV_FREE_REUSABLE + MADV_FREE_REUSE to
+    // work around a kernel bug on macOS Tahoe. We should change this back once
+    // that bug is fixed. See bug 2015359.
+    status = madvise(region, length, MADV_FREE);
 #  elif defined(XP_SOLARIS)
     status = posix_madvise(region, length, POSIX_MADV_DONTNEED);
 #  else
@@ -995,11 +1039,6 @@ bool MarkPagesUnusedHard(void* region, size_t length) {
 void MarkPagesInUseSoft(void* region, size_t length) {
   MOZ_ASSERT(DecommitEnabled());
   CheckDecommit(region, length);
-
-#if defined(XP_DARWIN)
-  while (madvise(region, length, MADV_FREE_REUSE) == -1 && errno == EAGAIN) {
-  }
-#endif
 
   MOZ_MAKE_MEM_UNDEFINED(region, length);
 }
@@ -1131,6 +1170,7 @@ void* AllocateMappedContent(int fd, size_t offset, size_t length,
                                  MAP_PRIVATE | MAP_FIXED, fd, alignedOffset));
   if (map == MAP_FAILED) {
     UnmapInternal(region, mappedLength);
+    RecordMemoryFree(mappedLength);
     return nullptr;
   }
 #  endif

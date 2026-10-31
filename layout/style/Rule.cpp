@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -30,7 +28,7 @@ NS_INTERFACE_MAP_BEGIN_CYCLE_COLLECTION(Rule)
   NS_INTERFACE_MAP_ENTRY(nsISupports)
 NS_INTERFACE_MAP_END
 
-NS_IMPL_CYCLE_COLLECTION_WRAPPERCACHE_0(Rule)
+NS_IMPL_CYCLE_COLLECTION_WRAPPERCACHE_WEAK_PTR(Rule)
 
 bool Rule::IsCCLeaf() const { return !PreservingWrapper(); }
 
@@ -93,6 +91,10 @@ void Rule::SetCssText(const nsACString& aCssText) {
 
 Rule* Rule::GetParentRule() const { return mParentRule; }
 
+already_AddRefed<Rule> Rule::GetParentRuleForBindings() const {
+  return do_AddRef(mParentRule);
+}
+
 #ifdef DEBUG
 void Rule::AssertParentRuleType() {
   // Would be nice to check that this->Type() is StyleCssRuleType::Keyframe
@@ -110,6 +112,7 @@ void Rule::AssertParentRuleType() {
                type == StyleCssRuleType::Container ||
                type == StyleCssRuleType::Scope ||
                type == StyleCssRuleType::StartingStyle ||
+               type == StyleCssRuleType::AppearanceBase ||
                type == StyleCssRuleType::Page);
   }
 }
