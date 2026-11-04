@@ -385,6 +385,12 @@ static int mediacodec_wrap_sw_audio_buffer(AVCodecContext *avctx,
         goto done;
     }
 
+    if (info->size % (sample_size * avctx->ch_layout.nb_channels)) {
+        av_log(avctx, AV_LOG_ERROR, "input is not a multiple of channels * sample_size\n");
+        ret = AVERROR(EINVAL);
+        goto done;
+    }
+
     frame->format = avctx->sample_fmt;
     frame->sample_rate = avctx->sample_rate;
     frame->nb_samples = info->size / (sample_size * avctx->ch_layout.nb_channels);
@@ -422,7 +428,20 @@ static int mediacodec_wrap_sw_audio_buffer(AVCodecContext *avctx,
            "Frame: format=%d channels=%d sample_rate=%d nb_samples=%d",
            avctx->sample_fmt, avctx->ch_layout.nb_channels, avctx->sample_rate, frame->nb_samples);
 
-    memcpy(frame->data[0], data, info->size);
+    if (s->ch_offsets) {
+        const int channels = avctx->ch_layout.nb_channels;
+        const int stride = channels * sample_size;
+
+        for (int i = 0; i < frame->nb_samples; i++) {
+            const uint8_t *src = data + i * stride;
+            uint8_t *dst = frame->data[0] + i * stride;
+
+            for (int ch = 0; ch < channels; ch++)
+                memcpy(dst + ch * sample_size, src + s->ch_offsets[ch] * sample_size, sample_size);
+        }
+    } else {
+        memcpy(frame->data[0], data, info->size);
+    }
 
     ret = 0;
 done:
@@ -537,6 +556,8 @@ static int mediacodec_wrap_sw_buffer(AVCodecContext *avctx,
         av_log(avctx, AV_LOG_ERROR, "Could not get %s from format %s\n", key, format); \
         ret = AVERROR_EXTERNAL;                                                        \
         goto fail;                                                                     \
+    } else {                                                                           \
+        (name) = 0;                                                                    \
     }                                                                                  \
 } while (0)                                                                            \
 
@@ -575,6 +596,8 @@ static int mediacodec_dec_parse_video_format(AVCodecContext *avctx, MediaCodecDe
     } else if (strstr(s->codec_name, "OMX.SEC.avc.dec")) {
         s->slice_height = avctx->height;
         s->stride = avctx->width;
+    } else if (strstr(s->codec_name, "OMX.MTK.VIDEO.DECODER.MPEG2")) {
+        s->slice_height = s->height;
     } else if (s->slice_height == 0) {
         s->slice_height = s->height;
     }
@@ -682,11 +705,18 @@ static int mediacodec_dec_parse_audio_format(AVCodecContext *avctx, MediaCodecDe
 
     avctx->sample_rate = sample_rate;
 
+    s->ch_offsets = NULL;
     AMEDIAFORMAT_GET_INT32(channel_mask, "channel-mask", 0);
-    if (channel_mask)
+    if (channel_mask) {
         av_channel_layout_from_mask(&avctx->ch_layout, mcdec_map_channel_mask(avctx, channel_mask));
-    else
+    } else if (s->codec_ch_layouts && channel_count > 2 && channel_count <= 8) {
+        ret = av_channel_layout_copy(&avctx->ch_layout, &s->codec_ch_layouts[channel_count - 1]);
+        if (ret < 0)
+            goto fail;
+        s->ch_offsets = s->codec_ch_offsets[channel_count - 1];
+    } else {
         av_channel_layout_default(&avctx->ch_layout, channel_count);
+    }
 
     av_log(avctx, AV_LOG_INFO,
         "Output parameters channel-count=%d channel-layout=%x sample-rate=%d\n",

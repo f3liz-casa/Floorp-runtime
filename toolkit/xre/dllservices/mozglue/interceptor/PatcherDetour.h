@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
@@ -12,12 +10,11 @@
 #endif  // defined(_M_ARM64)
 #include <utility>
 
+#include "mozilla/DebugOnly.h"
 #include "mozilla/Maybe.h"
 #include "mozilla/NativeNt.h"
 #include "mozilla/ScopeExit.h"
 #include "mozilla/TypedEnumBits.h"
-#include "mozilla/Types.h"
-#include "mozilla/Unused.h"
 #include "mozilla/interceptor/PatcherBase.h"
 #include "mozilla/interceptor/Trampoline.h"
 #include "mozilla/interceptor/VMSharingPolicies.h"
@@ -665,10 +662,20 @@ class WindowsDllDetourPatcher final
   }
 
 #  if defined(_M_X64)
-  enum class JumpType { Je, Jne, Jae, Jmp, Call };
+  enum class JumpType { Je, Jne, Jae, Jmp, Call, Js };
 
   static bool GenerateJump(Trampoline<MMPolicyT>& aTramp,
-                           uintptr_t aAbsTargetAddress, const JumpType aType) {
+                           uintptr_t aAbsTargetAddress, const JumpType aType,
+                           const ReadOnlyTargetFunction<MMPolicyT>& origBytes,
+                           uint32_t aBytesToPatch) {
+    if (aAbsTargetAddress >= origBytes.GetBaseAddress() &&
+        aAbsTargetAddress < origBytes.GetBaseAddress() + aBytesToPatch) {
+      // We don't correctly detour jumps or calls with target inside the section
+      // that we are patching. We don't think we need this for any realistic
+      // use case, so just fail here.
+      return false;
+    }
+
     // Near call, absolute indirect, address given in r/m32
     if (aType == JumpType::Call) {
       // CALL [RIP+0]
@@ -696,6 +703,10 @@ class WindowsDllDetourPatcher final
       // JB RIP+14
       aTramp.WriteByte(0x72);
       aTramp.WriteByte(14);
+    } else if (aType == JumpType::Js) {
+      // JNS RIP+14
+      aTramp.WriteByte(0x79);
+      aTramp.WriteByte(14);
     }
 
     // Near jmp, absolute indirect, address given in r/m32
@@ -707,6 +718,51 @@ class WindowsDllDetourPatcher final
     aTramp.WritePointer(aAbsTargetAddress);
 
     return !!aTramp;
+  }
+
+  // Emit MOV r64, imm64 where aReg is a register number from 0 to 15.
+  static void WriteMovImm64(Trampoline<MMPolicyT>& aTramp, BYTE aReg,
+                            uintptr_t aImm) {
+    MOZ_ASSERT(aReg < 16);
+    aTramp.WriteByte(kRexOpcode | kMaskRexW | ((aReg & 8) ? kMaskRexB : 0));
+    aTramp.WriteByte(0xb8 + (aReg & kMaskRm));
+    aTramp.WritePointer(aImm);
+  }
+
+  // Emit instructions that load the 64-bit value stored at aAbsAddr into the
+  // register aReg, where aReg is a register number from 0 to 15 other than
+  // rsp. No other register is modified.
+  void WriteLoadFromAbsoluteAddress(Trampoline<MMPolicyT>& aTramp, BYTE aReg,
+                                    uintptr_t aAbsAddr) {
+    MOZ_ASSERT(aReg < 16 && aReg != kRegSp);
+
+    if (aReg == kRegAx) {
+      // MOV rax, moffs64
+      aTramp.WriteByte(kRexOpcode | kMaskRexW);
+      aTramp.WriteByte(0xa1);
+      aTramp.WritePointer(aAbsAddr);
+      return;
+    }
+
+    // MOV reg, imm64 followed by MOV reg, [reg]
+    WriteMovImm64(aTramp, aReg, aAbsAddr);
+
+    const BYTE lowReg = aReg & kMaskRm;
+    aTramp.WriteByte(kRexOpcode | kMaskRexW |
+                     ((aReg & 8) ? (kMaskRexR | kMaskRexB) : 0));
+    aTramp.WriteByte(0x8b);
+    if (lowReg == kRegSp) {
+      // r12 as a base register requires a SIB byte: base = r12, no index.
+      aTramp.WriteByte(BuildModRmByte(kModNoRegDisp, lowReg, kRmNeedSib));
+      aTramp.WriteByte(0x24);
+    } else if (lowReg == kRegBp) {
+      // rbp and r13 as a base register with mod = 00 would mean RIP-relative,
+      // so use mod = 01 with a zero disp8 instead.
+      aTramp.WriteByte(BuildModRmByte(kModDisp8, lowReg, lowReg));
+      aTramp.WriteByte(0x00);
+    } else {
+      aTramp.WriteByte(BuildModRmByte(kModNoRegDisp, lowReg, lowReg));
+    }
   }
 #  endif
 
@@ -812,19 +868,24 @@ class WindowsDllDetourPatcher final
         return false;
       }
 
+      // Set aOutTramp now so that the new target won't race if accessing this
+      // value. Bug 1838286 did not fix this path, resulting in bug 1950847.
+      *aOutTramp = reinterpret_cast<void*>(originalTarget);
+
       // Write the new JMP target address.
       target.WritePointer(aDest);
       if (!target.Commit()) {
+        *aOutTramp = nullptr;
         return false;
       }
 
       // Store the old target address so we can restore it when we're cleared
       aTramp.WritePointer(originalTarget);
       if (!aTramp) {
+        *aOutTramp = nullptr;
         return false;
       }
 
-      *aOutTramp = reinterpret_cast<void*>(originalTarget);
       return true;
     }
 #endif  // defined(_M_X64)
@@ -919,6 +980,8 @@ class WindowsDllDetourPatcher final
   }
 #endif  // defined(_M_X64)
 
+  // Note that *aOutTramp is not set until CreateTrampoline has completed
+  // successfully, so callers can use that to check for success.
   void CreateTrampoline(ReadOnlyTargetFunction<MMPolicyT>& origBytes,
                         TrampPoolT* aTrampPool, Trampoline<MMPolicyT>& aTramp,
                         intptr_t aDest, void** aOutTramp) {
@@ -946,8 +1009,7 @@ class WindowsDllDetourPatcher final
 
     auto clearInstanceOnFailure = MakeScopeExit([this, aOutTramp, &tramp,
                                                  &origBytes]() -> void {
-      // *aOutTramp is not set until CreateTrampoline has completed
-      // successfully, so we can use that to check for success.
+      // If *aOutTramp was set this method ran successfully.
       if (*aOutTramp) {
         return;
       }
@@ -978,8 +1040,8 @@ class WindowsDllDetourPatcher final
 #  endif  // defined(_M_ARM64)
 #else
       // Silence -Wunused-lambda-capture in non-Nightly.
-      Unused << this;
-      Unused << origBytes;
+      (void)this;
+      (void)origBytes;
 #endif  // defined(NIGHTLY_BUILD)
     });
 
@@ -1050,19 +1112,13 @@ class WindowsDllDetourPatcher final
         // INC r32
         origBytes += 1;
       } else if (*origBytes == 0x83) {
-        uint8_t mod = static_cast<uint8_t>(origBytes[1]) & kMaskMod;
-        uint8_t rm = static_cast<uint8_t>(origBytes[1]) & kMaskRm;
-        if (mod == kModReg) {
-          // ADD|OR|ADC|SBB|AND|SUB|XOR|CMP r, imm8
-          origBytes += 3;
-        } else if (mod == kModDisp8 && rm != kRmNeedSib) {
-          // ADD|OR|ADC|SBB|AND|SUB|XOR|CMP [r+disp8], imm8
-          origBytes += 4;
-        } else {
-          // bail
-          MOZ_ASSERT_UNREACHABLE("Unrecognized bit opcode sequence");
+        // ADD|OR|ADC|SBB|AND|SUB|XOR|CMP on imm8
+        int len = CountModRmSib(origBytes + 1);
+        if (len < 0) {
+          MOZ_ASSERT_UNREACHABLE("Unrecognized opcode sequence");
           return;
         }
+        COPY_CODES(len + 2);  // 1 for 0x83, 1 for imm8
       } else if (*origBytes == 0x68) {
         // PUSH with 4-byte operand
         origBytes += 5;
@@ -1173,8 +1229,17 @@ class WindowsDllDetourPatcher final
           ++origBytes;
           --tramp;  // overwrite the 0x0f we copied above
 
+          if (!GenerateJump(tramp, origBytes.ReadDisp32AsAbsolute(), jumpType,
+                            origBytes, bytesRequired)) {
+            return;
+          }
+        } else if (*origBytes == 0x88) {
+          // 0f 88 cd    JS  rel32
+          ++origBytes;
+          --tramp;  // overwrite the 0x0f we copied above
+
           if (!GenerateJump(tramp, origBytes.ReadDisp32AsAbsolute(),
-                            jumpType)) {
+                            JumpType::Js, origBytes, bytesRequired)) {
             return;
           }
         } else {
@@ -1194,6 +1259,10 @@ class WindowsDllDetourPatcher final
                  (origBytes[2] & (kMaskMod | kMaskRm)) ==
                      (kModNoRegDisp | kRmNoRegDispDisp32)) {
         int reg = origBytes[2] & kMaskReg;
+        if (reg == (kRegSp << kRegFieldShift)) {
+          // The register is spl, which the push below would modify.
+          return;
+        }
         origBytes += 3;
 
         // rex cmp byte ptr [rip-relative address], reg
@@ -1263,29 +1332,33 @@ class WindowsDllDetourPatcher final
         COPY_CODES(1);
 
         if (*origBytes == 0x33) {
-          // xor r32, r32
-          COPY_CODES(2);
+          // xor r32, r/m32
+          int len = CountModRmSib(origBytes + 1);
+          if (len < 0) {
+            MOZ_ASSERT_UNREACHABLE("Unrecognized opcode sequence");
+            return;
+          }
+          COPY_CODES(len + 1);
         } else {
           MOZ_ASSERT_UNREACHABLE("Unrecognized opcode sequence");
           return;
         }
       } else if ((*origBytes & 0xfa) == 0x48) {
         // REX.W | REX.WR | REX.WRB | REX.WB
+        const BYTE rexR = (*origBytes & kMaskRexR) ? 8 : 0;
         COPY_CODES(1);
 
         if (*origBytes == 0x81 && (origBytes[1] & 0xf8) == 0xe8) {
           // sub r, dword
           COPY_CODES(6);
-        } else if (*origBytes == 0x83 && (origBytes[1] & 0xf8) == 0xe8) {
-          // sub r, byte
-          COPY_CODES(3);
-        } else if (*origBytes == 0x83 &&
-                   (origBytes[1] & (kMaskMod | kMaskReg)) == kModReg) {
-          // add r, byte
-          COPY_CODES(3);
-        } else if (*origBytes == 0x83 && (origBytes[1] & 0xf8) == 0x60) {
-          // and [r+d], imm8
-          COPY_CODES(5);
+        } else if (*origBytes == 0x83) {
+          // ADD|OR|ADC|SBB|AND|SUB|XOR|CMP on imm8
+          int len = CountModRmSib(origBytes + 1);
+          if (len < 0) {
+            MOZ_ASSERT_UNREACHABLE("Unrecognized opcode sequence");
+            return;
+          }
+          COPY_CODES(len + 2);  // 1 for 0x83, 1 for imm8
         } else if (*origBytes == 0x2b && (origBytes[1] & kMaskMod) == kModReg) {
           // sub r64, r64
           COPY_CODES(2);
@@ -1306,6 +1379,19 @@ class WindowsDllDetourPatcher final
             if (len != kModOperand64) {
               return;
             }
+            if (*origBytes == 0x89) {
+              // MOV [rip+disp32], r64 would require a scratch register, which
+              // we would need to save and restore on the stack. Not supported.
+              return;
+            }
+
+            reg |= rexR;
+            if (reg == kRegSp) {
+              // Loading into rsp would require moving the stack pointer to
+              // an arbitrary address temporarily. Not supported.
+              return;
+            }
+
             origBytes += 2;  // skip the MOV and MOD R/M bytes
 
             // The instruction MOVs 64-bit data from a RIP-relative memory
@@ -1313,22 +1399,8 @@ class WindowsDllDetourPatcher final
             // 64-bit register.
             uintptr_t absAddr = origBytes.ReadDisp32AsAbsolute();
 
-            if (reg == kRegAx) {
-              // Destination is RAX.  Encode instruction as MOVABS with a
-              // 64-bit absolute address as its immediate operand.
-              tramp.WriteByte(0xa1);
-              tramp.WritePointer(absAddr);
-            } else {
-              // The MOV must be done in two steps.  First, we MOVABS the
-              // absolute 64-bit address into our target register.
-              // Then, we MOV from that address into the register
-              // using register-indirect addressing.
-              tramp.WriteByte(0xb8 + reg);
-              tramp.WritePointer(absAddr);
-              tramp.WriteByte(0x48);
-              tramp.WriteByte(0x8b);
-              tramp.WriteByte(BuildModRmByte(kModNoRegDisp, reg, reg));
-            }
+            --tramp;  // overwrite the REX prefix we copied above
+            WriteLoadFromAbsoluteAddress(tramp, reg, absAddr);
           } else {
             COPY_CODES(len + 1);
           }
@@ -1350,12 +1422,13 @@ class WindowsDllDetourPatcher final
           if ((origBytes[1] & 0xc0) == 0x0 && (origBytes[1] & 0x07) == 0x5 &&
               ((origBytes[1] & 0x38) == 0x20 ||
                (origBytes[1] & 0x38) == 0x10)) {
+            foundJmp = (origBytes[1] & 0x38) == 0x20;
             origBytes += 2;
             --tramp;  // overwrite the REX.W/REX.RW we copied above
 
-            foundJmp = (origBytes[1] & 0x38) == 0x20;
             if (!GenerateJump(tramp, origBytes.ChasePointerFromDisp(),
-                              foundJmp ? JumpType::Jmp : JumpType::Call)) {
+                              foundJmp ? JumpType::Jmp : JumpType::Call,
+                              origBytes, bytesRequired)) {
               return;
             }
           } else {
@@ -1370,11 +1443,11 @@ class WindowsDllDetourPatcher final
             // [rip+disp32]
             // convert 32bit offset to 64bit direct and convert instruction
             // to a simple 64-bit mov
-            BYTE reg = (origBytes[1] & kMaskReg) >> kRegFieldShift;
+            BYTE reg = ((origBytes[1] & kMaskReg) >> kRegFieldShift) | rexR;
             origBytes += 2;
             uintptr_t absAddr = origBytes.ReadDisp32AsAbsolute();
-            tramp.WriteByte(0xb8 + reg);  // move
-            tramp.WritePointer(absAddr);
+            --tramp;  // overwrite the REX prefix we copied above
+            WriteMovImm64(tramp, reg, absAddr);
           } else {
             // Above we dealt with RIP-relative instructions.  Any other
             // operand form can simply be copied.
@@ -1460,7 +1533,9 @@ class WindowsDllDetourPatcher final
         tramp.WriteByte(0x49);
         tramp.WriteByte(0x53);
 
-        uintptr_t absAddr = origBytes.ReadDisp32AsAbsolute();
+        // The displacement is relative to the end of the instruction, which
+        // includes the imm8 that follows it.
+        uintptr_t absAddr = origBytes.ReadDisp32AsAbsolute() + 1;
 
         // mov r11, absolute address
         tramp.WriteByte(0x49);
@@ -1487,7 +1562,12 @@ class WindowsDllDetourPatcher final
       } else if (*origBytes == 0x31 || *origBytes == 0x33) {
         // xor r/m32, r32
         // xor r32, r/m32
-        COPY_CODES(2);
+        int len = CountModRmSib(origBytes + 1);
+        if (len < 0) {
+          MOZ_ASSERT_UNREACHABLE("Unrecognized opcode sequence");
+          return;
+        }
+        COPY_CODES(len + 1);
       } else if (*origBytes == 0xf6) {
         // test r/m8, imm8 (used by ntdll on Windows 10 x64)
         // (no flags are affected by near jmp since there is no task switch,
@@ -1512,9 +1592,14 @@ class WindowsDllDetourPatcher final
         // bit shifts/rotates : (SA|SH|RO|RC)(R|L) r32
         // (e.g. 0xd1 0xe0 is SAL, 0xd1 0xc8 is ROR)
         COPY_CODES(2);
-      } else if (*origBytes == 0x83 && (origBytes[1] & kMaskMod) == kModReg) {
-        // ADD|OR|ADC|SBB|AND|SUB|XOR|CMP r, imm8
-        COPY_CODES(3);
+      } else if (*origBytes == 0x83) {
+        // ADD|OR|ADC|SBB|AND|SUB|XOR|CMP on imm8
+        int len = CountModRmSib(origBytes + 1);
+        if (len < 0) {
+          MOZ_ASSERT_UNREACHABLE("Unrecognized opcode sequence");
+          return;
+        }
+        COPY_CODES(len + 2);  // 1 for 0x83, 1 for imm8
       } else if (*origBytes == 0xc3) {
         // ret
         COPY_CODES(1);
@@ -1527,7 +1612,8 @@ class WindowsDllDetourPatcher final
         ++origBytes;
 
         if (!GenerateJump(tramp, origBytes.ReadDisp32AsAbsolute(),
-                          foundJmp ? JumpType::Jmp : JumpType::Call)) {
+                          foundJmp ? JumpType::Jmp : JumpType::Call, origBytes,
+                          bytesRequired)) {
           return;
         }
       } else if (*origBytes >= 0x73 && *origBytes <= 0x75) {
@@ -1537,12 +1623,36 @@ class WindowsDllDetourPatcher final
         const JumpType kJumpTypes[] = {JumpType::Jae, JumpType::Je,
                                        JumpType::Jne};
         auto jumpType = kJumpTypes[*origBytes - 0x73];
-        uint8_t offset = origBytes[1];
+        int8_t offset = origBytes[1];
+        if (offset < 0) {
+          // We don't support backwards relative jumps. If we want to in the
+          // future we should find a good way to test them.
+          MOZ_ASSERT_UNREACHABLE(
+              "Unrecognized opcode sequence - backwards relative jump");
+          return;
+        }
+
+        origBytes += 2;
+
+        if (!GenerateJump(tramp, origBytes.OffsetToAbsolute(offset), jumpType,
+                          origBytes, bytesRequired)) {
+          return;
+        }
+      } else if (*origBytes == 0x78) {
+        // 78 cb    JS rel8
+        int8_t offset = origBytes[1];
+        if (offset < 0) {
+          // We don't support backwards relative jumps. If we want to in the
+          // future we should find a good way to test them.
+          MOZ_ASSERT_UNREACHABLE(
+              "Unrecognized opcode sequence - backwards relative jump");
+          return;
+        }
 
         origBytes += 2;
 
         if (!GenerateJump(tramp, origBytes.OffsetToAbsolute(offset),
-                          jumpType)) {
+                          JumpType::Js, origBytes, bytesRequired)) {
           return;
         }
       } else if (*origBytes == 0xff) {
@@ -1557,7 +1667,7 @@ class WindowsDllDetourPatcher final
           // FF 15    CALL [disp32]
           origBytes += 2;
           if (!GenerateJump(tramp, origBytes.ChasePointerFromDisp(),
-                            JumpType::Call)) {
+                            JumpType::Call, origBytes, bytesRequired)) {
             return;
           }
         } else if (reg == 4) {
@@ -1570,7 +1680,8 @@ class WindowsDllDetourPatcher final
 
             uintptr_t jmpDest = origBytes.ChasePointerFromDisp();
 
-            if (!GenerateJump(tramp, jmpDest, JumpType::Jmp)) {
+            if (!GenerateJump(tramp, jmpDest, JumpType::Jmp, origBytes,
+                              bytesRequired)) {
               return;
             }
           } else {
@@ -1590,9 +1701,6 @@ class WindowsDllDetourPatcher final
           MOZ_ASSERT_UNREACHABLE("Unrecognized opcode sequence");
           return;
         }
-      } else if (*origBytes == 0x83 && (origBytes[1] & 0xf8) == 0x60) {
-        // and [r+d], imm8
-        COPY_CODES(5);
       } else if (*origBytes == 0xc6) {
         // mov [r+d], imm8
         int len = CountModRmSib(origBytes + 1);
@@ -1645,6 +1753,23 @@ class WindowsDllDetourPatcher final
         break;
       }
 
+      if (pcRelInfo.inspect().mType == arm64::LoadOrBranch::Type::Branch) {
+        // We need to branch to the original target of this instruction.
+        // This is a problem because on the first pass
+        // GetCurrentRemoteAddress() is 0, so the offset may be too large for
+        // BuildUnconditionalBranchImm. We don't need this for now on ARM64.
+        // so just behave like we don't have a decoder.
+
+        // origBytes is now pointing one instruction past the one that we
+        // need the trampoline to jump back to.
+        if (!origBytes.BackUpOneInstruction()) {
+          return;
+        }
+
+        break;
+      }
+
+      MOZ_ASSERT(pcRelInfo.inspect().mType == arm64::LoadOrBranch::Type::Load);
       // We need to load an absolute address into a particular register
       tramp.WriteLoadLiteral(pcRelInfo.inspect().mAbsAddress,
                              pcRelInfo.inspect().mDestReg);
@@ -1674,7 +1799,8 @@ class WindowsDllDetourPatcher final
     // if we found a _conditional_ jump or a CALL (or no control operations
     // at all) then we still need to run the rest of aOriginalFunction.
     if (!foundJmp) {
-      if (!GenerateJump(tramp, origBytes.GetAddress(), JumpType::Jmp)) {
+      if (!GenerateJump(tramp, origBytes.GetAddress(), JumpType::Jmp, origBytes,
+                        bytesRequired)) {
         return;
       }
     }

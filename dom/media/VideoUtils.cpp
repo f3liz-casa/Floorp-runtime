@@ -6,8 +6,11 @@
 
 #include <stdint.h>
 
+#include <memory>
+
 #include "CubebUtils.h"
 #include "H264.h"
+#include "H265.h"
 #include "ImageContainer.h"
 #include "MediaContainerType.h"
 #include "MediaResource.h"
@@ -215,6 +218,26 @@ bool IsDefaultPlaybackDeviceMono() {
   return CubebUtils::MaxNumberOfChannels() == 1;
 }
 
+void SetOpusOutputChannels(AudioInfo& aInfo) {
+  if (!aInfo.mCodecSpecificConfig.is<OpusCodecSpecificData>()) {
+    return;
+  }
+  aInfo.mCodecSpecificConfig.as<OpusCodecSpecificData>().mOutputChannels =
+      DecideAudioPlaybackChannels(aInfo);
+}
+
+uint32_t AudioPlaybackChannels(const AudioInfo& aInfo) {
+  if (aInfo.mCodecSpecificConfig.is<OpusCodecSpecificData>()) {
+    uint32_t channels =
+        aInfo.mCodecSpecificConfig.as<OpusCodecSpecificData>().mOutputChannels;
+    if (channels) {
+      return channels;
+    }
+    MOZ_ASSERT_UNREACHABLE("Opus config has no playback channel count");
+  }
+  return DecideAudioPlaybackChannels(aInfo);
+}
+
 bool IsVideoContentType(const nsCString& aContentType) {
   constexpr auto video = "video"_ns;
   return FindInReadable(video, aContentType);
@@ -228,16 +251,21 @@ bool IsValidVideoRegion(const gfx::IntSize& aFrame,
          aFrame.height <= PlanarYCbCrImage::MAX_DIMENSION &&
          aFrame.width * aFrame.height <= MAX_VIDEO_WIDTH * MAX_VIDEO_HEIGHT &&
          aPicture.width > 0 &&
-         aPicture.width <= PlanarYCbCrImage::MAX_DIMENSION &&
+         aPicture.width <= PlanarYCbCrImage::MAX_DIMENSION && aPicture.x >= 0 &&
          aPicture.x < PlanarYCbCrImage::MAX_DIMENSION &&
          aPicture.x + aPicture.width < PlanarYCbCrImage::MAX_DIMENSION &&
-         aPicture.height > 0 &&
+         aPicture.XMost() <= aFrame.width && aPicture.height > 0 &&
          aPicture.height <= PlanarYCbCrImage::MAX_DIMENSION &&
-         aPicture.y < PlanarYCbCrImage::MAX_DIMENSION &&
+         aPicture.y >= 0 && aPicture.y < PlanarYCbCrImage::MAX_DIMENSION &&
          aPicture.y + aPicture.height < PlanarYCbCrImage::MAX_DIMENSION &&
+         aPicture.YMost() <= aFrame.height &&
          aPicture.width * aPicture.height <=
              MAX_VIDEO_WIDTH * MAX_VIDEO_HEIGHT &&
-         aDisplay.width > 0 &&
+         IsValidVideoDisplaySize(aDisplay);
+}
+
+bool IsValidVideoDisplaySize(const gfx::IntSize& aDisplay) {
+  return aDisplay.width > 0 &&
          aDisplay.width <= PlanarYCbCrImage::MAX_DIMENSION &&
          aDisplay.height > 0 &&
          aDisplay.height <= PlanarYCbCrImage::MAX_DIMENSION &&
@@ -245,35 +273,29 @@ bool IsValidVideoRegion(const gfx::IntSize& aFrame,
 }
 
 already_AddRefed<SharedThreadPool> GetMediaThreadPool(MediaThreadType aType) {
-  const char* name;
-  uint32_t threads = 4;
+  RefPtr<SharedThreadPool> pool;
   switch (aType) {
     case MediaThreadType::PLATFORM_DECODER:
-      name = "MediaPDecoder";
+      pool = SharedThreadPool::Get("MediaPDecoder", 4);
       break;
     case MediaThreadType::WEBRTC_CALL_THREAD:
-      name = "WebrtcCallThread";
-      threads = 1;
+      pool = SharedThreadPool::Get("WebrtcCallThread", 1);
       break;
     case MediaThreadType::WEBRTC_WORKER:
-      name = "WebrtcWorker";
+      pool = SharedThreadPool::Get("WebrtcWorker", 4);
       break;
     case MediaThreadType::MDSM:
-      name = "MediaDecoderStateMachine";
-      threads = 1;
+      pool = SharedThreadPool::Get("MediaDecoderStateMachine", 1);
       break;
     case MediaThreadType::PLATFORM_ENCODER:
-      name = "MediaPEncoder";
+      pool = SharedThreadPool::Get("MediaPEncoder", 4);
       break;
     default:
       MOZ_FALLTHROUGH_ASSERT("Unexpected MediaThreadType");
     case MediaThreadType::SUPERVISOR:
-      name = "MediaSupervisor";
+      pool = SharedThreadPool::Get("MediaSupervisor", 4);
       break;
   }
-
-  RefPtr<SharedThreadPool> pool =
-      SharedThreadPool::Get(nsDependentCString(name), threads);
 
   // Ensure a larger stack for platform decoder threads
   bool needsLargerStacks = aType == MediaThreadType::PLATFORM_DECODER;
@@ -584,8 +606,18 @@ bool IsH265ProfileRecognizable(uint8_t aProfile,
   return p != eUnknown;
 }
 
-bool ExtractH265CodecDetails(const nsAString& aCodec, uint8_t& aProfile,
-                             uint8_t& aLevel, nsTArray<uint8_t>& aConstraints) {
+// ISO/IEC 14496-15 Annex E.3: "the 32 bits of the
+// general_profile_compatibility_flags, but in reverse bit order."
+static uint32_t ReverseBitOrder(uint32_t aValue) {
+  uint32_t reversed = 0;
+  for (uint8_t bit = 0; bit < 32; bit++) {
+    reversed |= ((aValue >> bit) & 1u) << (31 - bit);
+  }
+  return reversed;
+}
+
+bool ExtractH265CodecDetails(const nsAString& aCodec,
+                             H265CodecDetails* aDetails) {
   // HEVC codec id consists of:
   const size_t maxHevcCodecIdLength =
       5 +  // 'hev1.' or 'hvc1.' prefix (5 chars)
@@ -606,7 +638,9 @@ bool ExtractH265CodecDetails(const nsAString& aCodec, uint8_t& aProfile,
 
   nsresult rv;
   CheckedUint8 profile;
+  uint8_t profileSpace = 0;
   int32_t compabilityFlags = 0;
+  bool tierFlag = false;
   CheckedUint8 level = 0;
   nsTArray<uint8_t> constraints;
 
@@ -630,7 +664,9 @@ bool ExtractH265CodecDetails(const nsAString& aCodec, uint8_t& aProfile,
           fieldStr.First() == u'C') {
         validProfileSpace.emplace(1 + (fieldStr.First() - 'A'));
       }
-      // If fieldStr.First() is not A, B, C or a digit, ToInteger() should fail.
+      profileSpace = validProfileSpace.valueOr(0);
+      // ToInteger skips a leading character that is not a hex digit, so an
+      // unrecognized profile space is dropped rather than rejected.
       profile = validProfileSpace ? Substring(fieldStr, 1).ToInteger(&rv)
                                   : fieldStr.ToInteger(&rv);
       if (NS_FAILED(rv) || !profile.isValid() || profile.value() > 0x1F) {
@@ -650,7 +686,9 @@ bool ExtractH265CodecDetails(const nsAString& aCodec, uint8_t& aProfile,
       if (fieldStr.First() == u'L' || fieldStr.First() == u'H') {
         validProfileTier.emplace(fieldStr.First() == u'L' ? 0 : 1);
       }
-      // If fieldStr.First() is not L, H, or a digit, ToInteger() should fail.
+      tierFlag = validProfileTier.valueOr(0) != 0;
+      // ToInteger skips a leading character that is not a hex digit, so an
+      // unrecognized tier is dropped rather than rejected.
       level = validProfileTier ? Substring(fieldStr, 1).ToInteger(&rv)
                                : fieldStr.ToInteger(&rv);
       if (NS_FAILED(rv) || !level.isValid()) {
@@ -676,9 +714,20 @@ bool ExtractH265CodecDetails(const nsAString& aCodec, uint8_t& aProfile,
     return false;
   }
 
-  aProfile = profile.value();
-  aLevel = level.value();
-  aConstraints = std::move(constraints);
+  aDetails->general_profile_space = profileSpace;
+  aDetails->general_tier_flag = tierFlag;
+  aDetails->general_profile_idc = profile.value();
+  aDetails->general_profile_compatibility_flags =
+      ReverseBitOrder(static_cast<uint32_t>(compabilityFlags));
+  // ISO/IEC 14496-15 Annex E.3: "trailing bytes that are zero may be omitted."
+  // Store the constraint bytes left-aligned in
+  // general_constraint_indicator_flags.
+  aDetails->general_constraint_indicator_flags = 0;
+  for (size_t i = 0; i < constraints.Length(); i++) {
+    aDetails->general_constraint_indicator_flags |=
+        static_cast<uint64_t>(constraints[i]) << (40 - i * 8);
+  }
+  aDetails->general_level_idc = level.value();
   return true;
 }
 
@@ -977,7 +1026,7 @@ nsresult GenerateRandomPathName(nsCString& aOutSalt, uint32_t aLength) {
   return NS_OK;
 }
 
-already_AddRefed<TaskQueue> CreateMediaDecodeTaskQueue(const char* aName) {
+already_AddRefed<TaskQueue> CreateMediaDecodeTaskQueue(StaticString aName) {
   RefPtr<TaskQueue> queue = TaskQueue::Create(
       GetMediaThreadPool(MediaThreadType::PLATFORM_DECODER), aName);
   return queue.forget();
@@ -1055,7 +1104,8 @@ void LogToBrowserConsole(const nsAString& aMsg) {
   if (!NS_IsMainThread()) {
     nsString msg(aMsg);
     nsCOMPtr<nsIRunnable> task = NS_NewRunnableFunction(
-        "LogToBrowserConsole", [msg]() { LogToBrowserConsole(msg); });
+        "LogToBrowserConsole",
+        [msg = std::move(msg)]() { LogToBrowserConsole(msg); });
     SchedulerGroup::Dispatch(task.forget());
     return;
   }
@@ -1112,11 +1162,35 @@ bool IsH264CodecString(const nsAString& aCodec) {
                                  H264CodecStringStrictness::Lenient);
 }
 
+bool IsAllowedH264Codec(const nsAString& aCodec) {
+  uint8_t profile = 0, constraint = 0;
+  H264_LEVEL level;
+
+  // Don't validate too much here, validation happens below
+  if (!ExtractH264CodecDetails(aCodec, profile, constraint, level,
+                               H264CodecStringStrictness::Lenient)) {
+    return false;
+  }
+
+  // Just assume what we can play on all platforms the codecs/formats that
+  // WMF can play, since we don't have documentation about what other
+  // platforms can play... According to the WMF documentation:
+  // http://msdn.microsoft.com/en-us/library/windows/desktop/dd797815%28v=vs.85%29.aspx
+  // "The Media Foundation H.264 video decoder is a Media Foundation Transform
+  // that supports decoding of Baseline, Main, and High profiles, up to level
+  // 5.1.". We extend the limit to level 6.2, relying on the decoder to handle
+  // any potential errors, the level limit being rather arbitrary.
+  // We also report that we can play Extended profile, as there are
+  // bitstreams that are Extended compliant that are also Baseline compliant.
+  return level >= H264_LEVEL::H264_LEVEL_1 &&
+         level <= H264_LEVEL::H264_LEVEL_6_2 &&
+         (profile == H264_PROFILE_BASE || profile == H264_PROFILE_MAIN ||
+          profile == H264_PROFILE_EXTENDED || profile == H264_PROFILE_HIGH);
+}
+
 bool IsH265CodecString(const nsAString& aCodec) {
-  uint8_t profile = 0;
-  uint8_t level = 0;
-  nsTArray<uint8_t> constraints;
-  return ExtractH265CodecDetails(aCodec, profile, level, constraints);
+  H265CodecDetails details;
+  return ExtractH265CodecDetails(aCodec, &details);
 }
 
 bool IsAACCodecString(const nsAString& aCodec) {
@@ -1125,10 +1199,9 @@ bool IsAACCodecString(const nsAString& aCodec) {
              "mp4a.40.02") ||  // MPEG4 AAC-LC(for compatibility)
          aCodec.EqualsLiteral("mp4a.40.5") ||  // MPEG4 HE-AAC
          aCodec.EqualsLiteral(
-             "mp4a.40.05") ||                // MPEG4 HE-AAC(for compatibility)
-         aCodec.EqualsLiteral("mp4a.67") ||  // MPEG2 AAC-LC
-         aCodec.EqualsLiteral("mp4a.40.29") ||  // MPEG4 HE-AACv2
-         aCodec.EqualsLiteral("mp4a.40.42");    // MPEG-D USAC (xHE-AAC)
+             "mp4a.40.05") ||                 // MPEG4 HE-AAC(for compatibility)
+         aCodec.EqualsLiteral("mp4a.67") ||   // MPEG2 AAC-LC
+         aCodec.EqualsLiteral("mp4a.40.29");  // MPEG4 HE-AACv2
 }
 
 bool IsVP8CodecString(const nsAString& aCodec) {
@@ -1164,10 +1237,10 @@ UniquePtr<TrackInfo> CreateTrackInfoWithMIMEType(
     const nsACString& aCodecMIMEType) {
   UniquePtr<TrackInfo> trackInfo;
   if (StartsWith(aCodecMIMEType, "audio/")) {
-    trackInfo.reset(new AudioInfo());
+    trackInfo = std::make_unique<AudioInfo>();
     trackInfo->mMimeType = aCodecMIMEType;
   } else if (StartsWith(aCodecMIMEType, "video/")) {
-    trackInfo.reset(new VideoInfo());
+    trackInfo = std::make_unique<VideoInfo>();
     trackInfo->mMimeType = aCodecMIMEType;
   }
   return trackInfo;

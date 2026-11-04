@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -23,7 +21,6 @@
 #include "nsContentUtils.h"
 #include "nsGkAtoms.h"
 #include "nsIContentInlines.h"
-#include "nsIDragService.h"
 #include "nsIDragSession.h"
 #include "nsIPopupContainer.h"
 #include "nsIScriptContext.h"
@@ -59,6 +56,16 @@ nsXULTooltipListener::~nsXULTooltipListener() {
 NS_IMPL_ISUPPORTS(nsXULTooltipListener, nsIDOMEventListener)
 
 void nsXULTooltipListener::MouseOut(Event* aEvent) {
+  // This listener is a process-wide singleton, so mouseouts of nodes we are not
+  // tracking reach it too. They say nothing about the node the mouse is
+  // hovering, and acting on them cancels a tooltip about to show in another
+  // window.
+  nsCOMPtr<nsIContent> previousTarget =
+      do_QueryReferent(mPreviousMouseMoveTarget);
+  if (previousTarget != aEvent->GetOriginalTarget()) {
+    return;
+  }
+
   // reset flag so that tooltip will display on the next MouseMove
   mTooltipShownOnce = false;
   mPreviousMouseMoveTarget = nullptr;
@@ -146,11 +153,6 @@ void nsXULTooltipListener::MouseMove(Event* aEvent) {
 
   auto* const sourceContent =
       nsIContent::FromEventTargetOrNull(aEvent->GetCurrentTarget());
-  mSourceNode = do_GetWeakReference(sourceContent);
-  mIsSourceTree = sourceContent->IsXULElement(nsGkAtoms::treechildren);
-  if (mIsSourceTree) {
-    CheckTreeBodyMove(mouseEvent);
-  }
 
   // as the mouse moves, we want to make sure we reset the timer to show it,
   // so that the delay is from when the mouse stops moving, not when it enters
@@ -163,6 +165,16 @@ void nsXULTooltipListener::MouseMove(Event* aEvent) {
   if (!isSameTarget) {
     HideTooltip();
     mTooltipShownOnce = false;
+  }
+
+  mIsSourceTree = sourceContent->IsXULElement(nsGkAtoms::treechildren);
+  // Record the source only once the tooltip that was showing has been torn
+  // down: HideTooltip() runs DestroyTooltip(), which clears mSourceNode, and
+  // ShowTooltip() needs it when the timer armed below fires.
+  // CheckTreeBodyMove() needs it too.
+  mSourceNode = do_GetWeakReference(sourceContent);
+  if (mIsSourceTree) {
+    CheckTreeBodyMove(mouseEvent);
   }
 
   // If the mouse moves while the tooltip is up, hide it. If nothing is
@@ -198,7 +210,7 @@ void nsXULTooltipListener::MouseMove(Event* aEvent) {
       nsresult rv = NS_NewTimerWithFuncCallback(
           getter_AddRefs(mTooltipTimer), sTooltipCallback, this,
           StaticPrefs::ui_tooltip_delay_ms(), nsITimer::TYPE_ONE_SHOT,
-          "sTooltipCallback", GetMainThreadSerialEventTarget());
+          "sTooltipCallback"_ns, GetMainThreadSerialEventTarget());
       if (NS_FAILED(rv)) {
         mTargetNode = nullptr;
         mSourceNode = nullptr;
@@ -243,18 +255,19 @@ nsXULTooltipListener::HandleEvent(Event* aEvent) {
     return NS_OK;
   }
 
+  if (type.EqualsLiteral("pagehide")) {
+    HideTooltip();
+    return NS_OK;
+  }
+
   // Note that mousemove, mouseover and mouseout might be
   // fired even during dragging due to widget's bug.
-  nsCOMPtr<nsIDragService> dragService =
-      do_GetService("@mozilla.org/widget/dragservice;1");
-  NS_ENSURE_TRUE(dragService, NS_OK);
   auto* widgetGuiEvent = aEvent->WidgetEventPtr()->AsGUIEvent();
   if (!widgetGuiEvent) {
     return NS_OK;
   }
-  nsCOMPtr<nsIDragSession> dragSession =
-      dragService->GetCurrentSession(widgetGuiEvent->mWidget);
-  if (dragSession) {
+  if (nsCOMPtr<nsIDragSession> dragSession =
+          nsContentUtils::GetDragSession(widgetGuiEvent->mWidget)) {
     return NS_OK;
   }
 
@@ -416,6 +429,11 @@ nsresult nsXULTooltipListener::ShowTooltip() {
   }
   mSourceNode = nullptr;
 
+  if (Document* sourceDoc = sourceNode->GetComposedDoc()) {
+    mTooltipSourceDoc = do_GetWeakReference(sourceDoc);
+    sourceDoc->AddSystemEventListener(u"pagehide"_ns, this, true);
+  }
+
   return NS_OK;
 }
 
@@ -429,7 +447,8 @@ static void SetTitletipLabel(XULTreeElement* aTree, Element* aTooltip,
 #endif
         view->GetCellText(aRow, aCol, label);
     NS_WARNING_ASSERTION(NS_SUCCEEDED(rv), "Couldn't get the cell text!");
-    aTooltip->SetAttr(kNameSpaceID_None, nsGkAtoms::label, label, true);
+    aTooltip->SetAttr(kNameSpaceID_None, nsGkAtoms::label, label, true,
+                      IsKnownNewAttr::No);
   }
 }
 
@@ -448,7 +467,7 @@ void nsXULTooltipListener::LaunchTooltip() {
       return;
     }
     currentTooltip->SetAttr(kNameSpaceID_None, nsGkAtoms::titletip, u"true"_ns,
-                            true);
+                            true, IsKnownNewAttr::No);
   } else {
     currentTooltip->UnsetAttr(kNameSpaceID_None, nsGkAtoms::titletip, true);
   }
@@ -552,7 +571,8 @@ nsresult nsXULTooltipListener::FindTooltip(nsIContent* aTarget,
         nsIPopupContainer::GetPopupContainer(document->GetPresShell());
     NS_ENSURE_STATE(popupContainer);
     if (RefPtr<Element> tooltip = popupContainer->GetDefaultTooltip()) {
-      tooltip->SetAttr(kNameSpaceID_None, nsGkAtoms::label, tooltipText, true);
+      tooltip->SetAttr(kNameSpaceID_None, nsGkAtoms::label, tooltipText, true,
+                       IsKnownNewAttr::No);
       tooltip.forget(aTooltip);
     }
     return NS_OK;
@@ -641,6 +661,10 @@ nsresult nsXULTooltipListener::DestroyTooltip() {
   // kill any ongoing timers
   KillTooltipTimer();
   mSourceNode = nullptr;
+  if (nsCOMPtr<Document> sourceDoc = do_QueryReferent(mTooltipSourceDoc)) {
+    sourceDoc->RemoveSystemEventListener(u"pagehide"_ns, this, true);
+  }
+  mTooltipSourceDoc = nullptr;
   mLastTreeCol = nullptr;
 
   return NS_OK;

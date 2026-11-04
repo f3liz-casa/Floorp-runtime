@@ -11,8 +11,10 @@
 #include "modules/desktop_capture/shared_desktop_frame.h"
 
 #include <memory>
-#include <type_traits>
 #include <utility>
+
+#include "api/scoped_refptr.h"
+#include "modules/desktop_capture/desktop_frame.h"
 
 namespace webrtc {
 
@@ -50,9 +52,11 @@ bool SharedDesktopFrame::IsShared() {
 SharedDesktopFrame::SharedDesktopFrame(scoped_refptr<Core> core)
     : DesktopFrame((*core)->size(),
                    (*core)->stride(),
+                   (*core)->pixel_format(),
                    (*core)->data(),
-                   (*core)->shared_memory()),
-      core_(core) {
+                   (*core)->shared_memory(),
+                   (*core)->texture()),
+      core_(std::move(core)) {
   CopyFrameInfoFrom(*(core_->get()));
 }
 

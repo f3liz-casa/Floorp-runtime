@@ -33,6 +33,20 @@ export const FeatureManifest: {
             };
         };
     };
+    testPlatformExposureFeature: {
+        description: string;
+        owner: string;
+        applications: string[];
+        hasExposure: boolean;
+        exposureDescription: string;
+        isEarlyStartup: boolean;
+        variables: {
+            enabled: {
+                type: string;
+                description: string;
+            };
+        };
+    };
     "nimbus-qa-1": {
         description: string;
         owner: string;
@@ -79,33 +93,11 @@ export const FeatureManifest: {
             path: string;
         };
     };
-    nimbusStore: {
-        description: string;
-        owner: string;
-        hasExposure: boolean;
-        variables: {
-            dbEnabled: {
-                type: string;
-                description: string;
-                setPref: {
-                    branch: string;
-                    pref: string;
-                };
-            };
-            dbSyncEnabled: {
-                type: string;
-                description: string;
-                setPref: {
-                    branch: string;
-                    pref: string;
-                };
-            };
-        };
-    };
     search: {
         description: string;
         owner: string;
         hasExposure: boolean;
+        exposureDescription: string;
         variables: {
             scotchBonnetEnableOverride: {
                 type: string;
@@ -136,6 +128,14 @@ export const FeatureManifest: {
                 description: string;
             };
             visualSearchEnabled: {
+                type: string;
+                setPref: {
+                    branch: string;
+                    pref: string;
+                };
+                description: string;
+            };
+            highlightToSearchEnabled: {
                 type: string;
                 setPref: {
                     branch: string;
@@ -200,6 +200,11 @@ export const FeatureManifest: {
                 type: string;
                 description: string;
             };
+            allowSearchSuggestionsForSimpleOrigins: {
+                type: string;
+                fallbackPref: string;
+                description: string;
+            };
             ampFeatureGate: {
                 type: string;
                 fallbackPref: string;
@@ -212,16 +217,62 @@ export const FeatureManifest: {
             };
             autoFillAdaptiveHistoryEnabled: {
                 type: string;
-                fallbackPref: string;
+                setPref: {
+                    pref: string;
+                    branch: string;
+                };
                 description: string;
             };
             autoFillAdaptiveHistoryMinCharsThreshold: {
                 type: string;
-                fallbackPref: string;
+                setPref: {
+                    pref: string;
+                    branch: string;
+                };
                 description: string;
             };
             autoFillAdaptiveHistoryUseCountThreshold: {
                 type: string;
+                description: string;
+            };
+            autoFillAdaptiveHistoryUrlMinPicks: {
+                type: string;
+                setPref: {
+                    pref: string;
+                    branch: string;
+                };
+                description: string;
+            };
+            autoFillAdaptiveHistoryUrlPicksAgeDays: {
+                type: string;
+                setPref: {
+                    pref: string;
+                    branch: string;
+                };
+                description: string;
+            };
+            autoFillBackspaceBlockDurationMs: {
+                type: string;
+                setPref: {
+                    pref: string;
+                    branch: string;
+                };
+                description: string;
+            };
+            autoFillBackspaceThreshold: {
+                type: string;
+                setPref: {
+                    pref: string;
+                    branch: string;
+                };
+                description: string;
+            };
+            autoFillDismissalBlockDurationMs: {
+                type: string;
+                setPref: {
+                    pref: string;
+                    branch: string;
+                };
                 description: string;
             };
             deduplicationEnabled: {
@@ -237,16 +288,12 @@ export const FeatureManifest: {
                 fallbackPref: string;
                 description: string;
             };
-            fakespotMinKeywordLength: {
-                type: string;
-                description: string;
-            };
-            fakespotShowLessFrequentlyCap: {
+            flightStatusFeatureGate: {
                 type: string;
                 fallbackPref: string;
                 description: string;
             };
-            fakespotSuggestedIndex: {
+            importantDatesFeatureGate: {
                 type: string;
                 fallbackPref: string;
                 description: string;
@@ -259,12 +306,9 @@ export const FeatureManifest: {
                 };
                 description: string;
             };
-            marketMinKeywordLength: {
+            marketFeatureGate: {
                 type: string;
-                description: string;
-            };
-            marketShowLessFrequentlyCap: {
-                type: string;
+                fallbackPref: string;
                 description: string;
             };
             mdnFeatureGate: {
@@ -305,6 +349,21 @@ export const FeatureManifest: {
                 fallbackPref: string;
                 description: string;
             };
+            newtabFeatureGate: {
+                type: string;
+                fallbackPref: string;
+                description: string;
+            };
+            newtabVariantA: {
+                type: string;
+                fallbackPref: string;
+                description: string;
+            };
+            newtabVariantB: {
+                type: string;
+                fallbackPref: string;
+                description: string;
+            };
             exposureResults: {
                 type: string;
                 setPref: {
@@ -326,56 +385,12 @@ export const FeatureManifest: {
                 fallbackPref: string;
                 description: string;
             };
-            quickSuggestContextualOptInEnabled: {
+            quickSuggestAmpTopPickUseNovaIconSize: {
                 type: string;
                 setPref: {
                     branch: string;
                     pref: string;
                 };
-                description: string;
-            };
-            quickSuggestContextualOptInFirstReshowAfterPeriodDays: {
-                type: string;
-                setPref: {
-                    branch: string;
-                    pref: string;
-                };
-                description: string;
-            };
-            quickSuggestContextualOptInSecondReshowAfterPeriodDays: {
-                type: string;
-                setPref: {
-                    branch: string;
-                    pref: string;
-                };
-                description: string;
-            };
-            quickSuggestContextualOptInThirdReshowAfterPeriodDays: {
-                type: string;
-                setPref: {
-                    branch: string;
-                    pref: string;
-                };
-                description: string;
-            };
-            quickSuggestContextualOptInImpressionLimit: {
-                type: string;
-                setPref: {
-                    branch: string;
-                    pref: string;
-                };
-                description: string;
-            };
-            quickSuggestContextualOptInImpressionDaysLimit: {
-                type: string;
-                setPref: {
-                    branch: string;
-                    pref: string;
-                };
-                description: string;
-            };
-            quickSuggestDataCollectionEnabled: {
-                type: string;
                 description: string;
             };
             quickSuggestDynamicSuggestionTypes: {
@@ -420,6 +435,11 @@ export const FeatureManifest: {
                 fallbackPref: string;
                 description: string;
             };
+            quickSuggestOnlineAvailable: {
+                type: string;
+                fallbackPref: string;
+                description: string;
+            };
             quickSuggestRankingMode: {
                 type: string;
                 fallbackPref: string;
@@ -449,6 +469,14 @@ export const FeatureManifest: {
                 fallbackPref: string;
                 description: string;
             };
+            realtimeMinKeywordLength: {
+                type: string;
+                description: string;
+            };
+            realtimeShowLessFrequentlyCap: {
+                type: string;
+                description: string;
+            };
             recentSearchesFeatureGate: {
                 type: string;
                 setPref: {
@@ -465,6 +493,11 @@ export const FeatureManifest: {
                 };
                 description: string;
             };
+            resultExplanationsFeatureGate: {
+                type: string;
+                fallbackPref: string;
+                description: string;
+            };
             semanticHistoryEnable: {
                 type: string;
                 setPref: {
@@ -473,7 +506,31 @@ export const FeatureManifest: {
                 };
                 description: string;
             };
-            semanticHistoryCompletionThreshold: {
+            semanticHistoryDefaultBatchChunksize: {
+                type: string;
+                setPref: {
+                    branch: string;
+                    pref: string;
+                };
+                description: string;
+            };
+            semanticHistoryMaxChunkTimeMs: {
+                type: string;
+                setPref: {
+                    branch: string;
+                    pref: string;
+                };
+                description: string;
+            };
+            semanticHistoryMaxChunkTimeMsFailsafe: {
+                type: string;
+                setPref: {
+                    branch: string;
+                    pref: string;
+                };
+                description: string;
+            };
+            semanticHistoryMinEntriesBeforeThrottle: {
                 type: string;
                 setPref: {
                     branch: string;
@@ -489,12 +546,57 @@ export const FeatureManifest: {
                 };
                 description: string;
             };
+            semanticHistorySmartwindowDistanceThreshold: {
+                type: string;
+                setPref: {
+                    branch: string;
+                    pref: string;
+                };
+                description: string;
+            };
+            semanticHistorySupportedRegions: {
+                type: string;
+                setPref: {
+                    branch: string;
+                    pref: string;
+                };
+                description: string;
+            };
+            semanticHistoryEmbeddingType: {
+                type: string;
+                setPref: {
+                    branch: string;
+                    pref: string;
+                };
+                description: string;
+            };
+            semanticHistoryMultilingualEmbeddingRegions: {
+                type: string;
+                setPref: {
+                    branch: string;
+                    pref: string;
+                };
+                description: string;
+            };
+            semanticHistoryInSeparateGroup: {
+                type: string;
+                setPref: {
+                    branch: string;
+                    pref: string;
+                };
+                description: string;
+            };
             showDebuggingIcons: {
                 type: string;
                 setPref: {
                     branch: string;
                     pref: string;
                 };
+                description: string;
+            };
+            sportsFeatureGate: {
+                type: string;
+                fallbackPref: string;
                 description: string;
             };
             suggestSemanticHistoryMinLength: {
@@ -511,6 +613,11 @@ export const FeatureManifest: {
                     branch: string;
                     pref: string;
                 };
+                description: string;
+            };
+            trackerCountFeatureGate: {
+                type: string;
+                fallbackPref: string;
                 description: string;
             };
             unitConversionEnabled: {
@@ -573,6 +680,11 @@ export const FeatureManifest: {
                 description: string;
             };
             yelpSuggestPriority: {
+                type: string;
+                fallbackPref: string;
+                description: string;
+            };
+            yelpRealtimeFeatureGate: {
                 type: string;
                 fallbackPref: string;
                 description: string;
@@ -800,6 +912,22 @@ export const FeatureManifest: {
             };
         };
     };
+    pushNotificationHelper: {
+        description: string;
+        owner: string;
+        applications: string[];
+        hasExposure: boolean;
+        variables: {
+            available: {
+                type: string;
+                setPref: {
+                    branch: string;
+                    pref: string;
+                };
+                description: string;
+            };
+        };
+    };
     firefoxBridge: {
         description: string;
         owner: string;
@@ -821,6 +949,29 @@ export const FeatureManifest: {
         hasExposure: boolean;
         variables: {
             enabled: {
+                type: string;
+                description: string;
+                setPref: {
+                    branch: string;
+                    pref: string;
+                };
+            };
+        };
+    };
+    diskCache: {
+        description: string;
+        owner: string;
+        hasExposure: boolean;
+        variables: {
+            diskCacheEnabled: {
+                type: string;
+                description: string;
+                setPref: {
+                    branch: string;
+                    pref: string;
+                };
+            };
+            diskCacheEncryptionEnabled: {
                 type: string;
                 description: string;
                 setPref: {
@@ -1024,21 +1175,6 @@ export const FeatureManifest: {
             };
         };
     };
-    newtabGroupedSponsoredControls: {
-        description: string;
-        owner: string;
-        hasExposure: boolean;
-        variables: {
-            enabled: {
-                type: string;
-                setPref: {
-                    branch: string;
-                    pref: string;
-                };
-                description: string;
-            };
-        };
-    };
     newtabInlineTopicSelection: {
         description: string;
         owner: string;
@@ -1080,6 +1216,21 @@ export const FeatureManifest: {
                     branch: string;
                     pref: string;
                 };
+                description: string;
+            };
+        };
+    };
+    newtabOhttpImages: {
+        description: string;
+        owner: string;
+        hasExposure: boolean;
+        variables: {
+            enabled: {
+                type: string;
+                description: string;
+            };
+            includeTopStoriesSection: {
+                type: string;
                 description: string;
             };
         };
@@ -1136,14 +1287,6 @@ export const FeatureManifest: {
                 };
                 description: string;
             };
-            redactNewtabPing: {
-                type: string;
-                setPref: {
-                    branch: string;
-                    pref: string;
-                };
-                description: string;
-            };
             includeInferredInterests: {
                 type: string;
                 setPref: {
@@ -1177,35 +1320,12 @@ export const FeatureManifest: {
             };
         };
     };
-    newtabRefinedCardsLayout: {
-        description: string;
-        owner: string;
-        hasExposure: boolean;
-        variables: {
-            enabled: {
-                type: string;
-                setPref: {
-                    branch: string;
-                    pref: string;
-                };
-                description: string;
-            };
-        };
-    };
     newTabSectionsExperiment: {
         description: string;
         owner: string;
         hasExposure: boolean;
         variables: {
             sectionsEnabled: {
-                type: string;
-                setPref: {
-                    branch: string;
-                    pref: string;
-                };
-                description: string;
-            };
-            cardRefreshThumbsUpDownEnabled: {
                 type: string;
                 setPref: {
                     branch: string;
@@ -1335,12 +1455,47 @@ export const FeatureManifest: {
             };
         };
     };
+    newtabInferredPersonalization: {
+        description: string;
+        owner: string;
+        hasExposure: boolean;
+        variables: {
+            iv_refresh_frequency_hours: {
+                type: string;
+                description: string;
+            };
+            history_cull_days: {
+                type: string;
+                description: string;
+            };
+            normalized_time_zone_offset: {
+                type: string;
+                description: string;
+            };
+            local_popular_today_rerank: {
+                type: string;
+                description: string;
+            };
+            local_inferred_weight: {
+                type: string;
+                description: string;
+            };
+            server_inferred_weight: {
+                type: string;
+                description: string;
+            };
+        };
+    };
     newtabSmartShortcuts: {
         description: string;
         owner: string;
         hasExposure: boolean;
         variables: {
             enabled: {
+                type: string;
+                description: string;
+            };
+            force_log: {
                 type: string;
                 description: string;
             };
@@ -1357,6 +1512,50 @@ export const FeatureManifest: {
                 description: string;
             };
             thom_weight: {
+                type: string;
+                description: string;
+            };
+            frec_weight: {
+                type: string;
+                description: string;
+            };
+            hour_weight: {
+                type: string;
+                description: string;
+            };
+            daily_weight: {
+                type: string;
+                description: string;
+            };
+            bmark_weight: {
+                type: string;
+                description: string;
+            };
+            rece_weight: {
+                type: string;
+                description: string;
+            };
+            freq_weight: {
+                type: string;
+                description: string;
+            };
+            refre_weight: {
+                type: string;
+                description: string;
+            };
+            bias_weight: {
+                type: string;
+                description: string;
+            };
+            fset: {
+                type: string;
+                description: string;
+            };
+            eta: {
+                type: string;
+                description: string;
+            };
+            click_bonus: {
                 type: string;
                 description: string;
             };
@@ -1432,6 +1631,18 @@ export const FeatureManifest: {
             };
         };
     };
+    adsBackend: {
+        description: string;
+        owner: string;
+        hasExposure: boolean;
+        allowCoenrollment: boolean;
+        variables: {
+            flags: {
+                type: string;
+                description: string;
+            };
+        };
+    };
     newtabTrainhop: {
         description: string;
         owner: string;
@@ -1448,10 +1659,11 @@ export const FeatureManifest: {
             };
         };
     };
-    newtabTrainhopAddon: {
+    newtabTrainhopAddonDeployment: {
         description: string;
         owner: string;
         hasExposure: boolean;
+        allowCoenrollment: boolean;
         exposureDescription: string;
         variables: {
             xpi_download_path: {
@@ -1461,32 +1673,16 @@ export const FeatureManifest: {
             addon_version: {
                 type: string;
                 description: string;
-                setPref: {
-                    branch: string;
-                    pref: string;
-                };
             };
         };
     };
-    newtabTrendingSearchWidget: {
+    newtabTrainhopFirstStartup: {
         description: string;
         owner: string;
         hasExposure: boolean;
         variables: {
             enabled: {
                 type: string;
-                setPref: {
-                    branch: string;
-                    pref: string;
-                };
-                description: string;
-            };
-            variant: {
-                type: string;
-                setPref: {
-                    branch: string;
-                    pref: string;
-                };
                 description: string;
             };
         };
@@ -1618,6 +1814,18 @@ export const FeatureManifest: {
                 type: string;
                 description: string;
             };
+            clocksEnabled: {
+                type: string;
+                description: string;
+            };
+            listsBadgeEnabled: {
+                type: string;
+                description: string;
+            };
+            listsBadgeLabel: {
+                type: string;
+                description: string;
+            };
         };
     };
     pocketNewtab: {
@@ -1626,11 +1834,6 @@ export const FeatureManifest: {
         hasExposure: boolean;
         isEarlyStartup: boolean;
         variables: {
-            spocTopsitesPositions: {
-                type: string;
-                fallbackPref: string;
-                description: string;
-            };
             contileTopsitesPositions: {
                 type: string;
                 fallbackPref: string;
@@ -1642,21 +1845,6 @@ export const FeatureManifest: {
                 description: string;
             };
             spocZoneIds: {
-                type: string;
-                fallbackPref: string;
-                description: string;
-            };
-            spocTopsitesAdTypes: {
-                type: string;
-                fallbackPref: string;
-                description: string;
-            };
-            spocTopsitesZoneIds: {
-                type: string;
-                fallbackPref: string;
-                description: string;
-            };
-            spocTopsitesPlacementEnabled: {
                 type: string;
                 fallbackPref: string;
                 description: string;
@@ -1687,16 +1875,6 @@ export const FeatureManifest: {
                 description: string;
             };
             newFooterSection: {
-                type: string;
-                fallbackPref: string;
-                description: string;
-            };
-            saveToPocketCard: {
-                type: string;
-                fallbackPref: string;
-                description: string;
-            };
-            saveToPocketCardRegions: {
                 type: string;
                 fallbackPref: string;
                 description: string;
@@ -1732,26 +1910,6 @@ export const FeatureManifest: {
                 description: string;
             };
             descLines: {
-                type: string;
-                fallbackPref: string;
-                description: string;
-            };
-            onboardingExperience: {
-                type: string;
-                fallbackPref: string;
-                description: string;
-            };
-            essentialReadsHeader: {
-                type: string;
-                fallbackPref: string;
-                description: string;
-            };
-            editorsPicksHeader: {
-                type: string;
-                fallbackPref: string;
-                description: string;
-            };
-            recentSavesEnabled: {
                 type: string;
                 fallbackPref: string;
                 description: string;
@@ -1822,24 +1980,6 @@ export const FeatureManifest: {
                 };
                 description: string;
             };
-            recsPersonalized: {
-                type: string;
-                fallbackPref: string;
-                description: string;
-            };
-            spocsPersonalized: {
-                type: string;
-                fallbackPref: string;
-                description: string;
-            };
-            discoveryStreamConfig: {
-                description: string;
-                type: string;
-                setPref: {
-                    branch: string;
-                    pref: string;
-                };
-            };
             spocsEndpoint: {
                 description: string;
                 type: string;
@@ -1849,14 +1989,6 @@ export const FeatureManifest: {
                 };
             };
             spocsEndpointAllowlist: {
-                description: string;
-                type: string;
-                setPref: {
-                    branch: string;
-                    pref: string;
-                };
-            };
-            spocsClearEndpoint: {
                 description: string;
                 type: string;
                 setPref: {
@@ -1874,25 +2006,10 @@ export const FeatureManifest: {
                 type: string;
                 fallbackPref: string;
             };
-            spocMessageVariant: {
-                description: string;
-                type: string;
-                fallbackPref: string;
-            };
             regionStoriesConfig: {
                 description: string;
                 type: string;
                 fallbackPref: string;
-            };
-            regionBffConfig: {
-                type: string;
-                fallbackPref: string;
-                description: string;
-            };
-            merinoProviderEnabled: {
-                type: string;
-                fallbackPref: string;
-                description: string;
             };
             merinoProviderEndpoint: {
                 type: string;
@@ -1900,11 +2017,6 @@ export const FeatureManifest: {
                 description: string;
             };
             regionStoriesBlock: {
-                description: string;
-                type: string;
-                fallbackPref: string;
-            };
-            localeListConfig: {
                 description: string;
                 type: string;
                 fallbackPref: string;
@@ -1938,104 +2050,12 @@ export const FeatureManifest: {
                 type: string;
                 description: string;
             };
-            topSitesContileSovEnabled: {
-                description: string;
-                type: string;
-                fallbackPref: string;
-            };
             pocketFeedParameters: {
                 type: string;
                 fallbackPref: string;
                 description: string;
             };
             merinoFeedExperiment: {
-                type: string;
-                setPref: {
-                    branch: string;
-                    pref: string;
-                };
-                description: string;
-            };
-            thumbsUpDown: {
-                type: string;
-                setPref: {
-                    branch: string;
-                    pref: string;
-                };
-                description: string;
-            };
-            regionThumbsUpDownConfig: {
-                description: string;
-                type: string;
-                setPref: {
-                    branch: string;
-                    pref: string;
-                };
-            };
-            localeThumbsUpDownConfig: {
-                description: string;
-                type: string;
-                setPref: {
-                    branch: string;
-                    pref: string;
-                };
-            };
-            thumbsUpDownCompactLayout: {
-                type: string;
-                setPref: {
-                    branch: string;
-                    pref: string;
-                };
-                description: string;
-            };
-        };
-    };
-    saveToPocket: {
-        description: string;
-        owner: string;
-        hasExposure: boolean;
-        variables: {
-            enabled: {
-                type: string;
-                setPref: {
-                    branch: string;
-                    pref: string;
-                };
-                description: string;
-            };
-            emailButton: {
-                type: string;
-                setPref: {
-                    branch: string;
-                    pref: string;
-                };
-                description: string;
-            };
-            hideRecentSaves: {
-                type: string;
-                setPref: {
-                    branch: string;
-                    pref: string;
-                };
-                description: string;
-            };
-            bffRecentSaves: {
-                type: string;
-                setPref: {
-                    branch: string;
-                    pref: string;
-                };
-                description: string;
-            };
-            bffApi: {
-                type: string;
-                setPref: {
-                    branch: string;
-                    pref: string;
-                };
-                description: string;
-            };
-            oAuthConsumerKeyBff: {
                 type: string;
                 setPref: {
                     branch: string;
@@ -2051,6 +2071,30 @@ export const FeatureManifest: {
         hasExposure: boolean;
         variables: {
             startupBehavior: {
+                type: string;
+                setPref: {
+                    branch: string;
+                    pref: string;
+                };
+                description: string;
+            };
+        };
+    };
+    sessionRestoreNewTab: {
+        description: string;
+        owner: string;
+        hasExposure: boolean;
+        exposureDescription: string;
+        variables: {
+            enabled: {
+                type: string;
+                setPref: {
+                    branch: string;
+                    pref: string;
+                };
+                description: string;
+            };
+            showSetting: {
                 type: string;
                 setPref: {
                     branch: string;
@@ -2082,32 +2126,10 @@ export const FeatureManifest: {
             };
         };
     };
-    "email-autocomplete-relay": {
-        description: string;
-        exposureDescription: string;
-        hasExposure: boolean;
-        owner: string;
-        variables: {
-            firstOfferVersion: {
-                type: string;
-                description: string;
-                fallbackPref: string;
-            };
-            showToAllBrowsers: {
-                type: string;
-                setPref: {
-                    branch: string;
-                    pref: string;
-                };
-                description: string;
-            };
-        };
-    };
     "address-autofill-feature": {
         description: string;
         owner: string;
         hasExposure: boolean;
-        exposureDescription: string;
         variables: {
             status: {
                 type: string;
@@ -2125,6 +2147,128 @@ export const FeatureManifest: {
         hasExposure: boolean;
         variables: {
             creditcardsSupported: {
+                description: string;
+                type: string;
+                setPref: {
+                    branch: string;
+                    pref: string;
+                };
+            };
+        };
+    };
+    "creditcards-cvv-capture": {
+        description: string;
+        owner: string;
+        hasExposure: boolean;
+        variables: {
+            cvvSupported: {
+                description: string;
+                type: string;
+                setPref: {
+                    branch: string;
+                    pref: string;
+                };
+            };
+        };
+    };
+    "autofill-ml": {
+        description: string;
+        owner: string;
+        hasExposure: boolean;
+        variables: {
+            enabled: {
+                description: string;
+                type: string;
+                setPref: {
+                    branch: string;
+                    pref: string;
+                };
+            };
+            twoHeadEnabled: {
+                type: string;
+                setPref: {
+                    branch: string;
+                    pref: string;
+                };
+                description: string;
+            };
+            engineTimeoutMS: {
+                type: string;
+                setPref: {
+                    branch: string;
+                    pref: string;
+                };
+                description: string;
+            };
+            features: {
+                description: string;
+                type: string;
+                setPref: {
+                    branch: string;
+                    pref: string;
+                };
+            };
+            modelVersion: {
+                description: string;
+                type: string;
+                setPref: {
+                    branch: string;
+                    pref: string;
+                };
+            };
+        };
+    };
+    "autofill-ml-ignore-field-types": {
+        description: string;
+        owner: string;
+        hasExposure: boolean;
+        variables: {
+            ignoreFieldTypes: {
+                type: string;
+                setPref: {
+                    branch: string;
+                    pref: string;
+                };
+                description: string;
+            };
+        };
+    };
+    "autofill-suppress-unrecognized-autocomplete": {
+        description: string;
+        owner: string;
+        hasExposure: boolean;
+        variables: {
+            enabled: {
+                type: string;
+                setPref: {
+                    branch: string;
+                    pref: string;
+                };
+                description: string;
+            };
+        };
+    };
+    "autofill-addresses-rust-storage": {
+        description: string;
+        owner: string;
+        hasExposure: boolean;
+        variables: {
+            enabled: {
+                description: string;
+                type: string;
+                setPref: {
+                    branch: string;
+                    pref: string;
+                };
+            };
+        };
+    };
+    "autofill-credit-cards-rust-storage": {
+        description: string;
+        owner: string;
+        hasExposure: boolean;
+        variables: {
+            enabled: {
                 description: string;
                 type: string;
                 setPref: {
@@ -2182,6 +2326,23 @@ export const FeatureManifest: {
                 fallbackPref: string;
                 description: string;
             };
+            focusSetDefaultBrowserButton: {
+                description: string;
+                setPref: {
+                    branch: string;
+                    pref: string;
+                };
+                type: string;
+            };
+            displayKitImageBehindSetDefaultBrowserButton: {
+                description: string;
+                setPref: {
+                    branch: string;
+                    pref: string;
+                };
+                type: string;
+                enum: string[];
+            };
         };
     };
     upgradeDialog: {
@@ -2219,6 +2380,13 @@ export const FeatureManifest: {
         };
         variables: {};
     };
+    includeForWebPush: {
+        description: string;
+        owner: string;
+        hasExposure: boolean;
+        allowCoenrollment: boolean;
+        variables: {};
+    };
     infobar: {
         description: string;
         owner: string;
@@ -2252,6 +2420,38 @@ export const FeatureManifest: {
         };
         variables: {};
     };
+    privacySecurityMessaging: {
+        description: string;
+        owner: string;
+        hasExposure: boolean;
+        exposureDescription: string;
+        variables: {
+            blockingMilestoneMessagingEnabled: {
+                type: string;
+                setPref: {
+                    branch: string;
+                    pref: string;
+                };
+                description: string;
+            };
+            blockingMilestones: {
+                type: string;
+                setPref: {
+                    branch: string;
+                    pref: string;
+                };
+                description: string;
+            };
+            blockingMilestoneUpdateInterval: {
+                type: string;
+                setPref: {
+                    branch: string;
+                    pref: string;
+                };
+                description: string;
+            };
+        };
+    };
     fullPageTranslation: {
         description: string;
         owner: string;
@@ -2283,6 +2483,21 @@ export const FeatureManifest: {
         };
     };
     selectTranslation: {
+        description: string;
+        owner: string;
+        hasExposure: boolean;
+        variables: {
+            enabled: {
+                description: string;
+                type: string;
+                setPref: {
+                    branch: string;
+                    pref: string;
+                };
+            };
+        };
+    };
+    translationsQuickAction: {
         description: string;
         owner: string;
         hasExposure: boolean;
@@ -2335,7 +2550,27 @@ export const FeatureManifest: {
                     pref: string;
                 };
             };
+            enableSignatureVerification: {
+                description: string;
+                type: string;
+                setPref: {
+                    branch: string;
+                    pref: string;
+                };
+            };
         };
+    };
+    "fxms-message": {
+        description: string;
+        owner: string;
+        allowCoenrollment: boolean;
+        hasExposure: boolean;
+        exposureDescription: string;
+        schema: {
+            uri: string;
+            path: string;
+        };
+        variables: {};
     };
     "fxms-message-1": {
         description: string;
@@ -2502,6 +2737,116 @@ export const FeatureManifest: {
         };
         variables: {};
     };
+    "fxms-message-16": {
+        description: string;
+        owner: string;
+        hasExposure: boolean;
+        exposureDescription: string;
+        schema: {
+            uri: string;
+            path: string;
+        };
+        variables: {};
+    };
+    "fxms-message-17": {
+        description: string;
+        owner: string;
+        hasExposure: boolean;
+        exposureDescription: string;
+        schema: {
+            uri: string;
+            path: string;
+        };
+        variables: {};
+    };
+    "fxms-message-18": {
+        description: string;
+        owner: string;
+        hasExposure: boolean;
+        exposureDescription: string;
+        schema: {
+            uri: string;
+            path: string;
+        };
+        variables: {};
+    };
+    "fxms-message-19": {
+        description: string;
+        owner: string;
+        hasExposure: boolean;
+        exposureDescription: string;
+        schema: {
+            uri: string;
+            path: string;
+        };
+        variables: {};
+    };
+    "fxms-message-20": {
+        description: string;
+        owner: string;
+        hasExposure: boolean;
+        exposureDescription: string;
+        schema: {
+            uri: string;
+            path: string;
+        };
+        variables: {};
+    };
+    "fxms-message-21": {
+        description: string;
+        owner: string;
+        hasExposure: boolean;
+        exposureDescription: string;
+        schema: {
+            uri: string;
+            path: string;
+        };
+        variables: {};
+    };
+    "fxms-message-22": {
+        description: string;
+        owner: string;
+        hasExposure: boolean;
+        exposureDescription: string;
+        schema: {
+            uri: string;
+            path: string;
+        };
+        variables: {};
+    };
+    "fxms-message-23": {
+        description: string;
+        owner: string;
+        hasExposure: boolean;
+        exposureDescription: string;
+        schema: {
+            uri: string;
+            path: string;
+        };
+        variables: {};
+    };
+    "fxms-message-24": {
+        description: string;
+        owner: string;
+        hasExposure: boolean;
+        exposureDescription: string;
+        schema: {
+            uri: string;
+            path: string;
+        };
+        variables: {};
+    };
+    "fxms-message-25": {
+        description: string;
+        owner: string;
+        hasExposure: boolean;
+        exposureDescription: string;
+        schema: {
+            uri: string;
+            path: string;
+        };
+        variables: {};
+    };
     whatsNewPage: {
         description: string;
         owner: string;
@@ -2552,6 +2897,22 @@ export const FeatureManifest: {
             path: string;
         };
         variables: {};
+    };
+    privateWindowRedesign: {
+        description: string;
+        owner: string;
+        hasExposure: boolean;
+        exposureDescription: string;
+        variables: {
+            pbwRedesignGate: {
+                type: string;
+                setPref: {
+                    branch: string;
+                    pref: string;
+                };
+                description: string;
+            };
+        };
     };
     backgroundTaskMessage: {
         description: string;
@@ -2667,6 +3028,34 @@ export const FeatureManifest: {
                     branch: string;
                     pref: string;
                 };
+            };
+            enableFOGTransport: {
+                type: string;
+                description: string;
+                setPref: {
+                    branch: string;
+                    pref: string;
+                };
+            };
+        };
+    };
+    legacyTelemetry: {
+        description: string;
+        owner: string;
+        applications: string[];
+        hasExposure: boolean;
+        variables: {
+            disabledPings: {
+                type: string;
+                description: string;
+            };
+            disableMainPingScalars: {
+                type: string;
+                description: string;
+            };
+            disableMainPingHgrams: {
+                type: string;
+                description: string;
             };
         };
     };
@@ -2887,7 +3276,7 @@ export const FeatureManifest: {
                     pref: string;
                 };
             };
-            networkPredictor: {
+            http3CCalgorithm: {
                 description: string;
                 type: string;
                 setPref: {
@@ -2895,7 +3284,23 @@ export const FeatureManifest: {
                     pref: string;
                 };
             };
-            http3CCalgorithm: {
+            http3SlowStartAlgorithm: {
+                description: string;
+                type: string;
+                setPref: {
+                    branch: string;
+                    pref: string;
+                };
+            };
+            http3HyStartAlternativeCssBaseline: {
+                description: string;
+                type: string;
+                setPref: {
+                    branch: string;
+                    pref: string;
+                };
+            };
+            http3SpuriousRecovery: {
                 description: string;
                 type: string;
                 setPref: {
@@ -2927,7 +3332,23 @@ export const FeatureManifest: {
                     pref: string;
                 };
             };
+            dnsNegativeCacheExpiration: {
+                description: string;
+                type: string;
+                setPref: {
+                    branch: string;
+                    pref: string;
+                };
+            };
             http3UseNSPRForIO: {
+                description: string;
+                type: string;
+                setPref: {
+                    branch: string;
+                    pref: string;
+                };
+            };
+            prefetchNext: {
                 description: string;
                 type: string;
                 setPref: {
@@ -3012,7 +3433,39 @@ export const FeatureManifest: {
                     pref: string;
                 };
             };
+            httpMaxUrgentStartExcessiveConnectionsPerHost: {
+                description: string;
+                type: string;
+                setPref: {
+                    branch: string;
+                    pref: string;
+                };
+            };
             speculativeConnectionLimit: {
+                description: string;
+                type: string;
+                setPref: {
+                    branch: string;
+                    pref: string;
+                };
+            };
+            happyEyeballsEnabled: {
+                description: string;
+                type: string;
+                setPref: {
+                    branch: string;
+                    pref: string;
+                };
+            };
+            happyEyeballsResolutionDelay: {
+                description: string;
+                type: string;
+                setPref: {
+                    branch: string;
+                    pref: string;
+                };
+            };
+            happyEyeballsConnectionAttemptDelay: {
                 description: string;
                 type: string;
                 setPref: {
@@ -3081,7 +3534,39 @@ export const FeatureManifest: {
         owner: string;
         hasExposure: boolean;
         variables: {
+            enableLNAWithETPStrict: {
+                description: string;
+                type: string;
+                setPref: {
+                    branch: string;
+                    pref: string;
+                };
+            };
             blockTrackers: {
+                description: string;
+                type: string;
+                setPref: {
+                    branch: string;
+                    pref: string;
+                };
+            };
+            lnaPromptsEnabled: {
+                description: string;
+                type: string;
+                setPref: {
+                    branch: string;
+                    pref: string;
+                };
+            };
+            lnaFeatureEnabled: {
+                description: string;
+                type: string;
+                setPref: {
+                    branch: string;
+                    pref: string;
+                };
+            };
+            blockInsecureContexts: {
                 description: string;
                 type: string;
                 setPref: {
@@ -3574,20 +4059,27 @@ export const FeatureManifest: {
             };
         };
     };
-    cookieStore: {
+    compressionDictionaries: {
         description: string;
         owner: string;
         hasExposure: boolean;
         variables: {
-            enabled: {
+            enableDictionaries: {
+                description: string;
                 type: string;
                 setPref: {
                     branch: string;
                     pref: string;
                 };
-                description: string;
             };
-            managerEnabled: {
+        };
+    };
+    streamingUpload: {
+        description: string;
+        owner: string;
+        hasExposure: boolean;
+        variables: {
+            enableFetchStreamingUpload: {
                 description: string;
                 type: string;
                 setPref: {
@@ -3631,6 +4123,53 @@ export const FeatureManifest: {
                 description: string;
             };
             visitCountingExperimentList: {
+                type: string;
+                description: string;
+            };
+        };
+    };
+    dapIncrementality: {
+        description: string;
+        owner: string;
+        hasExposure: boolean;
+        variables: {
+            measurementType: {
+                type: string;
+                description: string;
+            };
+            advertiser: {
+                type: string;
+                description: string;
+            };
+            taskId: {
+                type: string;
+                description: string;
+            };
+            length: {
+                type: string;
+                description: string;
+            };
+            timePrecision: {
+                type: string;
+                description: string;
+            };
+            visitCountUrls: {
+                type: string;
+                description: string;
+            };
+            referrerUrls: {
+                type: string;
+                description: string;
+            };
+            targetUrls: {
+                type: string;
+                description: string;
+            };
+            unknownReferrerBucket: {
+                type: string;
+                description: string;
+            };
+            unknownReferrerMetricName: {
                 type: string;
                 description: string;
             };
@@ -3728,12 +4267,75 @@ export const FeatureManifest: {
             };
         };
     };
-    thirdPartyTrackerCookieBlocking: {
+    googleSafeBrowsingV5: {
         description: string;
         owner: string;
         hasExposure: boolean;
         variables: {
             enabled: {
+                description: string;
+                type: string;
+                setPref: {
+                    branch: string;
+                    pref: string;
+                };
+            };
+        };
+    };
+    safeBrowsingRealTime: {
+        description: string;
+        owner: string;
+        hasExposure: boolean;
+        variables: {
+            enabled: {
+                description: string;
+                type: string;
+                setPref: {
+                    branch: string;
+                    pref: string;
+                };
+            };
+            globalCacheEnabled: {
+                description: string;
+                type: string;
+                setPref: {
+                    branch: string;
+                    pref: string;
+                };
+            };
+            simulationEnabled: {
+                description: string;
+                type: string;
+                setPref: {
+                    branch: string;
+                    pref: string;
+                };
+            };
+            simulationCacheTTLSec: {
+                description: string;
+                type: string;
+                setPref: {
+                    branch: string;
+                    pref: string;
+                };
+            };
+            simulationHitProbability: {
+                description: string;
+                type: string;
+                setPref: {
+                    branch: string;
+                    pref: string;
+                };
+            };
+            simulationNegativeCacheEnabled: {
+                description: string;
+                type: string;
+                setPref: {
+                    branch: string;
+                    pref: string;
+                };
+            };
+            simulationNegativeCacheTTLSec: {
                 description: string;
                 type: string;
                 setPref: {
@@ -3848,45 +4450,6 @@ export const FeatureManifest: {
             };
         };
     };
-    queryStripping: {
-        description: string;
-        owner: string;
-        hasExposure: boolean;
-        variables: {
-            enabledNormalBrowsing: {
-                type: string;
-                setPref: {
-                    branch: string;
-                    pref: string;
-                };
-                description: string;
-            };
-            enabledPrivateBrowsing: {
-                type: string;
-                setPref: {
-                    branch: string;
-                    pref: string;
-                };
-                description: string;
-            };
-            allowList: {
-                type: string;
-                setPref: {
-                    branch: string;
-                    pref: string;
-                };
-                description: string;
-            };
-            stripList: {
-                type: string;
-                setPref: {
-                    branch: string;
-                    pref: string;
-                };
-                description: string;
-            };
-        };
-    };
     fingerprintingProtection: {
         description: string;
         owner: string;
@@ -3950,21 +4513,6 @@ export const FeatureManifest: {
             };
         };
     };
-    portlessPartitioning: {
-        description: string;
-        owner: string;
-        hasExposure: boolean;
-        variables: {
-            no_port: {
-                type: string;
-                setPref: {
-                    branch: string;
-                    pref: string;
-                };
-                description: string;
-            };
-        };
-    };
     userCharacteristics: {
         description: string;
         owner: string;
@@ -3977,6 +4525,45 @@ export const FeatureManifest: {
                     pref: string;
                 };
                 description: string;
+            };
+        };
+    };
+    mediaCapabilities: {
+        description: string;
+        owner: string;
+        hasExposure: boolean;
+        variables: {
+            webrtcEnabled: {
+                description: string;
+                type: string;
+                setPref: {
+                    branch: string;
+                    pref: string;
+                };
+            };
+            webrtcAllowlist: {
+                description: string;
+                type: string;
+                setPref: {
+                    branch: string;
+                    pref: string;
+                };
+            };
+            legacyEnabled: {
+                description: string;
+                type: string;
+                setPref: {
+                    branch: string;
+                    pref: string;
+                };
+            };
+            legacyAllowlist: {
+                description: string;
+                type: string;
+                setPref: {
+                    branch: string;
+                    pref: string;
+                };
             };
         };
     };
@@ -4390,12 +4977,76 @@ export const FeatureManifest: {
             };
         };
     };
-    raceCacheWithNetwork: {
+    scriptloader: {
         description: string;
         owner: string;
         hasExposure: boolean;
         variables: {
-            enabled: {
+            bytecode_cache_strategy: {
+                description: string;
+                type: string;
+                setPref: {
+                    branch: string;
+                    pref: string;
+                };
+            };
+            delazification_strategy: {
+                description: string;
+                type: string;
+                setPref: {
+                    branch: string;
+                    pref: string;
+                };
+            };
+            delazification_max_size: {
+                description: string;
+                type: string;
+                setPref: {
+                    branch: string;
+                    pref: string;
+                };
+            };
+            delazification_min_mem: {
+                description: string;
+                type: string;
+                setPref: {
+                    branch: string;
+                    pref: string;
+                };
+            };
+            speculate_async_enabled: {
+                description: string;
+                type: string;
+                setPref: {
+                    branch: string;
+                    pref: string;
+                };
+            };
+            speculate_link_preload_enabled: {
+                description: string;
+                type: string;
+                setPref: {
+                    branch: string;
+                    pref: string;
+                };
+            };
+            speculate_non_parser_inserted_enabled: {
+                description: string;
+                type: string;
+                setPref: {
+                    branch: string;
+                    pref: string;
+                };
+            };
+            speculate_enabled: {
+                description: string;
+                type: string;
+                setPref: {
+                    branch: string;
+                    pref: string;
+                };
+            };
+            navigation_cache_enabled: {
                 description: string;
                 type: string;
                 setPref: {
@@ -4410,6 +5061,7 @@ export const FeatureManifest: {
         owner: string;
         hasExposure: boolean;
         exposureDescription: string;
+        isEarlyStartup: boolean;
         variables: {
             enabled: {
                 description: string;
@@ -4540,77 +5192,6 @@ export const FeatureManifest: {
             };
         };
     };
-    cookieBannerHandling: {
-        description: string;
-        owner: string;
-        hasExposure: boolean;
-        variables: {
-            modeNormalBrowsing: {
-                type: string;
-                setPref: {
-                    branch: string;
-                    pref: string;
-                };
-                description: string;
-            };
-            modePrivateBrowsing: {
-                type: string;
-                setPref: {
-                    branch: string;
-                    pref: string;
-                };
-                description: string;
-            };
-            enableGlobalRules: {
-                type: string;
-                setPref: {
-                    branch: string;
-                    pref: string;
-                };
-                description: string;
-            };
-            enableGlobalRulesSubFrames: {
-                type: string;
-                setPref: {
-                    branch: string;
-                    pref: string;
-                };
-                description: string;
-            };
-            enableDetectOnly: {
-                type: string;
-                setPref: {
-                    branch: string;
-                    pref: string;
-                };
-                description: string;
-            };
-            enableFirefoxDesktopUI: {
-                type: string;
-                setPref: {
-                    branch: string;
-                    pref: string;
-                };
-                description: string;
-            };
-            enablePromo: {
-                type: string;
-                setPref: {
-                    branch: string;
-                    pref: string;
-                };
-                description: string;
-            };
-            enableDesktopFeatureCallout: {
-                type: string;
-                setPref: {
-                    branch: string;
-                    pref: string;
-                };
-                description: string;
-            };
-        };
-    };
     backgroundThreads: {
         description: string;
         owner: string;
@@ -4631,61 +5212,6 @@ export const FeatureManifest: {
                     branch: string;
                     pref: string;
                 };
-            };
-        };
-    };
-    reportBrokenSite: {
-        description: string;
-        owner: string;
-        hasExposure: boolean;
-        variables: {
-            enabled: {
-                type: string;
-                setPref: {
-                    branch: string;
-                    pref: string;
-                };
-                description: string;
-            };
-            sendMoreInfo: {
-                type: string;
-                setPref: {
-                    branch: string;
-                    pref: string;
-                };
-                description: string;
-            };
-            reasonDropdown: {
-                type: string;
-                setPref: {
-                    branch: string;
-                    pref: string;
-                };
-                description: string;
-            };
-        };
-    };
-    feltPrivacy: {
-        description: string;
-        owner: string;
-        hasExposure: boolean;
-        exposureDescription: string;
-        variables: {
-            feltPrivacy: {
-                type: string;
-                setPref: {
-                    branch: string;
-                    pref: string;
-                };
-                description: string;
-            };
-            resetPBMAction: {
-                type: string;
-                setPref: {
-                    branch: string;
-                    pref: string;
-                };
-                description: string;
             };
         };
     };
@@ -4734,6 +5260,38 @@ export const FeatureManifest: {
                     pref: string;
                 };
             };
+            phcAvgDelayContentFirst: {
+                description: string;
+                type: string;
+                setPref: {
+                    branch: string;
+                    pref: string;
+                };
+            };
+            phcAvgDelayContentNormal: {
+                description: string;
+                type: string;
+                setPref: {
+                    branch: string;
+                    pref: string;
+                };
+            };
+            phcAvgDelayContentPageReuse: {
+                description: string;
+                type: string;
+                setPref: {
+                    branch: string;
+                    pref: string;
+                };
+            };
+            phcMaxSize: {
+                description: string;
+                type: string;
+                setPref: {
+                    branch: string;
+                    pref: string;
+                };
+            };
         };
     };
     mailto: {
@@ -4761,6 +5319,10 @@ export const FeatureManifest: {
                 type: string;
                 description: string;
                 fallbackPref: string;
+            };
+            dialog: {
+                type: string;
+                description: string;
             };
         };
     };
@@ -4835,6 +5397,21 @@ export const FeatureManifest: {
             };
         };
     };
+    netErrorSearchCTA: {
+        description: string;
+        owner: string;
+        hasExposure: boolean;
+        variables: {
+            enabled: {
+                description: string;
+                type: string;
+                setPref: {
+                    branch: string;
+                    pref: string;
+                };
+            };
+        };
+    };
     contentRelevancy: {
         description: string;
         owner: string;
@@ -4881,14 +5458,6 @@ export const FeatureManifest: {
                 };
                 description: string;
             };
-            prefsUIEnabled: {
-                type: string;
-                setPref: {
-                    branch: string;
-                    pref: string;
-                };
-                description: string;
-            };
             sqlitePagesPerStep: {
                 description: string;
                 type: string;
@@ -4921,6 +5490,14 @@ export const FeatureManifest: {
                     pref: string;
                 };
             };
+            archiveKillswitch: {
+                type: string;
+                description: string;
+            };
+            restoreKillswitch: {
+                type: string;
+                description: string;
+            };
         };
     };
     pqcrypto: {
@@ -4937,14 +5514,6 @@ export const FeatureManifest: {
                 description: string;
             };
             h3EnableMlkem: {
-                type: string;
-                setPref: {
-                    branch: string;
-                    pref: string;
-                };
-                description: string;
-            };
-            sendP256: {
                 type: string;
                 setPref: {
                     branch: string;
@@ -5006,7 +5575,23 @@ export const FeatureManifest: {
                 };
                 description: string;
             };
+            h3EnableBrotli: {
+                type: string;
+                setPref: {
+                    branch: string;
+                    pref: string;
+                };
+                description: string;
+            };
             tlsEnableZstd: {
+                type: string;
+                setPref: {
+                    branch: string;
+                    pref: string;
+                };
+                description: string;
+            };
+            h3EnableZstd: {
                 type: string;
                 setPref: {
                     branch: string;
@@ -5135,14 +5720,6 @@ export const FeatureManifest: {
         owner: string;
         hasExposure: boolean;
         variables: {
-            defaultLauncherVisible: {
-                type: string;
-                setPref: {
-                    branch: string;
-                    pref: string;
-                };
-                description: string;
-            };
             minVersion: {
                 type: string;
                 description: string;
@@ -5172,21 +5749,6 @@ export const FeatureManifest: {
         };
         variables: {};
     };
-    contentProcessSandbox: {
-        description: string;
-        owner: string;
-        hasExposure: boolean;
-        variables: {
-            Level: {
-                description: string;
-                type: string;
-                setPref: {
-                    branch: string;
-                    pref: string;
-                };
-            };
-        };
-    };
     certificateTransparency: {
         description: string;
         owner: string;
@@ -5215,6 +5777,21 @@ export const FeatureManifest: {
             message: {
                 description: string;
                 type: string;
+            };
+        };
+    };
+    tabNotes: {
+        description: string;
+        owner: string;
+        hasExposure: boolean;
+        variables: {
+            enabled: {
+                type: string;
+                description: string;
+                setPref: {
+                    branch: string;
+                    pref: string;
+                };
             };
         };
     };
@@ -5288,6 +5865,35 @@ export const FeatureManifest: {
             };
         };
     };
+    tabContextMenu: {
+        description: string;
+        owner: string;
+        hasExposure: boolean;
+        variables: {
+            altStructureEnabled: {
+                type: string;
+                setPref: {
+                    branch: string;
+                    pref: string;
+                };
+                description: string;
+            };
+        };
+    };
+    externalLinkHandling: {
+        description: string;
+        owner: string;
+        hasExposure: boolean;
+        exposureDescription: string;
+        variables: {
+            openBehavior: {
+                description: string;
+                type: string;
+                enum: number[];
+                fallbackPref: string;
+            };
+        };
+    };
     smartblockEmbeds: {
         description: string;
         owner: string;
@@ -5299,17 +5905,6 @@ export const FeatureManifest: {
                     branch: string;
                     pref: string;
                 };
-                description: string;
-            };
-        };
-    };
-    selectableProfiles: {
-        description: string;
-        owner: string;
-        hasExposure: boolean;
-        variables: {
-            enabled: {
-                type: string;
                 description: string;
             };
         };
@@ -5406,6 +6001,100 @@ export const FeatureManifest: {
                     pref: string;
                 };
             };
+            chipsAffectsTCP: {
+                description: string;
+                type: string;
+                setPref: {
+                    branch: string;
+                    pref: string;
+                };
+            };
+        };
+    };
+    trackingProtectionExperimentation: {
+        description: string;
+        owner: string;
+        hasExposure: boolean;
+        variables: {
+            deferAnnotationEnabled: {
+                description: string;
+                type: string;
+                setPref: {
+                    branch: string;
+                    pref: string;
+                };
+            };
+        };
+    };
+    contentClassifier: {
+        description: string;
+        owner: string;
+        hasExposure: boolean;
+        variables: {
+            protectionEnabled: {
+                description: string;
+                type: string;
+                setPref: {
+                    branch: string;
+                    pref: string;
+                };
+            };
+            protectionEngines: {
+                description: string;
+                type: string;
+                setPref: {
+                    branch: string;
+                    pref: string;
+                };
+            };
+            protectionEnginesPbmode: {
+                description: string;
+                type: string;
+                setPref: {
+                    branch: string;
+                    pref: string;
+                };
+            };
+            annotationEnabled: {
+                description: string;
+                type: string;
+                setPref: {
+                    branch: string;
+                    pref: string;
+                };
+            };
+            annotationEngines: {
+                description: string;
+                type: string;
+                setPref: {
+                    branch: string;
+                    pref: string;
+                };
+            };
+            annotationEnginesPbmode: {
+                description: string;
+                type: string;
+                setPref: {
+                    branch: string;
+                    pref: string;
+                };
+            };
+            mirrorMode: {
+                description: string;
+                type: string;
+                setPref: {
+                    branch: string;
+                    pref: string;
+                };
+            };
+            skipURLClassifier: {
+                description: string;
+                type: string;
+                setPref: {
+                    branch: string;
+                    pref: string;
+                };
+            };
         };
     };
     "auto-pip": {
@@ -5465,36 +6154,6 @@ export const FeatureManifest: {
                     branch: string;
                     pref: string;
                 };
-            };
-        };
-    };
-    "css-masonry": {
-        description: string;
-        owner: string;
-        hasExposure: boolean;
-        variables: {
-            enabled: {
-                type: string;
-                description: string;
-                setPref: {
-                    branch: string;
-                    pref: string;
-                };
-            };
-        };
-    };
-    "contextual-password-manager": {
-        description: string;
-        owner: string;
-        hasExposure: boolean;
-        variables: {
-            enabled: {
-                type: string;
-                setPref: {
-                    branch: string;
-                    pref: string;
-                };
-                description: string;
             };
         };
     };
@@ -5563,7 +6222,60 @@ export const FeatureManifest: {
             };
         };
     };
+    fireButton: {
+        description: string;
+        owner: string;
+        hasExposure: boolean;
+        exposureDescription: string;
+        variables: {
+            enabled: {
+                type: string;
+                setPref: {
+                    branch: string;
+                    pref: string;
+                };
+                description: string;
+            };
+            flow: {
+                type: string;
+                enum: string[];
+                fallbackPref: string;
+                description: string;
+            };
+        };
+    };
     ipProtection: {
+        description: string;
+        owner: string;
+        hasExposure: boolean;
+        variables: {
+            enabled: {
+                type: string;
+                setPref: {
+                    branch: string;
+                    pref: string;
+                };
+                description: string;
+            };
+            bandwidthMax: {
+                type: string;
+                setPref: {
+                    branch: string;
+                    pref: string;
+                };
+                description: string;
+            };
+            upgradeNotAvailable: {
+                type: string;
+                setPref: {
+                    branch: string;
+                    pref: string;
+                };
+                description: string;
+            };
+        };
+    };
+    webApps: {
         description: string;
         owner: string;
         hasExposure: boolean;
@@ -5578,7 +6290,633 @@ export const FeatureManifest: {
             };
         };
     };
-    webApps: {
+    defaultWindowsLaunchOnLogin: {
+        description: string;
+        owner: string;
+        hasExposure: boolean;
+        variables: {
+            enabled: {
+                type: string;
+                setPref: {
+                    branch: string;
+                    pref: string;
+                };
+                description: string;
+            };
+        };
+    };
+    passwordManager: {
+        description: string;
+        owner: string;
+        hasExposure: boolean;
+        variables: {
+            reencryptionNeeded: {
+                isEarlyStartup: boolean;
+                type: string;
+                setPref: {
+                    branch: string;
+                    pref: string;
+                };
+                description: string;
+            };
+        };
+    };
+    "logins-rust-storage": {
+        description: string;
+        owner: string;
+        hasExposure: boolean;
+        variables: {
+            enabled: {
+                description: string;
+                type: string;
+                setPref: {
+                    branch: string;
+                    pref: string;
+                };
+            };
+        };
+    };
+    xpcom: {
+        description: string;
+        owner: string;
+        hasExposure: boolean;
+        variables: {
+            low_commit_space_threshold_mb: {
+                description: string;
+                type: string;
+                setPref: {
+                    branch: string;
+                    pref: string;
+                };
+            };
+            low_commit_space_threshold_percent: {
+                description: string;
+                type: string;
+                setPref: {
+                    branch: string;
+                    pref: string;
+                };
+            };
+        };
+    };
+    layout: {
+        description: string;
+        owner: string;
+        hasExposure: boolean;
+        variables: {
+            lower_priority_refresh_driver_during_load: {
+                description: string;
+                type: string;
+                setPref: {
+                    branch: string;
+                    pref: string;
+                };
+            };
+            sessionstore_max_tabs_undo: {
+                description: string;
+                type: string;
+                setPref: {
+                    branch: string;
+                    pref: string;
+                };
+            };
+            sessionstore_max_windows_undo: {
+                description: string;
+                type: string;
+                setPref: {
+                    branch: string;
+                    pref: string;
+                };
+            };
+            sessionstore_interval: {
+                description: string;
+                type: string;
+                setPref: {
+                    branch: string;
+                    pref: string;
+                };
+            };
+            sessionhistory_max_total_viewers: {
+                description: string;
+                type: string;
+                setPref: {
+                    branch: string;
+                    pref: string;
+                };
+            };
+            smooth_scroll: {
+                description: string;
+                type: string;
+                setPref: {
+                    branch: string;
+                    pref: string;
+                };
+            };
+            frame_rate: {
+                description: string;
+                type: string;
+                setPref: {
+                    branch: string;
+                    pref: string;
+                };
+            };
+            frame_rate_throttled: {
+                description: string;
+                type: string;
+                setPref: {
+                    branch: string;
+                    pref: string;
+                };
+            };
+            min_background_timeout_value_without_budget_throttling: {
+                description: string;
+                type: string;
+                setPref: {
+                    branch: string;
+                    pref: string;
+                };
+            };
+            timeout_throttling_delay: {
+                description: string;
+                type: string;
+                setPref: {
+                    branch: string;
+                    pref: string;
+                };
+            };
+            initialpaint_delay: {
+                description: string;
+                type: string;
+                setPref: {
+                    branch: string;
+                    pref: string;
+                };
+            };
+            initialpaint_delay_oopif: {
+                description: string;
+                type: string;
+                setPref: {
+                    branch: string;
+                    pref: string;
+                };
+            };
+            page_load_deprioritization_period: {
+                description: string;
+                type: string;
+                setPref: {
+                    branch: string;
+                    pref: string;
+                };
+            };
+        };
+    };
+    ipc: {
+        description: string;
+        owner: string;
+        hasExposure: boolean;
+        variables: {
+            backend_mach: {
+                description: string;
+                type: string;
+                setPref: {
+                    branch: string;
+                    pref: string;
+                };
+            };
+            process_count: {
+                description: string;
+                type: string;
+                setPref: {
+                    branch: string;
+                    pref: string;
+                };
+            };
+            process_count_web_isolated: {
+                description: string;
+                type: string;
+                setPref: {
+                    branch: string;
+                    pref: string;
+                };
+            };
+            preallocated_process_count: {
+                description: string;
+                type: string;
+                setPref: {
+                    branch: string;
+                    pref: string;
+                };
+            };
+            preallocated_lowmem_mb: {
+                description: string;
+                type: string;
+                setPref: {
+                    branch: string;
+                    pref: string;
+                };
+            };
+            priority_manager_enabled: {
+                description: string;
+                type: string;
+                setPref: {
+                    branch: string;
+                    pref: string;
+                };
+            };
+            priority_manager_background_grace_period_ms: {
+                description: string;
+                type: string;
+                setPref: {
+                    branch: string;
+                    pref: string;
+                };
+            };
+            priority_manager_background_perceivable_grace_period_ms: {
+                description: string;
+                type: string;
+                setPref: {
+                    branch: string;
+                    pref: string;
+                };
+            };
+            priority_manager_background_uses_ecoqos: {
+                description: string;
+                type: string;
+                setPref: {
+                    branch: string;
+                    pref: string;
+                };
+            };
+        };
+    };
+    graphics: {
+        description: string;
+        owner: string;
+        hasExposure: boolean;
+        variables: {
+            gfx_webrender_all: {
+                description: string;
+                type: string;
+                setPref: {
+                    branch: string;
+                    pref: string;
+                };
+            };
+            layers_acceleration_force_enabled: {
+                description: string;
+                type: string;
+                setPref: {
+                    branch: string;
+                    pref: string;
+                };
+            };
+        };
+    };
+    image: {
+        description: string;
+        owner: string;
+        hasExposure: boolean;
+        variables: {
+            image_cache_size: {
+                description: string;
+                type: string;
+                setPref: {
+                    branch: string;
+                    pref: string;
+                };
+            };
+            image_mem_decode_bytes_at_a_time: {
+                description: string;
+                type: string;
+                setPref: {
+                    branch: string;
+                    pref: string;
+                };
+            };
+        };
+    };
+    walletCustomSchemes: {
+        description: string;
+        owner: string;
+        hasExposure: boolean;
+        variables: {
+            enabledSchemes: {
+                type: string;
+                setPref: {
+                    branch: string;
+                    pref: string;
+                };
+                description: string;
+            };
+        };
+    };
+    macAppMenuSetAsDefault: {
+        description: string;
+        owner: string;
+        hasExposure: boolean;
+        variables: {
+            shown: {
+                type: string;
+                setPref: {
+                    branch: string;
+                    pref: string;
+                };
+                description: string;
+            };
+        };
+    };
+    smartWindow: {
+        description: string;
+        owner: string;
+        hasExposure: boolean;
+        variables: {
+            enabled: {
+                type: string;
+                description: string;
+            };
+            isDefault: {
+                type: string;
+                setPref: {
+                    branch: string;
+                    pref: string;
+                };
+                description: string;
+            };
+            hiddenOnboardingScreenIds: {
+                type: string;
+                fallbackPref: string;
+                description: string;
+            };
+            resumeActivity: {
+                type: string;
+                fallbackPref: string;
+                description: string;
+            };
+            aiTabEnabled: {
+                type: string;
+                setPref: {
+                    branch: string;
+                    pref: string;
+                };
+                description: string;
+            };
+        };
+    };
+    smartWindowAgentWatch: {
+        description: string;
+        owner: string;
+        hasExposure: boolean;
+        variables: {
+            enabled: {
+                type: string;
+                setPref: {
+                    branch: string;
+                    pref: string;
+                };
+                description: string;
+            };
+            supportedRegions: {
+                type: string;
+                setPref: {
+                    branch: string;
+                    pref: string;
+                };
+                description: string;
+            };
+            monitorAnnouncement: {
+                type: string;
+                setPref: {
+                    branch: string;
+                    pref: string;
+                };
+                description: string;
+            };
+        };
+    };
+    autoTabGrouping: {
+        description: string;
+        owner: string;
+        hasExposure: boolean;
+        variables: {
+            enabled: {
+                type: string;
+                setPref: {
+                    branch: string;
+                    pref: string;
+                };
+                description: string;
+            };
+            minCandidateTabs: {
+                type: string;
+                setPref: {
+                    branch: string;
+                    pref: string;
+                };
+                description: string;
+            };
+            maxCandidateTabs: {
+                type: string;
+                setPref: {
+                    branch: string;
+                    pref: string;
+                };
+                description: string;
+            };
+            minTabsPerGroup: {
+                type: string;
+                setPref: {
+                    branch: string;
+                    pref: string;
+                };
+                description: string;
+            };
+            maxGroups: {
+                type: string;
+                setPref: {
+                    branch: string;
+                    pref: string;
+                };
+                description: string;
+            };
+            minCohesion: {
+                type: string;
+                setPref: {
+                    branch: string;
+                    pref: string;
+                };
+                description: string;
+            };
+            timeoutMs: {
+                type: string;
+                setPref: {
+                    branch: string;
+                    pref: string;
+                };
+                description: string;
+            };
+            preloadModels: {
+                type: string;
+                setPref: {
+                    branch: string;
+                    pref: string;
+                };
+                description: string;
+            };
+            supportedLocales: {
+                type: string;
+                setPref: {
+                    branch: string;
+                    pref: string;
+                };
+                description: string;
+            };
+            thresholdInt: {
+                type: string;
+                setPref: {
+                    branch: string;
+                    pref: string;
+                };
+                description: string;
+            };
+            nonEnglishThresholdInt: {
+                type: string;
+                setPref: {
+                    branch: string;
+                    pref: string;
+                };
+                description: string;
+            };
+        };
+    };
+    contentSharing: {
+        description: string;
+        owner: string;
+        hasExposure: boolean;
+        variables: {
+            enabled: {
+                type: string;
+                setPref: {
+                    branch: string;
+                    pref: string;
+                };
+                description: string;
+            };
+            serverUrl: {
+                type: string;
+                setPref: {
+                    branch: string;
+                    pref: string;
+                };
+                description: string;
+            };
+        };
+    };
+    urlbarShareButton: {
+        description: string;
+        owner: string;
+        hasExposure: boolean;
+        variables: {
+            enabled: {
+                type: string;
+                setPref: {
+                    branch: string;
+                    pref: string;
+                };
+                description: string;
+            };
+        };
+    };
+    referrals: {
+        description: string;
+        owner: string;
+        hasExposure: boolean;
+        variables: {
+            enabled: {
+                type: string;
+                setPref: {
+                    branch: string;
+                    pref: string;
+                };
+                description: string;
+            };
+        };
+    };
+    webNotificationsPermissionUi: {
+        description: string;
+        owner: string;
+        hasExposure: boolean;
+        exposureDescription: string;
+        variables: {
+            headline: {
+                type: string;
+                description: string;
+            };
+            body: {
+                type: string;
+                description: string;
+            };
+            primaryCtaLabel: {
+                type: string;
+                description: string;
+            };
+            primaryCtaAccessKey: {
+                type: string;
+                description: string;
+            };
+            secondaryCtaLabel: {
+                type: string;
+                description: string;
+            };
+            secondaryCtaAccessKey: {
+                type: string;
+                description: string;
+            };
+            logoUrl: {
+                type: string;
+                description: string;
+            };
+            useSiteFavicon: {
+                type: string;
+                description: string;
+            };
+            activationTargeting: {
+                type: string;
+                description: string;
+            };
+            headlineL10nId: {
+                type: string;
+                description: string;
+            };
+            bodyL10nId: {
+                type: string;
+                description: string;
+            };
+            primaryCtaLabelL10nId: {
+                type: string;
+                description: string;
+            };
+            secondaryCtaLabelL10nId: {
+                type: string;
+                description: string;
+            };
+        };
+    };
+    editContext: {
+        description: string;
+        owner: string;
+        hasExposure: boolean;
+        variables: {
+            enabled: {
+                type: string;
+                setPref: {
+                    branch: string;
+                    pref: string;
+                };
+                description: string;
+            };
+        };
+    };
+    nova: {
         description: string;
         owner: string;
         hasExposure: boolean;

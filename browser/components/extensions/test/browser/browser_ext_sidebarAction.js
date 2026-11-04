@@ -1,5 +1,3 @@
-/* -*- Mode: indent-tabs-mode: nil; js-indent-level: 2 -*- */
-/* vim: set sts=2 sw=2 et tw=80: */
 "use strict";
 
 requestLongerTimeout(2);
@@ -75,11 +73,14 @@ async function sendMessage(ext, msg, data = undefined) {
   await ext.awaitMessage("done");
 }
 
-add_setup(() =>
+add_setup(() => {
   SpecialPowers.pushPrefEnv({
     set: [["layout.css.devPixelsPerPx", 1]],
-  })
-);
+  });
+  if (Services.prefs.getBoolPref("sidebar.revamp", false)) {
+    Services.prefs.setCharPref("sidebar.visibility", "always-show");
+  }
+});
 registerCleanupFunction(() => SpecialPowers.popPrefEnv());
 
 add_task(async function sidebar_initial_install() {
@@ -125,16 +126,16 @@ add_task(async function sidebar__install_closed() {
   let extension = ExtensionTestUtils.loadExtension(tempExtData);
   await extension.startup();
 
-  // Test sidebar is closed on install
+  // Test sidebar panel is closed on install
   ok(sidebarBox.hidden, "sidebar box is hidden");
 
-  SidebarController.show(`${makeWidgetId(extension.id)}-sidebar-action`);
+  await SidebarController.show(`${makeWidgetId(extension.id)}-sidebar-action`);
   ok(!sidebarBox.hidden, "Opened by the user.");
 
-  SidebarController.hide();
+  SidebarController.hide({ dismissPanel: true });
   ok(sidebarBox.hidden, "Hidden by the user.");
 
-  info("Reloading to verify the sidebar stays closed.");
+  info("Reloading to verify the sidebar panel stays closed.");
   let addon = await AddonManager.getAddonByID(extension.id);
   await addon.reload();
 
@@ -202,7 +203,7 @@ add_task(async function sidebar_isOpen() {
   await sendMessage(extension2, "isOpen", { result: true });
 
   info("Switch back to extension1's sidebar");
-  SidebarController.show(sidebar1ID);
+  await SidebarController.show(sidebar1ID);
   await extension1.awaitMessage("sidebar");
   await sendMessage(extension1, "isOpen", { result: true });
   await sendMessage(extension2, "isOpen", { result: false });
@@ -237,7 +238,7 @@ add_task(async function sidebar_isOpen() {
   newWin.close();
 
   info("Close the sidebar in the original window");
-  SidebarController.hide();
+  SidebarController.hide({ dismissPanel: true });
   await sendMessage(extension1, "isOpen", { result: false });
   await sendMessage(extension2, "isOpen", { result: false });
 
@@ -369,7 +370,6 @@ add_task(async function sidebar_action_icon_update() {
   const sidebarID = SidebarController.currentID;
 
   let iconUrl = `moz-extension://${extension.uuid}/icon.png`;
-  let icon2xUrl = `moz-extension://${extension.uuid}/icon@2x.png`;
 
   if (isNewSidebar) {
     ok(sidebar, "sidebar is shown");
@@ -381,11 +381,18 @@ add_task(async function sidebar_action_icon_update() {
     );
     is(
       item.style.getPropertyValue("--webextension-menuitem-image"),
-      `image-set(url("${iconUrl}"), url("${icon2xUrl}") 2x)`,
+      `url("${iconUrl}")`,
       "Extension has the correct icon."
     );
   }
-  SidebarController.hide();
+  const menuItem = document.getElementById(`menubar_menu_${sidebarID}`);
+  is(
+    menuItem.style.getPropertyValue("--webextension-menuitem-image"),
+    `url("${iconUrl}")`,
+    "View>Sidebars menu item has the correct icon."
+  );
+
+  SidebarController.hide({ dismissPanel: true });
   await sendMessage(extension, "isOpen", { result: false });
 
   await sendMessage(extension, "set-icon", "1.png");
@@ -393,6 +400,13 @@ add_task(async function sidebar_action_icon_update() {
   await extension.awaitMessage("sidebar");
   await sendMessage(extension, "isOpen", { result: true });
   iconUrl = `moz-extension://${extension.uuid}/1.png`;
+
+  const updatedMenuItem = document.getElementById(`menubar_menu_${sidebarID}`);
+  is(
+    updatedMenuItem.style.getPropertyValue("--webextension-menuitem-image"),
+    `url("${iconUrl}")`,
+    "View>Sidebars menu item has the updated icon."
+  );
 
   if (isNewSidebar) {
     const { iconSrc } = sidebar.extensionButtons[0];
@@ -403,7 +417,7 @@ add_task(async function sidebar_action_icon_update() {
     );
     is(
       item.style.getPropertyValue("--webextension-menuitem-image"),
-      `image-set(url("${iconUrl}"), url("${iconUrl}") 2x)`,
+      `url("${iconUrl}")`,
       "Extension has updated icon."
     );
   }
@@ -425,8 +439,8 @@ add_task(async function sidebar_action_hidpi_icon() {
   info("Test extension's sidebar is opened on install");
   await extension.awaitMessage("sidebar");
   await sendMessage(extension, "isOpen", { result: true });
+  const sidebarID = SidebarController.currentID;
 
-  let iconUrl = `moz-extension://${extension.uuid}/icon.png`;
   let icon2xUrl = `moz-extension://${extension.uuid}/icon@2x.png`;
 
   if (isNewSidebar) {
@@ -443,10 +457,17 @@ add_task(async function sidebar_action_hidpi_icon() {
     );
     is(
       item.style.getPropertyValue("--webextension-menuitem-image"),
-      `image-set(url("${iconUrl}"), url("${icon2xUrl}") 2x)`,
+      `url("${icon2xUrl}")`,
       "Extension has the correct icon for HiDPI displays."
     );
   }
+
+  const menuItem = document.getElementById(`menubar_menu_${sidebarID}`);
+  is(
+    menuItem.style.getPropertyValue("--webextension-menuitem-image"),
+    `url("${icon2xUrl}")`,
+    "View>Sidebars menu item has the correct icon for HiDPI displays."
+  );
 
   await extension.unload();
   await SpecialPowers.popPrefEnv();
@@ -523,6 +544,6 @@ add_task(async function sidebar_switcher_label_bug1905771_regression_test() {
   // NOTE: explicitly close the sidebar to prevent perma-failure when running in
   // test-verify mode (due to the sidebar not being inizially closed as the first
   // test ask in this file expects).
-  await window.SidebarController.hide();
+  await window.SidebarController.hide({ dismissPanel: true });
   await extension.unload();
 });

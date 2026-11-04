@@ -3,15 +3,26 @@
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 import { actionCreators as ac, actionTypes as at } from "common/Actions.mjs";
+import { nextDwellId } from "content-src/lib/dwell-id";
 import React from "react";
 
 export class SafeAnchor extends React.PureComponent {
   constructor(props) {
     super(props);
     this.onClick = this.onClick.bind(this);
+    this.onAuxClick = this.onAuxClick.bind(this);
+  }
+
+  // Firefox, not newtab, opens the link on middle-click or from its context
+  // menu, so let the owner report the click before that happens.
+  onAuxClick(event) {
+    if (event.button === 1) {
+      this.props.onLinkOpenIntent?.(event);
+    }
   }
 
   onClick(event) {
+    const dwellId = this.props.dwellLabel ? nextDwellId() : undefined;
     // Use dispatch instead of normal link click behavior to include referrer
     if (this.props.dispatch) {
       event.preventDefault();
@@ -26,6 +37,13 @@ export class SafeAnchor extends React.PureComponent {
             // Use the anchor's url, which could have been cleaned up
             url: event.currentTarget.href,
             is_sponsored: this.props.isSponsored,
+            // Opts this link into newtab.opened_page_dwell_time, and names the
+            // label the sample accrues to. Spread rather than set to undefined,
+            // so the action shape is unchanged for the anchors that did not opt
+            // in.
+            ...(this.props.dwellLabel
+              ? { dwell_label: this.props.dwellLabel, dwell_id: dwellId }
+              : {}),
           },
         })
       );
@@ -33,7 +51,7 @@ export class SafeAnchor extends React.PureComponent {
 
     // Propagate event if there's a handler
     if (this.props.onLinkClick) {
-      this.props.onLinkClick(event);
+      this.props.onLinkClick(event, dwellId);
     }
   }
 
@@ -54,7 +72,7 @@ export class SafeAnchor extends React.PureComponent {
   }
 
   render() {
-    const { url, className, title, isSponsored } = this.props;
+    const { url, className, title, isSponsored, onFocus } = this.props;
 
     let anchor = (
       <a
@@ -62,6 +80,12 @@ export class SafeAnchor extends React.PureComponent {
         title={title}
         className={className}
         onClick={this.onClick}
+        {...(this.props.onLinkOpenIntent
+          ? {
+              onAuxClick: this.onAuxClick,
+              onContextMenu: this.props.onLinkOpenIntent,
+            }
+          : {})}
         data-is-sponsored-link={!!isSponsored}
         {...(this.props.tabIndex === 0 || this.props.tabIndex
           ? {
@@ -69,6 +93,7 @@ export class SafeAnchor extends React.PureComponent {
               tabIndex: this.props.tabIndex,
             }
           : {})}
+        {...(onFocus ? { onFocus } : {})}
       >
         {this.props.children}
       </a>

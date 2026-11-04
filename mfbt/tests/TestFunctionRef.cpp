@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -40,8 +38,8 @@ template <typename Fn>
 struct Caller;
 
 template <typename Fn, typename... Params>
-std::invoke_result_t<Fn, Params...> CallFunctionRef(FunctionRef<Fn> aRef,
-                                                    Params... aParams) {
+std::invoke_result_t<Fn, Params&&...> CallFunctionRef(FunctionRef<Fn> aRef,
+                                                      Params&&... aParams) {
   return aRef(std::forward<Params>(aParams)...);
 }
 

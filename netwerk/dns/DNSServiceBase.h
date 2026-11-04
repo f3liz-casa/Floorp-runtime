@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set sw=2 ts=8 et tw=80 : */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -8,10 +6,13 @@
 #define mozilla_net_DNSServiceBase_h
 
 #include "mozilla/Atomics.h"
+#include "mozilla/StaticPtr.h"
+#include "mozilla/net/rust_helper.h"
 #include "nsIObserver.h"
 #include "nsString.h"
 
 class nsIPrefBranch;
+class nsIThreadPool;
 
 namespace mozilla::net {
 
@@ -21,7 +22,12 @@ class DNSServiceBase : public nsIObserver {
 
   DNSServiceBase() = default;
 
+  static void DoReadEtcHostsFile(ParsingCallback aCallback);
+
  protected:
+  static nsIThreadPool* GetEtcHostsReaderPool();
+  static StaticRefPtr<nsIThreadPool> sEtcHostsReaderPool;
+
   virtual ~DNSServiceBase() = default;
   void AddPrefObserver(nsIPrefBranch* aPrefs);
   virtual void ReadPrefs(const char* aName);

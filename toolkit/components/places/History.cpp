@@ -1,11 +1,11 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "mozilla/Attributes.h"
+#include "mozilla/CheckedInt.h"
 #include "mozilla/DebugOnly.h"
+#include "mozilla/FloatingPoint.h"
 #include "mozilla/MemoryReporting.h"
 
 #include "mozilla/dom/ContentChild.h"
@@ -36,7 +36,6 @@
 #include "nsIWidget.h"
 #include "nsIXPConnect.h"
 #include "nsIXULRuntime.h"
-#include "mozilla/Unused.h"
 #include "nsContentUtils.h"  // for nsAutoScriptBlocker
 #include "nsJSUtils.h"
 #include "nsStandardURL.h"
@@ -95,7 +94,8 @@ struct VisitData {
         source(nsINavHistoryService::VISIT_SOURCE_ORGANIC),
         triggeringPlaceId(0),
         triggeringSponsoredURLVisitTimeMS(0),
-        bookmarked(false) {
+        bookmarked(false),
+        userContextId(0) {
     guid.SetIsVoid(true);
     title.SetIsVoid(true);
     baseDomain.SetIsVoid(true);
@@ -122,7 +122,8 @@ struct VisitData {
         source(nsINavHistoryService::VISIT_SOURCE_ORGANIC),
         triggeringPlaceId(0),
         triggeringSponsoredURLVisitTimeMS(0),
-        bookmarked(false) {
+        bookmarked(false),
+        userContextId(0) {
     MOZ_ASSERT(aURI);
     if (aURI) {
       (void)aURI->GetSpec(spec);
@@ -194,6 +195,7 @@ struct VisitData {
   nsCString triggeringSponsoredURLBaseDomain;
   int64_t triggeringSponsoredURLVisitTimeMS;
   bool bookmarked;
+  uint32_t userContextId;
 };
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -359,12 +361,12 @@ nsresult GetIntFromJSObject(JSContext* aCtx, JS::Handle<JSObject*> aObject,
   NS_ENSURE_ARG(value.isPrimitive());
   NS_ENSURE_ARG(value.isNumber());
 
-  double num;
-  rc = JS::ToNumber(aCtx, value, &num);
-  NS_ENSURE_TRUE(rc, NS_ERROR_UNEXPECTED);
-  NS_ENSURE_ARG(IntType(num) == num);
+  int64_t num;
+  NS_ENSURE_ARG(mozilla::NumberEqualsInt64(value.toNumber(), &num));
+  CheckedInt<IntType> checked(num);
+  NS_ENSURE_ARG(checked.isValid());
 
-  *_int = IntType(num);
+  *_int = checked.value();
   return NS_OK;
 }
 
@@ -592,6 +594,7 @@ class NotifyManyVisitsObservers : public Runnable {
     visitEvent->mVisitCount = aPlace.visitCount + 1;  // Add current visit
     visitEvent->mTypedCount = static_cast<uint32_t>(aPlace.typed);
     visitEvent->mLastKnownTitle.Assign(aPlace.title);
+    visitEvent->mUserContextId = aPlace.userContextId;
 
     bool success = !!aEvents.AppendElement(visitEvent.forget(), fallible);
     MOZ_RELEASE_ASSERT(success);
@@ -871,8 +874,8 @@ class InsertVisitedURIs final : public Runnable {
       // We ignore errors from either of these methods in case old JS consumers
       // don't implement them (in which case they will get error/result
       // notifications as normal).
-      Unused << aCallback->GetIgnoreErrors(&ignoreErrors);
-      Unused << aCallback->GetIgnoreResults(&ignoreResults);
+      (void)aCallback->GetIgnoreErrors(&ignoreErrors);
+      (void)aCallback->GetIgnoreResults(&ignoreResults);
     }
     RefPtr<InsertVisitedURIs> event = new InsertVisitedURIs(
         aConnection, std::move(aPlaces), callback, ignoreErrors, ignoreResults,
@@ -915,7 +918,7 @@ class InsertVisitedURIs final : public Runnable {
         mDBConn, false, mozIStorageConnection::TRANSACTION_IMMEDIATE);
 
     // XXX Handle the error, bug 1696133.
-    Unused << NS_WARN_IF(NS_FAILED(transaction.Start()));
+    (void)NS_WARN_IF(NS_FAILED(transaction.Start()));
 
     const VisitData* lastFetchedPlace = nullptr;
     uint32_t lastFetchedVisitCount = 0;
@@ -1185,9 +1188,9 @@ class InsertVisitedURIs final : public Runnable {
     stmt = mHistory->GetStatement(
         "INSERT INTO moz_historyvisits "
         "(from_visit, place_id, visit_date, visit_type, session, source, "
-        "triggeringPlaceId) "
+        "triggeringPlaceId, userContextId) "
         "VALUES (:from_visit, :page_id, :visit_date, :visit_type, 0, :source, "
-        ":triggeringPlaceId) ");
+        ":triggeringPlaceId, :userContextId) ");
     NS_ENSURE_STATE(stmt);
     mozStorageStatementScoper scoper(stmt);
 
@@ -1211,6 +1214,8 @@ class InsertVisitedURIs final : public Runnable {
     } else {
       rv = stmt->BindNullByName("triggeringPlaceId"_ns);
     }
+    NS_ENSURE_SUCCESS(rv, rv);
+    rv = stmt->BindInt64ByName("userContextId"_ns, _place.userContextId);
     NS_ENSURE_SUCCESS(rv, rv);
 
     rv = stmt->Execute();
@@ -1472,7 +1477,7 @@ void NotifyEmbedVisit(VisitData& aPlace,
         new nsMainThreadPtrHolder<mozIVisitInfoCallback>(
             "mozIVisitInfoCallback", aCallback));
     bool ignoreResults = false;
-    Unused << aCallback->GetIgnoreResults(&ignoreResults);
+    (void)aCallback->GetIgnoreResults(&ignoreResults);
     if (!ignoreResults) {
       nsCOMPtr<nsIRunnable> event =
           new NotifyPlaceInfoCallback(callback, aPlace, true, NS_OK);
@@ -1716,7 +1721,7 @@ nsresult History::FetchPageInfo(VisitData& _place, bool* _exists) {
     nsAutoCString spec;
     rv = stmt->GetUTF8String(0, spec);
     NS_ENSURE_SUCCESS(rv, rv);
-    _place.spec = spec;
+    _place.spec = std::move(spec);
   }
 
   rv = stmt->GetInt64(1, &_place.placeId);
@@ -1731,7 +1736,7 @@ nsresult History::FetchPageInfo(VisitData& _place, bool* _exists) {
   // title (because we don't want to, that would be empty), and set the title
   // to what is currently stored in the datbase.
   if (_place.title.IsVoid()) {
-    _place.title = title;
+    _place.title = std::move(title);
   }
   // Otherwise, just indicate if the title has changed.
   else {
@@ -1929,7 +1934,8 @@ void History::AppendToRecentlyVisitedURIs(nsIURI* aURI, bool aHidden) {
 
 NS_IMETHODIMP
 History::VisitURI(nsIWidget* aWidget, nsIURI* aURI, nsIURI* aLastVisitedURI,
-                  uint32_t aFlags, uint64_t aBrowserId) {
+                  uint32_t aFlags, uint64_t aBrowserId,
+                  uint32_t aUserContextId) {
   MOZ_ASSERT(NS_IsMainThread());
   NS_ENSURE_ARG(aURI);
 
@@ -2038,6 +2044,7 @@ History::VisitURI(nsIWidget* aWidget, nsIURI* aURI, nsIURI* aLastVisitedURI,
   place.visitTime = PR_Now();
   place.SetTransitionType(transitionType);
   place.hidden = isHidden;
+  place.userContextId = aUserContextId;
 
   if (isRedirect) {
     place.useFrecencyRedirectBonus =
@@ -2060,7 +2067,7 @@ History::VisitURI(nsIWidget* aWidget, nsIURI* aURI, nsIURI* aLastVisitedURI,
     // If the origin is restricted, make isVisited status available during the
     // session but not stored in the database.
     nsAutoCString origin;
-    Unused << visitedURI->GetHost(origin);
+    (void)visitedURI->GetHost(origin);
     if (StringBeginsWith(origin, "www."_ns)) {
       origin.Cut(0, 4);
     }
@@ -2160,7 +2167,7 @@ History::SetURITitle(nsIURI* aURI, const nsAString& aTitle) {
   if (XRE_IsContentProcess()) {
     auto* cpc = dom::ContentChild::GetSingleton();
     MOZ_ASSERT(cpc, "Content Protocol is NULL!");
-    Unused << cpc->SendSetURITitle(aURI, PromiseFlatString(aTitle));
+    (void)cpc->SendSetURITitle(aURI, PromiseFlatString(aTitle));
     return NS_OK;
   }
 
@@ -2296,7 +2303,7 @@ History::UpdatePlaces(JS::Handle<JS::Value> aPlaceInfos,
       if (data.visitTime < (PR_Now() / 1000)) {
 #ifdef DEBUG
         nsCOMPtr<nsIXPConnect> xpc = nsIXPConnect::XPConnect();
-        Unused << xpc->DebugDumpJSStack(false, false, false);
+        (void)xpc->DebugDumpJSStack(false, false, false);
         MOZ_CRASH("invalid time format passed to updatePlaces");
 #endif
         return NS_ERROR_INVALID_ARG;
@@ -2323,6 +2330,16 @@ History::UpdatePlaces(JS::Handle<JS::Value> aPlaceInfos,
           GetURIFromJSObject(aCtx, visit, "referrerURI");
       if (referrer) {
         (void)referrer->GetSpec(data.referrerSpec);
+      }
+
+      JS::Rooted<JS::Value> userContextIdVal(aCtx);
+      if (!JS_GetProperty(aCtx, visit, "userContextId", &userContextIdVal)) {
+        return NS_ERROR_UNEXPECTED;
+      }
+      if (!userContextIdVal.isUndefined()) {
+        rv = GetIntFromJSObject(aCtx, visit, "userContextId",
+                                &data.userContextId);
+        NS_ENSURE_SUCCESS(rv, rv);
       }
     }
   }
@@ -2393,13 +2410,13 @@ void History::StartPendingVisitedQueries(PendingVisitedQueries&& aQueries) {
       MOZ_ASSERT(entry.GetData().IsEmpty(),
                  "Child process shouldn't have parent requests");
       if (uris.Length() == kBatchLimit) {
-        Unused << cpc->SendStartVisitedQueries(uris);
+        (void)cpc->SendStartVisitedQueries(uris);
         uris.ClearAndRetainStorage();
       }
     }
 
     if (!uris.IsEmpty()) {
-      Unused << cpc->SendStartVisitedQueries(uris);
+      (void)cpc->SendStartVisitedQueries(uris);
     }
   } else {
     VisitedQuery::Start(std::move(aQueries));

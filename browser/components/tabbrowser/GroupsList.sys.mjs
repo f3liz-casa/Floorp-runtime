@@ -3,6 +3,7 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 import { PrivateBrowsingUtils } from "resource://gre/modules/PrivateBrowsingUtils.sys.mjs";
+import { SessionStore } from "moz-src:///browser/components/sessionstore/SessionStore.sys.mjs";
 import { TabMetrics } from "moz-src:///browser/components/tabbrowser/TabMetrics.sys.mjs";
 
 const MAX_INITIAL_ITEMS = 5;
@@ -12,7 +13,7 @@ export class GroupsPanel {
     this.view = view;
     this.#showAll = showAll;
     this.containerNode = containerNode;
-    this.win = containerNode.ownerGlobal;
+    this.win = containerNode.documentGlobal;
     this.doc = containerNode.ownerDocument;
     this.panelMultiView = null;
     this.view.addEventListener("ViewShowing", this);
@@ -73,12 +74,12 @@ export class GroupsPanel {
       case "allTabsGroupView_selectGroup": {
         let group = this.win.gBrowser.getTabGroupById(tabGroupId);
         group.select();
-        group.ownerGlobal.focus();
+        group.documentGlobal.focus();
         break;
       }
 
       case "allTabsGroupView_restoreGroup":
-        this.win.SessionStore.openSavedTabGroup(tabGroupId, this.win, {
+        SessionStore.openSavedTabGroup(tabGroupId, this.win, {
           source: TabMetrics.METRIC_SOURCE.TAB_OVERFLOW_MENU,
         });
         break;
@@ -104,7 +105,7 @@ export class GroupsPanel {
     });
     let savedGroups = [];
     if (!PrivateBrowsingUtils.isWindowPrivate(this.win)) {
-      savedGroups = this.win.SessionStore.savedGroups.toSorted(
+      savedGroups = SessionStore.savedGroups.toSorted(
         (group1, group2) => group2.closedAt - group1.closedAt
       );
     }
@@ -128,9 +129,6 @@ export class GroupsPanel {
       }
       itemCount++;
       let row = this.#createRow(groupData);
-      let button = row.querySelector("toolbarbutton");
-      button.dataset.command = "allTabsGroupView_selectGroup";
-      button.setAttribute("context", "open-tab-group-context-menu");
       fragment.appendChild(row);
     }
 
@@ -140,10 +138,6 @@ export class GroupsPanel {
       }
       itemCount++;
       let row = this.#createRow(groupData, { isOpen: false });
-      let button = row.querySelector("toolbarbutton");
-      button.dataset.command = "allTabsGroupView_restoreGroup";
-      button.classList.add("all-tabs-group-saved-group");
-      button.setAttribute("context", "saved-tab-group-context-menu");
       fragment.appendChild(row);
     }
 
@@ -162,7 +156,7 @@ export class GroupsPanel {
   }
 
   /**
-   * @param {TabGroupStateData} group
+   * @param {MozTabbrowserTabGroup|SavedTabGroupStateData} group
    * @param {object} [options]
    * @param {boolean} [options.isOpen]
    *   Set to true if the group is currently open, and false if it's saved
@@ -175,20 +169,24 @@ export class GroupsPanel {
 
     row.style.setProperty(
       "--tab-group-color",
-      `var(--tab-group-color-${group.color})`
+      `var(--tab-group-${group.color})`
     );
     row.style.setProperty(
       "--tab-group-color-invert",
-      `var(--tab-group-color-${group.color}-invert)`
+      `var(--tab-group-${group.color}-invert)`
     );
     row.style.setProperty(
       "--tab-group-color-pale",
-      `var(--tab-group-color-${group.color}-pale)`
+      `var(--tab-group-${group.color}-pale)`
+    );
+    row.style.setProperty(
+      "--tab-group-background-color",
+      `var(--tab-group-${group.color})`
     );
     let button = doc.createXULElement("toolbarbutton");
     button.setAttribute(
       "class",
-      "all-tabs-button subviewbutton subviewbutton-iconic all-tabs-group-action-button"
+      "all-tabs-button subviewbutton subviewbutton-iconic all-tabs-group-action-button tab-group-icon"
     );
     button.dataset.tabGroupId = group.id;
     if (!isOpen) {
@@ -197,15 +195,16 @@ export class GroupsPanel {
         "tab-group-icon-closed"
       );
       button.dataset.command = "allTabsGroupView_restoreGroup";
+      button.setAttribute("context", "saved-tab-group-context-menu");
     } else {
-      button.classList.add("tab-group-icon");
       button.dataset.command = "allTabsGroupView_selectGroup";
+      button.setAttribute("context", "open-tab-group-context-menu");
     }
     button.setAttribute("flex", "1");
     button.setAttribute("crop", "end");
 
     let setName = tabGroupName => {
-      if (group.saved) {
+      if (!isOpen) {
         doc.l10n.setAttributes(button, "tabbrowser-manager-closed-tab-group", {
           tabGroupName,
         });

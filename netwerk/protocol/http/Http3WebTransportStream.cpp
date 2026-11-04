@@ -1,19 +1,20 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "Http3WebTransportStream.h"
 
-#include "HttpLog.h"
+#include <limits>
+
 #include "Http3Session.h"
 #include "Http3WebTransportSession.h"
+#include "HttpLog.h"
 #include "mozilla/TimeStamp.h"
 #include "nsHttpHandler.h"
 #include "nsIOService.h"
 #include "nsIPipe.h"
-#include "nsSocketTransportService2.h"
 #include "nsIWebTransportStream.h"
+#include "nsSocketTransportService2.h"
 
 namespace mozilla::net {
 
@@ -45,7 +46,7 @@ class DummyWebTransportStreamTransaction : public nsAHttpTransaction {
   void Close(nsresult reason) override {}
   nsHttpConnectionInfo* ConnectionInfo() override { return nullptr; }
   void SetProxyConnectFailed() override {}
-  nsHttpRequestHead* RequestHead() override { return nullptr; }
+  const nsHttpRequestHead* RequestHead() override { return nullptr; }
   uint32_t Http1xTransactionCount() override { return 0; }
   [[nodiscard]] nsresult TakeSubTransactions(
       nsTArray<RefPtr<nsAHttpTransaction>>& outTransactions) override {
@@ -123,7 +124,8 @@ NS_IMPL_ISUPPORTS(Http3WebTransportStream, nsIInputStreamCallback,
                   nsIOutputStreamCallback)
 
 Http3WebTransportStream::Http3WebTransportStream(
-    Http3Session* aSession, uint64_t aSessionId, WebTransportStreamType aType,
+    Http3SessionBase* aSession, uint64_t aSessionId,
+    WebTransportStreamType aType,
     std::function<void(Result<RefPtr<WebTransportStreamBase>, nsresult>&&)>&&
         aCallback)
     : WebTransportStreamBase(aSessionId, std::move(aCallback)),
@@ -133,7 +135,7 @@ Http3WebTransportStream::Http3WebTransportStream(
   mStreamType = aType;
 }
 
-Http3WebTransportStream::Http3WebTransportStream(Http3Session* aSession,
+Http3WebTransportStream::Http3WebTransportStream(Http3SessionBase* aSession,
                                                  uint64_t aSessionId,
                                                  WebTransportStreamType aType,
                                                  uint64_t aStreamId)
@@ -496,7 +498,7 @@ nsresult Http3WebTransportStream::WriteSegments() {
     if (NS_FAILED(rv)) {
       if (rv == NS_BASE_STREAM_WOULD_BLOCK) {
         nsCOMPtr<nsIEventTarget> target;
-        Unused << gHttpHandler->GetSocketThreadTarget(getter_AddRefs(target));
+        (void)gHttpHandler->GetSocketThreadTarget(getter_AddRefs(target));
         if (target) {
           mReceiveStreamPipeOut->AsyncWait(this, 0, 0, target);
           rv = NS_OK;
@@ -544,6 +546,30 @@ void Http3WebTransportStream::Close(nsresult aResult) {
   mSendState = SEND_DONE;
   mRecvState = RECV_DONE;
   mSession = nullptr;
+}
+
+void Http3WebTransportStream::CloseReceiveSide(nsresult aResult) {
+  MOZ_ASSERT(OnSocketThread(), "not on socket thread");
+  LOG(("Http3WebTransportStream::CloseReceiveSide [this=%p]", this));
+  if (mReceiveStreamPipeOut) {
+    mReceiveStreamPipeOut->AsyncWait(nullptr, 0, 0, nullptr);
+    mReceiveStreamPipeOut->CloseWithStatus(aResult);
+  }
+  mRecvState = RECV_DONE;
+}
+
+void Http3WebTransportStream::CloseSendSide(nsresult aResult) {
+  MOZ_ASSERT(OnSocketThread(), "not on socket thread");
+  LOG(("Http3WebTransportStream::CloseSendSide [this=%p]", this));
+  if (mSendStreamPipeIn) {
+    mSendStreamPipeIn->AsyncWait(nullptr, 0, 0, nullptr);
+    mSendStreamPipeIn->CloseWithStatus(aResult);
+  }
+  // neqo resets the send half itself on STOP_SENDING; this keeps SendFin(),
+  // Reset() and Commit() from touching it again.
+  mSendFin = true;
+  mSendState = SEND_DONE;
+  mPendingTasks.Clear();
 }
 
 void Http3WebTransportStream::SendFin() {
@@ -621,10 +647,12 @@ void Http3WebTransportStream::Reset(uint64_t aErrorCode) {
   }
 }
 
-void Http3WebTransportStream::SendStopSending(uint8_t aErrorCode) {
+void Http3WebTransportStream::SendStopSending(uint64_t aErrorCode) {
   MOZ_ASSERT(OnSocketThread(), "not on socket thread");
-  LOG(("Http3WebTransportStream::SendStopSending [this=%p, mSendState=%d]",
-       this, mSendState));
+  LOG(
+      ("Http3WebTransportStream::SendStopSending [this=%p, mSendState=%d, "
+       "errorCode=%" PRIu64 "]",
+       this, mSendState, aErrorCode));
 
   if (mSendState == WAITING_TO_ACTIVATE) {
     return;
@@ -634,18 +662,31 @@ void Http3WebTransportStream::SendStopSending(uint8_t aErrorCode) {
     return;
   }
 
-  mStopSendingError = Some(aErrorCode);
+  // aErrorCode is the application-level WebTransport code (unlike Reset(),
+  // whose callers already pass an HTTP/3-mapped code); map it here per
+  // draft-ietf-webtrans-http3-15 section 4.4, matching the outgoing
+  // RESET_STREAM path.  WebTransportParent bounds it to 32 bits.
+  MOZ_DIAGNOSTIC_ASSERT(aErrorCode <= std::numeric_limits<uint32_t>::max());
+  mStopSendingError =
+      Some(WebTransportErrorToHttp3Error(static_cast<uint32_t>(aErrorCode)));
 
   mSession->StreamStopSending(this, *mStopSendingError);
   // StreamHasDataToWrite needs to be called to trigger ProcessOutput.
   mSession->StreamHasDataToWrite(this);
 }
 
-void Http3WebTransportStream::SetSendOrder(Maybe<int64_t> aSendOrder) {
+void Http3WebTransportStream::SetSendOrder(int64_t aSendOrder) {
   if (!mSession) {
     return;
   }
   mSession->SetSendOrder(this, aSendOrder);
+}
+
+void Http3WebTransportStream::SetSendGroup(uint64_t aSendGroupId) {
+  if (!mSession) {
+    return;
+  }
+  mSession->SetSendGroup(this, aSendGroupId);
 }
 
 }  // namespace mozilla::net

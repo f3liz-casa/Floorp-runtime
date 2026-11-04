@@ -4,10 +4,10 @@
 
 package org.mozilla.fenix.exceptions.login
 
+import io.mockk.coVerify
 import io.mockk.mockk
-import io.mockk.verify
+import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.TestScope
-import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.runTest
 import mozilla.components.feature.logins.exceptions.LoginException
 import mozilla.components.feature.logins.exceptions.LoginExceptionStorage
@@ -18,24 +18,28 @@ class LoginExceptionsInteractorTest {
 
     private lateinit var loginExceptionStorage: LoginExceptionStorage
     private lateinit var interactor: LoginExceptionsInteractor
-    private val scope = TestScope(UnconfinedTestDispatcher())
+    private val scope = TestScope(StandardTestDispatcher())
 
     @Before
     fun setup() {
         loginExceptionStorage = mockk(relaxed = true)
-        interactor = DefaultLoginExceptionsInteractor(scope, loginExceptionStorage)
+        interactor = DefaultLoginExceptionsInteractor(scope = scope, loginExceptionStorage = loginExceptionStorage)
     }
 
     @Test
     fun onDeleteAll() = scope.runTest {
         interactor.onDeleteAll()
-        verify { loginExceptionStorage.deleteAllLoginExceptions() }
+        testScheduler.advanceUntilIdle()
+
+        coVerify { loginExceptionStorage.deleteAllLoginExceptions() }
     }
 
     @Test
     fun onDeleteOne() = scope.runTest {
         val exceptionsItem: LoginException = mockk()
         interactor.onDeleteOne(exceptionsItem)
-        verify { loginExceptionStorage.removeLoginException(exceptionsItem) }
+        testScheduler.advanceUntilIdle()
+
+        coVerify { loginExceptionStorage.removeLoginException(exceptionsItem) }
     }
 }

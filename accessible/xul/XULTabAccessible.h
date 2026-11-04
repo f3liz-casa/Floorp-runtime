@@ -1,10 +1,9 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef mozilla_a11y_XULTabAccessible_h__
-#define mozilla_a11y_XULTabAccessible_h__
+#ifndef mozilla_a11y_XULTabAccessible_h_
+#define mozilla_a11y_XULTabAccessible_h_
 
 // NOTE: alphabetically ordered
 #include "HyperTextAccessible.h"
@@ -27,7 +26,6 @@ class XULTabAccessible : public HyperTextAccessible {
   virtual a11y::role NativeRole() const override;
   virtual uint64_t NativeState() const override;
   virtual uint64_t NativeInteractiveState() const override;
-  virtual Relation RelationByType(RelationType aType) const override;
   virtual void ApplyARIAState(uint64_t* aState) const override;
 
   // ActionAccessible
@@ -89,7 +87,7 @@ class XULTabpanelAccessible : public AccessibleWrap {
 
   // LocalAccessible
   virtual a11y::role NativeRole() const override;
-  virtual Relation RelationByType(RelationType aType) const override;
+  virtual ENameValueFlag DirectName(nsString& aName) const override;
 };
 
 }  // namespace a11y

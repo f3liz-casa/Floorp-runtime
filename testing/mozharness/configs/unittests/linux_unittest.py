@@ -101,6 +101,7 @@ config = {
                 "--sandbox-read-whitelist=%(abs_work_dir)s",
             ],
             "run_filename": "runtests.py",
+            "test_summary": True,
             "testsdir": "mochitest",
         },
         "reftest": {
@@ -125,6 +126,7 @@ config = {
                 "--utility-path=tests/bin",
             ],
             "run_filename": "runxpcshelltests.py",
+            "test_summary": True,
             "testsdir": "xpcshell",
         },
         "gtest": {
@@ -149,16 +151,16 @@ config = {
             "--timeout=900",
             "--max-timeouts=50",
         ],
-        "mochitest-plain": ["--chunk-by-dir=4"],
+        "mochitest-plain": [],
         "mochitest-plain-gpu": ["--subsuite=gpu"],
-        "mochitest-plain-coverage": ["--chunk-by-dir=4", "--timeout=1200"],
+        "mochitest-plain-coverage": ["--timeout=1200"],
         "mochitest-media": ["--subsuite=media"],
-        "mochitest-chrome": ["--flavor=chrome", "--chunk-by-dir=4", "--disable-e10s"],
+        "mochitest-speech-recognition": ["--subsuite=speech-recognition"],
+        "mochitest-chrome": ["--flavor=chrome", "--disable-e10s"],
         "mochitest-chrome-gpu": ["--flavor=chrome", "--subsuite=gpu", "--disable-e10s"],
-        "mochitest-browser-chrome": ["--flavor=browser", "--chunk-by-runtime"],
+        "mochitest-browser-chrome": ["--flavor=browser"],
         "mochitest-browser-chrome-coverage": [
             "--flavor=browser",
-            "--chunk-by-runtime",
             "--timeout=1200",
         ],
         "mochitest-browser-screenshots": [
@@ -174,19 +176,26 @@ config = {
         "mochitest-devtools-chrome": [
             "--flavor=browser",
             "--subsuite=devtools",
-            "--chunk-by-runtime",
         ],
         "mochitest-devtools-chrome-coverage": [
             "--flavor=browser",
             "--subsuite=devtools",
-            "--chunk-by-runtime",
             "--timeout=1200",
+        ],
+        # Only runs through scripts/devtools_compat.py, which provisions a server.
+        "mochitest-devtools-compat": [
+            "--flavor=browser",
+            "--subsuite=devtools-compat",
         ],
         "mochitest-browser-a11y": ["--flavor=browser", "--subsuite=a11y"],
         "mochitest-browser-media": ["--flavor=browser", "--subsuite=media-bc"],
         "mochitest-browser-translations": [
             "--flavor=browser",
             "--subsuite=translations",
+        ],
+        "mochitest-browser-chrome-ml-models": [
+            "--flavor=browser",
+            "--subsuite=ml-models",
         ],
         "mochitest-a11y": ["--flavor=a11y", "--disable-e10s"],
         "mochitest-remote": ["--flavor=browser", "--subsuite=remote"],
@@ -264,9 +273,6 @@ config = {
     "vcs_output_timeout": 1000,
     "minidump_save_path": "%(abs_work_dir)s/../minidumps",
     "unstructured_flavors": {
-        "xpcshell": [],
-        "gtest": [],
-        "cppunittest": [],
         "jittest": [],
     },
     "tooltool_cache": "/builds/worker/tooltool-cache",

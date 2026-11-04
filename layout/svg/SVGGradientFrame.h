@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -9,8 +7,8 @@
 
 #include "gfxMatrix.h"
 #include "gfxRect.h"
-#include "mozilla/Attributes.h"
 #include "mozilla/SVGPaintServerFrame.h"
+#include "mozilla/webrender/WebRenderTypes.h"
 #include "nsCOMPtr.h"
 #include "nsCSSRenderingGradients.h"
 #include "nsIFrame.h"
@@ -56,9 +54,35 @@ class SVGGradientFrame : public SVGPaintServerFrame {
       StyleSVGPaint nsStyleSVG::* aFillOrStroke, float aGraphicOpacity,
       imgDrawingParams& aImgParams, const gfxRect* aOverrideBounds) override;
 
+  /**
+   * The gradient expressed with WebRender's gradient parameters, in the user
+   * space of the frame it is applied to. When the gradient degenerates to a
+   * single color (no stops, one stop or a zero length vector) mSolidColor is
+   * set and the other fields are unused.
+   */
+  struct WebRenderGradient {
+    bool mIsLinear = true;
+    CSSPoint mStart;
+    CSSPoint mEnd;
+    CSSPoint mCenter;
+    CSSSize mRadii;
+    nsTArray<wr::GradientStop> mStops;
+    wr::ExtendMode mExtendMode = wr::ExtendMode::Clamp;
+    Maybe<gfx::DeviceColor> mSolidColor;
+  };
+
+  /**
+   * Returns Nothing() when the gradient cannot be expressed with WebRender
+   * primitives, for example when gradientTransform (combined with the
+   * objectBoundingBox scaling) skews or rotates a radial gradient
+   * non-uniformly.
+   */
+  Maybe<WebRenderGradient> GetWebRenderGradient(nsIFrame* aSource,
+                                                float aGraphicOpacity);
+
   // nsIFrame interface:
   nsresult AttributeChanged(int32_t aNameSpaceID, nsAtom* aAttribute,
-                            int32_t aModType) override;
+                            AttrModType aModType) override;
 
 #ifdef DEBUG_FRAME_DUMP
   nsresult GetFrameName(nsAString& aResult) const override {
@@ -77,12 +101,18 @@ class SVGGradientFrame : public SVGPaintServerFrame {
 
   SVGGradientFrame* GetGradientTransformFrame(SVGGradientFrame* aDefault);
   // Will be singular for gradientUnits="objectBoundingBox" with an empty bbox.
-  gfxMatrix GetGradientTransform(nsIFrame* aSource,
+  gfxMatrix GetGradientTransform(nsIFrame* aSource, uint16_t aGradientUnits,
                                  const gfxRect* aOverrideBounds);
 
  protected:
-  virtual bool GradientVectorLengthIsZero() = 0;
-  virtual already_AddRefed<gfxPattern> CreateGradient() = 0;
+  virtual bool GradientVectorLengthIsZero(uint16_t aGradientUnits) = 0;
+  virtual already_AddRefed<gfxPattern> CreateGradient(
+      uint16_t aGradientUnits) = 0;
+  // Fills in the geometry of aGradient in gradient space, then maps it through
+  // aGradientToUserSpace. Returns false when the mapping cannot be expressed.
+  virtual bool GetWebRenderGeometry(uint16_t aGradientUnits,
+                                    const gfxMatrix& aGradientToUserSpace,
+                                    WebRenderGradient& aGradient) = 0;
 
   // Accessors to lookup gradient attributes
   uint16_t GetEnumValue(uint32_t aIndex, nsIContent* aDefault);
@@ -91,7 +121,8 @@ class SVGGradientFrame : public SVGPaintServerFrame {
   }
   uint16_t GetGradientUnits();
   uint16_t GetSpreadMethod();
-  float GetLengthValue(const SVGAnimatedLength& aLength);
+  float GetLengthValue(uint16_t aGradientUnits,
+                       const SVGAnimatedLength& aLength);
 
   // Gradient-type-specific lookups since the length values differ between
   // linear and radial gradients
@@ -137,7 +168,7 @@ class SVGLinearGradientFrame final : public SVGGradientFrame {
 #endif
 
   nsresult AttributeChanged(int32_t aNameSpaceID, nsAtom* aAttribute,
-                            int32_t aModType) override;
+                            AttrModType aModType) override;
 
 #ifdef DEBUG_FRAME_DUMP
   nsresult GetFrameName(nsAString& aResult) const override {
@@ -147,12 +178,15 @@ class SVGLinearGradientFrame final : public SVGGradientFrame {
 
  protected:
   using SVGGradientFrame::GetLengthValue;
-  float GetLengthValue(uint32_t aIndex);
+  float GetLengthValue(uint16_t aGradientUnits, uint32_t aIndex);
   mozilla::dom::SVGLinearGradientElement* GetLinearGradientWithLength(
       uint32_t aIndex,
       mozilla::dom::SVGLinearGradientElement* aDefault) override;
-  bool GradientVectorLengthIsZero() override;
-  already_AddRefed<gfxPattern> CreateGradient() override;
+  bool GradientVectorLengthIsZero(uint16_t aGradientUnits) override;
+  already_AddRefed<gfxPattern> CreateGradient(uint16_t aGradientUnits) override;
+  bool GetWebRenderGeometry(uint16_t aGradientUnits,
+                            const gfxMatrix& aGradientToUserSpace,
+                            WebRenderGradient& aGradient) override;
 };
 
 // -------------------------------------------------------------------------
@@ -179,7 +213,7 @@ class SVGRadialGradientFrame final : public SVGGradientFrame {
 #endif
 
   nsresult AttributeChanged(int32_t aNameSpaceID, nsAtom* aAttribute,
-                            int32_t aModType) override;
+                            AttrModType aModType) override;
 
 #ifdef DEBUG_FRAME_DUMP
   nsresult GetFrameName(nsAString& aResult) const override {
@@ -189,15 +223,20 @@ class SVGRadialGradientFrame final : public SVGGradientFrame {
 
  protected:
   using SVGGradientFrame::GetLengthValue;
-  float GetLengthValue(uint32_t aIndex, Maybe<float> aDefaultValue = Nothing());
-  float GetLengthValue(uint32_t aIndex, float aDefaultValue) {
-    return GetLengthValue(aIndex, Some(aDefaultValue));
+  float GetLengthValue(uint16_t aGradientUnits, uint32_t aIndex,
+                       Maybe<float> aDefaultValue = Nothing());
+  float GetLengthValue(uint16_t aGradientUnits, uint32_t aIndex,
+                       float aDefaultValue) {
+    return GetLengthValue(aGradientUnits, aIndex, Some(aDefaultValue));
   }
   mozilla::dom::SVGRadialGradientElement* GetRadialGradientWithLength(
       uint32_t aIndex,
       mozilla::dom::SVGRadialGradientElement* aDefault) override;
-  bool GradientVectorLengthIsZero() override;
-  already_AddRefed<gfxPattern> CreateGradient() override;
+  bool GradientVectorLengthIsZero(uint16_t aGradientUnits) override;
+  already_AddRefed<gfxPattern> CreateGradient(uint16_t aGradientUnits) override;
+  bool GetWebRenderGeometry(uint16_t aGradientUnits,
+                            const gfxMatrix& aGradientToUserSpace,
+                            WebRenderGradient& aGradient) override;
 };
 
 }  // namespace mozilla

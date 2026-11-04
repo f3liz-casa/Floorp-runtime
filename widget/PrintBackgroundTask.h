@@ -1,4 +1,3 @@
-/* -*- Mode: C++; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -6,11 +5,10 @@
 #ifndef mozilla_PrintBackgroundTask_h_
 #define mozilla_PrintBackgroundTask_h_
 
-#include "mozilla/dom/Promise.h"
-#include "mozilla/ErrorResult.h"
-
-#include <tuple>
 #include <utility>
+
+#include "mozilla/ErrorResult.h"
+#include "mozilla/dom/Promise.h"
 
 // A helper to resolve a DOM Promise with the result of a const method, executed
 // in another thread.
@@ -21,16 +19,16 @@ namespace mozilla {
 
 template <typename T, typename Result>
 void ResolveOrReject(dom::Promise& aPromise, T&, Result& aResult) {
-  aPromise.MaybeResolve(std::forward<Result>(aResult));
+  aPromise.MaybeResolve(std::move(aResult));
 }
 
 template <typename T, typename Result, typename... Args>
 using PrintBackgroundTask = Result (T::*)(Args...) const;
 
-template <typename T, typename Result, typename... Args>
+template <typename T, typename Result, typename... TArgs, typename... Args>
 void SpawnPrintBackgroundTask(
     T& aReceiver, dom::Promise& aPromise,
-    PrintBackgroundTask<T, Result, Args...> aBackgroundTask, Args... aArgs) {
+    PrintBackgroundTask<T, Result, TArgs...> aBackgroundTask, Args&&... aArgs) {
   auto promiseHolder = MakeRefPtr<nsMainThreadPtrHolder<dom::Promise>>(
       "nsPrinterBase::SpawnBackgroundTaskPromise", &aPromise);
   // We actually want to allow to access the printer data from the callback, so
@@ -41,18 +39,14 @@ void SpawnPrintBackgroundTask(
       /* strict = */ false);
   // See
   // https://stackoverflow.com/questions/47496358/c-lambdas-how-to-capture-variadic-parameter-pack-from-the-upper-scope
-  // about the tuple shenanigans. It could be improved with C++20
+  // for the capture.
   NS_DispatchBackgroundTask(
       NS_NewRunnableFunction(
           "SpawnPrintBackgroundTask",
           [holder = std::move(holder), promiseHolder = std::move(promiseHolder),
            backgroundTask = aBackgroundTask,
-           aArgs = std::make_tuple(std::forward<Args>(aArgs)...)] {
-            Result result = std::apply(
-                [&](auto&&... args) {
-                  return (holder->get()->*backgroundTask)(args...);
-                },
-                std::move(aArgs));
+           ... args = std::forward<Args>(aArgs)] {
+            Result result = (holder->get()->*backgroundTask)(args...);
             NS_DispatchToMainThread(NS_NewRunnableFunction(
                 "SpawnPrintBackgroundTaskResolution",
                 [holder = std::move(holder),
@@ -67,10 +61,10 @@ void SpawnPrintBackgroundTask(
 
 // Gets a fresh promise into aResultPromise, that resolves whenever the print
 // background task finishes.
-template <typename T, typename Result, typename... Args>
+template <typename T, typename Result, typename... TArgs, typename... Args>
 nsresult PrintBackgroundTaskPromise(
     T& aReceiver, JSContext* aCx, dom::Promise** aResultPromise,
-    PrintBackgroundTask<T, Result, Args...> aTask, Args... aArgs) {
+    PrintBackgroundTask<T, Result, TArgs...> aTask, Args&&... aArgs) {
   ErrorResult rv;
   RefPtr<dom::Promise> promise =
       dom::Promise::Create(xpc::CurrentNativeGlobal(aCx), rv);
@@ -87,11 +81,11 @@ nsresult PrintBackgroundTaskPromise(
 
 // Resolves an async attribute via a background task, creating and storing a
 // promise as needed in aPromiseSlot.
-template <typename T, typename Result, typename... Args>
+template <typename T, typename Result, typename... TArgs, typename... Args>
 nsresult AsyncPromiseAttributeGetter(
     T& aReceiver, RefPtr<dom::Promise>& aPromiseSlot, JSContext* aCx,
     dom::Promise** aResultPromise,
-    PrintBackgroundTask<T, Result, Args...> aTask, Args... aArgs) {
+    PrintBackgroundTask<T, Result, TArgs...> aTask, Args&&... aArgs) {
   if (RefPtr<dom::Promise> existing = aPromiseSlot) {
     existing.forget(aResultPromise);
     return NS_OK;

@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -40,10 +38,8 @@ enum class CSSPropFlags : uint16_t {
   // This property can be animated on the compositor.
   CanAnimateOnCompositor = 1 << 3,
 
-  // This property is an internal property that is not represented in
-  // the DOM. Properties with this flag are defined in an #ifndef
-  // CSS_PROP_LIST_EXCLUDE_INTERNAL section.
-  Internal = 1 << 4,
+  // This property can produce a scroll-linked effect.
+  ScrollLinkedEffective = 1 << 4,
 
   // Whether this property should be serialized by Servo in getComputedStyle.
   SerializedByServo = 1 << 5,
@@ -55,6 +51,12 @@ enum class CSSPropFlags : uint16_t {
   AffectsLayout = 1 << 7,
   AffectsOverflow = 1 << 8,
   AffectsPaint = 1 << 9,
+
+  // Whether this is a list-valued property, as defined by Typed OM, and how
+  // the items of the list are separated.
+  IsCommaSeparated = 1 << 10,
+  IsSpaceSeparated = 1 << 11,
+  IsListValued = IsCommaSeparated | IsSpaceSeparated,
 };
 
 MOZ_MAKE_ENUM_CLASS_BITWISE_OPERATORS(CSSPropFlags)

@@ -1,11 +1,10 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "mozilla/dom/SVGSwitchElement.h"
 
+#include "mozAutoDocUpdate.h"
 #include "mozilla/SVGUtils.h"
 #include "mozilla/dom/SVGSwitchElementBinding.h"
 #include "nsLayoutUtils.h"
@@ -37,7 +36,7 @@ NS_INTERFACE_MAP_END_INHERITING(SVGSwitchElementBase)
 // Implementation
 
 SVGSwitchElement::SVGSwitchElement(
-    already_AddRefed<mozilla::dom::NodeInfo>&& aNodeInfo)
+    already_AddRefed<mozilla::dom::NodeInfo> aNodeInfo)
     : SVGSwitchElementBase(std::move(aNodeInfo)) {}
 
 void SVGSwitchElement::MaybeInvalidate() {
@@ -68,12 +67,12 @@ NS_IMPL_ELEMENT_CLONE_WITH_INIT(SVGSwitchElement)
 //----------------------------------------------------------------------
 // nsINode methods
 
-void SVGSwitchElement::InsertChildBefore(nsIContent* aKid,
-                                         nsIContent* aBeforeThis, bool aNotify,
-                                         ErrorResult& aRv,
-                                         nsINode* aOldParent) {
+void SVGSwitchElement::InsertChildBefore(
+    nsIContent* aKid, nsIContent* aBeforeThis, bool aNotify, ErrorResult& aRv,
+    nsINode* aOldParent, MutationEffectOnScript aMutationEffectOnScript) {
+  mozAutoDocUpdate updateBatch(GetComposedDoc(), aNotify);
   SVGSwitchElementBase::InsertChildBefore(aKid, aBeforeThis, aNotify, aRv,
-                                          aOldParent);
+                                          aOldParent, aMutationEffectOnScript);
   if (aRv.Failed()) {
     return;
   }
@@ -81,10 +80,12 @@ void SVGSwitchElement::InsertChildBefore(nsIContent* aKid,
   MaybeInvalidate();
 }
 
-void SVGSwitchElement::RemoveChildNode(nsIContent* aKid, bool aNotify,
-                                       const BatchRemovalState* aState,
-                                       nsINode* aNewParent) {
-  SVGSwitchElementBase::RemoveChildNode(aKid, aNotify, aState, aNewParent);
+void SVGSwitchElement::RemoveChildNode(
+    nsIContent* aKid, bool aNotify, const BatchRemovalState* aState,
+    nsINode* aNewParent, MutationEffectOnScript aMutationEffectOnScript) {
+  mozAutoDocUpdate updateBatch(GetComposedDoc(), aNotify);
+  SVGSwitchElementBase::RemoveChildNode(aKid, aNotify, aState, aNewParent,
+                                        aMutationEffectOnScript);
   MaybeInvalidate();
 }
 

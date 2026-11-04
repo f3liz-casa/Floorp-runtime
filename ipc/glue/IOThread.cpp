@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -66,6 +64,10 @@ void IOThread::StartThread() {
   }
 }
 
+void IOThread::Init() {
+  mEventTarget = base::Thread::message_loop()->SerialEventTarget();
+}
+
 void IOThread::StopThread() {
   // This will block until CleanUp() has been called, and the IPC I/O thread has
   // been joined.
@@ -99,6 +101,8 @@ IOThreadParent::IOThreadParent() : IOThread("IPC I/O Parent") {
 IOThreadParent::~IOThreadParent() { StopThread(); }
 
 void IOThreadParent::Init() {
+  IOThread::Init();
+
 #if defined(XP_WIN)
   // Initializes the COM library on the current thread.
   CoInitialize(nullptr);
@@ -133,6 +137,8 @@ IOThreadChild::IOThreadChild(IPC::Channel::ChannelHandle aClientHandle,
 IOThreadChild::~IOThreadChild() { StopThread(); }
 
 void IOThreadChild::Init() {
+  IOThread::Init();
+
   mInitialPort =
       NodeController::InitChildProcess(std::move(mClientHandle), mParentPid);
 }

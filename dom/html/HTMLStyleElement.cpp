@@ -1,10 +1,9 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 #include "mozilla/dom/HTMLStyleElement.h"
 
+#include "mozilla/StyleSheet.h"
 #include "mozilla/dom/Document.h"
 #include "mozilla/dom/FetchPriority.h"
 #include "mozilla/dom/HTMLStyleElementBinding.h"
@@ -17,13 +16,14 @@
 #include "nsThreadUtils.h"
 #include "nsUnicharUtils.h"
 
-NS_IMPL_NS_NEW_HTML_ELEMENT(Style)
+NS_IMPL_NS_NEW_HTML_ELEMENT_CHECK_PARSER(Style)
 
 namespace mozilla::dom {
 
 HTMLStyleElement::HTMLStyleElement(
-    already_AddRefed<mozilla::dom::NodeInfo>&& aNodeInfo)
-    : nsGenericHTMLElement(std::move(aNodeInfo)) {
+    already_AddRefed<mozilla::dom::NodeInfo> aNodeInfo, FromParser aFromParser)
+    : nsGenericHTMLElement(std::move(aNodeInfo)),
+      mCreatedByParser(aFromParser) {
   AddMutationObserver(this);
 }
 
@@ -47,7 +47,7 @@ NS_IMPL_ISUPPORTS_CYCLE_COLLECTION_INHERITED(HTMLStyleElement,
                                              nsGenericHTMLElement,
                                              nsIMutationObserver)
 
-NS_IMPL_ELEMENT_CLONE(HTMLStyleElement)
+NS_IMPL_ELEMENT_CLONE(HTMLStyleElement, mozilla::dom::NOT_FROM_PARSER)
 
 bool HTMLStyleElement::Disabled() const {
   StyleSheet* ss = GetSheet();
@@ -93,7 +93,7 @@ void HTMLStyleElement::ContentWillBeRemoved(nsIContent* aChild,
 void HTMLStyleElement::ContentChanged(nsIContent* aContent) {
   mTriggeringPrincipal = nullptr;
   if (nsContentUtils::IsInSameAnonymousTree(this, aContent)) {
-    Unused << UpdateStyleSheetInternal(nullptr, nullptr);
+    (void)UpdateStyleSheetInternal(nullptr, nullptr);
   }
 }
 
@@ -105,12 +105,14 @@ nsresult HTMLStyleElement::BindToTree(BindContext& aContext, nsINode& aParent) {
 }
 
 void HTMLStyleElement::UnbindFromTree(UnbindContext& aContext) {
+  RenderBlockingElementUnbindFromTree(aContext);
+
   RefPtr<Document> oldDoc = GetUncomposedDoc();
   ShadowRoot* oldShadow = GetContainingShadow();
 
   nsGenericHTMLElement::UnbindFromTree(aContext);
 
-  Unused << UpdateStyleSheetInternal(oldDoc, oldShadow);
+  (void)UpdateStyleSheetInternal(oldDoc, oldShadow);
 }
 
 bool HTMLStyleElement::ParseAttribute(int32_t aNamespaceID, nsAtom* aAttribute,
@@ -135,7 +137,10 @@ void HTMLStyleElement::AfterSetAttr(int32_t aNameSpaceID, nsAtom* aName,
   if (aNameSpaceID == kNameSpaceID_None) {
     if (aName == nsGkAtoms::title || aName == nsGkAtoms::media ||
         aName == nsGkAtoms::type) {
-      Unused << UpdateStyleSheetInternal(nullptr, nullptr, ForceUpdate::Yes);
+      (void)UpdateStyleSheetInternal(nullptr, nullptr, ForceUpdate::Yes);
+    }
+    if (aName == nsGkAtoms::blocking) {
+      UnblockRenderingIfNotPotentiallyRenderBlocking();
     }
   }
 
@@ -158,7 +163,8 @@ void HTMLStyleElement::SetInnerHTMLTrusted(const nsAString& aInnerHTML,
 
 void HTMLStyleElement::SetTextContentInternal(const nsAString& aTextContent,
                                               nsIPrincipal* aScriptedPrincipal,
-                                              ErrorResult& aError) {
+                                              ErrorResult& aError,
+                                              MutationEffectOnScript) {
   // Per spec, if we're setting text content to an empty string and don't
   // already have any children, we should not trigger any mutation observers, or
   // re-parse the stylesheet.
@@ -176,7 +182,7 @@ void HTMLStyleElement::SetTextContentInternal(const nsAString& aTextContent,
   aError = nsContentUtils::SetNodeTextContent(this, aTextContent, true);
   if (updatesWereEnabled) {
     mTriggeringPrincipal = aScriptedPrincipal;
-    Unused << EnableUpdatesAndUpdateStyleSheet(nullptr);
+    (void)EnableUpdatesAndUpdateStyleSheet(nullptr);
   }
 }
 
@@ -227,12 +233,14 @@ nsDOMTokenList* HTMLStyleElement::Blocking() {
 }
 
 bool HTMLStyleElement::IsPotentiallyRenderBlocking() {
-  return BlockingContainsRender();
+  if (BlockingContainsRender()) {
+    return true;
+  }
 
-  // TODO: handle implicitly potentially render blocking
   // https://html.spec.whatwg.org/#implicitly-potentially-render-blocking
   // A style element is implicitly potentially render-blocking if the element
   // was created by its node document's parser.
+  return IsFromDocumentParser(mCreatedByParser);
 }
 
 nsresult HTMLStyleElement::CopyInnerTo(HTMLStyleElement* aDest) {

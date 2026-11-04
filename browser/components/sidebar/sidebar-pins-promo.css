@@ -10,6 +10,7 @@
   --promo-light-icon-border: var(--color-violet-50);
   --promo-dark-icon-border: var(--color-violet-0);
   --icon-height: 52px;
+  position: relative;
 }
 
 .promo-card {
@@ -26,6 +27,12 @@
 
   @media (prefers-contrast) {
     outline-color: var(--border-color);
+  }
+
+  @media (forced-colors) {
+    background-color: ButtonFace;
+    color: ButtonText;
+    outline-color: ButtonText;
   }
 
   &[dragactive] {
@@ -109,5 +116,17 @@
 
   @media not (prefers-contrast) {
     color: light-dark(var(--promo-light-text), var(--promo-dark-text));
+  }
+
+  @media (forced-colors) {
+    background-color: ButtonFace;
+    color: ButtonText;
+  }
+
+  &:hover {
+    @media (forced-colors) {
+      background-color: SelectedItem;
+      color: SelectedItemText;
+    }
   }
 }

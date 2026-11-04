@@ -1,6 +1,4 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- * vim: set ts=8 sts=2 et sw=2 tw=80:
- * This Source Code Form is subject to the terms of the Mozilla Public
+/* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
@@ -21,7 +19,6 @@
 #include "jit/BaselineICList.h"
 #include "jit/BaselineJIT.h"
 #include "jit/CalleeToken.h"
-#include "jit/InterpreterEntryTrampoline.h"
 #include "jit/IonCompileTask.h"
 #include "jit/IonTypes.h"
 #include "jit/JitCode.h"
@@ -29,6 +26,7 @@
 #include "jit/shared/Assembler-shared.h"
 #include "jit/TrampolineNatives.h"
 #include "js/AllocPolicy.h"
+#include "js/GCVector.h"
 #include "js/ProfilingFrameIterator.h"
 #include "js/TypeDecls.h"
 #include "js/UniquePtr.h"
@@ -81,12 +79,11 @@ class BaselineICFallbackCode {
                                size_t(BaselineICFallbackKind::Count)>;
   OffsetArray offsets_ = {};
 
-  // Keep track of offset into various baseline stubs' code at return
-  // point from called script.
-  using BailoutReturnArray =
+  // Keep track of offset into various baseline stubs' bailout stub code.
+  using BailoutStubArray =
       mozilla::EnumeratedArray<BailoutReturnKind, uint32_t,
                                size_t(BailoutReturnKind::Count)>;
-  BailoutReturnArray bailoutReturnOffsets_ = {};
+  BailoutStubArray bailoutStubOffsets_ = {};
 
  public:
   BaselineICFallbackCode() = default;
@@ -97,18 +94,16 @@ class BaselineICFallbackCode {
     offsets_[kind] = offset;
   }
   void initCode(JitCode* code) { code_ = code; }
-  void initBailoutReturnOffset(BailoutReturnKind kind, uint32_t offset) {
-    bailoutReturnOffsets_[kind] = offset;
+  void initBailoutStubOffset(BailoutReturnKind kind, uint32_t offset) {
+    bailoutStubOffsets_[kind] = offset;
   }
   TrampolinePtr addr(BaselineICFallbackKind kind) const {
     return TrampolinePtr(code_->raw() + offsets_[kind]);
   }
-  uint8_t* bailoutReturnAddr(BailoutReturnKind kind) const {
-    return code_->raw() + bailoutReturnOffsets_[kind];
+  uint8_t* bailoutStubAddr(BailoutReturnKind kind) const {
+    return code_->raw() + bailoutStubOffsets_[kind];
   }
 };
-
-enum class ArgumentsRectifierKind { Normal, TrialInlining };
 
 enum class DebugTrapHandlerKind { Interpreter, Compiler, Count };
 
@@ -144,18 +139,17 @@ class JitRuntime {
   // Trampoline for entering JIT code.
   WriteOnceData<uint32_t> enterJITOffset_{0};
 
+  // Trampoline for resuming a suspended generator/async function.
+  WriteOnceData<uint32_t> enterJITGeneratorResumeOffset_{0};
+
   // Generic bailout table; used if the bailout table overflows.
   WriteOnceData<uint32_t> bailoutHandlerOffset_{0};
 
-  // Argument-rectifying thunks, in the case of insufficient arguments passed
-  // to a function call site. The return offset is used to rebuild stack frames
-  // when bailing out.
-  WriteOnceData<uint32_t> argumentsRectifierOffset_{0};
-  WriteOnceData<uint32_t> trialInliningArgumentsRectifierOffset_{0};
-  WriteOnceData<uint32_t> argumentsRectifierReturnOffset_{0};
-
   // Thunk that invalides an (Ion compiled) caller on the Ion stack.
   WriteOnceData<uint32_t> invalidatorOffset_{0};
+
+  // Shared handler for Baseline debug-mode OSR.
+  WriteOnceData<uint32_t> baselineDebugModeOSRHandlerOffset_{0};
 
   // Thunk that calls the GC pre barrier.
   WriteOnceData<uint32_t> valuePreBarrierOffset_{0};
@@ -179,10 +173,22 @@ class JitRuntime {
                            size_t(IonGenericCallKind::Count)>
       ionGenericCallStubOffset_;
 
+  // Thunks to attempt a megamorphic load using the MegamorphicCache.
+  WriteOnceData<uint32_t> megamorphicLoadStubOffset_{0};
+  // The "Permissive" variants support getters. We have to do a little
+  // more work if the op supports getters, so we split this out into a
+  // separate stub to avoid that work for the common case.
+  WriteOnceData<uint32_t> megamorphicLoadStubPermissiveOffset_{0};
+
   // Thunk used by the debugger for breakpoint and step mode.
   mozilla::EnumeratedArray<DebugTrapHandlerKind, WriteOnceData<JitCode*>,
                            size_t(DebugTrapHandlerKind::Count)>
       debugTrapHandlers_;
+
+  // Return sites in JitCode belonging to recompiled baseline scripts that have
+  // pending live frames.
+  MainThreadData<JS::GCVector<DebugModeOSRReturnSite, 0, SystemAllocPolicy>>
+      debugModeOSRReturnSites_;
 
   // BaselineInterpreter state.
   BaselineInterpreter baselineInterpreter_;
@@ -205,10 +211,6 @@ class JitRuntime {
 
   // Map that stores Jit Hints for each script.
   MainThreadData<JitHintsMap*> jitHintsMap_{nullptr};
-
-  // Map used to collect entry trampolines for the Interpreters which is used
-  // for external profiling to identify which functions are being interpreted.
-  MainThreadData<EntryTrampolineMap*> interpreterEntryMap_{nullptr};
 
 #ifdef DEBUG
   // The number of possible bailing places encountered before forcefully bailing
@@ -247,6 +249,11 @@ class JitRuntime {
   MainThreadData<uint32_t> disallowArbitraryCode_{false};
 #endif
 
+  // Flag that can be set from JIT code to indicate that we're calling
+  // a function whose alias set does not include stores to ObjectFields.
+  // See handleGrowSlotsForPureCall.
+  MainThreadData<uint32_t> inPureCall_{false};
+
   bool generateTrampolines(JSContext* cx);
   bool generateBaselineICFallbackCode(JSContext* cx);
 
@@ -258,11 +265,20 @@ class JitRuntime {
   void generateExceptionTailStub(MacroAssembler& masm, Label* profilerExitTail,
                                  Label* bailoutTail);
   void generateBailoutTailStub(MacroAssembler& masm, Label* bailoutTail);
-  void generateEnterJIT(JSContext* cx, MacroAssembler& masm);
-  void generateArgumentsRectifier(MacroAssembler& masm,
-                                  ArgumentsRectifierKind kind);
+
+  enum class EnterJitMode { Normal, GeneratorResume };
+  void generateEnterJIT(JSContext* cx, MacroAssembler& masm, EnterJitMode mode);
+  void generateEnterJitShared(MacroAssembler& masm, Register argcReg,
+                              Register argvReg, Register calleeTokenReg,
+                              Register scratch, Register scratch2,
+                              Register scratch3);
+  void generateEnterJitResumeShared(MacroAssembler& masm, Register argvReg,
+                                    Register calleeTokenReg, Register scratch,
+                                    Register scratch2);
+
   void generateBailoutHandler(MacroAssembler& masm, Label* bailoutTail);
   void generateInvalidator(MacroAssembler& masm, Label* bailoutTail);
+  void generateBaselineDebugModeOSRHandler(MacroAssembler& masm);
   uint32_t generatePreBarrier(JSContext* cx, MacroAssembler& masm,
                               MIRType type);
   void generateIonGenericCallStub(MacroAssembler& masm,
@@ -278,6 +294,10 @@ class JitRuntime {
   void generateIonGenericCallArgumentsShift(MacroAssembler& masm, Register argc,
                                             Register curr, Register end,
                                             Register scratch, Label* done);
+  void generateIonGenericHandleUnderflow(MacroAssembler& masm,
+                                         bool isConstructing, Label* vmCall);
+  void generateMegamorphicLoadStub(MacroAssembler& masm);
+  void generateMegamorphicLoadStubPermissive(MacroAssembler& masm);
 
   JitCode* generateDebugTrapHandler(JSContext* cx, DebugTrapHandlerKind kind);
 
@@ -314,6 +334,13 @@ class JitRuntime {
   }
 
  public:
+  // Magic values set by the megamorphic load stubs into CallTempReg2 to
+  // indicate the two kinds of cache hits. If CallTempReg2 does not hold one
+  // of these two after calling the stub, it will hold a pointer to an entry
+  // in the MegamorphicCache
+  static constexpr size_t MegamorphicLoadStubCacheHit = 1;
+  static constexpr size_t MegamorphicLoadStubCacheHitGetter = 2;
+
   JitCode* generateEntryTrampolineForScript(JSContext* cx, JSScript* script);
 
   JitRuntime() = default;
@@ -321,7 +348,6 @@ class JitRuntime {
   [[nodiscard]] bool initialize(JSContext* cx);
 
   static void TraceAtomZoneRoots(JSTracer* trc);
-  [[nodiscard]] static bool MarkJitcodeGlobalTableIteratively(GCMarker* marker);
   static void TraceWeakJitcodeGlobalTable(JSRuntime* rt, JSTracer* trc);
 
   const BaselineICFallbackCode& baselineICFallbackCode() const {
@@ -345,7 +371,13 @@ class JitRuntime {
   const void* addressOfDisallowArbitraryCode() const {
     return &disallowArbitraryCode_.refNoCheck();
   }
+  static size_t offsetOfDisallowArbitraryCode() {
+    return offsetof(JitRuntime, disallowArbitraryCode_);
+  }
 #endif
+
+  bool inPureCall() const { return inPureCall_; }
+  const void* addressOfInPureCall() const { return &inPureCall_.refNoCheck(); }
 
   uint8_t* allocateIonOsrTempData(size_t size);
   void freeIonOsrTempData();
@@ -381,27 +413,23 @@ class JitRuntime {
     return trampolineCode(profilerExitFrameTailOffset_);
   }
 
-  TrampolinePtr getArgumentsRectifier(
-      ArgumentsRectifierKind kind = ArgumentsRectifierKind::Normal) const {
-    if (kind == ArgumentsRectifierKind::TrialInlining) {
-      return trampolineCode(trialInliningArgumentsRectifierOffset_);
-    }
-    return trampolineCode(argumentsRectifierOffset_);
-  }
-
   uint32_t vmInterpreterEntryOffset() { return vmInterpreterEntryOffset_; }
-
-  TrampolinePtr getArgumentsRectifierReturnAddr() const {
-    return trampolineCode(argumentsRectifierReturnOffset_);
-  }
 
   TrampolinePtr getInvalidationThunk() const {
     return trampolineCode(invalidatorOffset_);
   }
 
+  TrampolinePtr getBaselineDebugModeOSRHandler() const {
+    return trampolineCode(baselineDebugModeOSRHandlerOffset_);
+  }
+
   EnterJitCode enterJit() const {
     return JS_DATA_TO_FUNC_PTR(EnterJitCode,
                                trampolineCode(enterJITOffset_).value);
+  }
+  EnterJitCode enterJitGeneratorResume() const {
+    return JS_DATA_TO_FUNC_PTR(
+        EnterJitCode, trampolineCode(enterJITGeneratorResumeOffset_).value);
   }
 
   // Return the registers from the native caller frame of the given JIT frame.
@@ -430,6 +458,12 @@ class JitRuntime {
 
   TrampolinePtr lazyLinkStub() const {
     return trampolineCode(lazyLinkStubOffset_);
+  }
+  TrampolinePtr megamorphicLoadStub() const {
+    return trampolineCode(megamorphicLoadStubOffset_);
+  }
+  TrampolinePtr megamorphicLoadStubPermissive() const {
+    return trampolineCode(megamorphicLoadStubPermissiveOffset_);
   }
   TrampolinePtr interpreterStub() const {
     return trampolineCode(interpreterStubOffset_);
@@ -471,15 +505,6 @@ class JitRuntime {
     return jitHintsMap_;
   }
 
-  bool hasInterpreterEntryMap() const {
-    return interpreterEntryMap_ != nullptr;
-  }
-
-  EntryTrampolineMap* getInterpreterEntryMap() {
-    MOZ_ASSERT(hasInterpreterEntryMap());
-    return interpreterEntryMap_;
-  }
-
   bool isProfilerInstrumentationEnabled(JSRuntime* rt) {
     return rt->geckoProfiler().enabled();
   }
@@ -512,6 +537,18 @@ class JitRuntime {
 
   void ionLazyLinkListRemove(JSRuntime* rt, js::jit::IonCompileTask* task);
   void ionLazyLinkListAdd(JSRuntime* rt, js::jit::IonCompileTask* task);
+
+  void handleGrowSlotsForPureCall(JSContext* cx);
+
+  [[nodiscard]] bool reserveDebugModeOSRReturnSites(JSContext* cx,
+                                                    size_t count);
+  void addDebugModeOSRReturnSite(BaselineScript* baselineScript,
+                                 const RetAddrEntry& retAddrEntry);
+  void releaseDebugModeOSRReturnSite(DebugModeOSRReturnSite* site);
+  DebugModeOSRReturnSite* lookupDebugModeOSRReturnSite(
+      const uint8_t* returnAddress);
+
+  static void TraceDebugModeOSRReturnSites(JSTracer* trc);
 };
 
 }  // namespace jit

@@ -2,17 +2,15 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-import { UrlbarUtils } from "resource:///modules/UrlbarUtils.sys.mjs";
+import { XPCOMUtils } from "resource://gre/modules/XPCOMUtils.sys.mjs";
 
-import {
-  ActionsProvider,
-  ActionsResult,
-} from "resource:///modules/ActionsProvider.sys.mjs";
+import { ActionsProvider } from "moz-src:///browser/components/urlbar/ActionsProvider.sys.mjs";
 
-const lazy = {};
+/**
+ * @import {ActionsResult} from "moz-src:///browser/components/urlbar/ActionsProvider.sys.mjs"
+ */
 
-ChromeUtils.defineESModuleGetters(lazy, {
-  BrowserWindowTracker: "resource:///modules/BrowserWindowTracker.sys.mjs",
+const lazy = XPCOMUtils.declareLazy({
   OpenSearchEngine:
     "moz-src:///toolkit/components/search/OpenSearchEngine.sys.mjs",
   OpenSearchManager:
@@ -21,8 +19,12 @@ ChromeUtils.defineESModuleGetters(lazy, {
     "moz-src:///toolkit/components/search/OpenSearchLoader.sys.mjs",
   PlacesUtils: "resource://gre/modules/PlacesUtils.sys.mjs",
   PrivateBrowsingUtils: "resource://gre/modules/PrivateBrowsingUtils.sys.mjs",
-  UrlbarPrefs: "resource:///modules/UrlbarPrefs.sys.mjs",
-  UrlbarSearchUtils: "resource:///modules/UrlbarSearchUtils.sys.mjs",
+  SearchService: "moz-src:///toolkit/components/search/SearchService.sys.mjs",
+  SearchUIUtils: "moz-src:///browser/components/search/SearchUIUtils.sys.mjs",
+  UrlbarPrefs: "moz-src:///browser/components/urlbar/UrlbarPrefs.sys.mjs",
+  UrlbarSearchUtils:
+    "moz-src:///browser/components/urlbar/UrlbarSearchUtils.sys.mjs",
+  UrlbarShared: "chrome://browser/content/urlbar/UrlbarShared.mjs",
 });
 
 const ENABLED_PREF = "contextualSearch.enabled";
@@ -32,6 +34,11 @@ const OPEN_SEARCH_ENGINE = "opensearch-engine";
 const CONTEXTUAL_SEARCH_ENGINE = "contextual-search-engine";
 
 const DEFAULT_ICON = "chrome://browser/skin/search-engine-placeholder@2x.png";
+
+/**
+ * @import {SearchEngine} from "moz-src:///toolkit/components/search/SearchEngine.sys.mjs"
+ * @import {BrowserSearchTelemetry} from "moz-src:///browser/components/search/BrowserSearchTelemetry.sys.mjs"
+ */
 
 /**
  * A provider that returns an option for using the search engine provided
@@ -66,29 +73,34 @@ class ProviderContextualSearch extends ActionsProvider {
     return "ActionsProviderContextualSearch";
   }
 
-  isActive(queryContext) {
+  /**
+   * @param {UrlbarQueryContext} queryContext
+   * @param {UrlbarParentController} _controller
+   * @returns {boolean}
+   */
+  isActive(queryContext, _controller) {
     return (
       queryContext.trimmedSearchString &&
       lazy.UrlbarPrefs.getScotchBonnetPref(ENABLED_PREF) &&
-      !queryContext.searchMode &&
+      !queryContext.restrictInSearchMode() &&
       lazy.UrlbarPrefs.get("suggest.engines")
     );
   }
 
-  async queryActions(queryContext) {
-    this.#resultEngine = await this.matchEngine(queryContext);
-    let defaultEngine = lazy.UrlbarSearchUtils.getDefaultEngine();
-
-    if (
-      this.#resultEngine &&
-      this.#resultEngine.engine?.name != defaultEngine?.name
-    ) {
+  /**
+   * @param {UrlbarQueryContext} queryContext
+   * @param {UrlbarParentController} controller
+   * @returns {Promise<ActionsResult[]>}
+   */
+  async queryActions(queryContext, controller) {
+    this.#resultEngine = await this.matchEngine(queryContext, controller);
+    if (this.#resultEngine) {
       return [await this.#createActionResult(this.#resultEngine)];
     }
     return null;
   }
 
-  onSearchSessionEnd() {
+  onSearchSessionEnd(_queryContext, _controller, _details) {
     // We cache the results for a host while the user is typing, clear
     // when the search session ends as the results for the host may
     // change by the next search session.
@@ -97,29 +109,30 @@ class ProviderContextualSearch extends ActionsProvider {
 
   async #createActionResult({ type, engine, key = "contextual-search" }) {
     let icon = engine?.icon || (await engine?.getIconURL?.()) || DEFAULT_ICON;
-    let result = {
+    return /** @type {ActionsResult} */ ({
+      providerName: this.name,
       key,
       l10nId: "urlbar-result-search-with",
       l10nArgs: { engine: engine.name || engine.title },
       icon,
-      onPick: (context, controller) => {
-        this.pickAction(context, controller);
-      },
-    };
-
-    if (type == INSTALLED_ENGINE) {
-      result.engine = engine.name;
-      result.dataset = { providesSearchMode: true };
-    }
-
-    return new ActionsResult(result);
+      ...(type == INSTALLED_ENGINE && {
+        engine: engine.name,
+        dataset: {
+          providesSearchMode: true,
+          ...(key != "matched-contextual-search" && { immediateSearch: true }),
+        },
+      }),
+    });
   }
 
-  /*
+  /**
    * Searches for engines that we want to present to the user based on their
    * current host and the search query they have entered.
+   *
+   * @param {UrlbarQueryContext} queryContext
+   * @param {UrlbarParentController} controller
    */
-  async matchEngine(queryContext) {
+  async matchEngine(queryContext, controller) {
     // First find currently installed engines that match the current query
     // if the user has DuckDuckGo installed and types "duck", offer that.
     let engine = await this.#matchTabToSearchEngine(queryContext);
@@ -127,15 +140,16 @@ class ProviderContextualSearch extends ActionsProvider {
       return engine;
     }
 
-    let browser =
-      lazy.BrowserWindowTracker.getTopWindow()?.gBrowser.selectedBrowser;
-    if (!browser) {
-      return null;
-    }
+    // Don't match the default engine for non-query-matches.
+    let defaultEngine = queryContext.isPrivate
+      ? lazy.SearchService.defaultPrivateEngine
+      : lazy.SearchService.defaultEngine;
+
+    let browser = controller.browserWindow.gBrowser.selectedBrowser;
 
     let host;
     try {
-      host = UrlbarUtils.stripPrefixAndTrim(browser.currentURI.host, {
+      host = lazy.UrlbarShared.stripPrefixAndTrim(browser.currentURI.host, {
         stripWww: true,
       })[0];
     } catch (e) {
@@ -153,7 +167,7 @@ class ProviderContextualSearch extends ActionsProvider {
         // the current host. If the user is on ecosia.com and starts searching
         // offer ecosia's search.
         let contextualEngineConfig =
-          await Services.search.findContextualSearchEngineByHost(host);
+          await lazy.SearchService.findContextualSearchEngineByHost(host);
         if (contextualEngineConfig) {
           hostEngine = {
             type: CONTEXTUAL_SEARCH_ENGINE,
@@ -164,22 +178,22 @@ class ProviderContextualSearch extends ActionsProvider {
       // Cache the result against this host so we do not need to rerun
       // the same query every keystroke.
       this.#hostEngines.set(host, hostEngine);
-      if (hostEngine) {
+      if (hostEngine && hostEngine.engine.name != defaultEngine.name) {
         return hostEngine;
       }
     } else if (host) {
       let cachedEngine = this.#hostEngines.get(host);
-      if (cachedEngine) {
+      if (cachedEngine && cachedEngine.engine.name != defaultEngine.name) {
         return cachedEngine;
       }
     }
 
     // Lastly match any openSearch
-    if (browser) {
-      let openSearchEngines = lazy.OpenSearchManager.getEngines(browser);
-      if (openSearchEngines.length) {
-        return { type: OPEN_SEARCH_ENGINE, engine: openSearchEngines[0] };
-      }
+    let openSearchEngines = lazy.OpenSearchManager.getEngines(browser);
+    // We don't need to check if the engine has the same name as the
+    // default engine because OpenSearchManager already handles that.
+    if (openSearchEngines.length) {
+      return { type: OPEN_SEARCH_ENGINE, engine: openSearchEngines[0] };
     }
 
     return null;
@@ -190,7 +204,7 @@ class ProviderContextualSearch extends ActionsProvider {
    * the cache for `visitedEngineDomains` so we can avoid expensive places
    * queries.
    *
-   * @param {window} window
+   * @param {BrowserWindow} window
    *  The browser window where the location change happened.
    * @param {nsIURI} uri
    *  The URI being navigated to.
@@ -200,6 +214,9 @@ class ProviderContextualSearch extends ActionsProvider {
    *   Load flags. See nsIWebProgressListener.idl for possible values.
    */
   async onLocationChange(window, uri, _webProgress, _flags) {
+    if (!uri.scheme.startsWith("http")) {
+      return;
+    }
     try {
       if (this.#visitedEngineDomains.has(uri.host)) {
         this.#visitedEngineDomains.set(uri.host, true);
@@ -222,21 +239,45 @@ class ProviderContextualSearch extends ActionsProvider {
    */
   async #matchTabToSearchEngine(queryContext) {
     let searchStr = queryContext.trimmedSearchString.toLocaleLowerCase();
+    let defaultEngine = lazy.SearchService.defaultEngine;
+    let matchedEngine = null;
 
-    for (let engine of await Services.search.getVisibleEngines()) {
+    for (let engine of await lazy.SearchService.getVisibleEngines()) {
+      let engineName = engine.name.toLocaleLowerCase();
+      let engineAliases = engine.aliases.map(a => a.toLocaleLowerCase());
+
+      const matches = (search, name) =>
+        search.length < 3 ? name.startsWith(search) : name.includes(search);
+
       if (
-        engine.name.toLocaleLowerCase().startsWith(searchStr) &&
+        (matches(searchStr, engineName) ||
+          engineAliases.some(alias => matches(searchStr, alias))) &&
         ((await this.#shouldskipRecentVisitCheck(searchStr)) ||
           (await this.#engineDomainHasRecentVisits(engine.searchUrlDomain)))
       ) {
-        return {
-          type: INSTALLED_ENGINE,
-          engine,
-          key: "matched-contextual-search",
-        };
+        if (engine.name == defaultEngine.name) {
+          return {
+            type: INSTALLED_ENGINE,
+            engine,
+            key: "matched-contextual-search",
+          };
+        }
+
+        if (!matchedEngine) {
+          matchedEngine = engine;
+        }
       }
     }
-    return null;
+
+    if (!matchedEngine) {
+      return null;
+    }
+
+    return {
+      type: INSTALLED_ENGINE,
+      engine: matchedEngine,
+      key: "matched-contextual-search",
+    };
   }
 
   /*
@@ -282,27 +323,62 @@ class ProviderContextualSearch extends ActionsProvider {
     );
   }
 
-  async pickAction(queryContext, controller, _element) {
+  /**
+   * @param {UrlbarQueryContext} queryContext
+   * @param {UrlbarParentController} controller
+   * @param {ActionsResult} action
+   * @param {object} details
+   */
+  onPick(queryContext, controller, action, details) {
+    this.pickAction(queryContext, controller, details.searchSource).catch(
+      console.error
+    );
+  }
+
+  /**
+   * Picks an action
+   *
+   * @param {UrlbarQueryContext} queryContext
+   * @param {UrlbarParentController} controller
+   * @param {keyof typeof BrowserSearchTelemetry.KNOWN_SEARCH_SOURCES} searchSource
+   */
+  async pickAction(queryContext, controller, searchSource) {
     let { type, engine } = this.#resultEngine;
 
     if (type == OPEN_SEARCH_ENGINE) {
+      let browser = controller.browserWindow.gBrowser.selectedBrowser;
+      let { privateBrowsingId, userContextId } =
+        browser.contentPrincipal.originAttributes;
+      let originAttributes = { privateBrowsingId, userContextId };
+      try {
+        originAttributes.firstPartyDomain = Services.eTLD.getSchemelessSite(
+          browser.currentURI
+        );
+      } catch {}
       let openSearchEngineData = await lazy.loadAndParseOpenSearchEngine(
-        Services.io.newURI(engine.uri)
+        Services.io.newURI(engine.uri),
+        null,
+        originAttributes
       );
-      engine = new lazy.OpenSearchEngine({ engineData: openSearchEngineData });
+      engine = new lazy.OpenSearchEngine({
+        engineData: openSearchEngineData,
+        originAttributes,
+      });
     }
 
     this.#performSearch(
       engine,
       queryContext.searchString,
-      controller.input,
-      type == INSTALLED_ENGINE
+      controller,
+      this.#resultEngine.key == "matched-contextual-search",
+      searchSource
     );
 
     if (
       !queryContext.isPrivate &&
       type != INSTALLED_ENGINE &&
-      (await Services.search.shouldShowInstallPrompt(engine))
+      Services.policies.isAllowed("installSearchEngine") &&
+      (await lazy.SearchService.shouldShowInstallPrompt(engine))
     ) {
       this.#showInstallPrompt(controller, engine);
     }
@@ -312,24 +388,49 @@ class ProviderContextualSearch extends ActionsProvider {
     this.#visitedEngineDomains.clear();
   }
 
-  async #performSearch(engine, search, input, enterSearchMode) {
-    const [url] = UrlbarUtils.getSearchQueryUrl(engine, search);
+  /**
+   * Loads a search in the current tab.
+   *
+   * @param {SearchEngine} engine
+   * @param {string} search
+   * @param {UrlbarParentController} controller
+   * @param {boolean} enterSearchMode
+   * @param {keyof typeof BrowserSearchTelemetry.KNOWN_SEARCH_SOURCES} searchSource
+   */
+  async #performSearch(
+    engine,
+    search,
+    controller,
+    enterSearchMode,
+    searchSource
+  ) {
     if (enterSearchMode) {
-      input.search(search, { searchEngine: engine });
+      // Pass only the fields `search()` reads, as a plain object, so it stays
+      // structured-cloneable when this runs parent-side on the actor message
+      // path (the engine itself can't cross the boundary).
+      controller.input.search(search, {
+        // TODO, Bug 2043607: Pass an id rather than the details & remove the
+        // comment above.
+        // @ts-expect-error
+        searchEngine: { name: engine.name, aliases: engine.aliases },
+      });
     }
-    input.window.gBrowser.fixupAndLoadURIString(url, {
+
+    lazy.SearchUIUtils.loadSearch({
+      window: controller.browserWindow,
+      searchText: search,
+      engine,
       triggeringPrincipal: Services.scriptSecurityManager.getSystemPrincipal(),
+      sapSource: searchSource,
     });
-    input.window.gBrowser.selectedBrowser.focus();
   }
 
   #showInstallPrompt(controller, engineData) {
-    let win = controller.input.window;
     let buttons = [
       {
         "l10n-id": "install-search-engine-add",
         callback() {
-          Services.search.addSearchEngine(engineData);
+          lazy.SearchService.addSearchEngine(engineData);
         },
       },
       {
@@ -338,7 +439,7 @@ class ProviderContextualSearch extends ActionsProvider {
       },
     ];
 
-    win.gNotificationBox.appendNotification(
+    controller.browserWindow.gNotificationBox.appendNotification(
       "install-search-engine",
       {
         label: {
@@ -346,7 +447,7 @@ class ProviderContextualSearch extends ActionsProvider {
           "l10n-args": { engineName: engineData.name },
         },
         image: "chrome://global/skin/icons/question-64.png",
-        priority: win.gNotificationBox.PRIORITY_INFO_LOW,
+        priority: controller.browserWindow.gNotificationBox.PRIORITY_INFO_LOW,
       },
       buttons
     );

@@ -1,6 +1,4 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- * vim: set ts=8 sts=2 et sw=2 tw=80:
- * This Source Code Form is subject to the terms of the Mozilla Public
+/* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
@@ -58,6 +56,10 @@ class BaselineFrame {
     // Frame is executing Realm-independent Jitcode, which requires
     // a valid interpreterScript_ field.
     REALM_INDEPENDENT = 1 << 7,
+
+    // The frame has a pending return through a DebugModeOSRReturnSite
+    // preserved in the JitRuntime.
+    HAS_PENDING_DEBUG_MODE_OSR_RETURN = 1 << 8,
   };
 
  protected:  // Silence Clang warning about unused private fields.
@@ -92,7 +94,7 @@ class BaselineFrame {
   uint32_t hiReturnValue_;
 
  public:
-  [[nodiscard]] bool initForOsr(InterpreterFrame* fp, uint32_t numStackValues);
+  void initForOsr(InterpreterFrame* fp, uint32_t numStackValues);
 
 #ifdef DEBUG
   uint32_t debugFrameSize() const { return debugFrameSize_; }
@@ -114,6 +116,9 @@ class BaselineFrame {
   }
   bool isConstructing() const {
     return CalleeTokenIsConstructing(calleeToken());
+  }
+  bool isResumingGenerator() const {
+    return framePrefix()->isResumingGenerator();
   }
   JSScript* script() const {
     return MaybeForwardedScriptFromCalleeToken(calleeToken());
@@ -141,6 +146,8 @@ class BaselineFrame {
     }
     return UndefinedValue();
   }
+
+  Value* resumeArgs() { return framePrefix()->resumeArgs(); }
 
 #ifdef DEBUG
   size_t debugNumValueSlots() const { return numValueSlots(debugFrameSize()); }
@@ -311,6 +318,18 @@ class BaselineFrame {
 
   void setFlag(uint32_t flag) { flags_ |= flag; }
   void setFlags(uint32_t flags) { flags_ = flags; }
+
+  bool hasPendingDebugModeOSRReturn() const {
+    return flags_ & HAS_PENDING_DEBUG_MODE_OSR_RETURN;
+  }
+  void setPendingDebugModeOSRReturn() {
+    MOZ_ASSERT(!hasPendingDebugModeOSRReturn());
+    flags_ |= HAS_PENDING_DEBUG_MODE_OSR_RETURN;
+  }
+  void clearPendingDebugModeOSRReturn() {
+    MOZ_ASSERT(hasPendingDebugModeOSRReturn());
+    flags_ &= ~HAS_PENDING_DEBUG_MODE_OSR_RETURN;
+  }
 
   [[nodiscard]] inline bool pushLexicalEnvironment(JSContext* cx,
                                                    Handle<LexicalScope*> scope);

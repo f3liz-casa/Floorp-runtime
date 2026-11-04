@@ -21,7 +21,6 @@
 #include <stdint.h>
 
 #include <limits>
-#include <map>
 #include <memory>
 #include <string>
 #include <utility>
@@ -36,18 +35,18 @@
 #include "api/call/transport.h"
 #include "api/media_types.h"
 #include "api/rtp_headers.h"
+#include "api/rtp_packet_infos.h"
 #include "api/rtp_parameters.h"
 #include "api/transport/rtp/rtp_source.h"
 #include "audio/audio_receive_stream.h"
 #include "call/audio_receive_stream.h"
 #include "call/audio_send_stream.h"
-#include "call/call_basic_stats.h"
 #include "domstubs.h"
 #include "jsapi/RTCStatsReport.h"
 #include "media/base/media_constants.h"
 #include "modules/rtp_rtcp/source/rtp_packet_received.h"
+#include "modules/rtp_rtcp/source/source_tracker.h"
 #include "mozilla/Assertions.h"
-#include "mozilla/Atomics.h"
 #include "mozilla/Maybe.h"
 #include "mozilla/StateWatching.h"
 #include "nsCOMPtr.h"
@@ -190,6 +189,7 @@ WebrtcAudioConduit::WebrtcAudioConduit(
       mSendTransport(this),
       mRecvTransport(this),
       mRecvStream(nullptr),
+      mSourceTracker(webrtc::Clock::GetRealTimeClockOnlyUseForRelativeTime()),
       mSendStreamConfig(&mSendTransport),
       mSendStream(nullptr),
       mSendStreamRunning(false),
@@ -263,8 +263,11 @@ MediaConduitErrorCode WebrtcAudioConduit::Init() {
 
 void WebrtcAudioConduit::OnDtmfEvent(const DtmfEvent& aEvent) {
   MOZ_ASSERT(mCallThread->IsOnCurrentThread());
-  MOZ_ASSERT(mSendStream);
   MOZ_ASSERT(mDtmfEnabled);
+  // Drop DTMF if sending is disabled.
+  if (!mSendStream) {
+    return;
+  }
   mSendStream->SendTelephoneEvent(aEvent.mPayloadType, aEvent.mPayloadFrequency,
                                   aEvent.mEventCode, aEvent.mLengthMs);
 }
@@ -356,7 +359,30 @@ void WebrtcAudioConduit::OnControlConfigChange() {
 
         webrtc::AudioSendStream::Config::SendCodecSpec spec(
             aConfig.mType, CodecConfigToLibwebrtcFormat(aConfig));
-        mSendStreamConfig.send_codec_spec = spec;
+        const auto info =
+            mSendStreamConfig.encoder_factory->QueryAudioEncoder(spec.format);
+        if (info) {
+          if (const auto& maxBps = mControl.mConfiguredSendCodec
+                                       ->mEncodingConstraints.maxBitrateBps) {
+            spec.target_bitrate_bps =
+                std::clamp(SaturatingCast<int>(*maxBps), info->min_bitrate_bps,
+                           info->max_bitrate_bps);
+          }
+        }
+        mSendStreamConfig.send_codec_spec = std::move(spec);
+
+        const int kDefaultAudioBitrateBps = 32000;
+        // Use the codec's own default bitrate when the application has not
+        // configured a max -- it already accounts for stereo, SDP
+        // maxaveragebitrate/maxplaybackrate, and fixed-rate codecs like
+        // PCMU/PCMA/G.722.
+        const int targetBps =
+            mSendStreamConfig.send_codec_spec->target_bitrate_bps.value_or(
+                info ? info->default_bitrate_bps : kDefaultAudioBitrateBps);
+        mSendStreamConfig.min_bitrate_bps = targetBps;
+        mSendStreamConfig.max_bitrate_bps = targetBps;
+        mSendStreamConfig.include_in_congestion_control_allocation =
+            aConfig.HasCongestionControlAck();
 
         mDtmfEnabled = aConfig.mDtmfEnabled;
         sendStreamReconfigureNeeded = true;
@@ -523,15 +549,33 @@ Maybe<webrtc::AudioSendStream::Stats> WebrtcAudioConduit::GetSenderStats()
     const {
   MOZ_ASSERT(mCallThread->IsOnCurrentThread());
   if (!mSendStream) {
-    // Might be nothing
-    return mTransitionalSendStreamStats;
+    // Prefer transitional stats left over from a recently destroyed stream
+    // (e.g. during a codec change). These carry real cumulative counters and
+    // should take priority over the synthesised fallback below.
+    if (mTransitionalSendStreamStats) {
+      return mTransitionalSendStreamStats;
+    }
+    // The send stream is only created when mTransmitting is true, which
+    // requires a track to be bound (see RTCRtpSender::UpdateBaseConfig). For
+    // a trackless sender the stream never starts, yet the WebRTC stats spec
+    // requires RTCOutboundRtpStreamStats to exist as soon as the sender is
+    // configured by a completed offer/answer exchange. Synthesise minimal
+    // stats from the SSRC that was negotiated in SDP so that outbound-rtp
+    // entries appear in getStats() even before a track arrives.
+    const auto& ssrcs = mControl.mLocalSsrcs.Ref();
+    if (ssrcs.empty()) {
+      return Nothing();
+    }
+    webrtc::AudioSendStream::Stats synthStats;
+    synthStats.local_ssrc = ssrcs[0];
+    return Some(std::move(synthStats));
   }
   // Successfully got stats, so clear the transitional stats.
   mTransitionalSendStreamStats = Nothing();
   return Some(mSendStream->GetStats());
 }
 
-Maybe<webrtc::CallBasicStats> WebrtcAudioConduit::GetCallStats() const {
+Maybe<webrtc::Call::Stats> WebrtcAudioConduit::GetCallStats() const {
   MOZ_ASSERT(mCallThread->IsOnCurrentThread());
   if (!mCall->Call()) {
     return Nothing();
@@ -663,9 +707,7 @@ void WebrtcAudioConduit::OnRtpReceived(webrtc::RtpPacketReceived&& aPacket,
   // grab the value now while on the call thread, and dispatch to main
   // to store the cached value if we have new source information.
   // See Bug 1845621.
-  if (mRecvStream) {
-    mCanonicalRtpSources = mRecvStream->GetSources();
-  }
+  mCanonicalRtpSources = mSourceTracker.GetSources();
 
   mRtpPacketEvent.Notify();
   if (mCall->Call()) {
@@ -934,6 +976,12 @@ RtpExtList WebrtcAudioConduit::FilterExtensions(LocalDirection aDirection,
       filteredExtensions.push_back(
           webrtc::RtpExtension(extension.uri, extension.id));
     }
+
+    // TransportCC header extension
+    if (extension.uri == webrtc::RtpExtension::kTransportSequenceNumberUri) {
+      filteredExtensions.push_back(
+          webrtc::RtpExtension(extension.uri, extension.id));
+    }
   }
 
   return filteredExtensions;
@@ -953,21 +1001,24 @@ webrtc::SdpAudioFormat WebrtcAudioConduit::CodecConfigToLibwebrtcFormat(
       parameters[kCodecParamUseDtx] = kParamValueTrue;
     }
     if (aConfig.mMaxPlaybackRate) {
-      parameters[kCodecParamMaxPlaybackRate] =
+      parameters[std::string(kCodecParamMaxPlaybackRate)] =
           std::to_string(aConfig.mMaxPlaybackRate);
     }
     if (aConfig.mMaxAverageBitrate) {
-      parameters[kCodecParamMaxAverageBitrate] =
+      parameters[std::string(kCodecParamMaxAverageBitrate)] =
           std::to_string(aConfig.mMaxAverageBitrate);
     }
     if (aConfig.mFrameSizeMs) {
-      parameters[kCodecParamPTime] = std::to_string(aConfig.mFrameSizeMs);
+      parameters[std::string(kCodecParamPTime)] =
+          std::to_string(aConfig.mFrameSizeMs);
     }
     if (aConfig.mMinFrameSizeMs) {
-      parameters[kCodecParamMinPTime] = std::to_string(aConfig.mMinFrameSizeMs);
+      parameters[std::string(kCodecParamMinPTime)] =
+          std::to_string(aConfig.mMinFrameSizeMs);
     }
     if (aConfig.mMaxFrameSizeMs) {
-      parameters[kCodecParamMaxPTime] = std::to_string(aConfig.mMaxFrameSizeMs);
+      parameters[std::string(kCodecParamMaxPTime)] =
+          std::to_string(aConfig.mMaxFrameSizeMs);
     }
     if (aConfig.mCbrEnabled) {
       parameters[kCodecParamCbr] = kParamValueTrue;
@@ -1036,7 +1087,26 @@ void WebrtcAudioConduit::CreateRecvStream() {
     return;
   }
 
-  mRecvStream = mCall->Call()->CreateAudioReceiveStream(mRecvStreamConfig);
+  // Config::Copy() does not copy move-only fields like
+  // on_frame_delivered_callback, so it needs to be (re)installed on the copy
+  // that is actually handed to the stream.
+  webrtc::AudioReceiveStreamInterface::Config config = mRecvStreamConfig.Copy();
+  // The receive stream retains this callback (and the RefPtr captured in
+  // it) until DeleteRecvStream() runs it down as part of conduit shutdown,
+  // so there is no cycle beyond that lifetime. Called synchronously on
+  // whatever thread decodes audio, not necessarily mCallThread, so hop over
+  // before touching mSourceTracker, which is not thread-safe.
+  config.on_frame_delivered_callback =
+      [self = RefPtr<WebrtcAudioConduit>(this)](
+          const webrtc::RtpPacketInfos& aPacketInfos,
+          webrtc::Timestamp aTimestamp) {
+        self->mCallThread->Dispatch(NS_NewRunnableFunction(
+            "WebrtcAudioConduit::OnFrameDelivered",
+            [self, aPacketInfos, aTimestamp] {
+              self->mSourceTracker.OnFrameDelivered(aPacketInfos, aTimestamp);
+            }));
+      };
+  mRecvStream = mCall->Call()->CreateAudioReceiveStream(std::move(config));
   // Ensure that we set the jitter buffer target on this stream.
   mRecvStream->SetBaseMinimumPlayoutDelayMs(mJitterBufferTargetMs);
 }

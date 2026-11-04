@@ -5086,6 +5086,8 @@
             var message;
             if (e.reason && e.reason.message) {
                 message = "Unhandled rejection: " + e.reason.message;
+            } else if (typeof e.reason === "string" && e.reason) {
+                message = "Unhandled rejection: " + e.reason;
             } else {
                 message = "Unhandled rejection";
             }
@@ -5144,7 +5146,7 @@ table#results.assertions > tbody > tr > td:last-child {\
     width:35%;\
 }\
 \
-table#results > thead > > tr > th {\
+table#results > thead > tr > th {\
     padding:0;\
     padding-bottom:0.5em;\
     border-bottom:medium solid black;\

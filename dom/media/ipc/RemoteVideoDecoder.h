@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -8,6 +6,7 @@
 #include "RemoteDecoderChild.h"
 #include "RemoteDecoderParent.h"
 #include "RemoteMediaManagerChild.h"
+#include "mozilla/layers/VideoBridgeChild.h"
 
 namespace mozilla::layers {
 class BufferRecycleBin;
@@ -19,7 +18,7 @@ class KnowsCompositorVideo : public layers::KnowsCompositor {
  public:
   NS_INLINE_DECL_THREADSAFE_REFCOUNTING(KnowsCompositorVideo, override)
 
-  layers::TextureForwarder* GetTextureForwarder() override;
+  RefPtr<layers::TextureForwarder> GetTextureForwarder() override;
   layers::LayersIPCActor* GetLayersIPCActor() override;
 
   static already_AddRefed<KnowsCompositorVideo> TryCreateForIdentifier(
@@ -39,7 +38,6 @@ class RemoteVideoDecoderChild : public RemoteDecoderChild {
   MOZ_IS_CLASS_INIT MediaResult
   InitIPDL(const VideoInfo& aVideoInfo, float aFramerate,
            const CreateDecoderParams::OptionSet& aOptions,
-           mozilla::Maybe<layers::TextureFactoryIdentifier> aIdentifier,
            const Maybe<uint64_t>& aMediaEngineId,
            const Maybe<TrackingId>& aTrackingId, PRemoteCDMActor* aCDM);
 
@@ -51,21 +49,28 @@ class RemoteVideoDecoderChild : public RemoteDecoderChild {
 
 class RemoteVideoDecoderParent final : public RemoteDecoderParent {
  public:
-  RemoteVideoDecoderParent(
-      RemoteMediaManagerParent* aParent, const VideoInfo& aVideoInfo,
-      float aFramerate, const CreateDecoderParams::OptionSet& aOptions,
-      const Maybe<layers::TextureFactoryIdentifier>& aIdentifier,
-      nsISerialEventTarget* aManagerThread, TaskQueue* aDecodeTaskQueue,
-      const Maybe<uint64_t>& aMediaEngineId, Maybe<TrackingId> aTrackingId,
-      RemoteCDMParent* aCDM);
+  RemoteVideoDecoderParent(RemoteMediaManagerParent* aParent,
+                           const VideoInfo& aVideoInfo, float aFramerate,
+                           const CreateDecoderParams::OptionSet& aOptions,
+                           nsISerialEventTarget* aManagerThread,
+                           TaskQueue* aDecodeTaskQueue,
+                           const Maybe<uint64_t>& aMediaEngineId,
+                           Maybe<TrackingId> aTrackingId,
+                           RemoteCDMParent* aCDM);
 
  protected:
+  void ActorDestroy(ActorDestroyReason aWhy) override;
+
   IPCResult RecvConstruct(ConstructResolver&& aResolver) override;
 
   MediaResult ProcessDecodedData(MediaDataDecoder::DecodedData&& aData,
                                  DecodedOutputIPDL& aDecodedData) override;
 
  private:
+  void RequestTextureFactoryIdentifier(ConstructResolver&& aResolver);
+  void CreateDecoder(const Maybe<layers::TextureFactoryIdentifier>& aIdentifier,
+                     ConstructResolver&& aResolver);
+
   // Can only be accessed from the manager thread
   // Note: we can't keep a reference to the original VideoInfo here
   // because unlike in typical MediaDataDecoder situations, we're being
@@ -74,6 +79,10 @@ class RemoteVideoDecoderParent final : public RemoteDecoderParent {
   const VideoInfo mVideoInfo;
   const float mFramerate;
   RefPtr<KnowsCompositorVideo> mKnowsCompositor;
+  MozPromiseRequestHolder<GenericNonExclusivePromise> mVideoBridgeRequest;
+  MozPromiseRequestHolder<
+      layers::VideoBridgeChild::GetTextureFactoryIdentifierPromise>
+      mIdentifierRequest;
 };
 
 }  // namespace mozilla

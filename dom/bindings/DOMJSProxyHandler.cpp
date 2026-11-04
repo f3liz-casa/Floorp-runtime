@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -115,32 +113,6 @@ static inline void CheckDOMProxy(JSObject* proxy) {
 }
 
 // static
-JSObject* DOMProxyHandler::GetAndClearExpandoObject(JSObject* obj) {
-  CheckDOMProxy(obj);
-
-  JS::Value v = js::GetProxyPrivate(obj);
-  if (v.isUndefined()) {
-    return nullptr;
-  }
-
-  if (v.isObject()) {
-    js::SetProxyPrivate(obj, UndefinedValue());
-  } else {
-    auto* expandoAndGeneration =
-        static_cast<JS::ExpandoAndGeneration*>(v.toPrivate());
-    v = expandoAndGeneration->expando;
-    if (v.isUndefined()) {
-      return nullptr;
-    }
-    expandoAndGeneration->expando = UndefinedValue();
-  }
-
-  CheckExpandoObject(obj, v);
-
-  return &v.toObject();
-}
-
-// static
 JSObject* DOMProxyHandler::EnsureExpandoObject(JSContext* cx,
                                                JS::Handle<JSObject*> obj) {
   CheckDOMProxy(obj);
@@ -180,6 +152,27 @@ JSObject* DOMProxyHandler::EnsureExpandoObject(JSContext* cx,
   js::SetProxyPrivate(obj, ObjectValue(*expando));
 
   return expando;
+}
+
+// static
+void DOMProxyHandler::ClearExpandoOnWrapFailure(JSObject* obj) {
+  MOZ_ASSERT(IsDOMProxy(obj), "expected a DOM proxy object");
+
+  JS::Value v = js::GetProxyPrivate(obj);
+  if (v.isObject() || v.isUndefined()) {
+    return;
+  }
+
+  MOZ_ASSERT(!js::GetProxyReservedSlot(obj, DOM_OBJECT_SLOT).isUndefined(),
+             "Must not clear the native slot before stopping tracing the "
+             "expando owned by native object");
+
+  auto* expandoAndGeneration =
+      static_cast<JS::ExpandoAndGeneration*>(v.toPrivate());
+  // If wrapper initialization fails, the proxy no longer owns the native
+  // object, so it should not trace the expando owned by the native object.
+  // Reset the expando as well to avoid leaving an untraced reference to it.
+  expandoAndGeneration->expando = JS::UndefinedValue();
 }
 
 bool DOMProxyHandler::preventExtensions(JSContext* cx,
@@ -318,9 +311,12 @@ void ShadowingDOMProxyHandler::trace(JSTracer* trc, JSObject* proxy) const {
   JS::Value v = js::GetProxyPrivate(proxy);
   MOZ_ASSERT(!v.isObject(), "Should not have expando object directly!");
 
-  // The proxy's private slot is set when we allocate the proxy,
-  // so it cannot be |undefined|.
-  MOZ_ASSERT(!v.isUndefined());
+  if (v.isUndefined()) {
+    MOZ_ASSERT(js::GetProxyReservedSlot(proxy, DOM_OBJECT_SLOT).isUndefined(),
+               "Only a proxy whose initialization failed should have an "
+               "undefined private slot");
+    return;
+  }
 
   auto* expandoAndGeneration =
       static_cast<JS::ExpandoAndGeneration*>(v.toPrivate());

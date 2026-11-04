@@ -1,13 +1,12 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef XULMenuParentElement_h__
-#define XULMenuParentElement_h__
+#ifndef XULMenuParentElement_h_
+#define XULMenuParentElement_h_
 
 #include "mozilla/Attributes.h"
+#include "mozilla/dom/XULPopupElementBinding.h"
 #include "nsISupports.h"
 #include "nsXULElement.h"
 
@@ -17,7 +16,7 @@ class KeyboardEvent;
 class XULButtonElement;
 
 nsXULElement* NS_NewXULMenuParentElement(
-    already_AddRefed<mozilla::dom::NodeInfo>&& aNodeInfo);
+    already_AddRefed<mozilla::dom::NodeInfo> aNodeInfo);
 
 class XULMenuParentElement : public nsXULElement {
  public:
@@ -25,7 +24,7 @@ class XULMenuParentElement : public nsXULElement {
   NS_DECL_CYCLE_COLLECTION_CLASS_INHERITED(XULMenuParentElement, nsXULElement)
 
   explicit XULMenuParentElement(
-      already_AddRefed<mozilla::dom::NodeInfo>&& aNodeInfo);
+      already_AddRefed<mozilla::dom::NodeInfo> aNodeInfo);
 
   bool IsMenuBar() const { return NodeInfo()->Equals(nsGkAtoms::menubar); }
   bool IsMenu() const { return !IsMenuBar(); }
@@ -54,10 +53,11 @@ class XULMenuParentElement : public nsXULElement {
   MOZ_CAN_RUN_SCRIPT void SetActiveMenuChild(XULButtonElement*,
                                              ByKey = ByKey::No);
 
-  XULButtonElement* GetFirstMenuItem() const;
+  XULButtonElement* GetFirstMenuItem(const GetMenuItemsOptions& = {}) const;
   XULButtonElement* GetLastMenuItem() const;
 
-  XULButtonElement* GetNextMenuItemFrom(const XULButtonElement&) const;
+  XULButtonElement* GetNextMenuItemFrom(const XULButtonElement&,
+                                        const GetMenuItemsOptions& = {}) const;
   XULButtonElement* GetPrevMenuItemFrom(const XULButtonElement&) const;
 
   enum class Wrap : bool { No, Yes };

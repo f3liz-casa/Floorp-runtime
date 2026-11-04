@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -8,7 +6,6 @@
 #define GFX_VR_PROCESS_PARENT_H
 
 #include "mozilla/UniquePtr.h"
-
 #include "mozilla/ipc/GeckoChildProcessHost.h"
 #include "mozilla/ipc/TaskFactory.h"
 
@@ -45,7 +42,6 @@ class VRProcessParent final : public mozilla::ipc::GeckoChildProcessHost {
   // Returns true if the process is successfully connected; false otherwise.
   bool WaitForLaunch();
   void Shutdown();
-  void DestroyProcess();
   bool CanShutdown() override { return true; }
 
   void OnChannelConnected(base::ProcessId peer_pid) override;
@@ -68,7 +64,6 @@ class VRProcessParent final : public mozilla::ipc::GeckoChildProcessHost {
   void KillHard(const char* aReason);
 
   RefPtr<VRChild> mVRChild;
-  mozilla::ipc::TaskFactory<VRProcessParent> mTaskFactory;
   nsCOMPtr<nsIThread> mLaunchThread;
   Listener* mListener;
 

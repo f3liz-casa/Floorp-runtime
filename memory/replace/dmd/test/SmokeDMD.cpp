@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -22,6 +20,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 
+#include <string>
+
 #include "mozilla/Assertions.h"
 #include "mozilla/JSONWriter.h"
 #include "mozilla/Sprintf.h"
@@ -33,12 +33,16 @@ using namespace mozilla::dmd;
 
 MOZ_RUNINIT DMDFuncs::Singleton DMDFuncs::sSingleton;
 
+// The directory the JSON files are written to.
+static const char* sOutputDir = ".";
+
 class FpWriteFunc final : public mozilla::JSONWriteFunc {
  public:
   explicit FpWriteFunc(const char* aFilename) {
-    mFp = fopen(aFilename, "w");
+    std::string path = std::string(sOutputDir) + "/" + aFilename;
+    mFp = fopen(path.c_str(), "w");
     if (!mFp) {
-      fprintf(stderr, "SmokeDMD: can't create %s file: %s\n", aFilename,
+      fprintf(stderr, "SmokeDMD: can't create %s file: %s\n", path.c_str(),
               strerror(errno));
       exit(1);
     }
@@ -371,7 +375,11 @@ void RunTests() {
   TestScan(seven);
 }
 
-int main() {
+int main(int argc, char** argv) {
+  if (argc > 1) {
+    sOutputDir = argv[1];
+  }
+
   RunTests();
 
   return 0;

@@ -10,6 +10,9 @@ export default {
   globals: {
     // WebAssembly is available everywhere but is not a webIDL definition.
     WebAssembly: "readonly",
+    // Manually added awaiting full list update:
+    DecompressionStream: "readonly",
+    TextDecoderStream: "readonly",
     // This list of items is currently obtained manually from the list of
     // mozilla::dom::constructor::id::ID enumerations in an object directory
     // generated dom/bindings/RegisterBindings.cpp
@@ -63,8 +66,9 @@ export default {
     ByteLengthQueuingStrategy: "readonly",
     CanonicalBrowsingContext: "readonly",
     CDATASection: "readonly",
+    CollectorLogAnalyzer: "readonly",
+    CollectorNodeFlags: "readonly",
     CSS: "readonly",
-    CSS2Properties: "readonly",
     CSSAnimation: "readonly",
     CSSConditionRule: "readonly",
     CSSCounterStyleRule: "readonly",
@@ -82,6 +86,7 @@ export default {
     CSSRule: "readonly",
     CSSRuleList: "readonly",
     CSSStyleDeclaration: "readonly",
+    CSSStyleProperties: "readonly",
     CSSStyleRule: "readonly",
     CSSStyleSheet: "readonly",
     CSSSupportsRule: "readonly",
@@ -167,7 +172,8 @@ export default {
     Event: "readonly",
     EventSource: "readonly",
     EventTarget: "readonly",
-    FeaturePolicyViolationReportBody: "readonly",
+    ExtensionGuardSet: "readonly",
+    PermissionsPolicyViolationReportBody: "readonly",
     FetchObserver: "readonly",
     File: "readonly",
     FileList: "readonly",
@@ -317,7 +323,6 @@ export default {
     InspectorCSSParser: "readonly",
     InspectorFontFace: "readonly",
     InspectorUtils: "readonly",
-    InstallTriggerImpl: "readonly",
     IntersectionObserver: "readonly",
     IntersectionObserverEntry: "readonly",
     IOUtils: "readonly",
@@ -490,7 +495,6 @@ export default {
     RTCIceCandidate: "readonly",
     RTCPeerConnection: "readonly",
     RTCPeerConnectionIceEvent: "readonly",
-    RTCPeerConnectionStatic: "readonly",
     RTCRtpReceiver: "readonly",
     RTCRtpSender: "readonly",
     RTCRtpTransceiver: "readonly",
@@ -505,6 +509,7 @@ export default {
     ReadableStream: "readonly",
     ReadableStreamDefaultController: "readonly",
     ReadableStreamDefaultReader: "readonly",
+    RedirectBlockedEvent: "readonly",
     Report: "readonly",
     ReportBody: "readonly",
     ReportingObserver: "readonly",

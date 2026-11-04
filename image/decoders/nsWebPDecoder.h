@@ -1,5 +1,4 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- *
+/*
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -8,9 +7,9 @@
 #define mozilla_image_decoders_nsWebPDecoder_h
 
 #include "Decoder.h"
-#include "webp/demux.h"
 #include "StreamingLexer.h"
 #include "SurfacePipe.h"
+#include "webp/demux.h"
 
 namespace mozilla {
 namespace image {
@@ -56,10 +55,11 @@ class nsWebPDecoder final : public Decoder {
   /// received, if and only if the iterator is discontiguous.
   Vector<uint8_t> mBufferedData;
 
-  /// The libwebp output buffer descriptor pointing to the decoded data.
-  WebPDecBuffer mBuffer;
+  /// The libwebp decoder configuration and output buffer descriptor. libwebp
+  /// keeps pointers into this, so it must outlive mDecoder.
+  WebPDecoderConfig mConfig;
 
-  /// The libwebp incremental decoder descriptor, wraps mBuffer.
+  /// The libwebp incremental decoder descriptor, wraps mConfig.output.
   WebPIDecoder* mDecoder;
 
   /// Blend method for the current frame.

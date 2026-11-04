@@ -1,4 +1,3 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -10,20 +9,12 @@
 #include "nsXULSortService.h"
 
 #include "mozilla/dom/Element.h"
-#include "mozilla/intl/Collator.h"
-#include "nsCOMArray.h"
-#include "nsCOMPtr.h"
-#include "nsGkAtoms.h"
-#include "nsIContent.h"
-#include "nsNameSpaceManager.h"
-#include "nsString.h"
-#include "nsTArray.h"
-#include "nsUnicharUtils.h"
+#include "mozilla/intl/AppCollator.h"
 #include "nsWhitespaceTokenizer.h"
 #include "nsXULContentUtils.h"
-#include "nsXULElement.h"
 
 using mozilla::dom::Element;
+using mozilla::dom::IsKnownNewAttr;
 const unsigned long SORT_COMPARECASE = 0x0001;
 const unsigned long SORT_INTEGER = 0x0100;
 
@@ -78,10 +69,10 @@ static void SetSortColumnHints(nsIContent* content,
       child->AsElement()->GetAttr(nsGkAtoms::sort, value);
       if (value == sortResource) {
         child->AsElement()->SetAttr(kNameSpaceID_None, nsGkAtoms::sortActive,
-                                    u"true"_ns, true);
+                                    u"true"_ns, true, IsKnownNewAttr::No);
 
         child->AsElement()->SetAttr(kNameSpaceID_None, nsGkAtoms::sortDirection,
-                                    sortDirection, true);
+                                    sortDirection, true, IsKnownNewAttr::No);
         // Note: don't break out of loop; want to set/unset
         // attribs on ALL sort columns
       } else if (!value.IsEmpty()) {
@@ -99,7 +90,8 @@ static void SetSortColumnHints(nsIContent* content,
  */
 static void SetSortHints(Element* aElement, nsSortState* aSortState) {
   // set sort and sortDirection attributes when is sort is done
-  aElement->SetAttr(kNameSpaceID_None, nsGkAtoms::sort, aSortState->sort, true);
+  aElement->SetAttr(kNameSpaceID_None, nsGkAtoms::sort, aSortState->sort, true,
+                    IsKnownNewAttr::No);
 
   nsAutoString direction;
   if (aSortState->direction == nsSortState_descending)
@@ -107,7 +99,7 @@ static void SetSortHints(Element* aElement, nsSortState* aSortState) {
   else if (aSortState->direction == nsSortState_ascending)
     direction.AssignLiteral("ascending");
   aElement->SetAttr(kNameSpaceID_None, nsGkAtoms::sortDirection, direction,
-                    true);
+                    true, IsKnownNewAttr::No);
 
   // for trees, also set the sort info on the currently sorted column
   if (aElement->IsXULElement(nsGkAtoms::tree)) {
@@ -171,16 +163,11 @@ static int32_t CompareValues(const nsAString& aLeft, const nsAString& aRight,
   }
 
   if (aSortHints & SORT_COMPARECASE) {
+    // XXX why does this not use a real collator?
     return ::Compare(aLeft, aRight);
   }
 
-  using mozilla::intl::Collator;
-  const Collator* collator = nsXULContentUtils::GetCollator();
-  if (collator) {
-    return collator->CompareStrings(aLeft, aRight);
-  }
-
-  return ::Compare(aLeft, aRight, nsCaseInsensitiveStringComparator);
+  return mozilla::intl::AppCollator::CompareBase(aLeft, aRight);
 }
 
 static int testSortCallback(const contentSortInfo& left,

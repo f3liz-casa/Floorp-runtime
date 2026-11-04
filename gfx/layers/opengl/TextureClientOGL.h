@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -10,16 +8,13 @@
 #include "GLContextTypes.h"  // for SharedTextureHandle, etc
 #include "GLImages.h"
 #include "gfxTypes.h"
-#include "mozilla/Attributes.h"  // for override
-#include "mozilla/gfx/Point.h"   // for IntSize
-#include "mozilla/gfx/Types.h"   // for SurfaceFormat
+#include "mozilla/gfx/Point.h"  // for IntSize
+#include "mozilla/gfx/Types.h"  // for SurfaceFormat
 #include "mozilla/layers/CompositorTypes.h"
 #include "mozilla/layers/LayersSurfaces.h"  // for SurfaceDescriptor
 #include "mozilla/layers/TextureClient.h"   // for TextureClient, etc
 #ifdef MOZ_WIDGET_ANDROID
 #  include "AndroidSurfaceTexture.h"
-#  include "AndroidNativeWindow.h"
-#  include "mozilla/java/GeckoSurfaceWrappers.h"
 #  include "mozilla/layers/AndroidHardwareBuffer.h"
 #endif
 
@@ -73,45 +68,6 @@ class AndroidSurfaceTextureData : public TextureData {
   const Maybe<gfx::Matrix4x4> mTransformOverride;
 };
 
-class AndroidNativeWindowTextureData : public TextureData {
- public:
-  static AndroidNativeWindowTextureData* Create(gfx::IntSize aSize,
-                                                gfx::SurfaceFormat aFormat);
-
-  TextureType GetTextureType() const override {
-    return TextureType::AndroidNativeWindow;
-  }
-
-  void FillInfo(TextureData::Info& aInfo) const override;
-
-  bool Serialize(SurfaceDescriptor& aOutDescriptor) override;
-
-  bool Lock(OpenMode) override;
-  void Unlock() override;
-
-  void Forget(LayersIPCChannel*) override;
-  void Deallocate(LayersIPCChannel*) override {}
-
-  already_AddRefed<gfx::DrawTarget> BorrowDrawTarget() override;
-
-  void OnForwardedToHost() override;
-
- protected:
-  AndroidNativeWindowTextureData(java::GeckoSurface::Param aSurface,
-                                 gfx::IntSize aSize,
-                                 gfx::SurfaceFormat aFormat);
-
- private:
-  java::GeckoSurface::GlobalRef mSurface;
-  ANativeWindow* mNativeWindow;
-  ANativeWindow_Buffer mBuffer;
-  // Keeps track of whether the underlying NativeWindow is actually locked.
-  bool mIsLocked;
-
-  const gfx::IntSize mSize;
-  const gfx::SurfaceFormat mFormat;
-};
-
 class AndroidHardwareBufferTextureData : public TextureData {
  public:
   static AndroidHardwareBufferTextureData* Create(gfx::IntSize aSize,
@@ -159,6 +115,44 @@ class AndroidHardwareBufferTextureData : public TextureData {
 
   // Keeps track of whether the underlying NativeWindow is actually locked.
   bool mIsLocked;
+};
+
+class AndroidImageReaderImageTextureData : public TextureData {
+ public:
+  static already_AddRefed<TextureClient> CreateTextureClient(
+      const layers::GpuProcessAndroidImageReaderId aImageReaderId,
+      const layers::AndroidMediaCodecFrameId aFrameId, gfx::IntSize aSize,
+      gl::OriginPos aOriginPos, bool aHasAlpha, LayersIPCChannel* aAllocator,
+      TextureFlags aFlags);
+
+  virtual ~AndroidImageReaderImageTextureData();
+
+  void FillInfo(TextureData::Info& aInfo) const override;
+
+  bool Serialize(SurfaceDescriptor& aOutDescriptor) override;
+
+  RemoteDecoderVideoType GetRemoteDecoderVideoType() override {
+    return RemoteDecoderVideoType::AndroidImageReaderImage;
+  }
+
+  // Useless functions.
+  bool Lock(OpenMode) override { return true; }
+
+  void Unlock() override {}
+
+  // Our data is always owned externally.
+  void Deallocate(LayersIPCChannel*) override {}
+
+ protected:
+  AndroidImageReaderImageTextureData(
+      const layers::GpuProcessAndroidImageReaderId aImageReaderId,
+      const layers::AndroidMediaCodecFrameId aFrameId, gfx::IntSize aSize,
+      bool aHasAlpha);
+
+  const layers::GpuProcessAndroidImageReaderId mImageReaderId;
+  const layers::AndroidMediaCodecFrameId mFrameId;
+  const gfx::IntSize mSize;
+  const bool mHasAlpha;
 };
 
 #endif  // MOZ_WIDGET_ANDROID

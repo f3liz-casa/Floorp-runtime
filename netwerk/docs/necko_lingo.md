@@ -39,8 +39,6 @@
     - [OnStartRequest/OnDataAvailable/OnStopRequest/](#onstartrequestondataavailableonstoprequest)
 - __Q__
     - [QUIC](#quic)
-- __R__
-    - [RCWN](#rcwn)
 - __S__
     - [Socket Process](#socket-process)
     - [Socket Thread](#socket-thread)
@@ -70,7 +68,7 @@ It usually means nsHttpChannel.
 
 ## Child Process
 Usually a firefox forked process - not the main process.\
-See [GeckoProcessTypes.h](https://searchfox.org/mozilla-central/source/__GENERATED__/xpcom/build/GeckoProcessTypes.h) for all process types in gecko.
+See [GeckoProcessTypes.inc](https://searchfox.org/firefox-main/source/__GENERATED__/xpcom/build/GeckoProcessTypes.inc) for all process types in gecko.
 
 ## Content Process
 Usually a firefox forked process running untrusted web content.
@@ -79,7 +77,7 @@ Usually a firefox forked process running untrusted web content.
 [DNS](https://developer.mozilla.org/en-US/docs/Glossary/DNS) over HTTPS.\
 Refer [RFC 8484 - DNS Queries over HTTPS (DoH)](https://datatracker.ietf.org/doc/html/rfc8484).\
 Resolves DNS names by using a HTTPS server.\
-Refer [this link](https://firefox-source-docs.mozilla.org/networking/dns/dns-over-https-trr.html) for more details.
+Refer {doc}`this link </networking/dns/dns-over-https-trr>` for more details.
 
 ## Eventsource
 Web API for [server-sent-events](https://developer.mozilla.org/en-US/docs/Web/API/Server-sent_events). \
@@ -122,7 +120,7 @@ HSTS preload - a list of websites that will be upgraded to HTTPS without first n
 
 ## LoadInfo
 Object containing information about about the load (who triggered the load, in which context, etc).
-Refer [nsILoadContext](https://searchfox.org/mozilla-central/source/netwerk/base/nsILoadContextInfo.idl) for more details.
+Refer [nsILoadContext](https://searchfox.org/firefox-main/source/netwerk/base/nsILoadContextInfo.idl) for more details.
 
 
 ## Listener
@@ -138,7 +136,7 @@ For content processes, MainThread is where normal JS content runs ([Worker](http
 
 ## Mochitest
 Browser tests, run with full UI. \
-Refer [this](https://firefox-source-docs.mozilla.org/testing/mochitest-plain/index.html) for more details.
+Refer {doc}`this </testing/mochitest-plain/index>` for more details.
 
 ## neqo v/s Necko
 _neqo_ is the name of the Mozilla [QUIC](https://github.com/mozilla/neqo) stack.
@@ -149,18 +147,18 @@ _Necko_ is the project name of the Mozilla networking stack.
 
 ## NSS
 An acronym for the Network Security Services.
-Refer  [this](https://firefox-source-docs.mozilla.org/security/nss/index.html) for more details.
+Refer  {doc}`this </security/nss/index>` for more details.
 
 
 ## NSPR
-An acronym for [Netscape Portable Runtime](https://firefox-source-docs.mozilla.org/nspr/index.html)
+An acronym for {doc}`Netscape Portable Runtime </nspr/index>`
 Necko’s scope?
 
 ## Observer
 Terminology used for referring the classes implementing the Observer design pattern. \
 Refer the following interfaces for more details:
-- [nsIObserver](https://searchfox.org/mozilla-central/source/xpcom/ds/nsIObserver.idl)
-- [nsIObserverService](https://searchfox.org/mozilla-central/source/xpcom/ds/nsIObserverService.idl)
+- [nsIObserver](https://searchfox.org/firefox-main/source/xpcom/ds/nsIObserver.idl)
+- [nsIObserverService](https://searchfox.org/firefox-main/source/xpcom/ds/nsIObserverService.idl)
 
 ## PSM
 The PSM acronym may also be described as "Platform Security Module". \
@@ -177,8 +175,8 @@ Before e10s, all code ran in the Parent Process.
 ### Principal
 Abstraction encapsulating security details of a web page.
 Refer the following links for more details:
-- [sec-necko-components](https://firefox-source-docs.mozilla.org/networking/sec-necko-components.html)
-- [nsIPrincipal](https://searchfox.org/mozilla-central/source/caps/nsIPrincipal.idl)
+- {doc}`sec-necko-components </networking/sec-necko-components>`
+- [nsIPrincipal](https://searchfox.org/firefox-main/source/caps/nsIPrincipal.idl)
 
 ## OMT
 Abbreviation for Off Main Thread. OMT refers to processing data in non-main thread.
@@ -190,15 +188,12 @@ There has been efforts in the past to move the processing of data to non-main th
 - OnDataAvailable is a listener notification sent when necko has received the the data/body.
 - OnStopRequest is a listener notification sent when necko has received the complete response.
 - Refer to the following interface documentation for more details:
-  - [nsIRequestObserver](https://searchfox.org/mozilla-central/source/netwerk/base/nsIRequestObserver.idl)
-  - [nsIStreamListener.idl](https://searchfox.org/mozilla-central/source/netwerk/base/nsIStreamListener.idl)
+  - [nsIRequestObserver](https://searchfox.org/firefox-main/source/netwerk/base/nsIRequestObserver.idl)
+  - [nsIStreamListener.idl](https://searchfox.org/firefox-main/source/netwerk/base/nsIStreamListener.idl)
 
 ## QUIC
 An IETF transport protocol [RFC9000](https://datatracker.ietf.org/doc/html/rfc9000) primarily designed to carry HTTP/3, but now also used as a general-purpose Internet transport protocol for other workloads.
 Implemented in RUST and maintained by [neqo](https://github.com/mozilla/neqo).
-
-## RCWN
-Race cache with network. Feature that will send a request to network and cache at the same time and take the first to resolve.
 
 ## Socket Process
 WIP project to move the actions of the socket thread into its own process for the purposes of isolation for security and stability (during crashes).
@@ -237,7 +232,7 @@ References:
 ## Xpcshell-tests
 Unit tests for testing our XPCOM code from JS context.
 Runs without a UI in a simpler  setup (typically single-process). \
-Refer [firefox-source-docs](https://firefox-source-docs.mozilla.org/testing/xpcshell/index.html) for detailed explanation.
+Refer to the {doc}`xpcshell documentation </testing/xpcshell/index>` for detailed explanation.
 
 ## XHR
 [XMLHttpRequest](https://developer.mozilla.org/en-US/docs/Web/API/XMLHttpRequest). One way to perform AJAX, essentially a way to dynamically make network requests for use in the callers webpage, similar to Fetch.

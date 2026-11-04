@@ -26,6 +26,8 @@ task-defaults:
     fetches:
         toolchain:
             - android-sdk-linux
+            - linux64-embedded-uniffi-bindgen
+            - linux64-nimbus-fml
             - android-gradle-dependencies
             - linux64-jdk
         build-fat-aar:
@@ -44,7 +46,7 @@ task-defaults:
         kind: test
         platform: 'AC-ui-test/opt'
         tier: 2
-    worker-type: b-linux-medium-gcp
+    worker-type: b-linux-medium
     worker:
         artifacts:
             - name: public
@@ -54,7 +56,7 @@ task-defaults:
         env:
             GOOGLE_APPLICATION_CREDENTIALS: '.firebase_token.json'
             GOOGLE_PROJECT: moz-android-components-230120
-        max-run-time: 2400
+        max-run-time: 3600
     optimization:
         skip-unless-backstop: null
 
@@ -85,3 +87,4 @@ tasks:
     android-support-ktx: {}
     android-feature-downloads: {}
     android-feature-recentlyclosed: {}
+    android-lib-crash: {}

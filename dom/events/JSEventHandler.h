@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -7,14 +5,15 @@
 #ifndef mozilla_JSEventHandler_h_
 #define mozilla_JSEventHandler_h_
 
-#include "mozilla/Attributes.h"
 #include "mozilla/MemoryReporting.h"
+#include "mozilla/UniquePtr.h"
 #include "mozilla/dom/EventHandlerBinding.h"
 #include "nsAtom.h"
 #include "nsCOMPtr.h"
 #include "nsCycleCollectionParticipant.h"
 #include "nsIDOMEventListener.h"
 #include "nsIScriptContext.h"
+#include "nsString.h"
 
 namespace mozilla {
 namespace dom {
@@ -57,6 +56,8 @@ class TypedEventHandler {
   }
 
   ~TypedEventHandler() { ReleaseHandler(); }
+
+  void operator=(const TypedEventHandler&) = delete;
 
   HandlerType Type() const { return HandlerType(mBits & eTypeBits); }
 
@@ -120,8 +121,6 @@ class TypedEventHandler {
   }
 
  private:
-  void operator=(const TypedEventHandler&) = delete;
-
   void ReleaseHandler() {
     nsISupports* ptr = Ptr();
     NS_IF_RELEASE(ptr);
@@ -173,15 +172,37 @@ class JSEventHandler : public nsIDOMEventListener {
   // be bound to the right target.
   void SetHandler(const TypedEventHandler& aTypedHandler) {
     mTypedHandler.SetHandler(aTypedHandler);
+    mPendingSource = nullptr;
   }
   void SetHandler(dom::EventHandlerNonNull* aHandler) {
     mTypedHandler.SetHandler(aHandler);
+    mPendingSource = nullptr;
   }
   void SetHandler(dom::OnBeforeUnloadEventHandlerNonNull* aHandler) {
     mTypedHandler.SetHandler(aHandler);
+    mPendingSource = nullptr;
   }
   void SetHandler(dom::OnErrorEventHandlerNonNull* aHandler) {
     mTypedHandler.SetHandler(aHandler);
+    mPendingSource = nullptr;
+  }
+
+  // The source of a handler that hasn't been compiled yet, kept for targets
+  // that can't provide it again at compile time: a window that an event handler
+  // content attribute of <body>, <frameset> or <xul:window> is forwarded to.
+  struct PendingSource {
+    nsString mBody;
+    // Namespace of the element the attribute was set on, which determines the
+    // name of the handler's event argument.
+    int32_t mNameSpaceID;
+  };
+
+  void SetPendingSource(const nsAString& aBody, int32_t aNameSpaceID) {
+    mPendingSource =
+        MakeUnique<PendingSource>(PendingSource{nsString(aBody), aNameSpaceID});
+  }
+  UniquePtr<PendingSource> TakePendingSource() {
+    return std::move(mPendingSource);
   }
 
   size_t SizeOfExcludingThis(MallocSizeOf aMallocSizeOf) const {
@@ -190,6 +211,7 @@ class JSEventHandler : public nsIDOMEventListener {
     // Measurement of the following members may be added later if DMD finds it
     // is worthwhile:
     // - mTarget
+    // - mPendingSource
     //
     // The following members are not measured:
     // - mTypedHandler: may be shared with others
@@ -210,6 +232,7 @@ class JSEventHandler : public nsIDOMEventListener {
   dom::EventTarget* mTarget;
   RefPtr<nsAtom> mEventName;
   TypedEventHandler mTypedHandler;
+  UniquePtr<PendingSource> mPendingSource;
 };
 
 }  // namespace mozilla

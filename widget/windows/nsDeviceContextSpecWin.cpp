@@ -1,49 +1,44 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "nsDeviceContextSpecWin.h"
 
-#include "mozilla/ArrayUtils.h"
-#include "mozilla/gfx/PrintPromise.h"
-#include "mozilla/gfx/PrintTargetPDF.h"
-#include "mozilla/gfx/PrintTargetWindows.h"
-#include "mozilla/Logging.h"
-#include "mozilla/Preferences.h"
-#include "mozilla/RefPtr.h"
-#include "mozilla/glean/PrintingMetrics.h"
-#include "nsAnonymousTemporaryFile.h"
-
 #include <wchar.h>
 #include <windef.h>
 #include <winspool.h>
 
-#include "nsIWidget.h"
+#include <algorithm>
+#include <array>
 
-#include "nsTArray.h"
-#include "nsIPrintSettingsWin.h"
+#include "mozilla/Logging.h"
+#include "mozilla/Preferences.h"
+#include "mozilla/RefPtr.h"
+#include "mozilla/gfx/PrintPromise.h"
+#include "mozilla/gfx/PrintTargetSkPDF.h"
+#include "mozilla/gfx/PrintTargetWindows.h"
+#include "mozilla/glean/PrintingMetrics.h"
+#include "nsAnonymousTemporaryFile.h"
 
+// winspool.h pollutes the global namespace, failing unified builds in e.g.
+// nsIFormControl::SetForm. Undo the damage.
+#undef AddForm
+#undef DeleteForm
+#undef EnumForms
+#undef GetForm
+#undef SetForm
+
+#include "gfxWindowsSurface.h"
+#include "mozilla/gfx/Logging.h"
 #include "nsComponentManagerUtils.h"
+#include "nsIFileStreams.h"
+#include "nsIPrintSettingsWin.h"
+#include "nsIWidget.h"
 #include "nsPrinterWin.h"
 #include "nsReadableUtils.h"
 #include "nsString.h"
-
-#include "gfxWindowsSurface.h"
-
-#include "nsIFileStreams.h"
+#include "nsTArray.h"
 #include "nsWindowsHelpers.h"
-
-#include "mozilla/gfx/Logging.h"
-
-#ifdef MOZ_ENABLE_SKIA_PDF
-#  include "mozilla/gfx/PrintTargetSkPDF.h"
-#  include "mozilla/gfx/PrintTargetEMF.h"
-#  include "nsIUUIDGenerator.h"
-#  include "nsDirectoryServiceDefs.h"
-#  include "nsPrintfCString.h"
-#  include "nsThreadUtils.h"
-#endif
 
 extern mozilla::LazyLogModule gPrintingLog;
 #define PR_PL(_p1) MOZ_LOG(gPrintingLog, mozilla::LogLevel::Debug, _p1)
@@ -51,11 +46,27 @@ extern mozilla::LazyLogModule gPrintingLog;
 using namespace mozilla;
 using namespace mozilla::gfx;
 
-#ifdef MOZ_ENABLE_SKIA_PDF
 using namespace mozilla::widget;
-#endif
 
 static const wchar_t kDriverName[] = L"WINSPOOL";
+
+static constexpr std::array<nsLiteralString, 15> kPDFPrinterPrefixes = {
+    u"Microsoft Print to PDF"_ns,
+    u"Adobe PDF"_ns,
+    u"Bullzip PDF Printer"_ns,
+    u"CutePDF Writer"_ns,
+    u"doPDF"_ns,
+    u"Foxit Reader PDF Printer"_ns,
+    u"Nitro PDF Creator"_ns,
+    u"novaPDF"_ns,
+    u"PDF-XChange"_ns,
+    u"PDF24 PDF"_ns,
+    u"PDFCreator"_ns,
+    u"PrimoPDF"_ns,
+    u"Soda PDF"_ns,
+    u"Solid PDF Creator"_ns,
+    u"Universal Document Converter"_ns,
+};
 
 //----------------------------------------------------------------------------------
 //---------------
@@ -135,22 +146,10 @@ NS_IMETHODIMP nsDeviceContextSpecWin::Init(nsIPrintSettings* aPrintSettings,
     glean::printing::target_type
         .EnumGet(glean::printing::TargetTypeLabel::ePdfFile)
         .Add(1);
-  } else if (StringBeginsWith(printerName, u"Microsoft Print to PDF"_ns) ||
-             StringBeginsWith(printerName, u"Adobe PDF"_ns) ||
-             StringBeginsWith(printerName, u"Bullzip PDF Printer"_ns) ||
-             StringBeginsWith(printerName, u"CutePDF Writer"_ns) ||
-             StringBeginsWith(printerName, u"doPDF"_ns) ||
-             StringBeginsWith(printerName, u"Foxit Reader PDF Printer"_ns) ||
-             StringBeginsWith(printerName, u"Nitro PDF Creator"_ns) ||
-             StringBeginsWith(printerName, u"novaPDF"_ns) ||
-             StringBeginsWith(printerName, u"PDF-XChange"_ns) ||
-             StringBeginsWith(printerName, u"PDF24 PDF"_ns) ||
-             StringBeginsWith(printerName, u"PDFCreator"_ns) ||
-             StringBeginsWith(printerName, u"PrimoPDF"_ns) ||
-             StringBeginsWith(printerName, u"Soda PDF"_ns) ||
-             StringBeginsWith(printerName, u"Solid PDF Creator"_ns) ||
-             StringBeginsWith(printerName,
-                              u"Universal Document Converter"_ns)) {
+  } else if (std::any_of(kPDFPrinterPrefixes.begin(), kPDFPrinterPrefixes.end(),
+                         [&](const auto& prefix) {
+                           return StringBeginsWith(printerName, prefix);
+                         })) {
     glean::printing::target_type
         .EnumGet(glean::printing::TargetTypeLabel::ePdfFile)
         .Add(1);
@@ -175,14 +174,6 @@ NS_IMETHODIMP nsDeviceContextSpecWin::Init(nsIPrintSettings* aPrintSettings,
 
   nsresult rv = NS_ERROR_GFX_PRINTER_NO_PRINTER_AVAILABLE;
   if (aPrintSettings) {
-#ifdef MOZ_ENABLE_SKIA_PDF
-    nsAutoString printViaPdf;
-    Preferences::GetString("print.print_via_pdf_encoder", printViaPdf);
-    if (printViaPdf.EqualsLiteral("skia-pdf")) {
-      mPrintViaSkPDF = true;
-    }
-#endif
-
     // If we're in the child or we're printing to PDF we only need information
     // from the print settings.
     if (XRE_IsContentProcess() ||
@@ -239,47 +230,6 @@ NS_IMETHODIMP nsDeviceContextSpecWin::Init(nsIPrintSettings* aPrintSettings,
 already_AddRefed<PrintTarget> nsDeviceContextSpecWin::MakePrintTarget() {
   NS_ASSERTION(mDevMode || mOutputFormat == nsIPrintSettings::kOutputFormatPDF,
                "DevMode can't be NULL here unless we're printing to PDF.");
-
-#ifdef MOZ_ENABLE_SKIA_PDF
-  if (mPrintViaSkPDF) {
-    double width, height;
-    mPrintSettings->GetEffectivePageSize(&width, &height);
-    if (width <= 0 || height <= 0) {
-      return nullptr;
-    }
-
-    // convert twips to points
-    width /= TWIPS_PER_POINT_FLOAT;
-    height /= TWIPS_PER_POINT_FLOAT;
-    IntSize size = IntSize::Ceil(width, height);
-
-    if (mOutputFormat == nsIPrintSettings::kOutputFormatPDF) {
-      nsString filename;
-      // TODO(dshin):
-      // - Does this handle bug 1659470?
-      // - Should this code path be enabled, we should use temporary files and
-      // then move the file in `EndDocument()`.
-      mPrintSettings->GetToFileName(filename);
-
-      nsAutoCString printFile(NS_ConvertUTF16toUTF8(filename).get());
-      auto skStream = MakeUnique<SkFILEWStream>(printFile.get());
-      return PrintTargetSkPDF::CreateOrNull(std::move(skStream), size);
-    }
-
-    if (mDevMode) {
-      NS_WARNING_ASSERTION(!mDriverName.IsEmpty(), "No driver!");
-      HDC dc =
-          ::CreateDCW(mDriverName.get(), mDeviceName.get(), nullptr, mDevMode);
-      if (!dc) {
-        gfxCriticalError(gfxCriticalError::DefaultOptions(false))
-            << "Failed to create device context in GetSurfaceForPrinter";
-        return nullptr;
-      }
-      return PrintTargetEMF::CreateOrNull(dc, size);
-    }
-  }
-#endif
-
   if (mOutputFormat == nsIPrintSettings::kOutputFormatPDF) {
     double width, height;
     mPrintSettings->GetEffectiveSheetSize(&width, &height);
@@ -317,7 +267,7 @@ already_AddRefed<PrintTarget> nsDeviceContextSpecWin::MakePrintTarget() {
       return stream;
     }();
 
-    return PrintTargetPDF::CreateOrNull(stream, IntSize::Ceil(width, height));
+    return PrintTargetSkPDF::CreateOrNull(stream, IntSize::Ceil(width, height));
   }
 
   if (mDevMode) {
@@ -343,12 +293,6 @@ RefPtr<PrintEndDocumentPromise> nsDeviceContextSpecWin::EndDocument() {
       mOutputFormat != nsIPrintSettings::kOutputFormatPDF) {
     return PrintEndDocumentPromise::CreateAndResolve(true, __func__);
   }
-
-#ifdef MOZ_ENABLE_SKIA_PDF
-  if (mPrintViaSkPDF) {
-    return PrintEndDocumentPromise::CreateAndResolve(true, __func__);
-  }
-#endif
 
   MOZ_ASSERT(mTempFile, "No handle to temporary PDF file.");
 
@@ -559,7 +503,12 @@ nsTArray<nsPrinterListBase::PrinterInfo> nsPrinterListWin::Printers() const {
     // (We always need to be able to handle an error, anyhow, as the printer
     // could get disconnected after we've created the list, for example.)
     bool isAvailable = false;
-    if (printers[i].Attributes & PRINTER_ATTRIBUTE_NETWORK) {
+    // PRINTER_ATTRIBUTE_NETWORK feeds the sortAfterLocal hint on Windows; see
+    // the sortAfterLocal doc-comment in nsIPrinter.idl for why this isn't a
+    // precise "auto-discovered" signal.
+    const bool isNetwork =
+        !!(printers[i].Attributes & PRINTER_ATTRIBUTE_NETWORK);
+    if (isNetwork) {
       isAvailable = true;
     } else if (printers[i].Attributes & PRINTER_ATTRIBUTE_LOCAL) {
       HANDLE handle;
@@ -569,7 +518,9 @@ nsTArray<nsPrinterListBase::PrinterInfo> nsPrinterListWin::Printers() const {
       }
     }
     if (isAvailable) {
-      list.AppendElement(PrinterInfo{nsString(printers[i].pPrinterName)});
+      list.AppendElement(PrinterInfo{nsString(printers[i].pPrinterName),
+                                     nullptr,
+                                     /* mSortAfterLocal = */ isNetwork});
       PR_PL(("Printer Name: %s\n",
              NS_ConvertUTF16toUTF8(printers[i].pPrinterName).get()));
     }
@@ -601,7 +552,9 @@ Maybe<nsPrinterListBase::PrinterInfo> nsPrinterListWin::PrinterByName(
       reinterpret_cast<const _PRINTER_INFO_4W*>(buffer.Elements());
   for (unsigned i = 0; i < count; ++i) {
     if (aName.Equals(nsString(printers[i].pPrinterName))) {
-      rv.emplace(PrinterInfo{aName});
+      rv.emplace(
+          PrinterInfo{aName, nullptr,
+                      !!(printers[i].Attributes & PRINTER_ATTRIBUTE_NETWORK)});
       break;
     }
   }
@@ -615,7 +568,8 @@ Maybe<nsPrinterListBase::PrinterInfo> nsPrinterListWin::PrinterBySystemName(
 }
 
 RefPtr<nsIPrinter> nsPrinterListWin::CreatePrinter(PrinterInfo aInfo) const {
-  return nsPrinterWin::Create(mCommonPaperInfo, std::move(aInfo.mName));
+  return nsPrinterWin::Create(mCommonPaperInfo, std::move(aInfo.mName),
+                              aInfo.mSortAfterLocal);
 }
 
 nsresult nsPrinterListWin::SystemDefaultPrinterName(nsAString& aName) const {
@@ -641,8 +595,7 @@ nsPrinterListWin::InitPrintSettingsFromPrinter(
     return NS_OK;
   }
 
-  RefPtr<nsDeviceContextSpecWin> devSpecWin = new nsDeviceContextSpecWin();
-  if (!devSpecWin) return NS_ERROR_OUT_OF_MEMORY;
+  auto devSpecWin = MakeRefPtr<nsDeviceContextSpecWin>();
 
   // If the settings have already been initialized from prefs then pass these to
   // GetDataFromPrinter, so that they are saved to the printer.

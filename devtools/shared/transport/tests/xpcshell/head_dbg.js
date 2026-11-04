@@ -16,12 +16,6 @@ const { NetUtil } = ChromeUtils.importESModule(
   "resource://gre/modules/NetUtil.sys.mjs"
 );
 
-// We do not want to log packets by default, because in some tests,
-// we can be sending large amounts of data. The test harness has
-// trouble dealing with logging all the data, and we end up with
-// intermittent time outs (e.g. bug 775924).
-// Services.prefs.setBoolPref("devtools.debugger.log", true);
-// Services.prefs.setBoolPref("devtools.debugger.log.verbose", true);
 // Enable remote debugging for the relevant tests.
 Services.prefs.setBoolPref("devtools.debugger.remote-enabled", true);
 
@@ -111,19 +105,14 @@ function initTestDevToolsServer() {
   DevToolsServer.keepAlive = true;
 }
 
-/**
- * Wrapper around do_get_file to prefix files with the name of current test to
- * avoid collisions when running in parallel.
- */
-function getTestTempFile(fileName, allowMissing) {
-  let thisTest = _TEST_FILE.toString().replace(/\\/g, "/");
-  thisTest = thisTest.substring(thisTest.lastIndexOf("/") + 1);
-  thisTest = thisTest.replace(/\..*$/, "");
-  return do_get_file(fileName + "-" + thisTest, allowMissing);
+function getTestTempFile(fileName) {
+  const file = do_get_tempdir();
+  file.append(fileName);
+  return file;
 }
 
 function writeTestTempFile(fileName, content) {
-  const file = getTestTempFile(fileName, true);
+  const file = getTestTempFile(fileName);
   const stream = Cc["@mozilla.org/network/file-output-stream;1"].createInstance(
     Ci.nsIFileOutputStream
   );
@@ -138,7 +127,7 @@ function writeTestTempFile(fileName, content) {
   }
 }
 
-/** * Transport Factories ***/
+/*** Transport Factories ***/
 
 var socket_transport = async function () {
   if (!DevToolsServer.listeningSockets) {
@@ -163,7 +152,7 @@ function local_transport() {
   return Promise.resolve(DevToolsServer.connectPipe());
 }
 
-/** * Sample Data ***/
+/*** Sample Data ***/
 
 var gReallyLong;
 function really_long() {

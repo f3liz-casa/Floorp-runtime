@@ -49,6 +49,9 @@ add_setup(() => {
 });
 
 async function clear_state() {
+  Services.fog.testResetFOG();
+  enableUptakeMetric();
+
   Services.prefs.setStringPref(
     "services.settings.server",
     `http://localhost:${server.identity.primaryPort}/v1`
@@ -68,6 +71,9 @@ async function clear_state() {
     },
     delete: async id => {
       delete downloader.cache[id];
+    },
+    deleteMultiple: async ids => {
+      ids.forEach(id => delete downloader.cache[id]);
     },
     hasData: async () => {
       return !!Object.keys(downloader.cache).length;
@@ -214,25 +220,15 @@ add_task(async function test_downloader_reports_download_errors() {
     await client.attachments.download(record, { retry: 0 });
   } catch (e) {}
 
-  TelemetryTestUtils.assertEvents([
-    [
-      "uptake.remotecontent.result",
-      "uptake",
-      "remotesettings",
-      UptakeTelemetry.STATUS.DOWNLOAD_START,
-      {
-        source: client.identifier,
-      },
-    ],
-    [
-      "uptake.remotecontent.result",
-      "uptake",
-      "remotesettings",
-      UptakeTelemetry.STATUS.DOWNLOAD_ERROR,
-      {
-        source: client.identifier,
-      },
-    ],
+  assertTelemetryEvents([
+    {
+      value: UptakeTelemetry.STATUS.DOWNLOAD_START,
+      source: client.identifier,
+    },
+    {
+      value: UptakeTelemetry.STATUS.DOWNLOAD_ERROR,
+      source: client.identifier,
+    },
   ]);
 });
 add_task(clear_state);
@@ -253,25 +249,15 @@ add_task(async function test_downloader_reports_offline_error() {
       await client.attachments.download(record, { retry: 0 });
     } catch (e) {}
 
-    TelemetryTestUtils.assertEvents([
-      [
-        "uptake.remotecontent.result",
-        "uptake",
-        "remotesettings",
-        UptakeTelemetry.STATUS.DOWNLOAD_START,
-        {
-          source: client.identifier,
-        },
-      ],
-      [
-        "uptake.remotecontent.result",
-        "uptake",
-        "remotesettings",
-        UptakeTelemetry.STATUS.NETWORK_OFFLINE_ERROR,
-        {
-          source: client.identifier,
-        },
-      ],
+    assertTelemetryEvents([
+      {
+        value: UptakeTelemetry.STATUS.DOWNLOAD_START,
+        source: client.identifier,
+      },
+      {
+        value: UptakeTelemetry.STATUS.NETWORK_OFFLINE_ERROR,
+        source: client.identifier,
+      },
     ]);
   } finally {
     Services.io.offline = backupOffline;
@@ -782,13 +768,28 @@ add_task(
 
 add_task(clear_state);
 
+async function listTempZipFiles() {
+  const children = await IOUtils.getChildren(PathUtils.tempDir);
+  return children.filter(path => path.endsWith(".zip"));
+}
+
+async function assertNoTempZipLeftBehind(zipsBefore) {
+  const leftBehind = (await listTempZipFiles()).filter(
+    path => !zipsBefore.includes(path)
+  );
+  Assert.deepEqual(leftBehind, [], "No zip file is left behind.");
+}
+
 add_task(async function test_cacheAll_happy_path() {
+  const zipsBefore = await listTempZipFiles();
+
   // verify bundle is downloaded succesfully
   const allSuccess = await downloader.cacheAll();
   Assert.ok(
     allSuccess,
     "Attachments cacheAll succesfully downloaded a bundle and saved all attachments"
   );
+  await assertNoTempZipLeftBehind(zipsBefore);
 
   // verify accuracy of attachments downloaded
   Assert.equal(
@@ -879,12 +880,14 @@ add_task(clear_state);
 add_task(async function test_cacheAll_failed_unzip() {
   downloader.bucketName = "error-bucket";
   downloader.collectionName = "bad-zip";
+  const zipsBefore = await listTempZipFiles();
   const allSuccess = await downloader.cacheAll();
   Assert.equal(
     allSuccess,
     false,
     "Attachments cacheAll request failed to extract a bundle and returned false"
   );
+  await assertNoTempZipLeftBehind(zipsBefore);
 });
 
 add_task(clear_state);
@@ -897,6 +900,7 @@ add_task(async function test_cacheAll_failed_save() {
     throw new Error("boom");
   };
 
+  const zipsBefore = await listTempZipFiles();
   const allSuccess = await client.attachments.cacheAll();
 
   Assert.equal(
@@ -904,6 +908,7 @@ add_task(async function test_cacheAll_failed_save() {
     false,
     "Attachments cacheAll failed to save entries in DB and returned false"
   );
+  await assertNoTempZipLeftBehind(zipsBefore);
   client.db.saveAttachments = backup;
 });
 

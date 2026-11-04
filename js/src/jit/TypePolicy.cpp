@@ -1,6 +1,4 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- * vim: set ts=8 sts=2 et sw=2 tw=80:
- * This Source Code Form is subject to the terms of the Mozilla Public
+/* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
@@ -753,16 +751,30 @@ bool ToStringPolicy::staticAdjustInputs(TempAllocator& alloc,
                                         MInstruction* ins) {
   MOZ_ASSERT(ins->isToString());
 
-  MIRType type = ins->getOperand(0)->type();
-  if (type == MIRType::Object || type == MIRType::Symbol ||
-      type == MIRType::BigInt) {
-    ins->replaceOperand(0, BoxAt(alloc, ins, ins->getOperand(0)));
-    return true;
+  MDefinition* in = ins->getOperand(0);
+  switch (in->type()) {
+    case MIRType::Null:
+    case MIRType::Undefined:
+    case MIRType::Boolean:
+    case MIRType::Int32:
+    case MIRType::Double:
+    case MIRType::String:
+    case MIRType::Value:
+      return true;
+    case MIRType::Float32:
+      // TODO remove the following line once 966957 has landed
+      EnsureOperandNotFloat32(alloc, ins, 0);
+      return true;
+    case MIRType::Object:
+    case MIRType::Symbol:
+    case MIRType::BigInt:
+      break;
+    default:
+      MOZ_RELEASE_ASSERT(IsMagicType(in->type()));
+      break;
   }
 
-  // TODO remove the following line once 966957 has landed
-  EnsureOperandNotFloat32(alloc, ins, 0);
-
+  ins->replaceOperand(0, BoxAt(alloc, ins, in));
   return true;
 }
 
@@ -1056,11 +1068,10 @@ bool ClampPolicy::adjustInputs(TempAllocator& alloc, MInstruction* ins) const {
   _(UnboxedInt32Policy<1>)                                                    \
   _(IntPtrPolicy<0>)                                                          \
   _(TruncateToInt32OrToInt64Policy<2>)                                        \
+  _(MixPolicy<DoublePolicy<0>, UnboxedInt32Policy<1>>)                        \
   _(MixPolicy<ObjectPolicy<0>, StringPolicy<1>, BoxPolicy<2>>)                \
   _(MixPolicy<ObjectPolicy<0>, BoxPolicy<1>, BoxPolicy<2>>)                   \
-  IF_EXPLICIT_RESOURCE_MANAGEMENT(                                            \
-      _(MixPolicy<ObjectPolicy<0>, BoxPolicy<1>, BoxPolicy<2>,                \
-                  BooleanPolicy<3>>))                                         \
+  _(MixPolicy<ObjectPolicy<0>, BoxPolicy<1>, BoxPolicy<2>, BooleanPolicy<3>>) \
   _(MixPolicy<ObjectPolicy<0>, BoxPolicy<1>, ObjectPolicy<2>>)                \
   _(MixPolicy<ObjectPolicy<0>, BoxPolicy<1>, UnboxedInt32Policy<2>>)          \
   _(MixPolicy<ObjectPolicy<0>, UnboxedInt32Policy<1>, BoxPolicy<2>>)          \
@@ -1072,6 +1083,8 @@ bool ClampPolicy::adjustInputs(TempAllocator& alloc, MInstruction* ins) const {
   _(MixPolicy<ObjectPolicy<0>, ObjectPolicy<1>, IntPtrPolicy<2>>)             \
   _(MixPolicy<ObjectPolicy<0>, ObjectPolicy<1>, ObjectPolicy<2>>)             \
   _(MixPolicy<ObjectPolicy<0>, ObjectPolicy<1>, BoxPolicy<2>>)                \
+  _(MixPolicy<ObjectPolicy<0>, ObjectPolicy<1>, UnboxedInt32Policy<2>,        \
+              BoxPolicy<3>>)                                                  \
   _(MixPolicy<StringPolicy<0>, UnboxedInt32Policy<1>, UnboxedInt32Policy<2>>) \
   _(MixPolicy<StringPolicy<0>, ObjectPolicy<1>, StringPolicy<2>>)             \
   _(MixPolicy<StringPolicy<0>, StringPolicy<1>, StringPolicy<2>>)             \
@@ -1119,6 +1132,8 @@ bool ClampPolicy::adjustInputs(TempAllocator& alloc, MInstruction* ins) const {
   _(MixPolicy<UnboxedInt32Policy<0>, UnboxedInt32Policy<1>,                   \
               NoFloatPolicyAfter<2>>)                                         \
   _(MixPolicy<IntPtrPolicy<0>, IntPtrPolicy<1>, IntPtrPolicy<2>>)             \
+  _(MixPolicy<ObjectPolicy<0>, UnboxedInt32Policy<1>, NoFloatPolicy<2>>)      \
+  _(MixPolicy<UnboxedInt32Policy<1>, NoFloatPolicy<2>>)                       \
   _(NoFloatPolicy<0>)                                                         \
   _(NoFloatPolicy<1>)                                                         \
   _(NoFloatPolicy<2>)                                                         \

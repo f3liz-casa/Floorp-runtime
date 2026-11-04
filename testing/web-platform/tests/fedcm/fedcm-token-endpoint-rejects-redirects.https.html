@@ -1,5 +1,6 @@
 <!DOCTYPE html>
 <title>Federated Credential Management API token endpoint does not follow redirects.</title>
+<meta name="pac" content="/fedcm/support/proxy.sub.pac">
 <link rel="help" href="https://fedidcg.github.io/FedCM">
 <script src="/resources/testharness.js"></script>
 <script src="/resources/testharnessreport.js"></script>
@@ -26,7 +27,7 @@ fedcm_test(async t => {
     assert_true(e instanceof DOMException);
     assert_equals(e.name, "IdentityCredentialError");
     // 308 should not produce a valid error code
-    assert_equals(e.code, "");
+    assert_equals(e.error, "");
   }
 }, 'Test that token endpoint does not follow redirects');
   </script>

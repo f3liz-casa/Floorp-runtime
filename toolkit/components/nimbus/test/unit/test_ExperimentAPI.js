@@ -1,5 +1,8 @@
 "use strict";
 
+const { FirstStartup } = ChromeUtils.importESModule(
+  "resource://gre/modules/FirstStartup.sys.mjs"
+);
 const { NimbusTelemetry } = ChromeUtils.importESModule(
   "resource://nimbus/lib/Telemetry.sys.mjs"
 );
@@ -820,3 +823,93 @@ add_task(async function testGetProfileId() {
 
   await cleanup();
 });
+
+add_task(async function testFirstStartupTimestamps() {
+  {
+    const { cleanup } = await NimbusTestUtils.setupTest();
+
+    Assert.equal(
+      ExperimentAPI.getAndClearFirstStartupTimestamps(),
+      null,
+      "Timestamps not recorded outside first startup"
+    );
+
+    await cleanup();
+  }
+
+  {
+    FirstStartup._state = FirstStartup.IN_PROGRESS;
+
+    const { cleanup } = await NimbusTestUtils.setupTest();
+
+    const timestamps = ExperimentAPI.getAndClearFirstStartupTimestamps();
+    Assert.deepEqual(
+      Object.keys(timestamps).sort(),
+      [
+        "storeInitEnd",
+        "managerInitEnd",
+        "loaderInitEnd",
+        "nimbusInitEnd",
+      ].sort(),
+      "All timestamps are present"
+    );
+
+    Assert.equal(
+      ExperimentAPI.getAndClearFirstStartupTimestamps(),
+      null,
+      "Timestamps are cleared after first retrieval"
+    );
+
+    await cleanup();
+
+    FirstStartup.resetForTesting();
+  }
+});
+
+add_task(async function test_updateRecipesForFeatures() {
+  const { sandbox, loader, cleanup } = await NimbusTestUtils.setupTest({
+    init: false,
+  });
+  sandbox.spy(loader, "updateRecipes");
+
+  await ExperimentAPI.updateRecipesForFeatures("test-trigger", ["foo", "bar"]);
+
+  Assert.equal(loader.updateRecipes.callCount, 2);
+  Assert.ok(
+    loader.updateRecipes.calledWithExactly("enabled", { forceSync: false })
+  );
+  Assert.ok(
+    loader.updateRecipes.calledWithExactly("test-trigger", {
+      onlyFeatureIds: sinon.match.set.deepEquals(new Set(["foo", "bar"])),
+    })
+  );
+
+  await cleanup();
+});
+
+add_task(
+  async function test_updateRecipesForFeatures_studiesAndRolloutsDisabled() {
+    const prefs = [
+      "app.shield.optoutstudies.enabled",
+      "nimbus.rollouts.enabled",
+    ];
+    const originalValues = prefs.map(pref =>
+      Services.prefs.getBoolPref(pref, false)
+    );
+    prefs.forEach(pref => Services.prefs.setBoolPref(pref, false));
+
+    const { sandbox, loader, cleanup } = await NimbusTestUtils.setupTest({
+      init: false,
+    });
+    sandbox.spy(loader, "updateRecipes");
+
+    await ExperimentAPI.updateRecipesForFeatures("test-trigger", ["foo"]);
+
+    Assert.ok(!loader.updateRecipes.calledWith("test-trigger"));
+
+    await cleanup();
+    prefs.forEach((pref, i) =>
+      Services.prefs.setBoolPref(pref, originalValues[i])
+    );
+  }
+);

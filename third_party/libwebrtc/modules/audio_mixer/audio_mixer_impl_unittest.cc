@@ -10,21 +10,23 @@
 
 #include "modules/audio_mixer/audio_mixer_impl.h"
 
-#include <string.h>
-
+#include <algorithm>
 #include <cstdint>
-#include <limits>
+#include <cstring>
 #include <memory>
 #include <optional>
+#include <span>
 #include <string>
-#include <utility>
 #include <vector>
 
+#include "api/audio/audio_frame.h"
 #include "api/audio/audio_mixer.h"
 #include "api/rtp_packet_info.h"
 #include "api/rtp_packet_infos.h"
+#include "api/scoped_refptr.h"
 #include "api/units/timestamp.h"
 #include "modules/audio_mixer/default_output_rate_calculator.h"
+#include "modules/audio_mixer/output_rate_calculator.h"
 #include "rtc_base/checks.h"
 #include "rtc_base/strings/string_builder.h"
 #include "rtc_base/task_queue_for_test.h"
@@ -34,7 +36,6 @@
 
 using ::testing::_;
 using ::testing::Exactly;
-using ::testing::Invoke;
 using ::testing::Return;
 using ::testing::UnorderedElementsAre;
 
@@ -43,7 +44,7 @@ namespace webrtc {
 namespace {
 
 constexpr int kDefaultSampleRateHz = 48000;
-const char kSourceCountHistogramName[] =
+constexpr char kSourceCountHistogramName[] =
     "WebRTC.Audio.AudioMixer.NewHighestSourceCount";
 
 // Utility function that resets the frame member variables with
@@ -77,8 +78,9 @@ class MockMixerAudioSource : public ::testing::NiceMock<AudioMixer::Source> {
   MockMixerAudioSource()
       : fake_audio_frame_info_(AudioMixer::Source::AudioFrameInfo::kNormal) {
     ON_CALL(*this, GetAudioFrameWithInfo(_, _))
-        .WillByDefault(
-            Invoke(this, &MockMixerAudioSource::FakeAudioFrameWithInfo));
+        .WillByDefault([this](int sample_rate_hz, AudioFrame* audio_frame) {
+          return FakeAudioFrameWithInfo(sample_rate_hz, audio_frame);
+        });
     ON_CALL(*this, PreferredSampleRate())
         .WillByDefault(Return(kDefaultSampleRateHz));
   }
@@ -120,7 +122,7 @@ class CustomRateCalculator : public OutputRateCalculator {
  public:
   explicit CustomRateCalculator(int rate) : rate_(rate) {}
   int CalculateOutputRateFromRange(
-      ArrayView<const int> /* preferred_rates */) override {
+      std::span<const int> /* preferred_rates */) override {
     return rate_;
   }
 
@@ -482,7 +484,7 @@ class HighOutputRateCalculator : public OutputRateCalculator {
  public:
   static const int kDefaultFrequency = 76000;
   int CalculateOutputRateFromRange(
-      ArrayView<const int> /* preferred_sample_rates */) override {
+      std::span<const int> /* preferred_sample_rates */) override {
     return kDefaultFrequency;
   }
   ~HighOutputRateCalculator() override {}

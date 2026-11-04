@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set sw=2 ts=8 et tw=80 : */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -7,12 +5,21 @@
 #include "DNSServiceBase.h"
 
 #include "DNS.h"
+#include "mozilla/ClearOnShutdown.h"
 #include "mozilla/Preferences.h"
 #include "mozilla/StaticPrefs_network.h"
 #include "nsIDNSService.h"
-#include "nsIProtocolProxyService2.h"
 #include "nsIPrefBranch.h"
+#include "nsIProtocolProxyService2.h"
 #include "nsIProxyInfo.h"
+#include "nsThreadPool.h"
+#include "nsThreadUtils.h"
+
+#if defined(XP_WIN)
+#  include <shlobj.h>
+#endif
+
+#include "DNSLogging.h"
 
 namespace mozilla::net {
 
@@ -22,12 +29,22 @@ static const char kPrefNetworkProxySOCKS[] = "network.proxy.socks";
 static const char kPrefNetworkProxySOCKSVersion[] =
     "network.proxy.socks_version";
 
+StaticRefPtr<nsIThreadPool> DNSServiceBase::sEtcHostsReaderPool;
+
 NS_IMPL_ISUPPORTS(DNSServiceBase, nsIObserver)
 
 void DNSServiceBase::AddPrefObserver(nsIPrefBranch* aPrefs) {
   aPrefs->AddObserver(kPrefProxyType, this, false);
+  // [pref-trie-audit] "network.dns.disablePrefetch" is an ambiguous prefix of
+  // "network.dns.disablePrefetchFromHTTPS"; triggers only for the exact pref
+  // ("disablePrefetchFromHTTPS" is a StaticPref and needs no callback).
   aPrefs->AddObserver(kPrefDisablePrefetch, this, false);
   // Monitor these to see if there is a change in proxy configuration
+  // [pref-trie-audit] "network.proxy.socks" is an ambiguous prefix of
+  // "network.proxy.socks5_remote_dns", "network.proxy.socks_port",
+  // "network.proxy.socks_remote_dns", "network.proxy.socks_version";
+  // triggers only for the exact pref (the others are StaticPrefs or have their
+  // own observers).
   aPrefs->AddObserver(kPrefNetworkProxySOCKS, this, false);
   aPrefs->AddObserver(kPrefNetworkProxySOCKSVersion, this, false);
 }
@@ -77,6 +94,72 @@ bool DNSServiceBase::DNSForbiddenByActiveProxy(const nsACString& aHostname,
     }
   }
   return false;
+}
+
+void DNSServiceBase::DoReadEtcHostsFile(ParsingCallback aCallback) {
+  MOZ_ASSERT(XRE_IsParentProcess());
+
+  if (!StaticPrefs::network_trr_exclude_etc_hosts()) {
+    return;
+  }
+
+  auto readHostsTask = [aCallback]() {
+    MOZ_ASSERT(!NS_IsMainThread(), "Must not run on the main thread");
+#if defined(XP_WIN)
+    nsCString path;
+    path.SetLength(MAX_PATH + 1);
+    if (!SHGetSpecialFolderPathA(NULL, path.BeginWriting(), CSIDL_SYSTEM,
+                                 false)) {
+      LOG(("Calling SHGetSpecialFolderPathA failed"));
+      return;
+    }
+
+    path.SetLength(strlen(path.get()));
+    path.Append("\\drivers\\etc\\hosts");
+#else
+    nsAutoCString path("/etc/hosts"_ns);
+#endif
+
+    LOG(("Reading hosts file at %s", path.get()));
+    rust_parse_etc_hosts(&path, aCallback);
+  };
+
+  nsIThreadPool* pool = GetEtcHostsReaderPool();
+  if (!pool) {
+    return;
+  }
+  (void)pool->Dispatch(
+      NS_NewRunnableFunction("Read /etc/hosts file", readHostsTask),
+      NS_DISPATCH_NORMAL);
+}
+
+// Reading the hosts file can block forever, e.g. when security software
+// holds it. A dedicated pool lets shutdown time out and leak the thread.
+nsIThreadPool* DNSServiceBase::GetEtcHostsReaderPool() {
+  MOZ_ASSERT(NS_IsMainThread());
+
+  if (sEtcHostsReaderPool) {
+    return sEtcHostsReaderPool;
+  }
+  if (PastShutdownPhase(ShutdownPhase::XPCOMShutdown)) {
+    return nullptr;
+  }
+
+  nsCOMPtr<nsIThreadPool> pool = new nsThreadPool();
+  MOZ_ALWAYS_SUCCEEDS(pool->SetThreadLimit(1));
+  MOZ_ALWAYS_SUCCEEDS(pool->SetIdleThreadLimit(0));
+  MOZ_ALWAYS_SUCCEEDS(pool->SetName("EtcHostsReader"_ns));
+  sEtcHostsReaderPool = pool;
+
+  RunOnShutdown(
+      [] {
+        nsCOMPtr<nsIThreadPool> pool = sEtcHostsReaderPool.forget();
+        pool->ShutdownWithTimeout(
+            StaticPrefs::network_dns_resolver_shutdown_timeout_ms());
+      },
+      ShutdownPhase::XPCOMShutdown);
+
+  return sEtcHostsReaderPool;
 }
 
 }  // namespace mozilla::net

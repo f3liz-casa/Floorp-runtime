@@ -1,16 +1,17 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 // HttpLog.h should generally be included first
-#include "HttpLog.h"
+#include "Http2WebTransportStream.h"
 
 #include <algorithm>
-#include "Http2WebTransportStream.h"
-#include "Http2WebTransportSession.h"
+
 #include "Capsule.h"
 #include "CapsuleEncoder.h"
+#include "Http2WebTransportSession.h"
+#include "HttpLog.h"
+#include "nsHttp.h"
 #include "nsIOService.h"
 
 namespace mozilla::net {
@@ -111,7 +112,7 @@ class StreamId Http2WebTransportStream::WebTransportStreamId() const {
 
 uint64_t Http2WebTransportStream::GetStreamId() const { return mStreamId; }
 
-void Http2WebTransportStream::SendStopSending(uint8_t aErrorCode) {
+void Http2WebTransportStream::SendStopSending(uint64_t aErrorCode) {
   if (mSentStopSending || !mWebTransportSession) {
     // https://www.ietf.org/archive/id/draft-ietf-webtrans-http2-11.html#section-6.3
     // A WT_STOP_SENDING capsule MUST NOT be sent multiple times for the same
@@ -156,7 +157,7 @@ Http2WebTransportStream::GetReceiveStreamStats() {
 
 bool Http2WebTransportStream::RecvDone() const { return false; }
 
-void Http2WebTransportStream::SetSendOrder(Maybe<int64_t> aSendOrder) {}
+void Http2WebTransportStream::SetSendOrder(int64_t aSendOrder) {}
 
 NS_IMETHODIMP
 Http2WebTransportStream::OnInputStreamReady(nsIAsyncInputStream* aIn) {
@@ -170,8 +171,22 @@ Http2WebTransportStream::OnInputStreamReady(nsIAsyncInputStream* aIn) {
   }
 
   uint32_t sendBytes = 0;
-  return mSendStreamPipeIn->ReadSegments(
+  nsresult rv = mSendStreamPipeIn->ReadSegments(
       ReadRequestSegment, this, nsIOService::gDefaultSegmentSize, &sendBytes);
+
+  if (rv >= NS_ERROR_WEBTRANSPORT_CODE_BASE &&
+      rv <= NS_ERROR_WEBTRANSPORT_CODE_END) {
+    // The DOM side closed the outgoing pipe with a WebTransport error code
+    // (see WebTransportSendStreamAlgorithms::AbortCallbackImpl) to request a
+    // WT_RESET_STREAM capsule; decode and send it. Mirrors
+    // Http3WebTransportStream::ReadSegments()'s handling of the same
+    // encoding, which this HTTP/2 backend was missing.
+    uint8_t errorCode = GetWebTransportErrorFromNSResult(rv);
+    Reset(errorCode);
+    return NS_OK;
+  }
+
+  return rv;
 }
 
 NS_IMETHODIMP
@@ -184,13 +199,19 @@ Http2WebTransportStream::OnOutputStreamReady(nsIAsyncOutputStream* aOut) {
   }
 
   while (mCurrentOut && mReceiveStreamPipeOut && (mRecvState != RECV_DONE)) {
+    uint32_t available = mCurrentOut->GetData().Length() - mWriteOffset;
     char* writeBuffer = reinterpret_cast<char*>(const_cast<uint8_t*>(
                             mCurrentOut->GetData().Elements())) +
                         mWriteOffset;
-    uint32_t toWrite = mCurrentOut->GetData().Length() - mWriteOffset;
+    uint32_t toWrite = available;
     if (mReliableSize) {
-      if (mTotalReceived + toWrite > *mReliableSize) {
-        toWrite = *mReliableSize - mTotalReceived;
+      if (*mReliableSize <= mTotalReceived) {
+        mRecvState = RECV_DONE;
+        break;
+      }
+      uint64_t remaining = *mReliableSize - mTotalReceived;
+      if (remaining < toWrite) {
+        toWrite = static_cast<uint32_t>(remaining);
       }
     }
 
@@ -358,23 +379,32 @@ nsresult Http2WebTransportStream::HandleMaxStreamData(uint64_t aLimit) {
 
 void Http2WebTransportStream::OnStopSending() { mSendState = SEND_DONE; }
 
-void Http2WebTransportStream::OnReset(uint64_t aSize) {
+nsresult Http2WebTransportStream::OnReset(uint64_t aSize) {
   if (mReliableSize) {
-    return;
+    return NS_OK;
+  }
+
+  LOG(("Http2WebTransportStream::OnReset %p aSize=%" PRIu64
+       " mTotalReceived=%" PRIu64,
+       this, aSize, mTotalReceived));
+
+  if (aSize < mTotalReceived) {
+    // A receiver MUST treat the receipt of a WT_RESET_STREAM with a Reliable
+    // Size smaller than the number of bytes it has received on the stream as a
+    // session error.
+    RefPtr<Http2WebTransportSessionImpl> session = mWebTransportSession;
+    Close(NS_ERROR_ILLEGAL_VALUE);
+    session->Close(NS_ERROR_ILLEGAL_VALUE);
+    return NS_ERROR_ILLEGAL_VALUE;
   }
 
   mReliableSize.emplace(aSize);
 
-  LOG(("Http2WebTransportStream::OnReset %p mReliableSize=%" PRIu64
-       " mTotalReceived=%" PRIu64,
-       this, *mReliableSize, mTotalReceived));
-  if (*mReliableSize < mTotalReceived) {
-    // A receiver MUST treat the receipt of a WT_RESET_STREAM with a Reliable
-    // Size smaller than the number of bytes it has received on the stream as a
-    // session error.
-    // TODO: find a better error code.
-    mWebTransportSession->OnError(0);
+  if (mTotalReceived == aSize) {
+    mRecvState = RECV_DONE;
   }
+
+  return NS_OK;
 }
 
 void Http2WebTransportStream::OnStreamDataSent(size_t aCount) {

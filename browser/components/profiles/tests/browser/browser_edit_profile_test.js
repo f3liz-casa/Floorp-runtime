@@ -62,6 +62,7 @@ add_task(async function test_edit_profile_delete() {
         nameInput.dispatchEvent(new content.Event("input"));
 
         let deleteButton = editProfileCard.deleteButton;
+        deleteButton.scrollIntoView();
         EventUtils.synthesizeMouseAtCenter(deleteButton, {}, content);
       });
 
@@ -175,7 +176,7 @@ add_task(async function test_edit_profile_avatar() {
         await editProfileCard.updateComplete;
 
         EventUtils.synthesizeMouseAtCenter(
-          editProfileCard.avatarSelectorLink,
+          editProfileCard.avatarSelectorButton,
           {},
           content
         );
@@ -183,7 +184,7 @@ add_task(async function test_edit_profile_avatar() {
         const avatarSelector = editProfileCard.avatarSelector;
 
         await ContentTaskUtils.waitForCondition(
-          () => ContentTaskUtils.isVisible(avatarSelector),
+          () => ContentTaskUtils.isVisible(avatarSelector.dialog),
           "Waiting for avatar selector to become visible"
         );
 
@@ -241,15 +242,23 @@ add_task(async function test_edit_profile_theme() {
   }
   let profile = await setup();
 
+  let defaultTheme = await lazy.AddonManager.getAddonByID(
+    "default-theme@mozilla.org"
+  );
+  await defaultTheme.enable();
+
   // Set the profile to the built-in light theme to avoid theme randomization
   // by the new profile card and make the built-in dark theme card available
   // to be clicked.
   let lightTheme = await lazy.AddonManager.getAddonByID(
     "firefox-compact-light@mozilla.org"
   );
-  await lightTheme.enable();
 
-  let expectedThemeId = "firefox-compact-dark@mozilla.org";
+  let profileUpdated = TestUtils.topicObserved("sps-profiles-updated");
+  await lightTheme.enable();
+  await profileUpdated;
+
+  let expectedThemeId = "default-theme@mozilla.org";
 
   is(
     null,
@@ -274,11 +283,27 @@ add_task(async function test_edit_profile_theme() {
 
         await editProfileCard.updateComplete;
 
-        let darkThemeCard = editProfileCard.themeCards[5];
-        EventUtils.synthesizeMouseAtCenter(darkThemeCard, {}, content);
+        let themesPicker = editProfileCard.themesPicker;
+
+        Assert.ok(themesPicker, "Themes picker should exist");
+        Assert.equal(
+          themesPicker.headingLevel,
+          2,
+          "Themes picker should have headingLevel of 2"
+        );
+
+        let defaultThemeCard = editProfileCard.themesPicker.querySelector(
+          "moz-visual-picker-item[value='default-theme@mozilla.org']"
+        );
+
+        Assert.ok(
+          !defaultThemeCard.checked,
+          "Default theme chip should not be selected"
+        );
+        EventUtils.synthesizeMouseAtCenter(defaultThemeCard, {}, content);
 
         await ContentTaskUtils.waitForCondition(
-          () => darkThemeCard.checked,
+          () => defaultThemeCard.checked,
           "Waiting for the new theme chip to be selected"
         );
 
@@ -308,7 +333,9 @@ add_task(async function test_edit_profile_theme() {
   lightTheme = await lazy.AddonManager.getAddonByID(
     "firefox-compact-light@mozilla.org"
   );
+  profileUpdated = TestUtils.topicObserved("sps-profiles-updated");
   await lightTheme.enable();
+  await profileUpdated;
 });
 
 add_task(async function test_edit_profile_explore_more_themes() {
@@ -345,6 +372,7 @@ add_task(async function test_edit_profile_explore_more_themes() {
         // To simplify the test, deactivate the link before clicking.
         editProfileCard.moreThemesLink.href = "#";
         editProfileCard.moreThemesLink.target = "";
+        editProfileCard.moreThemesLink.scrollIntoView();
         EventUtils.synthesizeMouseAtCenter(
           editProfileCard.moreThemesLink,
           {},
@@ -403,6 +431,7 @@ add_task(async function test_edit_profile_displayed_closed_telemetry() {
         await editProfileCard.updateComplete;
 
         // Click the done editing button to trigger closed event.
+        editProfileCard.doneButton.scrollIntoView();
         EventUtils.synthesizeMouseAtCenter(
           editProfileCard.doneButton,
           {},
@@ -446,7 +475,7 @@ add_task(async function test_avatar_picker_arrow_key_support() {
         await editProfileCard.updateComplete;
 
         EventUtils.synthesizeMouseAtCenter(
-          editProfileCard.avatarSelectorLink,
+          editProfileCard.avatarSelectorButton,
           {},
           content
         );
@@ -454,7 +483,7 @@ add_task(async function test_avatar_picker_arrow_key_support() {
         const avatarSelector = editProfileCard.avatarSelector;
 
         await ContentTaskUtils.waitForCondition(
-          () => ContentTaskUtils.isVisible(avatarSelector),
+          () => ContentTaskUtils.isVisible(avatarSelector.dialog),
           "Waiting for avatar selector to become visible"
         );
 
@@ -562,13 +591,18 @@ add_task(async function test_theme_picker_arrow_key_support() {
         // Select and focus the light theme to get started.
         EventUtils.synthesizeMouseAtCenter(themeCards[0], {}, content);
         themeCards[0].focus();
+
+        await ContentTaskUtils.waitForCondition(
+          () => themeCards[0].checked,
+          "Wait for theme card to be checked"
+        );
         let selectedTheme = editProfileCard.shadowRoot.querySelector(
           "#themes > moz-visual-picker-item[checked]"
         );
         Assert.equal(
-          "firefox-compact-light@mozilla.org",
+          themeCards[0].value,
           selectedTheme.value,
-          "Light theme was selected"
+          "Gray theme was selected"
         );
         Assert.equal(
           editProfileCard.shadowRoot.activeElement,
@@ -634,7 +668,9 @@ add_task(async function test_edit_profile_system_theme() {
   let lightTheme = await lazy.AddonManager.getAddonByID(
     "firefox-compact-light@mozilla.org"
   );
+  let profileUpdated = TestUtils.topicObserved("sps-profiles-updated");
   await lightTheme.enable();
+  await profileUpdated;
 
   let expectedThemeId = "default-theme@mozilla.org";
 
@@ -661,7 +697,14 @@ add_task(async function test_edit_profile_system_theme() {
 
         await editProfileCard.updateComplete;
 
-        let defaultThemeCard = editProfileCard.themeCards[9];
+        let defaultThemeCard = editProfileCard.themesPicker.querySelector(
+          "moz-visual-picker-item[value='default-theme@mozilla.org']"
+        );
+
+        Assert.ok(
+          !defaultThemeCard.checked,
+          "Default theme chip should not be selected"
+        );
         EventUtils.synthesizeMouseAtCenter(defaultThemeCard, {}, content);
 
         await ContentTaskUtils.waitForCondition(
@@ -708,7 +751,9 @@ add_task(async function test_edit_profile_system_theme() {
   lightTheme = await lazy.AddonManager.getAddonByID(
     "firefox-compact-light@mozilla.org"
   );
+  profileUpdated = TestUtils.topicObserved("sps-profiles-updated");
   await lightTheme.enable();
+  await profileUpdated;
 });
 
 add_task(async function test_edit_link_keyboard_accessibility() {
@@ -737,35 +782,184 @@ add_task(async function test_edit_link_keyboard_accessibility() {
         );
         await editProfileCard.updateComplete;
 
-        let editLink = editProfileCard.avatarSelectorLink;
+        let editButton = editProfileCard.avatarSelectorButton;
 
-        Assert.ok(editLink, "Edit link should exist");
+        Assert.ok(editButton, "Edit button should exist");
+
+        editButton.focus();
         Assert.equal(
-          editLink.getAttribute("tabindex"),
-          "0",
-          "Edit link should be focusable"
+          editProfileCard.shadowRoot.activeElement,
+          editButton,
+          "Edit button should be focusable"
         );
 
-        editLink.focus();
         let avatarSelector = editProfileCard.avatarSelector;
-        Assert.ok(avatarSelector.hidden, "Avatar selector should start hidden");
+        Assert.ok(
+          ContentTaskUtils.isHidden(avatarSelector.dialog),
+          "Avatar selector should start hidden"
+        );
 
         EventUtils.synthesizeKey("KEY_Enter", {}, content);
         Assert.ok(
-          !avatarSelector.hidden,
+          ContentTaskUtils.isVisible(avatarSelector.dialog),
           "Avatar selector should be visible after Enter key"
         );
 
-        EventUtils.synthesizeKey("KEY_Enter", {}, content); // Hide the avatar selector first
+        EventUtils.synthesizeKey("KEY_Escape", {}, content);
         Assert.ok(
-          avatarSelector.hidden,
+          ContentTaskUtils.isHidden(avatarSelector.dialog),
           "Avatar selector should be hidden again"
+        );
+        Assert.equal(
+          editProfileCard.shadowRoot.activeElement,
+          editButton,
+          "Focus should return to the edit button"
         );
 
         EventUtils.synthesizeKey(" ", {}, content);
         Assert.ok(
-          !avatarSelector.hidden,
+          ContentTaskUtils.isVisible(avatarSelector.dialog),
           "Avatar selector should be visible after Space key"
+        );
+      });
+    }
+  );
+});
+
+add_task(async function test_avatar_selector_closes_on_click_outside() {
+  if (!AppConstants.MOZ_SELECTABLE_PROFILES) {
+    ok(true, "Skipping because !AppConstants.MOZ_SELECTABLE_PROFILES");
+    return;
+  }
+
+  await setup();
+
+  await BrowserTestUtils.withNewTab(
+    {
+      gBrowser,
+      url: "about:editprofile",
+    },
+    async browser => {
+      await SpecialPowers.spawn(browser, [], async () => {
+        const EventUtils = ContentTaskUtils.getEventUtils(content);
+
+        let editProfileCard =
+          content.document.querySelector("edit-profile-card").wrappedJSObject;
+
+        await ContentTaskUtils.waitForCondition(
+          () => editProfileCard.initialized,
+          "Waiting for edit-profile-card to be initialized"
+        );
+        await editProfileCard.updateComplete;
+
+        let avatarSelector = editProfileCard.avatarSelector;
+
+        EventUtils.synthesizeMouseAtCenter(
+          editProfileCard.avatarSelectorButton,
+          {},
+          content
+        );
+        Assert.ok(
+          ContentTaskUtils.isVisible(avatarSelector.dialog),
+          "Avatar selector should be visible"
+        );
+
+        EventUtils.synthesizeMouse(
+          content.document.documentElement,
+          2,
+          2,
+          {},
+          content
+        );
+        Assert.ok(
+          ContentTaskUtils.isHidden(avatarSelector.dialog),
+          "Avatar selector should be hidden after clicking outside of it"
+        );
+      });
+    }
+  );
+});
+
+add_task(async function test_avatar_selector_contains_focus() {
+  if (!AppConstants.MOZ_SELECTABLE_PROFILES) {
+    ok(true, "Skipping because !AppConstants.MOZ_SELECTABLE_PROFILES");
+    return;
+  }
+
+  await setup();
+
+  await BrowserTestUtils.withNewTab(
+    {
+      gBrowser,
+      url: "about:editprofile",
+    },
+    async browser => {
+      await SpecialPowers.spawn(browser, [], async () => {
+        const EventUtils = ContentTaskUtils.getEventUtils(content);
+
+        let editProfileCard =
+          content.document.querySelector("edit-profile-card").wrappedJSObject;
+
+        await ContentTaskUtils.waitForCondition(
+          () => editProfileCard.initialized,
+          "Waiting for edit-profile-card to be initialized"
+        );
+        await editProfileCard.updateComplete;
+
+        let avatarSelector = editProfileCard.avatarSelector;
+
+        const getDeepActiveElement = () => {
+          let element = content.document.activeElement;
+          while (element?.shadowRoot?.activeElement) {
+            element = element.shadowRoot.activeElement;
+          }
+          return element;
+        };
+
+        const isInDialog = element => {
+          while (element) {
+            if (avatarSelector.dialog.contains(element)) {
+              return true;
+            }
+            element = element.getRootNode().host;
+          }
+          return false;
+        };
+
+        EventUtils.synthesizeMouseAtCenter(
+          editProfileCard.avatarSelectorButton,
+          {},
+          content
+        );
+        Assert.ok(
+          ContentTaskUtils.isVisible(avatarSelector.dialog),
+          "Avatar selector should be visible"
+        );
+        let initialFocus = getDeepActiveElement();
+        Assert.ok(
+          isInDialog(initialFocus),
+          "Focus should move into the avatar selector when it opens"
+        );
+
+        // Tab until focus leaves the page or wraps back to where it started.
+        // Focus must never land on the page behind the dialog.
+        let focused;
+        do {
+          EventUtils.synthesizeKey("KEY_Tab", {}, content);
+          focused = content.document.hasFocus() ? getDeepActiveElement() : null;
+          if (focused) {
+            Assert.ok(
+              isInDialog(focused),
+              "Focus should stay inside the avatar selector"
+            );
+          }
+        } while (focused && focused !== initialFocus);
+
+        editProfileCard.nameInput.focus();
+        Assert.notEqual(
+          editProfileCard.shadowRoot.activeElement,
+          editProfileCard.nameInput,
+          "Content behind the avatar selector should not be focusable"
         );
       });
     }

@@ -13,6 +13,7 @@ toolkit.jar:
     content/extensions/parent/ext-browserSettings.js (parent/ext-browserSettings.js)
     content/extensions/parent/ext-browsingData.js (parent/ext-browsingData.js)
 #ifndef ANDROID
+    content/extensions/parent/ext-builtin-widget.js (parent/ext-builtin-widget.js)
     content/extensions/parent/ext-captivePortal.js (parent/ext-captivePortal.js)
 #endif
     content/extensions/parent/ext-contentScripts.js (parent/ext-contentScripts.js)
@@ -58,6 +59,7 @@ toolkit.jar:
 #ifndef ANDROID
     content/extensions/child/ext-identity.js (child/ext-identity.js)
 #endif
+    content/extensions/child/ext-publicSuffix.js (child/ext-publicSuffix.js)
     content/extensions/child/ext-runtime.js (child/ext-runtime.js)
     content/extensions/child/ext-scripting.js (child/ext-scripting.js)
     content/extensions/child/ext-storage.js (child/ext-storage.js)

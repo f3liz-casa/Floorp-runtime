@@ -37,11 +37,6 @@ class PrintHelper {
       }
     );
 
-    await SpecialPowers.popPrefEnv();
-    if (isPdf) {
-      await SpecialPowers.popPrefEnv();
-    }
-
     // Reset all of the other printing prefs to their default.
     this.resetPrintPrefs();
     return taskReturn;
@@ -89,6 +84,36 @@ class PrintHelper {
     return this.getTestPageUrlHTTPS("simplifyArticleSample.html");
   }
 
+  /**
+   * Silently print aBrowser to PDF in memory.
+   *
+   * @param {MozBrowser} aBrowser - the browser to print.
+   * @param {Function} [aConfigureSettings] - called with the nsIPrintSettings
+   *   before printing, to customize them.
+   * @returns {Promise<Uint8Array>} the contents of the PDF.
+   */
+  static async printToPDF(aBrowser, aConfigureSettings) {
+    let storageStream = Cc["@mozilla.org/storagestream;1"].createInstance(
+      Ci.nsIStorageStream
+    );
+    storageStream.init(4096, 0xffffffff);
+
+    let settings = Cc["@mozilla.org/gfx/printsettings-service;1"]
+      .getService(Ci.nsIPrintSettingsService)
+      .createNewPrintSettings();
+    settings.printerName = DEFAULT_PRINTER_NAME;
+    settings.outputFormat = Ci.nsIPrintSettings.kOutputFormatPDF;
+    settings.outputDestination = Ci.nsIPrintSettings.kOutputDestinationStream;
+    settings.outputStream = storageStream.getOutputStream(0);
+    aConfigureSettings?.(settings);
+
+    await aBrowser.browsingContext.print(settings);
+
+    return new Uint8Array(
+      NetUtil.readInputStream(storageStream.newInputStream(0))
+    );
+  }
+
   static createMockPaper(paperProperties = {}) {
     return Object.assign(
       {
@@ -116,7 +141,7 @@ class PrintHelper {
   }
 
   async startPrint(condition = {}) {
-    this.sourceBrowser.ownerGlobal.document
+    this.sourceBrowser.documentGlobal.document
       .getElementById("cmd_print")
       .doCommand();
     return this.waitForDialog(condition);
@@ -149,7 +174,7 @@ class PrintHelper {
       );
     }).then(([doc]) => {
       doc.addEventListener("DOMContentLoaded", () => {
-        initFn(doc.ownerGlobal);
+        initFn(doc.documentGlobal);
       });
     });
   }
@@ -258,6 +283,7 @@ class PrintHelper {
       printerInfoPromise = Promise.resolve(),
       paperSizeUnit = Ci.nsIPrintSettings.kPaperSizeInches,
       paperId,
+      sortAfterLocal = false,
     } = opts;
     let PSSVC = Cc["@mozilla.org/gfx/printsettings-service;1"].getService(
       Ci.nsIPrintSettingsService
@@ -297,6 +323,7 @@ class PrintHelper {
 
     let printer = {
       name,
+      sortAfterLocal,
       supportsColor: Promise.resolve(true),
       supportsMonochrome: Promise.resolve(true),
       printerInfo: printerInfoPromise.then(() => ({
@@ -317,7 +344,7 @@ class PrintHelper {
   }
 
   get _tabDialogBox() {
-    return this.sourceBrowser.ownerGlobal.gBrowser.getTabDialogBox(
+    return this.sourceBrowser.documentGlobal.gBrowser.getTabDialogBox(
       this.sourceBrowser
     );
   }
@@ -407,7 +434,7 @@ class PrintHelper {
   async waitForSettingsEvent(changeFn) {
     let changed = BrowserTestUtils.waitForEvent(this.doc, "print-settings");
     await changeFn?.();
-    await BrowserTestUtils.waitForCondition(
+    await TestUtils.waitForCondition(
       () => !this.win.PrintEventHandler._delayedSettingsChangeTask.isArmed,
       "Wait for all delayed tasks to execute"
     );
@@ -523,7 +550,7 @@ class PrintHelper {
   mockFilePickerCancel() {
     if (!pickerMocked) {
       pickerMocked = true;
-      MockFilePicker.init(window.browsingContext);
+      MockFilePicker.init();
       registerCleanupFunction(() => MockFilePicker.cleanup());
     }
     MockFilePicker.returnValue = MockFilePicker.returnCancel;
@@ -532,7 +559,7 @@ class PrintHelper {
   mockFilePicker(filename) {
     if (!pickerMocked) {
       pickerMocked = true;
-      MockFilePicker.init(window.browsingContext);
+      MockFilePicker.init();
       registerCleanupFunction(() => MockFilePicker.cleanup());
     }
     MockFilePicker.returnValue = MockFilePicker.returnOK;
@@ -549,7 +576,7 @@ class PrintHelper {
 }
 
 function waitForPreviewVisible() {
-  return BrowserTestUtils.waitForCondition(function () {
+  return TestUtils.waitForCondition(function () {
     let preview = document.querySelector(".printPreviewBrowser");
     return preview && BrowserTestUtils.isVisible(preview);
   });

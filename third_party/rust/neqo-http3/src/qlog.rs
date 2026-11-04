@@ -6,42 +6,57 @@
 
 // Functions that handle capturing QLOG traces.
 
-use neqo_common::qlog::Qlog;
+use std::time::Instant;
+
+use neqo_common::{qlog::Qlog, to_u64};
 use neqo_transport::StreamId;
-use qlog::events::{DataRecipient, EventData};
+use qlog::events::{DataRecipient, EventData, RawInfo, quic::StreamDataMoved};
 
-/// Uses [`Qlog::add_event_data_now`] instead of
-/// [`Qlog::add_event_data_with_instant`], given that `now` is not available
-/// on call-site. See docs on [`Qlog::add_event_data_now`] for details.
-pub fn h3_data_moved_up(qlog: &Qlog, stream_id: StreamId, amount: usize) {
-    qlog.add_event_data_now(|| {
-        let ev_data = EventData::DataMoved(qlog::events::quic::DataMoved {
-            stream_id: Some(stream_id.as_u64()),
-            offset: None,
-            length: Some(u64::try_from(amount).expect("usize fits in u64")),
-            from: Some(DataRecipient::Transport),
-            to: Some(DataRecipient::Application),
-            raw: None,
-        });
-
-        Some(ev_data)
-    });
+fn h3_data_moved(
+    qlog: &mut Qlog,
+    stream_id: StreamId,
+    amount: usize,
+    from: DataRecipient,
+    to: DataRecipient,
+    now: Instant,
+) {
+    qlog.add_event_at(
+        || {
+            Some(EventData::QuicStreamDataMoved(StreamDataMoved {
+                stream_id: Some(stream_id.as_u64()),
+                offset: None,
+                from: Some(from),
+                to: Some(to),
+                additional_info: None,
+                raw: Some(RawInfo {
+                    length: Some(to_u64(amount)),
+                    payload_length: None,
+                    data: None,
+                }),
+            }))
+        },
+        now,
+    );
 }
 
-/// Uses [`Qlog::add_event_data_now`] instead of
-/// [`Qlog::add_event_data_with_instant`], given that `now` is not available
-/// on call-site. See docs on [`Qlog::add_event_data_now`] for details.
-pub fn h3_data_moved_down(qlog: &Qlog, stream_id: StreamId, amount: usize) {
-    qlog.add_event_data_now(|| {
-        let ev_data = EventData::DataMoved(qlog::events::quic::DataMoved {
-            stream_id: Some(stream_id.as_u64()),
-            offset: None,
-            length: Some(u64::try_from(amount).expect("usize fits in u64")),
-            from: Some(DataRecipient::Application),
-            to: Some(DataRecipient::Transport),
-            raw: None,
-        });
+pub fn h3_data_moved_up(qlog: &mut Qlog, stream_id: StreamId, amount: usize, now: Instant) {
+    h3_data_moved(
+        qlog,
+        stream_id,
+        amount,
+        DataRecipient::Transport,
+        DataRecipient::Application,
+        now,
+    );
+}
 
-        Some(ev_data)
-    });
+pub fn h3_data_moved_down(qlog: &mut Qlog, stream_id: StreamId, amount: usize, now: Instant) {
+    h3_data_moved(
+        qlog,
+        stream_id,
+        amount,
+        DataRecipient::Application,
+        DataRecipient::Transport,
+        now,
+    );
 }

@@ -1,11 +1,9 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef _MOZILLA_GFX_DRAWTARGETWEBGL_INTERNAL_H
-#define _MOZILLA_GFX_DRAWTARGETWEBGL_INTERNAL_H
+#ifndef MOZILLA_GFX_DRAWTARGETWEBGL_INTERNAL_H
+#define MOZILLA_GFX_DRAWTARGETWEBGL_INTERNAL_H
 
 #include "DrawTargetWebgl.h"
 #include "mozilla/HashFunctions.h"
@@ -163,7 +161,7 @@ class TextureHandle : public RefCounted<TextureHandle>,
 
   virtual void Cleanup(SharedContextWebgl& aContext) {}
 
-  virtual ~TextureHandle() {}
+  virtual ~TextureHandle() = default;
 
   bool IsValid() const { return mValid; }
   void Invalidate() { mValid = false; }
@@ -222,7 +220,8 @@ class SharedTexture : public RefCounted<SharedTexture>, public BackingTexture {
   MOZ_DECLARE_REFCOUNTED_TYPENAME(SharedTexture)
 
   SharedTexture(const IntSize& aSize, SurfaceFormat aFormat,
-                const RefPtr<WebGLTexture>& aTexture);
+                const RefPtr<WebGLTexture>& aTexture,
+                const dom::ContentParentId& aContentId);
   ~SharedTexture();
 
   already_AddRefed<SharedTextureHandle> Allocate(const IntSize& aSize);
@@ -233,8 +232,11 @@ class SharedTexture : public RefCounted<SharedTexture>, public BackingTexture {
                                   mAtlasAllocator) > 0;
   }
 
+  const dom::ContentParentId& GetContentId() const { return mContentId; }
+
  private:
   Etagere::AtlasAllocator* mAtlasAllocator = nullptr;
+  dom::ContentParentId mContentId;
 };
 
 // SharedTextureHandle is an allocated region within a large SharedTexture page
@@ -411,7 +413,7 @@ class PathCacheEntry : public CacheEntryImpl<PathCacheEntry> {
                    const StrokeOptions* aStrokeOptions,
                    AAStrokeMode aStrokeMode, const Matrix& aTransform,
                    const IntRect& aBounds, const Point& aOrigin,
-                   HashNumber aHash, float aSigma);
+                   const Point& aPatternOffset, HashNumber aHash, float aSigma);
 
   static HashNumber HashPath(const QuantizedPath& aPath,
                              const Pattern* aPattern, const Matrix& aTransform,
@@ -434,11 +436,30 @@ class PathCacheEntry : public CacheEntryImpl<PathCacheEntry> {
     mSecondaryHandle = std::move(aHandle);
   }
 
+  // Links a texture into which the pattern, if any, was rasterized at the given
+  // offset relative to the unquantized path origin. This hides
+  // CacheEntry::Link so that the offset can't be forgotten.
+  void Link(const RefPtr<TextureHandle>& aHandle, const Point& aPatternOffset) {
+    CacheEntry::Link(aHandle);
+    mPatternOffset = aPatternOffset;
+  }
+
+  // Whether the pattern is rasterized into a texture, as opposed to only
+  // having cached vertex geometry that is drawn with the pattern.
+  bool HasBakedTexture() const {
+    return (mHandle && mHandle->IsValid()) ||
+           (mSecondaryHandle && mSecondaryHandle->IsValid());
+  }
+
  private:
   // The actual path geometry supplied
   QuantizedPath mPath;
   // The transformed origin of the path
   Point mOrigin;
+  // The quantized offset of the pattern relative to the unquantized path origin
+  // at which the pattern was rasterized into a texture. Only meaningful while
+  // HasBakedTexture() is true.
+  Point mPatternOffset;
   // The pattern used to rasterize the path, if not a mask
   UniquePtr<Pattern> mPattern;
   // The StrokeOptions used for stroked paths, if applicable
@@ -461,17 +482,18 @@ class PathCache : public CacheImpl<PathCacheEntry, true> {
       QuantizedPath aPath, const Pattern* aPattern,
       const StrokeOptions* aStrokeOptions, AAStrokeMode aStrokeMode,
       const Matrix& aTransform, const IntRect& aBounds, const Point& aOrigin,
-      float aSigma = -1.0f);
+      const Point& aPatternOffset, float aSigma = -1.0f);
 
   already_AddRefed<PathCacheEntry> FindEntry(
       const QuantizedPath& aPath, const Pattern* aPattern,
       const StrokeOptions* aStrokeOptions, AAStrokeMode aStrokeMode,
       const Matrix& aTransform, const IntRect& aBounds, const Point& aOrigin,
-      float aSigma = -1.0f, bool aHasSecondaryHandle = false);
+      const Point& aPatternOffset, float aSigma = -1.0f,
+      bool aHasSecondaryHandle = false);
 
   void ClearVertexRanges();
 };
 
 }  // namespace mozilla::gfx
 
-#endif  // _MOZILLA_GFX_DRAWTARGETWEBGL_INTERNAL_H
+#endif  // MOZILLA_GFX_DRAWTARGETWEBGL_INTERNAL_H

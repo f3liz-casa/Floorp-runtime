@@ -4,6 +4,7 @@
 
 /**
  * Sources reducer
+ *
  * @module reducers/sources
  */
 
@@ -17,17 +18,12 @@ export function initialSourcesState() {
   /* eslint sort-keys: "error" */
   return {
     /**
-     * List of all breakpoint positions for all sources (generated and original).
-     * Map of source id (string) to dictionary object whose keys are line numbers
-     * and values of array of positions.
-     * A position is an object made with two attributes:
-     * location and generatedLocation. Both refering to breakpoint positions
-     * in original and generated sources.
-     * In case of generated source, the two location will be the same.
+     * Set(Source ID: string)
      *
-     * Map(source id => Dictionary(int => array<Position>))
+     * This is a list of IDs for the style sheet sources which have been disabled and
+     * no longer have an impact on the page.
      */
-    mutableBreakpointPositions: new Map(),
+    mutableDisabledStylesheetsIDs: new Set(),
 
     /**
      * List of all breakable lines for original sources only.
@@ -122,7 +118,6 @@ export function initialSourcesState() {
   };
   /* eslint-disable sort-keys */
 }
-
 function update(state = initialSourcesState(), action) {
   switch (action.type) {
     case "ADD_SOURCES":
@@ -177,6 +172,16 @@ function update(state = initialSourcesState(), action) {
       };
     }
 
+    case "SET_GENERATED_SELECTED_LOCATION": {
+      if (action.location != state.selectedLocation) {
+        return state;
+      }
+      return {
+        ...state,
+        selectedGeneratedLocation: action.generatedLocation,
+      };
+    }
+
     case "SET_DEFAULT_SELECTED_LOCATION": {
       if (
         state.shouldSelectOriginalLocation ==
@@ -212,36 +217,12 @@ function update(state = initialSourcesState(), action) {
       };
     }
 
-    case "ADD_BREAKPOINT_POSITIONS": {
-      // Merge existing and new reported position if some where already stored
-      let positions = state.mutableBreakpointPositions.get(action.source.id);
-      if (positions) {
-        positions = { ...positions, ...action.positions };
-      } else {
-        positions = action.positions;
-      }
-
-      state.mutableBreakpointPositions.set(action.source.id, positions);
-
-      return {
-        ...state,
-      };
-    }
-
-    case "CLEAR_BREAKPOINT_POSITIONS": {
-      if (!state.mutableBreakpointPositions.has(action.source.id)) {
-        return state;
-      }
-
-      state.mutableBreakpointPositions.delete(action.source.id);
-
-      return {
-        ...state,
-      };
-    }
-
     case "REMOVE_SOURCES": {
       return removeSourcesAndActors(state, action);
+    }
+
+    case "SET_STYLESHEET_VISIBILITY": {
+      return updateDisabledStyleSheets(state, action);
     }
   }
 
@@ -292,7 +273,6 @@ function removeSourcesAndActors(state, action) {
     mutableOriginalSources,
     mutableSourceActors,
     mutableOriginalBreakableLines,
-    mutableBreakpointPositions,
   } = state;
 
   const newState = { ...state };
@@ -337,29 +317,7 @@ function removeSourcesAndActors(state, action) {
         originalSourceIds = originalSourceIds.filter(id => id != sourceId);
         mutableOriginalSources.set(generatedSourceId, originalSourceIds);
       }
-
-      // We should also remove the mapped location from the breakpoint positions
-      //
-      // `mutableBreakpointPositions` is a Map keyed per generated source id
-      //   `generatedBreakpointPositions` is a Array
-      //     `position` is an object with `location` and `generatedLocation` attributes
-      const generatedBreakpointPositions =
-        mutableBreakpointPositions.get(generatedSourceId);
-      if (generatedBreakpointPositions) {
-        for (const line in generatedBreakpointPositions) {
-          for (const position of generatedBreakpointPositions[line]) {
-            // Only clear the original mapped location if that's a breakpoint
-            // for the currently removed original source. This generated/bundle source
-            // may have breakpoints for many original sources.
-            if (position.location.source == removedSource) {
-              position.location = position.generatedLocation;
-            }
-          }
-        }
-      }
     }
-
-    mutableBreakpointPositions.delete(sourceId);
 
     if (
       action.resetSelectedLocation &&
@@ -371,7 +329,7 @@ function removeSourcesAndActors(state, action) {
   }
 
   for (const removedActor of action.actors) {
-    const sourceId = removedActor.source;
+    const sourceId = removedActor.sourceObject.id;
     const actorsForSource = mutableSourceActors.get(sourceId);
     // actors may have already been cleared by the previous for..loop
     if (!actorsForSource) {
@@ -408,7 +366,7 @@ function insertSourceActors(state, action) {
   // The `sourceActor` objects are defined from `newGeneratedSources` action:
   // https://searchfox.org/mozilla-central/rev/4646b826a25d3825cf209db890862b45fa09ffc3/devtools/client/debugger/src/actions/sources/newSources.js#300-314
   for (const sourceActor of sourceActors) {
-    const sourceId = sourceActor.source;
+    const sourceId = sourceActor.sourceObject.id;
     // We always clone the array of source actors as we return it from selectors.
     // So the map is mutable, but its values are considered immutable and will change
     // anytime there is a new actor added per source ID.
@@ -420,17 +378,23 @@ function insertSourceActors(state, action) {
     }
   }
 
-  const scriptActors = sourceActors.filter(
-    item => item.introductionType === "scriptElement"
-  );
-  if (scriptActors.length) {
-    // If new HTML sources are being added, we need to clear the breakpoint
-    // positions since the new source is a <script> with new breakpoints.
-    for (const { source } of scriptActors) {
-      state.mutableBreakpointPositions.delete(source);
-    }
-  }
+  return { ...state };
+}
 
+function updateDisabledStyleSheets(state, action) {
+  const { sourceId, isDisabled } = action;
+  const { mutableDisabledStylesheetsIDs } = state;
+  if (isDisabled) {
+    if (mutableDisabledStylesheetsIDs.has(sourceId)) {
+      return state;
+    }
+    mutableDisabledStylesheetsIDs.add(sourceId);
+  } else {
+    if (!mutableDisabledStylesheetsIDs.has(sourceId)) {
+      return state;
+    }
+    mutableDisabledStylesheetsIDs.delete(sourceId);
+  }
   return { ...state };
 }
 

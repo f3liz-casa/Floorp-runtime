@@ -1,4 +1,3 @@
-/* -*- Mode: IDL; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/.
@@ -51,6 +50,8 @@ interface HTMLMediaElement : HTMLElement {
   [Throws]
   undefined fastSeek(double time);
   readonly attribute unrestricted double duration;
+  [Func="IsChromeOrUAWidget"]
+  undefined updateCueDisplay();
   [ChromeOnly]
   readonly attribute boolean isEncrypted;
   // TODO: Bug 847376 - readonly attribute any startDate;
@@ -87,6 +88,10 @@ interface HTMLMediaElement : HTMLElement {
   [CEReactions, SetterThrows]
            attribute boolean defaultMuted;
 
+  // lazy loading
+  [CEReactions, SetterThrows, Pref="media.lazy_loading.enabled"]
+           attribute DOMString loading;
+
   // TODO: Bug 847379
   // tracks
   [Pref="media.track.enabled"]
@@ -101,31 +106,20 @@ interface HTMLMediaElement : HTMLElement {
 
 // Mozilla extensions:
 partial interface HTMLMediaElement {
-  [Func="HasDebuggerOrTabsPrivilege"]
+  [Func="MediaUtils::HasDebuggerOrTabsPrivilege"]
   readonly attribute MediaSource? mozMediaSourceObject;
 
-  [Func="HasDebuggerOrTabsPrivilege", NewObject]
+  [Func="MediaUtils::HasDebuggerOrTabsPrivilege", NewObject]
   Promise<HTMLMediaElementDebugInfo> mozRequestDebugInfo();
 
-  [Func="HasDebuggerOrTabsPrivilege", NewObject]
+  [Func="MediaUtils::HasDebuggerOrTabsPrivilege", NewObject]
   static undefined mozEnableDebugLog();
-  [Func="HasDebuggerOrTabsPrivilege", NewObject]
+  [Func="MediaUtils::HasDebuggerOrTabsPrivilege", NewObject]
   Promise<DOMString> mozRequestDebugLog();
 
   attribute MediaStream? srcObject;
 
   attribute boolean preservesPitch;
-
-  // NB: for internal use with the video controls:
-  [Func="IsChromeOrUAWidget"] attribute boolean mozAllowCasting;
-  [Func="IsChromeOrUAWidget"] attribute boolean mozIsCasting;
-
-  // Mozilla extension: stream capture
-  [Throws]
-  MediaStream mozCaptureStream();
-  [Throws]
-  MediaStream mozCaptureStreamUntilEnded();
-  readonly attribute boolean mozAudioCaptured;
 
   // Mozilla extension: return embedded metadata from the stream as a
   // JSObject with key:value pairs for each tag. This can be used by
@@ -226,6 +220,12 @@ partial interface HTMLMediaElement {
   [ChromeOnly]
   readonly attribute boolean isInViewPort;
 
+  // Bitmask of the reasons the element is currently muted (see MutedReasons in
+  // HTMLMediaElement.h), exposed so tests can distinguish muting that leaves
+  // the web-visible muted attribute untouched (e.g. mute via media control).
+  [ChromeOnly, BinaryName="GetMutedReasons"]
+  readonly attribute unsigned long mutedReasons;
+
   [ChromeOnly]
   readonly attribute boolean isVideoDecodingSuspended;
 
@@ -282,4 +282,17 @@ partial interface HTMLMediaElement {
 partial interface HTMLMediaElement {
   [Pref="media.allowed-to-play.enabled"]
   readonly attribute boolean allowedToPlay;
+};
+
+// https://w3c.github.io/mediacapture-fromelement/#html-media-element-media-capture-extensions
+partial interface HTMLMediaElement {
+  [Throws, Pref="media.captureStream.enabled"]
+  MediaStream captureStream();
+
+  // Non-spec compliant stream capture APIs. They will be deprecated.
+  [Throws]
+  MediaStream mozCaptureStream();
+  [Throws]
+  MediaStream mozCaptureStreamUntilEnded();
+  readonly attribute boolean mozAudioCaptured;
 };

@@ -1,4 +1,3 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -6,13 +5,18 @@
 #ifndef MOZILLA_DOM_CANVASRENDERINGCONTEXTHELPER_H_
 #define MOZILLA_DOM_CANVASRENDERINGCONTEXTHELPER_H_
 
+#include "mozilla/Maybe.h"
 #include "mozilla/UniquePtr.h"
+#include "mozilla/Variant.h"
 #include "mozilla/dom/BindingDeclarations.h"
+#include "mozilla/dom/CanvasRenderingContext2DBinding.h"
+#include "mozilla/dom/WebGLRenderingContextBinding.h"
 #include "mozilla/gfx/Point.h"
 #include "mozilla/layers/LayersTypes.h"
 #include "nsSize.h"
 
 class nsICanvasRenderingContextInternal;
+class nsICookieJarSettings;
 class nsIGlobalObject;
 
 namespace mozilla {
@@ -41,6 +45,32 @@ enum class CanvasContextType : uint8_t {
   ImageBitmap
 };
 
+class CanvasRenderingContextOptions {
+ public:
+  CanvasRenderingContextOptions() : mVariant(UnknownOptions()) {}
+
+  template <typename T>
+  bool is() const {
+    return mVariant.is<T>();
+  }
+
+  template <typename T>
+  const T& as() const {
+    return mVariant.as<T>();
+  }
+
+  MOZ_IMPLICIT operator bool() const { return !mVariant.is<UnknownOptions>(); }
+
+  bool Init(JSContext* aCx, CanvasContextType aContextType,
+            JS::Handle<JS::Value> aContextOptions, ErrorResult& aRv);
+
+ private:
+  struct UnknownOptions {};
+  Variant<CanvasRenderingContext2DSettings, WebGLContextAttributes,
+          UnknownOptions>
+      mVariant;
+};
+
 /**
  * Povides common RenderingContext functionality used by both OffscreenCanvas
  * and HTMLCanvasElement.
@@ -52,9 +82,13 @@ class CanvasRenderingContextHelper {
   virtual bool GetOpaqueAttr() = 0;
 
  protected:
-  virtual nsresult UpdateContext(JSContext* aCx,
-                                 JS::Handle<JS::Value> aNewContextOptions,
-                                 ErrorResult& aRvForDictionaryInit);
+  bool InitOrUpdateContext(
+      const nsCOMPtr<nsICanvasRenderingContextInternal>& aContext,
+      const CanvasRenderingContextOptions* aOptions);
+  void UpdateContext();
+
+  // Called after UpdateContext, but only if it succeeded.
+  virtual void AfterUpdateContext() {}
 
   virtual nsresult ParseParams(JSContext* aCx, const nsAString& aType,
                                const JS::Value& aEncoderOptions,
@@ -75,13 +109,11 @@ class CanvasRenderingContextHelper {
       CanvasUtils::ImageExtraction aExtractionBehavior, int32_t* aOutFormat,
       gfx::IntSize* aOutImageSize);
 
-  already_AddRefed<nsISupports> GetOrCreateContext(
-      JSContext* aCx, const nsAString& aContextId,
-      JS::Handle<JS::Value> aContextOptions, ErrorResult& aRv);
+  nsICookieJarSettings* GetCookieJarSettings() const;
 
-  already_AddRefed<nsISupports> GetOrCreateContext(
-      JSContext* aCx, CanvasContextType aContextType,
-      JS::Handle<JS::Value> aContextOptions, ErrorResult& aRv);
+  bool GetOrCreateContext(CanvasContextType aContextType,
+                          const CanvasRenderingContextOptions& aContextOptions,
+                          ErrorResult& aRv);
 
   virtual already_AddRefed<nsICanvasRenderingContextInternal> CreateContext(
       CanvasContextType aContextType);
@@ -95,8 +127,9 @@ class CanvasRenderingContextHelper {
   nsCOMPtr<nsICanvasRenderingContextInternal> mCurrentContext;
 };
 
-Maybe<layers::SurfaceDescriptor> ValidSurfaceDescriptorForRemoteCanvas2d(
-    const layers::SurfaceDescriptor&);
+bool ValidSurfaceDescriptorForRemoteCanvas2d(
+    const layers::SurfaceDescriptor& aSd,
+    Maybe<layers::SurfaceDescriptor>* aResultSd = nullptr);
 
 }  // namespace dom
 namespace CanvasUtils {

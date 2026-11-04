@@ -1,10 +1,9 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef mozilla_a11y_TextLeafAccessible_h__
-#define mozilla_a11y_TextLeafAccessible_h__
+#ifndef mozilla_a11y_TextLeafAccessible_h_
+#define mozilla_a11y_TextLeafAccessible_h_
 
 #include "BaseAccessibles.h"
 
@@ -23,7 +22,7 @@ class TextLeafAccessible : public LinkableAccessible {
   virtual mozilla::a11y::role NativeRole() const override;
   virtual void AppendTextTo(nsAString& aText, uint32_t aStartOffset = 0,
                             uint32_t aLength = UINT32_MAX) override;
-  virtual ENameValueFlag Name(nsString& aName) const override;
+  virtual ENameValueFlag DirectName(nsString& aName) const override;
 
   // TextLeafAccessible
   void SetText(const nsAString& aText) { mText = aText; }
@@ -36,8 +35,14 @@ class TextLeafAccessible : public LinkableAccessible {
 ////////////////////////////////////////////////////////////////////////////////
 // LocalAccessible downcast method
 
+// HTMLListBulletAccessible is implemented as a TextLeafAccessible so that it
+// can cache its text. However, it is fundamentally different in some ways; e.g.
+// it doesn't have character bounds. Therefore, IsTextLeaf() returns false for
+// it.
 inline TextLeafAccessible* LocalAccessible::AsTextLeaf() {
-  return IsTextLeaf() ? static_cast<TextLeafAccessible*>(this) : nullptr;
+  return IsTextLeaf() || IsHTMLListBullet()
+             ? static_cast<TextLeafAccessible*>(this)
+             : nullptr;
 }
 
 }  // namespace a11y

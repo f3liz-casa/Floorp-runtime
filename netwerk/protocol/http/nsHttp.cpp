@@ -1,50 +1,51 @@
-
-/* -*- Mode: C++; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim:set ts=4 sw=2 sts=2 et cin: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 // HttpLog.h should generally be included first
-#include "HttpLog.h"
-
 #include "nsHttp.h"
+
+#include <errno.h>
+#include <string.h>
+
+#include <functional>
+
 #include "CacheControlParser.h"
+#include "HttpLog.h"
 #include "PLDHashTable.h"
 #include "mozilla/DataMutex.h"
-#include "mozilla/HashFunctions.h"
 #include "mozilla/OriginAttributes.h"
 #include "mozilla/Preferences.h"
 #include "mozilla/StaticPrefs_network.h"
 #include "nsCRT.h"
 #include "nsContentUtils.h"
+#include "nsHttpHandler.h"
 #include "nsHttpRequestHead.h"
 #include "nsHttpResponseHead.h"
-#include "nsHttpHandler.h"
 #include "nsICacheEntry.h"
 #include "nsIRequest.h"
 #include "nsIStandardURL.h"
 #include "nsJSUtils.h"
+#include "nsLiteralString.h"
 #include "nsStandardURL.h"
 #include "sslerr.h"
-#include <errno.h>
-#include <functional>
-#include "nsLiteralString.h"
-#include <string.h>
 
 namespace mozilla {
 namespace net {
 
 extern const char kProxyType_SOCKS[];
 
-// https://datatracker.ietf.org/doc/html/draft-ietf-webtrans-http3/#section-4.3
+// https://datatracker.ietf.org/doc/html/draft-ietf-webtrans-http3-15#section-4.4
 constexpr uint64_t kWebTransportErrorCodeStart = 0x52e4a40fa8db;
-constexpr uint64_t kWebTransportErrorCodeEnd = 0x52e4a40fa9e2;
+// Covers the full unsigned long (0..2^32-1) streamErrorCode range: start +
+// 0xffffffff + floor(0xffffffff / 0x1e), per draft-ietf-webtrans-http3
+// section 4.4's error-code mapping.
+constexpr uint64_t kWebTransportErrorCodeEnd = 0x52e5ac983162;
 
 // find out how many atoms we have
 #define HTTP_ATOM(_name, _value) Unused_##_name,
 enum {
-#include "nsHttpAtomList.h"
+#include "nsHttpAtomList.inc"
   NUM_HTTP_ATOMS
 };
 #undef HTTP_ATOM
@@ -68,7 +69,7 @@ nsresult CreateAtomTable(
   // fill the table with our known atoms
   const nsHttpAtomLiteral* atoms[] = {
 #define HTTP_ATOM(_name, _value) &(_name),
-#include "nsHttpAtomList.h"
+#include "nsHttpAtomList.inc"
 #undef HTTP_ATOM
   };
 
@@ -76,7 +77,7 @@ nsresult CreateAtomTable(
     return NS_OK;
   }
   for (const auto* atom : atoms) {
-    Unused << base.PutEntry(atom->val(), fallible);
+    (void)base.PutEntry(atom->val(), fallible);
   }
 
   LOG(("Added static atoms to atomTable"));
@@ -283,16 +284,6 @@ bool ValidationRequired(bool isForcedValid,
     *performBackgroundRevalidation = false;
   }
 
-  // Check isForcedValid to see if it is possible to skip validation.
-  // Don't skip validation if we have serious reason to believe that this
-  // content is invalid (it's expired).
-  // See netwerk/cache2/nsICacheEntry.idl for details
-  if (isForcedValid && (!cachedResponseHead->ExpiresInPast() ||
-                        !cachedResponseHead->MustValidateIfExpired())) {
-    LOG(("NOT validating based on isForcedValid being true.\n"));
-    return false;
-  }
-
   // If the LOAD_FROM_CACHE flag is set, any cached data can simply be used
   if (loadFlags & nsIRequest::LOAD_FROM_CACHE || allowStaleCacheContent) {
     LOG(("NOT validating based on LOAD_FROM_CACHE load flag\n"));
@@ -306,6 +297,16 @@ bool ValidationRequired(bool isForcedValid,
       !isImmutable) {
     LOG(("Validating based on VALIDATE_ALWAYS load flag\n"));
     return true;
+  }
+
+  // Check isForcedValid to see if it is possible to skip validation.
+  // Don't skip validation if we have serious reason to believe that this
+  // content is invalid (it's expired).
+  // See netwerk/cache2/nsICacheEntry.idl for details
+  if (isForcedValid && (!cachedResponseHead->ExpiresInPast() ||
+                        !cachedResponseHead->MustValidateIfExpired())) {
+    LOG(("NOT validating based on isForcedValid being true.\n"));
+    return false;
   }
 
   // Even if the VALIDATE_NEVER flag is set, there are still some cases in
@@ -1002,15 +1003,17 @@ SupportedAlpnRank IsAlpnSupported(const nsACString& aAlpn) {
   return SupportedAlpnRank::NOT_SUPPORTED;
 }
 
-// NSS Errors which *may* have been triggered by the use of 0-RTT in the
-// presence of badly behaving middleboxes. We may re-attempt the connection
-// without early data.
+// NSS errors that may be triggered by early data or PSK session resumption
+// (e.g. badly behaving middleboxes, or a server whose session ticket
+// encryption key has rotated). We re-attempt the connection without early
+// data; MaybeRemoveSSLToken evicts the stale token so it is not re-offered.
 bool PossibleZeroRTTRetryError(nsresult aReason) {
   return (aReason ==
           psm::GetXPCOMFromNSSError(SSL_ERROR_PROTOCOL_VERSION_ALERT)) ||
          (aReason == psm::GetXPCOMFromNSSError(SSL_ERROR_BAD_MAC_ALERT)) ||
          (aReason ==
-          psm::GetXPCOMFromNSSError(SSL_ERROR_HANDSHAKE_UNEXPECTED_ALERT));
+          psm::GetXPCOMFromNSSError(SSL_ERROR_HANDSHAKE_UNEXPECTED_ALERT)) ||
+         (aReason == psm::GetXPCOMFromNSSError(SSL_ERROR_DECRYPT_ERROR_ALERT));
 }
 
 nsresult MakeOriginURL(const nsACString& origin, nsCOMPtr<nsIURI>& url) {
@@ -1048,7 +1051,7 @@ void CreatePushHashKey(const nsCString& scheme, const nsCString& hostHeader,
 
   if (NS_FAILED(rv)) {
     // Fallback to plain text copy - this may end up behaving poorly
-    outOrigin = fullOrigin;
+    outOrigin = std::move(fullOrigin);
   }
 
   outKey = outOrigin;
@@ -1078,25 +1081,22 @@ uint8_t GetWebTransportErrorFromNSResult(nsresult aResult) {
                               (uint32_t)NS_ERROR_WEBTRANSPORT_CODE_BASE);
 }
 
-uint64_t WebTransportErrorToHttp3Error(uint8_t aErrorCode) {
-  return kWebTransportErrorCodeStart + aErrorCode + aErrorCode / 0x1e;
+uint64_t WebTransportErrorToHttp3Error(uint32_t aErrorCode) {
+  return kWebTransportErrorCodeStart + aErrorCode +
+         static_cast<uint64_t>(aErrorCode) / 0x1e;
 }
 
-uint8_t Http3ErrorToWebTransportError(uint64_t aErrorCode) {
-  // Ensure the code is within the valid range.
+Maybe<uint32_t> Http3ErrorToWebTransportError(uint64_t aErrorCode) {
+  // Outside the range reserved for WT_APPLICATION_ERROR, or one of the
+  // reserved (GREASE) codepoints inside it: not an application error code.
   if (aErrorCode < kWebTransportErrorCodeStart ||
-      aErrorCode > kWebTransportErrorCodeEnd) {
-    return 0;
+      aErrorCode > kWebTransportErrorCodeEnd ||
+      (aErrorCode - 0x21) % 0x1f == 0) {
+    return Nothing();
   }
 
   uint64_t shifted = aErrorCode - kWebTransportErrorCodeStart;
-  uint64_t result = shifted - shifted / 0x1f;
-
-  if (result <= std::numeric_limits<uint8_t>::max()) {
-    return (uint8_t)result;
-  }
-
-  return 0;
+  return Some(static_cast<uint32_t>(shifted - shifted / 0x1f));
 }
 
 ConnectionCloseReason ToCloseReason(nsresult aErrorCode) {
@@ -1166,18 +1166,19 @@ nsLiteralCString HttpVersionToTelemetryLabel(HttpVersion version) {
   return "unknown"_ns;
 }
 
-ProxyDNSStrategy GetProxyDNSStrategyHelper(const char* aType, uint32_t aFlag) {
+nsIHttpChannelInternal::ProxyDNSStrategy GetProxyDNSStrategyHelper(
+    const char* aType, uint32_t aFlag) {
   if (!aType) {
-    return ProxyDNSStrategy::ORIGIN;
+    return nsIHttpChannelInternal::PROXY_DNS_STRATEGY_ORIGIN;
   }
 
   if (!(aFlag & nsIProxyInfo::TRANSPARENT_PROXY_RESOLVES_HOST)) {
     if (aType == kProxyType_SOCKS) {
-      return ProxyDNSStrategy::ORIGIN;
+      return nsIHttpChannelInternal::PROXY_DNS_STRATEGY_ORIGIN;
     }
   }
 
-  return ProxyDNSStrategy::PROXY;
+  return nsIHttpChannelInternal::PROXY_DNS_STRATEGY_PROXY;
 }
 
 }  // namespace net

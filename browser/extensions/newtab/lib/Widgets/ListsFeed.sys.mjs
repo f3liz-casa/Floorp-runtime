@@ -2,6 +2,8 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
+/** @import {Store} from "resource://newtab/lib/Store.sys.mjs" */
+
 const lazy = {};
 ChromeUtils.defineESModuleGetters(lazy, {
   PersistentCache: "resource://newtab/lib/PersistentCache.sys.mjs",
@@ -11,17 +13,25 @@ import {
   actionTypes as at,
   actionCreators as ac,
 } from "resource://newtab/common/Actions.mjs";
+import {
+  isWidgetAddable,
+  WIDGET_REGISTRY,
+} from "resource://newtab/common/WidgetsRegistry.mjs";
 
 const PREF_LISTS_ENABLED = "widgets.lists.enabled";
 const PREF_SYSTEM_LISTS_ENABLED = "widgets.system.lists.enabled";
 const PREF_WIDGETS_LISTS_MAX_LISTS = "widgets.lists.maxLists";
 const CACHE_KEY = "lists_widget";
+const LISTS_ENTRY = WIDGET_REGISTRY.find(w => w.id === "lists");
 
 /**
  * Class for the Lists widget, which manages the updates to the lists widget
  * and syncs with PersistentCache
  */
 export class ListsFeed {
+  /** @type {Store} */
+  store = null;
+
   constructor() {
     this.initialized = false;
     this.cache = this.PersistentCache(CACHE_KEY, true);
@@ -29,7 +39,12 @@ export class ListsFeed {
 
   get enabled() {
     const prefs = this.store.getState()?.Prefs.values;
-    return prefs?.[PREF_LISTS_ENABLED] && prefs?.[PREF_SYSTEM_LISTS_ENABLED];
+    const nimbusListsEnabled = prefs.widgetsConfig?.listsEnabled;
+
+    return (
+      prefs?.[PREF_LISTS_ENABLED] &&
+      (isWidgetAddable(LISTS_ENTRY, prefs) || nimbusListsEnabled)
+    );
   }
 
   async init() {
@@ -106,6 +121,26 @@ export class ListsFeed {
     );
   }
 
+  /**
+   * @param {object} action - The action object containing pref change data
+   * @param {object} action.data
+   * @param {string} action.data.name - The name of the pref that changed
+   */
+  async onPrefChangedAction(action) {
+    switch (action.data.name) {
+      case PREF_LISTS_ENABLED:
+      case PREF_SYSTEM_LISTS_ENABLED:
+      case "region":
+      case "trainhopConfig":
+      case "widgetsConfig": {
+        if (this.enabled && !this.initialized) {
+          await this.init();
+        }
+        break;
+      }
+    }
+  }
+
   async onAction(action) {
     switch (action.type) {
       case at.INIT:
@@ -114,15 +149,7 @@ export class ListsFeed {
         }
         break;
       case at.PREF_CHANGED:
-        if (
-          (action.data.name === PREF_LISTS_ENABLED ||
-            action.data.name === PREF_SYSTEM_LISTS_ENABLED) &&
-          action.data.value
-        ) {
-          if (this.enabled) {
-            await this.init();
-          }
-        }
+        await this.onPrefChangedAction(action);
         break;
       case at.WIDGETS_LISTS_UPDATE:
         await this.cache.set("lists", action.data.lists);

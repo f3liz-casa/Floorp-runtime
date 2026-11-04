@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -7,8 +5,9 @@
 #ifndef mozilla_StoragePrincipalHelper_h
 #define mozilla_StoragePrincipalHelper_h
 
-#include <cstdint>
 #include "ErrorList.h"
+#include "mozilla/AlreadyAddRefed.h"
+#include "nsIContentPolicy.h"
 #include "nsStringFwd.h"
 
 /**
@@ -329,6 +328,12 @@ class StoragePrincipalHelper final {
   static void UpdateOriginAttributesForNetworkState(
       nsIURI* aFirstPartyURI, OriginAttributes& aAttributes);
 
+  // Like GetOriginAttributesForNetworkState, but for HTTP connections. These
+  // are not partitioned when going through a proxy, unless
+  // privacy.partition.network_state.connection_with_proxy is set.
+  static bool GetOriginAttributesForHttpConnection(
+      nsIChannel* aChannel, bool aHasProxy, OriginAttributes& aAttributes);
+
   // For HSTS we want to force 'HTTP' in the partition key.
   static bool GetOriginAttributesForHSTS(nsIChannel* aChannel,
                                          OriginAttributes& aAttributes);
@@ -364,6 +369,17 @@ class StoragePrincipalHelper final {
   // injected resources by add-on content scripts.
   static nsString PartitionKeyForExpandedPrincipal(
       nsIPrincipal* aExpandedPrincipal);
+
+  // For subresources (e.g. images, scripts, stylesheets, fetch/XHR) loaded by
+  // add-on content scripts, i.e. whose triggering principal is an expanded
+  // principal, returns a CookieJarSettings rejecting all cookies and
+  // partitioned per add-on. Documents, frames and workers are not covered and
+  // get nullptr, as does any load not triggered by an add-on.
+  // aLoadingPrincipal is used to determine fingerprinting resistance.
+  static already_AddRefed<nsICookieJarSettings>
+  MaybeCreateCookieJarSettingsForContentScript(
+      nsIPrincipal* aTriggeringPrincipal, nsIPrincipal* aLoadingPrincipal,
+      nsContentPolicyType aContentPolicyType);
 };
 
 }  // namespace mozilla

@@ -7,7 +7,6 @@
 
 #include "MFMediaEngineStream.h"
 #include "WMFUtils.h"
-#include "mozilla/Atomics.h"
 #include "mozilla/Mutex.h"
 
 namespace mozilla {
@@ -42,6 +41,11 @@ class MFMediaEngineVideoStream final : public MFMediaEngineStream {
   void SetKnowsCompositor(layers::KnowsCompositor* aKnowsCompositor);
 
   void SetDCompSurfaceHandle(HANDLE aDCompSurfaceHandle, gfx::IntSize aDisplay);
+
+  // Called when the engine operates in frame server mode (without a DComp
+  // surface). Bypasses the DComp-readiness gate in OutputData/Drain so that
+  // video decode promises resolve immediately with empty outputs.
+  void SetFrameServerMode();
 
   MFMediaEngineVideoStream* AsVideoStream() override { return this; }
 
@@ -126,6 +130,11 @@ class MFMediaEngineVideoStream final : public MFMediaEngineStream {
 
   // Set when `CreateMediaType()` is called.
   bool mIsEncrypted = false;
+
+  // Set when the engine operates in frame server mode (without a DComp
+  // surface). Bypasses the DComp-readiness gate so decode promises resolve
+  // without a real image.
+  bool mFrameServerMode = false;
 };
 
 }  // namespace mozilla

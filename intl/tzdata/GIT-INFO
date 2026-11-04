@@ -1,5 +1,7 @@
-commit d6a3a85e988251a7e4966035e618c6d203f1bb7c
-Author: Almaz <mingaleev@google.com>
-Date:   Fri Apr 11 18:26:16 2025 +0100
+commit 6b06411d8f253e03dfae7843325f4200284c8749
+Author: github-actions[bot] <github-actions[bot]@users.noreply.github.com>
+Date:   Thu Oct 29 08:08:10 2026 +0000
 
-    ICU-23096 Update ICU data to TZDB 2025b. (#45)
+    ICU-23594 TZDB 2026f
+    
+    See #60

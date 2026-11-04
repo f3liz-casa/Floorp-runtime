@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -27,16 +25,14 @@
 #include <utility>
 
 #include "AnimationParams.h"
+#include "Orientation.h"
 #include "mozilla/Likely.h"
 #include "mozilla/Maybe.h"
-
 #include "mozilla/UniquePtr.h"
-#include "mozilla/Unused.h"
 #include "mozilla/Variant.h"
 #include "mozilla/gfx/2D.h"
 #include "mozilla/gfx/Swizzle.h"
 #include "nsDebug.h"
-#include "Orientation.h"
 
 namespace mozilla {
 namespace image {
@@ -102,7 +98,7 @@ class SurfaceFilter {
  public:
   SurfaceFilter() : mRowPointer(nullptr), mCol(0), mPixelSize(0) {}
 
-  virtual ~SurfaceFilter() {}
+  virtual ~SurfaceFilter() = default;
 
   /**
    * Reset this surface to the first row. It's legal for this filter to throw
@@ -176,7 +172,7 @@ class SurfaceFilter {
    *         has finished, regardless of the lambda's internal state.
    */
   template <typename PixelType, typename Func>
-  WriteState WritePixels(Func aFunc) {
+  WriteState WritePixels(Func&& aFunc) {
     Maybe<WriteState> result;
     while (
         !(result = DoWritePixelsToRow<PixelType>(std::forward<Func>(aFunc)))) {
@@ -214,7 +210,7 @@ class SurfaceFilter {
    *         writing has finished, regardless of the lambda's internal state.
    */
   template <typename PixelType, typename Func>
-  WriteState WritePixelBlocks(Func aFunc) {
+  WriteState WritePixelBlocks(Func&& aFunc) {
     Maybe<WriteState> result;
     while (!(result = DoWritePixelBlockToRow<PixelType>(
                  std::forward<Func>(aFunc)))) {
@@ -253,7 +249,7 @@ class SurfaceFilter {
    *         state.
    */
   template <typename PixelType, typename Func>
-  WriteState WritePixelsToRow(Func aFunc) {
+  WriteState WritePixelsToRow(Func&& aFunc) {
     return DoWritePixelsToRow<PixelType>(std::forward<Func>(aFunc))
         .valueOr(WriteState::NEED_MORE_DATA);
   }
@@ -634,17 +630,20 @@ class SurfaceFilter {
  */
 class SurfacePipe {
  public:
-  SurfacePipe() {}
+  SurfacePipe() = default;
 
   SurfacePipe(SurfacePipe&& aOther) : mHead(std::move(aOther.mHead)) {}
 
-  ~SurfacePipe() {}
+  ~SurfacePipe() = default;
 
   SurfacePipe& operator=(SurfacePipe&& aOther) {
     MOZ_ASSERT(this != &aOther);
     mHead = std::move(aOther.mHead);
     return *this;
   }
+
+  SurfacePipe(const SurfacePipe&) = delete;
+  SurfacePipe& operator=(const SurfacePipe&) = delete;
 
   /// Begins a new pass, seeking to the first row of the surface.
   void ResetToFirstRow() {
@@ -659,7 +658,7 @@ class SurfacePipe {
    * @see SurfaceFilter::WritePixels() for the canonical documentation.
    */
   template <typename PixelType, typename Func>
-  WriteState WritePixels(Func aFunc) {
+  WriteState WritePixels(Func&& aFunc) {
     MOZ_ASSERT(mHead, "Use before configured!");
     return mHead->WritePixels<PixelType>(std::forward<Func>(aFunc));
   }
@@ -672,7 +671,7 @@ class SurfacePipe {
    * @see SurfaceFilter::WritePixelBlocks() for the canonical documentation.
    */
   template <typename PixelType, typename Func>
-  WriteState WritePixelBlocks(Func aFunc) {
+  WriteState WritePixelBlocks(Func&& aFunc) {
     MOZ_ASSERT(mHead, "Use before configured!");
     return mHead->WritePixelBlocks<PixelType>(std::forward<Func>(aFunc));
   }
@@ -685,7 +684,7 @@ class SurfacePipe {
    * @see SurfaceFilter::WritePixelsToRow() for the canonical documentation.
    */
   template <typename PixelType, typename Func>
-  WriteState WritePixelsToRow(Func aFunc) {
+  WriteState WritePixelsToRow(Func&& aFunc) {
     MOZ_ASSERT(mHead, "Use before configured!");
     return mHead->WritePixelsToRow<PixelType>(std::forward<Func>(aFunc));
   }
@@ -748,9 +747,6 @@ class SurfacePipe {
 
   explicit SurfacePipe(UniquePtr<SurfaceFilter>&& aHead)
       : mHead(std::move(aHead)) {}
-
-  SurfacePipe(const SurfacePipe&) = delete;
-  SurfacePipe& operator=(const SurfacePipe&) = delete;
 
   UniquePtr<SurfaceFilter> mHead;  /// The first filter in the chain.
 };

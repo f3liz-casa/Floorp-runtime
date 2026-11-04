@@ -161,7 +161,7 @@ The `MOZ_FETCHES_DIR` environment variable is automatically set for pushes to CI
 
 For convenience, we provide a script that will automatically download the artifacts specified in [translations-fetch.yml]:
 
-* [toolkit/components/translations/tests/scripts/download-translations-artifacts.py](https://searchfox.org/mozilla-central/source/toolkit/components/translations/tests/scripts/download-translations-artifacts.py)
+* [toolkit/components/translations/tests/scripts/download-translations-artifacts.py](https://searchfox.org/firefox-main/source/toolkit/components/translations/tests/scripts/download-translations-artifacts.py)
 
 You will then need to export that temporary directory as `MOZ_FETCHES_DIR` prior to running end-to-end Translations tests.
 
@@ -214,7 +214,7 @@ In order to add a new performance test, you may need to add new language-model a
 
 You will also need to add a new test page and [register](https://searchfox.org/mozilla-central/rev/d5f93d53d7d005bd303925bc166163f158142cfd/browser/components/translations/tests/browser/head.js#420-434) its language, word count, and token count with the TranslationsBencher. For your convenience, we provide a script that will analyze the HTML of your test page, ensuring that it has a valid language tag, then providing you with the word count and token count.
 
-* [toolkit/components/translations/tests/scripts/translations-perf-data.py](https://searchfox.org/mozilla-central/source/toolkit/components/translations/tests/scripts/translations-perf-data.py)
+* [toolkit/components/translations/tests/scripts/translations-perf-data.py](https://searchfox.org/firefox-main/source/toolkit/components/translations/tests/scripts/translations-perf-data.py)
 
 
 
@@ -235,9 +235,9 @@ You will also need to add a new test page and [register](https://searchfox.org/m
 [Filter Expressions]: https://remote-settings.readthedocs.io/en/latest/target-filters.html#filter-expressions
 [Firefox Release Schedule]: https://wiki.mozilla.org/Release_Management/Calendar
 [generate functions]: https://emscripten.org/docs/api_reference/emscripten.h.html?highlight=dynamic_execution#functions
-[Getting Set Up To Work On The Firefox Codebase]: https://firefox-source-docs.mozilla.org/setup/index.html
+[Getting Set Up To Work On The Firefox Codebase]: /setup/index.md
 [importScripts()]: https://developer.mozilla.org/en-US/docs/Web/API/WorkerGlobalScope/importScripts
-[JSWindowActors]: https://firefox-source-docs.mozilla.org/dom/ipc/jsactors.html#jswindowactor
+[JSWindowActors]: /dom/ipc/jsactors.md#jswindowactor
 [kernel density estimation]: https://en.wikipedia.org/wiki/Kernel_density_estimation
 [minify]: https://github.com/tdewolff/minify
 [mozilla/translations]: https://github.com/mozilla/translations
@@ -247,6 +247,6 @@ You will also need to add a new test page and [register](https://searchfox.org/m
 [remote-settings-devtools]: https://github.com/mozilla-extensions/remote-settings-devtools/releases
 [Remote Settings]: https://remote-settings.readthedocs.io/en/latest/
 [toolkit/components/translations]: https://searchfox.org/mozilla-central/search?q=&path=toolkit%2Fcomponents%2Ftranslations&case=false&regexp=false
-[translations-fetch.yml]: https://searchfox.org/mozilla-central/source/taskcluster/kinds/fetch/translations-fetch.yml
+[translations-fetch.yml]: https://searchfox.org/firefox-main/source/taskcluster/kinds/fetch/translations-fetch.yml
 [WASM]: https://webassembly.org/
 [Workers]: https://searchfox.org/mozilla-central/search?q=%2Ftranslations.*worker&path=&case=false&regexp=true

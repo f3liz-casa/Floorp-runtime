@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim:set ts=2 sw=2 sts=2 et cindent: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -12,6 +10,7 @@
 #include "mozilla/ContentIterator.h"
 #include "mozilla/ResultVariant.h"
 #include "mozilla/SelectionMovementUtils.h"
+#include "mozilla/dom/Range.h"
 #include "mozilla/intl/WordBreaker.h"
 #include "nsComputedDOMStyle.h"
 #include "nsDOMAttributeMap.h"
@@ -21,7 +20,6 @@
 #include "nsIFrame.h"
 #include "nsINode.h"
 #include "nsIURI.h"
-#include "nsRange.h"
 #include "nsString.h"
 #include "nsTArray.h"
 #include "nsUnicharUtils.h"
@@ -70,7 +68,7 @@ Result<nsString, ErrorResult> TextDirectiveUtil::RangeContentAsString(
   return frame && frame->StyleVisibility()->IsVisible();
 }
 
-/* static */ RefPtr<nsRange> TextDirectiveUtil::FindStringInRange(
+/* static */ RefPtr<Range> TextDirectiveUtil::FindStringInRange(
     nsFind* aFinder, const RangeBoundary& aSearchStart,
     const RangeBoundary& aSearchEnd, const nsAString& aQuery,
     bool aWordStartBounded, bool aWordEndBounded) {
@@ -81,12 +79,12 @@ Result<nsString, ErrorResult> TextDirectiveUtil::RangeContentAsString(
   aFinder->SetWordStartBounded(aWordStartBounded);
   aFinder->SetWordEndBounded(aWordEndBounded);
   aFinder->SetCaseSensitive(false);
-  RefPtr<nsRange> result =
+  RefPtr<Range> result =
       aFinder->FindFromRangeBoundaries(aQuery, aSearchStart, aSearchEnd);
   if (!result || result->Collapsed()) {
     TEXT_FRAGMENT_LOG("Did not find query '{}'", NS_ConvertUTF16toUTF8(aQuery));
   } else {
-    auto rangeToString = [](nsRange* range) -> nsCString {
+    auto rangeToString = [](Range* range) -> nsCString {
       nsString rangeString;
       range->ToString(rangeString, IgnoreErrors());
       return NS_ConvertUTF16toUTF8(rangeString);
@@ -147,6 +145,12 @@ Result<nsString, ErrorResult> TextDirectiveUtil::RangeContentAsString(
   if (!aNode.IsElement()) {
     return false;
   }
+  // <br> is inline but creates a line break that should act as a block boundary
+  // for text fragment purposes. Without this, text on both sides of a <br> gets
+  // concatenated (e.g. "test<br>test" -> "testtest").
+  if (aNode.IsHTMLElement(nsGkAtoms::br)) {
+    return true;
+  }
   const Element* nodeAsElement = Element::FromNode(aNode);
   const RefPtr<const ComputedStyle> computedStyle =
       nsComputedDOMStyle::GetComputedStyleNoFlush(nodeAsElement);
@@ -191,8 +195,8 @@ Result<nsString, ErrorResult> TextDirectiveUtil::RangeContentAsString(
   return false;
 }
 
-/* static */ void TextDirectiveUtil::AdvanceStartToNextNonWhitespacePosition(
-    nsRange& aRange) {
+/* static */ bool TextDirectiveUtil::AdvanceStartToNextNonWhitespacePosition(
+    Range& aRange) {
   // 1. While range is not collapsed:
   while (!aRange.Collapsed()) {
     // 1.1. Let node be range's start node.
@@ -208,7 +212,7 @@ Result<nsString, ErrorResult> TextDirectiveUtil::RangeContentAsString(
       // tree order.
       // 1.3.2. Set range's start offset to 0.
       if (NS_FAILED(aRange.SetStart(node->GetNextNode(), 0))) {
-        return;
+        return false;
       }
       // 1.3.3. Continue.
       continue;
@@ -227,11 +231,12 @@ Result<nsString, ErrorResult> TextDirectiveUtil::RangeContentAsString(
     // 1.6.2 If cp does not have the White_Space property set, return.
     // 1.6.3 Add 1 to range’s start offset.
     if (!IsWhitespaceAtPosition(text, offset)) {
-      return;
+      return true;
     }
 
     aRange.SetStart(node, offset + 1);
   }
+  return false;
 }
 // https://wicg.github.io/scroll-to-text-fragment/#find-a-range-from-a-text-directive
 // Steps 2.2.3, 2.3.4
@@ -265,6 +270,20 @@ RangeBoundary TextDirectiveUtil::MoveToNextBoundaryPoint(
     return nsContentUtils::IsHTMLWhitespaceOrNBSP(ch) ||
            mozilla::IsPunctuationForWordSelect(ch);
   });
+}
+
+/* static */ bool TextDirectiveUtil::ContainsAtLeastTwoWords(
+    const nsAString& aString) {
+  uint32_t wordCount = 0;
+  for (uint32_t pos = 0; pos < aString.Length();) {
+    const auto [wordBegin, wordEnd] = intl::WordBreaker::FindWord(aString, pos);
+    if (!WordIsJustWhitespaceOrPunctuation(aString, wordBegin, wordEnd) &&
+        ++wordCount == 2) {
+      return true;
+    }
+    pos = wordEnd;
+  }
+  return false;
 }
 
 }  // namespace mozilla::dom

@@ -1,5 +1,3 @@
-/* -*- indent-tabs-mode: nil; js-indent-level: 2 -*- */
-/* vim: set ts=2 et sw=2 tw=80: */
 /* Any copyright is dedicated to the Public Domain.
  * http://creativecommons.org/publicdomain/zero/1.0/ */
 
@@ -17,9 +15,12 @@
 // Globals
 
 const kDeleteTempFileOnExit = "browser.helperApps.deleteTempFileOnExit";
+const kStartDownloadsInTmpDir = "browser.download.start_downloads_in_tmp_dir";
 // TODO (bug 1986365): we should replace the setting of this pref with an actual
 // test for the "new" behaviour (introduced in bug 1790641).
 const kDeletePrivateFileFeature = "browser.download.enableDeletePrivate";
+const kDecodeContentForKnownCompressedExtensions =
+  "network.http.decode_content_for_known_compressed_extensions";
 
 ChromeUtils.defineESModuleGetters(this, {
   FileUtils: "resource://gre/modules/FileUtils.sys.mjs",
@@ -29,10 +30,10 @@ ChromeUtils.defineESModuleGetters(this, {
  * Creates and starts a new download, using either DownloadCopySaver or
  * DownloadLegacySaver based on the current test run.
  *
- * @return {Promise}
- * @resolves The newly created Download object.  The download may be in progress
- *           or already finished.  The promiseDownloadStopped function can be
- *           used to wait for completion.
+ * @returns {Promise}
+ *   Resolves to the newly created Download object. The download may be in
+ *   progress or already finished. The promiseDownloadStopped function can be
+ *   used to wait for completion.
  * @rejects JavaScript exception.
  */
 function promiseStartDownload(aSourceUrl) {
@@ -55,8 +56,8 @@ function promiseStartDownload(aSourceUrl) {
  * @param expectedContents
  *        String containing the octets that are expected in the file.
  *
- * @return {Promise}
- * @resolves When the properties have been verified.
+ * @returns {Promise<void>}
+ *   Resolves when the properties have been verified.
  * @rejects JavaScript exception.
  */
 var promiseVerifyTarget = async function (downloadTarget, expectedContents) {
@@ -239,56 +240,159 @@ add_task(async function test_unix_permissions() {
 
   let launcherPath = getTempFile("app-launcher").path;
 
-  for (let autoDelete of [false, true]) {
-    for (let isPrivate of [false, true]) {
-      for (let launchWhenSucceeded of [false, true]) {
-        info(
-          "Checking " +
-            JSON.stringify({ autoDelete, isPrivate, launchWhenSucceeded })
-        );
-
-        Services.prefs.setBoolPref(kDeleteTempFileOnExit, autoDelete);
-
-        let download;
-        if (!gUseLegacySaver) {
-          download = await Downloads.createDownload({
-            source: { url: httpUrl("source.txt"), isPrivate },
-            target: getTempFile(TEST_TARGET_FILE_NAME).path,
-            launchWhenSucceeded,
-            launcherPath,
-          });
-          await download.start();
-        } else {
-          download = await promiseStartLegacyDownload(httpUrl("source.txt"), {
-            isPrivate,
-            launchWhenSucceeded,
-            launcherPath: launchWhenSucceeded && launcherPath,
-          });
-          await promiseDownloadStopped(download);
-        }
-
-        let isTemporary = launchWhenSucceeded && isPrivate;
-        let stat = await IOUtils.stat(download.target.path);
-        if (Services.appinfo.OS == "WINNT") {
-          // On Windows
-          // Temporary downloads should be read-only
-          Assert.equal(stat.permissions, isTemporary ? 0o444 : 0o666);
-        } else {
-          // On Linux, Mac
-          // Temporary downloads should be read-only and not accessible to other
-          // users, while permanently downloaded files should be readable and
-          // writable as specified by the system umask.
-          Assert.equal(
-            stat.permissions,
-            isTemporary ? 0o400 : 0o666 & ~Services.sysinfo.getProperty("umask")
+  for (let startInTmpDir of [false, true]) {
+    for (let autoDelete of [false, true]) {
+      for (let isPrivate of [false, true]) {
+        for (let launchWhenSucceeded of [false, true]) {
+          info(
+            "Checking " +
+              JSON.stringify({
+                startInTmpDir,
+                autoDelete,
+                isPrivate,
+                launchWhenSucceeded,
+              })
           );
+
+          Services.prefs.setBoolPref(kStartDownloadsInTmpDir, startInTmpDir);
+          Services.prefs.setBoolPref(kDeleteTempFileOnExit, autoDelete);
+
+          let download;
+          if (!gUseLegacySaver) {
+            download = await Downloads.createDownload({
+              source: { url: httpUrl("source.txt"), isPrivate },
+              target: getTempFile(TEST_TARGET_FILE_NAME).path,
+              launchWhenSucceeded,
+              launcherPath,
+            });
+            await download.start();
+          } else {
+            download = await promiseStartLegacyDownload(httpUrl("source.txt"), {
+              isPrivate,
+              launchWhenSucceeded,
+              launcherPath: launchWhenSucceeded && launcherPath,
+            });
+            await promiseDownloadStopped(download);
+          }
+
+          let isTemporary = launchWhenSucceeded && isPrivate && startInTmpDir;
+          let stat = await IOUtils.stat(download.target.path);
+          if (Services.appinfo.OS == "WINNT") {
+            // On Windows
+            // Temporary downloads should be read-only
+            Assert.equal(stat.permissions, isTemporary ? 0o444 : 0o666);
+          } else {
+            // On Linux, Mac
+            // Temporary downloads should be read-only and not accessible to
+            // other users, while permanently downloaded files should be
+            // readable and writable as specified by the system umask.
+            Assert.equal(
+              stat.permissions,
+              isTemporary
+                ? 0o400
+                : 0o666 & ~Services.sysinfo.getProperty("umask")
+            );
+          }
         }
       }
     }
   }
 
-  // Clean up the changes to the preference.
+  // Clean up the changes to the preferences.
   Services.prefs.clearUserPref(kDeleteTempFileOnExit);
+  Services.prefs.clearUserPref(kStartDownloadsInTmpDir);
+});
+
+/**
+ * Tests the MacOS xattr com.apple.metadata:kMDItemWhereFroms information of the final target
+ * once the download finished. This xattr should contain both the download source URL as well
+ * as the referrer for that source, unless the referrer policy would have blocked tracking the
+ * referrer.
+ */
+add_task(async function test_macos_xattrItemWhereFroms() {
+  // This test is only executed on MacOS.
+  if (Services.appinfo.OS != "Darwin") {
+    info("Skipping test.");
+    return;
+  }
+
+  const sourceUrl = httpUrl("source.txt");
+  const xattrName = "com.apple.metadata:kMDItemWhereFroms";
+
+  let unsafeReferrerInfo = new ReferrerInfo(
+    Ci.nsIReferrerInfo.UNSAFE_URL,
+    true,
+    NetUtil.newURI(TEST_REFERRER_URL)
+  );
+  Assert.notEqual(unsafeReferrerInfo, null);
+
+  let noReferrerInfo = new ReferrerInfo(
+    Ci.nsIReferrerInfo.NO_REFERRER,
+    true,
+    NetUtil.newURI(TEST_REFERRER_URL)
+  );
+
+  let targetFile = getTempFile(TEST_TARGET_FILE_NAME);
+
+  try {
+    if (!gUseLegacySaver) {
+      let download = await Downloads.createDownload({
+        source: { url: sourceUrl, referrerInfo: unsafeReferrerInfo },
+        target: targetFile.path,
+      });
+      await download.start();
+    } else {
+      let download = await promiseStartLegacyDownload(sourceUrl, {
+        targetFile,
+        referrerInfo: unsafeReferrerInfo,
+      });
+      await promiseDownloadStopped(download);
+    }
+    await promiseVerifyContents(targetFile.path, TEST_DATA_SHORT);
+
+    // Check the ItemWhereFroms xattr
+    let plist = new TextDecoder().decode(
+      await IOUtils.getMacXAttr(targetFile.path, xattrName)
+    );
+    info(plist);
+    // Test that the download source is captured in the xattr
+    Assert.ok(plist.includes(sourceUrl));
+    // Test that the referrer is in the xattr when the Referrer-policy doesn't prohibit it
+    Assert.ok(plist.includes(TEST_REFERRER_URL));
+  } finally {
+    await IOUtils.remove(targetFile.path);
+  }
+
+  targetFile = getTempFile(TEST_TARGET_FILE_NAME);
+
+  info(targetFile.path);
+  try {
+    if (!gUseLegacySaver) {
+      let download = await Downloads.createDownload({
+        source: { url: sourceUrl, referrerInfo: noReferrerInfo },
+        target: targetFile.path,
+      });
+      await download.start();
+    } else {
+      let download = await promiseStartLegacyDownload(sourceUrl, {
+        targetFile,
+        referrerInfo: noReferrerInfo,
+      });
+      await promiseDownloadStopped(download);
+    }
+    await promiseVerifyContents(targetFile.path, TEST_DATA_SHORT);
+    // Check the ItemWhereFroms xattr
+    let plist = new TextDecoder().decode(
+      await IOUtils.getMacXAttr(targetFile.path, xattrName)
+    );
+    info(plist);
+    // Test that the download source is captured in the xattr
+    Assert.ok(plist.includes(sourceUrl));
+    // Test that the referrer is not in the xattr when the Referrer-policy prohibits it
+    Assert.ok(!plist.includes(TEST_REFERRER_URL));
+  } finally {
+    await IOUtils.remove(targetFile.path);
+  }
 });
 
 /**
@@ -305,12 +409,15 @@ add_task(async function test_windows_zoneInformation() {
     return;
   }
 
+  // The file name must differ between the legacy and the non-legacy runs:
+  // both test files share this task and may run in parallel, and this
+  // directory is shared by the whole session.
   let normalTargetFile = await IOUtils.getFile(
     Services.dirsvc.get("LocalAppData", Ci.nsIFile).path,
-    "xpcshell-download-test.txt"
+    `xpcshell-download-test-${gUseLegacySaver ? "legacy" : "core"}.txt`
   );
 
-  // The template file name lenght is more than MAX_PATH characters. The final
+  // The template file name length is more than MAX_PATH characters. The final
   // full path will be shortened to MAX_PATH length by the createUnique call.
   let longTargetFile = await IOUtils.getFile(
     Services.dirsvc.get("LocalAppData", Ci.nsIFile).path,
@@ -385,6 +492,13 @@ add_task(async function test_windows_zoneInformation() {
         isPrivate: true,
       },
       expectedZoneId: "[ZoneTransfer]\r\nZoneId=3\r\n",
+    },
+    {
+      options: {
+        originalUrl: "https://original.url.com",
+      },
+      expectedZoneId:
+        "[ZoneTransfer]\r\nZoneId=3\r\nHostUrl=https://original.url.com/\r\n",
     },
   ];
   for (const test of tests) {
@@ -533,7 +647,7 @@ add_task(async function test_adjustChannel() {
     stream.setByteStringData(postData);
 
     channel.QueryInterface(Ci.nsIUploadChannel2);
-    channel.explicitSetUploadStream(stream, null, -1, "POST", false);
+    channel.explicitSetUploadStream(stream, null, -1, "POST");
 
     return Promise.resolve();
   }
@@ -1808,14 +1922,60 @@ add_task(async function test_with_content_encoding() {
 });
 
 /**
- * Checks that the file is not decoded if the extension matches the encoding.
+ * Checks that the Content-Encoding is decoded even when the file extension
+ * matches the encoding (bug 610679, bug 1470011). This is the default
+ * behavior; the legacy behavior is checked in the test below.
+ */
+add_task(async function test_with_content_encoding_matching_extension() {
+  Services.prefs.setBoolPref(kDecodeContentForKnownCompressedExtensions, true);
+
+  let sourcePath = "/test_with_content_encoding_matching_extension.gz";
+  let sourceUrl = httpUrl("test_with_content_encoding_matching_extension.gz");
+
+  function cleanup() {
+    gHttpServer.registerPathHandler(sourcePath, null);
+    Services.prefs.clearUserPref(kDecodeContentForKnownCompressedExtensions);
+  }
+  registerCleanupFunction(cleanup);
+
+  gHttpServer.registerPathHandler(sourcePath, function (aRequest, aResponse) {
+    aResponse.setHeader("Content-Type", "text/plain", false);
+    aResponse.setHeader("Content-Encoding", "gzip", false);
+    aResponse.setHeader(
+      "Content-Length",
+      "" + TEST_DATA_SHORT_GZIP_ENCODED.length,
+      false
+    );
+
+    let bos = new BinaryOutputStream(aResponse.bodyOutputStream);
+    bos.writeByteArray(TEST_DATA_SHORT_GZIP_ENCODED);
+  });
+
+  let download = await promiseStartDownload(sourceUrl);
+  await promiseDownloadStopped(download);
+
+  Assert.equal(download.progress, 100);
+  Assert.equal(download.totalBytes, TEST_DATA_SHORT_GZIP_ENCODED.length);
+
+  // Ensure the content matches the decoded test data.
+  await promiseVerifyTarget(download.target, TEST_DATA_SHORT);
+
+  cleanup();
+});
+
+/**
+ * Checks that with the legacy pref disabled, the file is not decoded if the
+ * extension matches the encoding.
  */
 add_task(async function test_with_content_encoding_ignore_extension() {
+  Services.prefs.setBoolPref(kDecodeContentForKnownCompressedExtensions, false);
+
   let sourcePath = "/test_with_content_encoding_ignore_extension.gz";
   let sourceUrl = httpUrl("test_with_content_encoding_ignore_extension.gz");
 
   function cleanup() {
     gHttpServer.registerPathHandler(sourcePath, null);
+    Services.prefs.clearUserPref(kDecodeContentForKnownCompressedExtensions);
   }
   registerCleanupFunction(cleanup);
 
@@ -1975,6 +2135,10 @@ add_task(async function test_getSha256Hash() {
     await promiseDownloadStopped(download);
     Assert.ok(download.stopped);
     Assert.equal(32, download.saver.getSha256Hash().length);
+    Assert.equal(
+      download.saver.getSha256HashHex(),
+      "616b8d2d6f4f68c4edd6d1e2fb9f7b383705f314f0358958b7f7a982a5861cb4"
+    );
   }
 });
 
@@ -2172,6 +2336,26 @@ add_task(async function test_blocked_applicationReputation_confirmBlock() {
   Assert.ok(!download.target.exists);
   Assert.equal(download.target.size, 0);
 });
+
+/**
+ * Checks that confirmBlock sets deleted to true.
+ */
+add_task(
+  async function test_blocked_applicationReputation_confirmBlock_sets_deleted() {
+    let download = await promiseBlockedDownload({
+      keepPartialData: true,
+      keepBlockedData: true,
+    });
+
+    Assert.ok(download.hasBlockedData);
+    Assert.ok(!download.deleted);
+
+    await download.confirmBlock();
+
+    Assert.ok(!download.hasBlockedData);
+    Assert.ok(download.deleted);
+  }
+);
 
 /**
  * Checks that application reputation blocks the download but maintains the

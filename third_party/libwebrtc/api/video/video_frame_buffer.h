@@ -11,10 +11,11 @@
 #ifndef API_VIDEO_VIDEO_FRAME_BUFFER_H_
 #define API_VIDEO_VIDEO_FRAME_BUFFER_H_
 
+#include <cstddef>
 #include <cstdint>
+#include <span>
 #include <string>
 
-#include "api/array_view.h"
 #include "api/ref_count.h"
 #include "api/scoped_refptr.h"
 #include "rtc_base/system/rtc_export.h"
@@ -44,9 +45,14 @@ class NV12BufferInterface;
 // correct subclass in custom video sinks. The purpose of this is to improve
 // performance by providing an optimized path without intermediate conversions.
 // Frame metadata such as rotation and timestamp are stored in
-// webrtc::VideoFrame, and not here.
-class RTC_EXPORT VideoFrameBuffer : public webrtc::RefCountInterface {
+// VideoFrame, and not here.
+class RTC_EXPORT VideoFrameBuffer : public RefCountInterface {
  public:
+  class RTC_EXPORT PreparedFrameHandler : public webrtc::RefCountInterface {
+   public:
+    virtual void OnFramePrepared(size_t frame_identifier) = 0;
+  };
+
   // New frame buffer types will be added conservatively when there is an
   // opportunity to optimize the path between some pair of video source and
   // video sink.
@@ -79,6 +85,20 @@ class RTC_EXPORT VideoFrameBuffer : public webrtc::RefCountInterface {
   // Conversion may fail, for example if reading the pixel data from a texture
   // fails. If the conversion fails, nullptr is returned.
   virtual scoped_refptr<I420BufferInterface> ToI420() = 0;
+
+  // Same as ToI420(), but signals that the conversion is for occasional,
+  // out-of-band inspection of the frame contents (e.g. corruption detection
+  // sampling) rather than for encoding or scaling of the frame.
+  //
+  // kNative implementations backed by GPU memory may use this distinction to
+  // avoid concluding that all subsequent frames should be delivered in CPU
+  // memory. The returned buffer must be identical in content to ToI420().
+  //
+  // The default implementation simply calls ToI420().
+  //
+  // TODO(crbug.com/555719593): figure out a way to avoid this synchronous call
+  // for kNative buffers.
+  virtual scoped_refptr<I420BufferInterface> ToI420ForInspection();
 
   // GetI420() methods should return I420 buffer if conversion is trivial, i.e
   // no change for binary data is needed. Otherwise these methods should return
@@ -123,10 +143,19 @@ class RTC_EXPORT VideoFrameBuffer : public webrtc::RefCountInterface {
   // frame type is not supported, mapping is not possible, or if the kNative
   // frame has not implemented this method. Only callable if type() is kNative.
   virtual scoped_refptr<VideoFrameBuffer> GetMappedFrameBuffer(
-      ArrayView<Type> types);
+      std::span<Type> types);
 
   // For logging: returns a textual representation of the storage.
   virtual std::string storage_representation() const;
+
+  // Informs the buffer about the maximum resolution for the upcoming
+  // `GetMappedBuffer()` calls.
+  //
+  virtual void PrepareMappedBufferAsync(
+      size_t width,
+      size_t height,
+      scoped_refptr<PreparedFrameHandler> handler,
+      size_t frame_identifier);
 
  protected:
   ~VideoFrameBuffer() override {}

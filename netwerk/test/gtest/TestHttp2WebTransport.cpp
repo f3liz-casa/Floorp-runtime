@@ -1,24 +1,23 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include <utility>
 
-#include "TestCommon.h"
-#include "gtest/gtest.h"
-#include "Http2WebTransportSession.h"
-#include "Http2WebTransportStream.h"
-#include "nsString.h"
-#include "nsTArray.h"
-#include "mozilla/gtest/MozAssertions.h"
-#include "mozilla/Queue.h"
-#include "mozilla/net/NeqoHttp3Conn.h"
 #include "Capsule.h"
 #include "CapsuleEncoder.h"
 #include "CapsuleParser.h"
+#include "Http2WebTransportSession.h"
+#include "Http2WebTransportStream.h"
+#include "TestCommon.h"
+#include "gtest/gtest.h"
+#include "mozilla/Queue.h"
+#include "mozilla/gtest/MozAssertions.h"
+#include "mozilla/net/NeqoHttp3Conn.h"
 #include "nsIWebTransport.h"
 #include "nsStreamUtils.h"
+#include "nsString.h"
+#include "nsTArray.h"
 #include "nsThreadUtils.h"
 
 using namespace mozilla;
@@ -201,18 +200,18 @@ class MockWebTransportSessionEventListener
   }
   nsTArray<uint8_t> mReceivedDatagrams;
 
-  Maybe<std::pair<uint64_t, nsresult>> TakeStopSending() {
+  Maybe<std::pair<uint64_t, uint64_t>> TakeStopSending() {
     return std::move(mStopSending);
   }
 
-  Maybe<std::pair<uint64_t, nsresult>> TakeReset() { return std::move(mReset); }
+  Maybe<std::pair<uint64_t, uint64_t>> TakeReset() { return std::move(mReset); }
 
  private:
   virtual ~MockWebTransportSessionEventListener() = default;
 
   nsTArray<RefPtr<WebTransportStreamBase>> mIncomingStreams;
-  Maybe<std::pair<uint64_t, nsresult>> mStopSending;
-  Maybe<std::pair<uint64_t, nsresult>> mReset;
+  Maybe<std::pair<uint64_t, uint64_t>> mStopSending;
+  Maybe<std::pair<uint64_t, uint64_t>> mReset;
 };
 
 NS_IMPL_ISUPPORTS(MockWebTransportSessionEventListener,
@@ -251,9 +250,13 @@ MockWebTransportSessionEventListener::OnSessionReady(uint64_t ready) {
 
 NS_IMETHODIMP
 MockWebTransportSessionEventListener::OnSessionClosed(
-    bool aCleanly, uint32_t aStatus, const nsACString& aReason) {
+    bool aCleanly, uint32_t aStatus, const nsACString& aReason,
+    nsIWebTransportSessionStats* aStats) {
   return NS_OK;
 }
+
+NS_IMETHODIMP
+MockWebTransportSessionEventListener::OnDraining() { return NS_OK; }
 
 NS_IMETHODIMP MockWebTransportSessionEventListener::OnDatagramReceivedInternal(
     nsTArray<uint8_t>&& aData) {
@@ -278,14 +281,19 @@ MockWebTransportSessionEventListener::OnOutgoingDatagramOutCome(
 }
 
 NS_IMETHODIMP MockWebTransportSessionEventListener::OnStopSending(
-    uint64_t aStreamId, nsresult aError) {
-  mStopSending = Some(std::pair<uint64_t, nsresult>(aStreamId, aError));
+    uint64_t aStreamId, uint64_t aErrorCode) {
+  mStopSending = Some(std::pair<uint64_t, uint64_t>(aStreamId, aErrorCode));
   return NS_OK;
 }
 
 NS_IMETHODIMP MockWebTransportSessionEventListener::OnResetReceived(
-    uint64_t aStreamId, nsresult aError) {
-  mReset = Some(std::pair<uint64_t, nsresult>(aStreamId, aError));
+    uint64_t aStreamId, uint64_t aErrorCode) {
+  mReset = Some(std::pair<uint64_t, uint64_t>(aStreamId, aErrorCode));
+  return NS_OK;
+}
+
+NS_IMETHODIMP MockWebTransportSessionEventListener::OnStatsAvailable(
+    nsIWebTransportSessionStats* aStats) {
   return NS_OK;
 }
 
@@ -429,8 +437,8 @@ CreateStreamAndSendData(WebTransportStreamBase* aStream,
   aStream->GetWriterAndReader(getter_AddRefs(writer), getter_AddRefs(reader));
 
   uint32_t numWritten = 0;
-  Unused << writer->Write((const char*)aData.Elements(), aData.Length(),
-                          &numWritten);
+  (void)writer->Write((const char*)aData.Elements(), aData.Length(),
+                      &numWritten);
   NS_ProcessPendingEvents(nullptr);
   return std::make_pair(writer, reader);
 }
@@ -544,7 +552,7 @@ TEST(TestHttp2WebTransport, OutgoingBidiStream)
   bidiStream->GetWriterAndReader(getter_AddRefs(writer),
                                  getter_AddRefs(reader));
   uint64_t available = 0;
-  Unused << reader->Available(&available);
+  (void)reader->Available(&available);
   EXPECT_EQ(available, inputData.Length());
 
   ValidateData(reader, inputData);
@@ -627,8 +635,8 @@ TEST(TestHttp2WebTransport, StreamDataSenderFlowControl)
   nsTArray<uint8_t> inputData;
   CreateTestData(100, inputData);
   uint32_t numWritten = 0;
-  Unused << writer->Write((const char*)inputData.Elements(), inputData.Length(),
-                          &numWritten);
+  (void)writer->Write((const char*)inputData.Elements(), inputData.Length(),
+                      &numWritten);
 
   NS_ProcessPendingEvents(nullptr);
 
@@ -646,8 +654,8 @@ TEST(TestHttp2WebTransport, StreamDataSenderFlowControl)
   ValidateData(streamData.mData, inputData);
 
   numWritten = 0;
-  Unused << writer->Write((const char*)inputData.Elements(), inputData.Length(),
-                          &numWritten);
+  (void)writer->Write((const char*)inputData.Elements(), inputData.Length(),
+                      &numWritten);
 
   NS_ProcessPendingEvents(nullptr);
   ServerProcessCapsules(server, client);
@@ -664,8 +672,8 @@ TEST(TestHttp2WebTransport, StreamDataSenderFlowControl)
   server->SendWebTransportMaxStreamDataCapsule(300, id);
   ClientProcessCapsules(server, client);
 
-  Unused << writer->Write((const char*)inputData.Elements(), inputData.Length(),
-                          &numWritten);
+  (void)writer->Write((const char*)inputData.Elements(), inputData.Length(),
+                      &numWritten);
 
   NS_ProcessPendingEvents(nullptr);
   ServerProcessCapsules(server, client);
@@ -701,8 +709,8 @@ TEST(TestHttp2WebTransport, StreamDataSenderFlowControlMaxData)
   nsTArray<uint8_t> inputData;
   CreateTestData(100, inputData);
   uint32_t numWritten = 0;
-  Unused << writer->Write((const char*)inputData.Elements(), inputData.Length(),
-                          &numWritten);
+  (void)writer->Write((const char*)inputData.Elements(), inputData.Length(),
+                      &numWritten);
 
   NS_ProcessPendingEvents(nullptr);
 
@@ -720,8 +728,8 @@ TEST(TestHttp2WebTransport, StreamDataSenderFlowControlMaxData)
   ValidateData(streamData.mData, inputData);
 
   numWritten = 0;
-  Unused << writer->Write((const char*)inputData.Elements(), inputData.Length(),
-                          &numWritten);
+  (void)writer->Write((const char*)inputData.Elements(), inputData.Length(),
+                      &numWritten);
 
   NS_ProcessPendingEvents(nullptr);
   ServerProcessCapsules(server, client);
@@ -742,8 +750,8 @@ TEST(TestHttp2WebTransport, StreamDataSenderFlowControlMaxData)
   server->SendWebTransportMaxStreamDataCapsule(500, id);
   ClientProcessCapsules(server, client);
 
-  Unused << writer->Write((const char*)inputData.Elements(), inputData.Length(),
-                          &numWritten);
+  (void)writer->Write((const char*)inputData.Elements(), inputData.Length(),
+                      &numWritten);
 
   NS_ProcessPendingEvents(nullptr);
   ServerProcessCapsules(server, client);
@@ -754,8 +762,8 @@ TEST(TestHttp2WebTransport, StreamDataSenderFlowControlMaxData)
   server->SendWebTransportMaxDataCapsule(1024);
   ClientProcessCapsules(server, client);
 
-  Unused << writer->Write((const char*)inputData.Elements(), inputData.Length(),
-                          &numWritten);
+  (void)writer->Write((const char*)inputData.Elements(), inputData.Length(),
+                      &numWritten);
 
   NS_ProcessPendingEvents(nullptr);
   ServerProcessCapsules(server, client);
@@ -852,7 +860,7 @@ TEST(TestHttp2WebTransport, ReceiverFlowControl1)
   ClientProcessCapsules(server, client);
 
   uint64_t available = 0;
-  Unused << reader->Available(&available);
+  (void)reader->Available(&available);
   EXPECT_EQ(available, FC_SIZE / 4);
 
   nsTArray<uint8_t> outputData;
@@ -870,7 +878,7 @@ TEST(TestHttp2WebTransport, ReceiverFlowControl1)
   CheckFc(*bidiStream->ReceiverFc(), FC_SIZE / 4 + 1, FC_SIZE / 4 + 1);
 
   available = 0;
-  Unused << reader->Available(&available);
+  (void)reader->Available(&available);
   EXPECT_EQ(available, 1u);
 
   ServerProcessCapsules(server, client);
@@ -955,14 +963,16 @@ TEST(TestHttp2WebTransport, StreamOnStopSending)
 
   ServerProcessCapsules(server, client);
 
-  server->SendWebTransportStopSendingCapsule(0,
+  // Above 255, so a narrowing anywhere on the way would show.
+  const uint64_t kErrorCode = 0x12345;
+  server->SendWebTransportStopSendingCapsule(kErrorCode,
                                              uniStream->WebTransportStreamId());
   ClientProcessCapsules(server, client);
 
   auto stopSending = listener->TakeStopSending();
   ASSERT_TRUE(stopSending);
   ASSERT_EQ(stopSending->first, uniStream->WebTransportStreamId());
-  ASSERT_EQ(stopSending->second, NS_ERROR_WEBTRANSPORT_CODE_BASE);
+  ASSERT_EQ(stopSending->second, kErrorCode);
 
   client->Done();
   server->Done();
@@ -1043,14 +1053,60 @@ TEST(TestHttp2WebTransport, StreamResetReliableSize)
   server->SendWebTransportStreamDataCapsule(stream->WebTransportStreamId(),
                                             false, std::move(inputData));
 
-  server->SendWebTransportResetStreamCapsule(0, TOTAL_SIZE / 2,
+  const uint64_t kErrorCode = 0x12345;
+  server->SendWebTransportResetStreamCapsule(kErrorCode, TOTAL_SIZE / 2,
                                              stream->WebTransportStreamId());
   ClientProcessCapsules(server, client);
 
   auto reset = listener->TakeReset();
   ASSERT_TRUE(reset);
   ASSERT_EQ(reset->first, stream->WebTransportStreamId());
-  ASSERT_EQ(reset->second, NS_ERROR_WEBTRANSPORT_CODE_BASE);
+  ASSERT_EQ(reset->second, kErrorCode);
+
+  client->Done();
+  server->Done();
+}
+
+TEST(TestHttp2WebTransport, SendHalfStaysWritableAfterPeerReset)
+{
+  const uint32_t TOTAL_SIZE = 1024;
+  Http2WebTransportInitialSettings settings;
+  settings.mInitialMaxStreamsBidi = 1;
+  settings.mInitialMaxStreamDataBidi = TOTAL_SIZE;
+  settings.mInitialMaxData = TOTAL_SIZE;
+  RefPtr<MockWebTransportClient> client = new MockWebTransportClient(settings);
+  RefPtr<MockWebTransportSessionEventListener> listener =
+      new MockWebTransportSessionEventListener();
+  client->Session()->SetWebTransportSessionEventListener(listener);
+  RefPtr<MockWebTransportServer> server = new MockWebTransportServer();
+
+  RefPtr<WebTransportStreamBase> stream = CreateOutgoingStream(client);
+  ASSERT_TRUE(stream != nullptr);
+
+  nsTArray<uint8_t> inputData;
+  CreateTestData(64, inputData);
+  auto streams = CreateStreamAndSendData(stream, inputData);
+  ServerProcessCapsules(server, client);
+
+  server->SendWebTransportResetStreamCapsule(0x12345, 0,
+                                             stream->WebTransportStreamId());
+  ClientProcessCapsules(server, client);
+  ASSERT_TRUE(listener->TakeReset());
+
+  nsTArray<uint8_t> moreData;
+  CreateTestData(64, moreData);
+  nsTArray<uint8_t> expectedData;
+  expectedData.AppendElements(moreData);
+  uint32_t numWritten = 0;
+  (void)streams.first->Write((const char*)moreData.Elements(),
+                             moreData.Length(), &numWritten);
+  NS_ProcessPendingEvents(nullptr);
+  ServerProcessCapsules(server, client);
+
+  nsTArray<Capsule> received = server->GetReceivedCapsules();
+  ASSERT_EQ(received.Length(), 2u);
+  ValidateData(received[1].GetWebTransportStreamDataCapsule().mData,
+               expectedData);
 
   client->Done();
   server->Done();
@@ -1070,7 +1126,8 @@ TEST(TestHttp2WebTransport, SendAndReceiveDatagram)
   expectedData.AppendElements(mockData);
 
   // Send datagram from client to server
-  client->Session()->SendDatagram(std::move(mockData), 1);
+  client->Session()->SendDatagram(std::move(mockData), 1, 0, 0,
+                                  TimeStamp::Now());
   ServerProcessCapsules(server, client);
 
   // Verify the server received the correct datagram capsule
