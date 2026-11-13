@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -12,17 +10,16 @@
 #include "mozilla/StorageAccess.h"
 #include "mozilla/StoragePrincipalHelper.h"
 #include "mozilla/dom/BrowserChild.h"
-#include "mozilla/dom/PolicyContainer.h"
 #include "mozilla/dom/ReferrerInfo.h"
 #include "mozilla/dom/nsCSPUtils.h"
 #include "mozilla/ipc/BackgroundUtils.h"
 #include "mozilla/ipc/PBackgroundSharedTypes.h"
+#include "nsContentSecurityUtils.h"
 #include "nsContentUtils.h"
 #include "nsIBrowserChild.h"
 #include "nsIContentSecurityPolicy.h"
 #include "nsICookieJarSettings.h"
 #include "nsINetworkInterceptController.h"
-#include "nsIProtocolHandler.h"
 #include "nsIReferrerInfo.h"
 #include "nsNetUtil.h"
 #include "nsScriptSecurityManager.h"
@@ -96,30 +93,20 @@ WorkerLoadInfoData::WorkerLoadInfoData()
       mStorageAccess(StorageAccess::eDeny),
       mUseRegularPrincipal(false),
       mUsingStorageAccess(false),
+      mSerialAllowed(true),
       mServiceWorkersTestingInWindow(false),
       mShouldResistFingerprinting(false),
       mIsThirdPartyContext(true),
       mSecureContext(eNotSet) {}
 
-nsresult WorkerLoadInfo::SetPrincipalsAndCSPOnMainThread(
+nsresult WorkerLoadInfo::SetPrincipalsOnMainThread(
     nsIPrincipal* aPrincipal, nsIPrincipal* aPartitionedPrincipal,
-    nsILoadGroup* aLoadGroup, nsIContentSecurityPolicy* aCsp) {
+    nsILoadGroup* aLoadGroup) {
   AssertIsOnMainThread();
   MOZ_ASSERT(NS_LoadGroupMatchesPrincipal(aLoadGroup, aPrincipal));
 
   mPrincipal = aPrincipal;
   mPartitionedPrincipal = aPartitionedPrincipal;
-
-  mCSP = aCsp;
-
-  if (mCSP) {
-    Result<UniquePtr<WorkerCSPContext>, nsresult> ctx =
-        WorkerCSPContext::CreateFromCSP(aCsp);
-    if (NS_WARN_IF(ctx.isErr())) {
-      return ctx.unwrapErr();
-    }
-    mCSPContext = ctx.unwrap();
-  }
 
   mLoadGroup = aLoadGroup;
 
@@ -128,17 +115,40 @@ nsresult WorkerLoadInfo::SetPrincipalsAndCSPOnMainThread(
   StoragePrincipalHelper::GetRegularPrincipalOriginAttributes(
       aLoadGroup, mOriginAttributes);
 
-  nsresult rv = PrincipalToPrincipalInfo(aPrincipal, mPrincipalInfo.get());
-  NS_ENSURE_SUCCESS(rv, rv);
+  MOZ_TRY(PrincipalToPrincipalInfo(aPrincipal, mPrincipalInfo.get()));
 
   if (aPrincipal->Equals(aPartitionedPrincipal)) {
     *mPartitionedPrincipalInfo = *mPrincipalInfo;
   } else {
     mPartitionedPrincipalInfo = MakeUnique<PrincipalInfo>();
-    rv = PrincipalToPrincipalInfo(aPartitionedPrincipal,
-                                  mPartitionedPrincipalInfo.get());
-    NS_ENSURE_SUCCESS(rv, rv);
+    MOZ_TRY(PrincipalToPrincipalInfo(aPartitionedPrincipal,
+                                     mPartitionedPrincipalInfo.get()));
   }
+
+  return NS_OK;
+}
+
+nsresult WorkerLoadInfo::SetPolicyContainerOnMainThread(
+    PolicyContainer* aPolicyContainer) {
+  AssertIsOnMainThread();
+
+  mPolicyContainer = aPolicyContainer;
+  mPolicyContainerArgs.reset();
+  mCSPContext = nullptr;
+
+  if (!mPolicyContainer) {
+    return NS_OK;
+  }
+
+  mozilla::ipc::PolicyContainerArgs policyContainerArgs;
+  PolicyContainer::ToArgs(mPolicyContainer, policyContainerArgs);
+  mPolicyContainerArgs.emplace(std::move(policyContainerArgs));
+
+  if (mPolicyContainerArgs->csp().isSome()) {
+    mozilla::ipc::CSPInfo cspInfo(*mPolicyContainerArgs->csp());
+    mCSPContext = MakeUnique<OffThreadCSPContext>(std::move(cspInfo));
+  }
+
   return NS_OK;
 }
 
@@ -196,17 +206,14 @@ nsresult WorkerLoadInfo::GetPrincipalsAndLoadGroupFromChannel(
       rv = NS_GetFinalChannelURI(aChannel, getter_AddRefs(finalURI));
       NS_ENSURE_SUCCESS(rv, rv);
 
-      // See if this is a resource URI. Since JSMs usually come from
-      // resource:// URIs we're currently considering all URIs with the
-      // URI_IS_UI_RESOURCE flag as valid for creating privileged workers.
-      bool isResource;
-      rv = NS_URIChainHasFlags(finalURI, nsIProtocolHandler::URI_IS_UI_RESOURCE,
-                               &isResource);
-      NS_ENSURE_SUCCESS(rv, rv);
-
-      if (isResource) {
-        // Assign the system principal to the resource:// worker only if it
-        // was loaded from code using the system principal.
+      // Privileged workers' scripts come from script-bearing chrome schemes
+      // such as resource:// (where JSMs live). We restrict them to those
+      // trusted schemes rather than the broad URI_IS_UI_RESOURCE flag, which
+      // image/UI data protocols (page-icon:, moz-icon:, ...) also carry and
+      // must never be loaded as worker scripts.
+      if (nsContentSecurityUtils::IsTrustedScheme(finalURI)) {
+        // Assign the system principal to the worker only if it was loaded from
+        // code using the system principal.
         channelPrincipal = mLoadingPrincipal;
         channelPartitionedPrincipal = mLoadingPrincipal;
       } else {
@@ -226,28 +233,30 @@ nsresult WorkerLoadInfo::GetPrincipalsAndLoadGroupFromChannel(
   return NS_OK;
 }
 
-nsresult WorkerLoadInfo::SetPrincipalsAndCSPFromChannel(nsIChannel* aChannel) {
+nsresult WorkerLoadInfo::SetPrincipalsAndPolicyContainerFromChannel(
+    nsIChannel* aChannel) {
   AssertIsOnMainThread();
 
   nsCOMPtr<nsIPrincipal> principal;
   nsCOMPtr<nsIPrincipal> partitionedPrincipal;
   nsCOMPtr<nsILoadGroup> loadGroup;
-  nsresult rv = GetPrincipalsAndLoadGroupFromChannel(
+  MOZ_TRY(GetPrincipalsAndLoadGroupFromChannel(
       aChannel, getter_AddRefs(principal), getter_AddRefs(partitionedPrincipal),
-      getter_AddRefs(loadGroup));
-  NS_ENSURE_SUCCESS(rv, rv);
+      getter_AddRefs(loadGroup)));
+
+  MOZ_TRY(
+      SetPrincipalsOnMainThread(principal, partitionedPrincipal, loadGroup));
 
   // Workers themselves can have their own CSP - Workers of an opaque origin
-  // however inherit the CSP of the document that spawned the worker.
-  nsCOMPtr<nsIContentSecurityPolicy> csp;
+  // however inherit the Policy-Container/CSP of the document that spawned the
+  // worker.
+  RefPtr<PolicyContainer> policyContainer;
   if (CSP_ShouldResponseInheritCSP(aChannel)) {
     nsCOMPtr<nsILoadInfo> loadinfo = aChannel->LoadInfo();
-    nsCOMPtr<nsIPolicyContainer> policyContainer =
-        loadinfo->GetPolicyContainer();
-    csp = PolicyContainer::GetCSP(policyContainer);
+    nsCOMPtr<nsIPolicyContainer> pc = loadinfo->GetPolicyContainer();
+    policyContainer = PolicyContainer::Cast(pc);
   }
-  return SetPrincipalsAndCSPOnMainThread(principal, partitionedPrincipal,
-                                         loadGroup, csp);
+  return SetPolicyContainerOnMainThread(policyContainer);
 }
 
 bool WorkerLoadInfo::FinalChannelPrincipalIsValid(nsIChannel* aChannel) {
@@ -294,18 +303,10 @@ bool WorkerLoadInfo::PrincipalURIMatchesScriptURL() {
   nsresult rv = mBaseURI->GetScheme(scheme);
   NS_ENSURE_SUCCESS(rv, false);
 
-  // A system principal must either be a blob URL or a resource JSM.
+  // A system principal must be a chrome script resource
+  // (e.g. a resource:// JSM).
   if (mPrincipal->IsSystemPrincipal()) {
-    if (scheme == "blob"_ns) {
-      return true;
-    }
-
-    bool isResource = false;
-    nsresult rv = NS_URIChainHasFlags(
-        mBaseURI, nsIProtocolHandler::URI_IS_UI_RESOURCE, &isResource);
-    NS_ENSURE_SUCCESS(rv, false);
-
-    return isResource;
+    return nsContentSecurityUtils::IsTrustedScheme(mBaseURI);
   }
 
   // A null principal can occur for a data URL worker script or a blob URL
@@ -351,7 +352,7 @@ bool WorkerLoadInfo::ProxyReleaseMainThreadObjects(
   SwapToISupportsArray(mPartitionedPrincipal, doomed);
   SwapToISupportsArray(mLoadingPrincipal, doomed);
   SwapToISupportsArray(mChannel, doomed);
-  SwapToISupportsArray(mCSP, doomed);
+  SwapToISupportsArray(mPolicyContainer, doomed);
   SwapToISupportsArray(mLoadGroup, doomed);
   SwapToISupportsArray(mInterfaceRequestor, doomed);
   // Before adding anything here update kDoomedCount above!
@@ -378,7 +379,7 @@ WorkerLoadInfo::InterfaceRequestor::InterfaceRequestor(
       callbacks->GetInterface(NS_GET_IID(nsILoadContext),
                               getter_AddRefs(baseContext));
     }
-    mOuterRequestor = callbacks;
+    mOuterRequestor = std::move(callbacks);
   }
 
   mLoadContext = new LoadContext(aPrincipal, baseContext);

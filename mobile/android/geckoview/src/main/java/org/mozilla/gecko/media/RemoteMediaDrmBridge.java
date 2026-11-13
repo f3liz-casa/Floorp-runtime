@@ -4,7 +4,6 @@
 
 package org.mozilla.gecko.media;
 
-import android.media.MediaCrypto;
 import android.util.Log;
 
 final class RemoteMediaDrmBridge implements GeckoMediaDrm {
@@ -145,18 +144,21 @@ final class RemoteMediaDrmBridge implements GeckoMediaDrm {
   }
 
   @Override
-  public synchronized MediaCrypto getMediaCrypto() {
-    if (DEBUG) Log.d(LOGTAG, "getMediaCrypto(), should not enter here!");
-    assertTrue(false);
-    return null;
-  }
-
-  @Override
   public synchronized void setServerCertificate(final byte[] cert) {
     try {
       mRemote.setServerCertificate(cert);
     } catch (final Exception e) {
       Log.e(LOGTAG, "Got exception while setting server certificate.", e);
+      throw new RuntimeException(e);
+    }
+  }
+
+  @Override
+  public synchronized void setOriginID(final String originID) {
+    try {
+      mRemote.setOriginID(originID);
+    } catch (final Exception e) {
+      Log.e(LOGTAG, "Got exception while setting origin ID.", e);
       throw new RuntimeException(e);
     }
   }

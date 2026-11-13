@@ -8,16 +8,18 @@
 
   position: relative;
   -moz-window-dragging: drag;
-  padding: calc(env(-moz-mac-titlebar-height) + 4px) 4px 3px;
+  padding: 4px 4px 3px;
   border-bottom: 1px solid ThreeDShadow;
 
-  &::after {
-    content: "";
-    position: absolute;
-    inset: 0;
-    appearance: auto;
-    -moz-default-appearance: -moz-window-titlebar;
-    z-index: -1;
+  @media not (-moz-mac-tahoe-theme) {
+    &::after {
+      content: "";
+      position: absolute;
+      inset: 0;
+      appearance: auto;
+      -moz-default-appearance: -moz-window-titlebar;
+      z-index: -1;
+    }
   }
 }
 
@@ -59,12 +61,12 @@
 
 #searchFilter {
   margin: var(--toolbar-item-margin);
-  --input-text-min-height: var(--toolbar-item-height);
+  --input-min-height: var(--toolbar-item-height);
   @media (-moz-mac-big-sur-theme) {
-    --input-text-background-color: transparent;
+    --input-background-color: transparent;
     --input-text-color: currentColor;
   }
-  --input-text-border-color: ButtonBorder;
+  --input-border-color: ButtonBorder;
 }
 
 /* Places Organizer Sidebars */
@@ -72,7 +74,6 @@
 #placesList {
   background-color: -moz-sidebar;
   width: 160px;
-  min-width: 100px;
   max-width: 400px;
 
   > treechildren::-moz-tree-cell-text {

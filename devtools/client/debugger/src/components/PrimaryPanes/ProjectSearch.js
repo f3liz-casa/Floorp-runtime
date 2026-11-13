@@ -19,10 +19,11 @@ import { getRelativePath } from "../../utils/sources-tree/utils";
 import {
   getProjectSearchQuery,
   getNavigateCounter,
+  getSearchOptions,
 } from "../../selectors/index";
 
-import SearchInput from "../shared/SearchInput";
-import AccessibleImage from "../shared/AccessibleImage";
+import DebuggerImage from "devtools/client/shared/components/DebuggerImage";
+import SearchInput from "devtools/client/shared/components/SearchInput";
 
 const { PluralForm } = require("resource://devtools/shared/plural-form.js");
 const classnames = require("resource://devtools/client/shared/classnames.js");
@@ -41,14 +42,6 @@ export const statusType = {
   done: "DONE",
   error: "ERROR",
 };
-
-function getFilePath(item, index) {
-  return item.type === "RESULT"
-    ? `${item.location.source.id}-${index || "$"}`
-    : `${item.location.source.id}-${item.location.line}-${
-        item.location.column
-      }-${index || "$"}`;
-}
 
 export class ProjectSearch extends Component {
   constructor(props) {
@@ -78,6 +71,9 @@ export class ProjectSearch extends Component {
       query: PropTypes.string.isRequired,
       searchSources: PropTypes.func.isRequired,
       selectSpecificLocationOrSameUrl: PropTypes.func.isRequired,
+      searchOptions: PropTypes.object.isRequired,
+      setSearchOptions: PropTypes.func.isRequired,
+      navigateCounter: PropTypes.number,
     };
   }
 
@@ -226,7 +222,12 @@ export class ProjectSearch extends Component {
 
   renderFile = (file, focused, expanded) => {
     const matchesLength = file.matches.length;
-    const matches = ` (${matchesLength} match${matchesLength > 1 ? "es" : ""})`;
+    const localizedMatchCount = PluralForm.get(
+      matchesLength,
+      L10N.getStr("projectTextSearch.results.matchCount")
+    ).replace("#1", matchesLength);
+    const matches = ` (${localizedMatchCount})`;
+
     return div(
       {
         className: classnames("file-result", {
@@ -234,13 +235,14 @@ export class ProjectSearch extends Component {
         }),
         key: file.location.source.id,
       },
-      React.createElement(AccessibleImage, {
-        className: classnames("arrow", {
+      React.createElement(DebuggerImage, {
+        name: "arrow",
+        className: classnames({
           expanded,
         }),
       }),
-      React.createElement(AccessibleImage, {
-        className: "file",
+      React.createElement(DebuggerImage, {
+        name: "file",
       }),
       span(
         {
@@ -307,8 +309,8 @@ export class ProjectSearch extends Component {
           : L10N.getStr("projectTextSearch.refreshButtonTooltip"),
         onClick: this.doSearch,
       },
-      React.createElement(AccessibleImage, {
-        className: "refresh",
+      React.createElement(DebuggerImage, {
+        name: "refresh",
       })
     );
   }
@@ -337,7 +339,6 @@ export class ProjectSearch extends Component {
         autoExpandDepth: 1,
         autoExpandNodeChildrenLimit: 100,
         getParent: () => null,
-        getPath: getFilePath,
         renderItem: this.renderItem,
         focused: this.state.focusedItem,
         onFocus: this.onFocus,
@@ -360,7 +361,10 @@ export class ProjectSearch extends Component {
           });
         },
         preventBlur: true,
-        getKey: getFilePath,
+        getKey: item =>
+          item.type === "RESULT"
+            ? `${item.location.source.id}`
+            : `${item.location.source.id}-${item.location.line}-${item.location.column}`,
       });
     }
     const msg =
@@ -405,16 +409,20 @@ export class ProjectSearch extends Component {
       onHistoryScroll: this.onHistoryScroll,
       showClose: false,
       showExcludePatterns: true,
+      showSearchModifiers: true,
       excludePatternsLabel: L10N.getStr(
         "projectTextSearch.excludePatterns.label"
       ),
       excludePatternsPlaceholder: L10N.getStr(
         "projectTextSearch.excludePatterns.placeholder"
       ),
-      ref: "searchInput",
-      showSearchModifiers: true,
       searchKey: searchKeys.PROJECT_SEARCH,
       onToggleSearchModifier: this.doSearch,
+      searchOptions: this.props.searchOptions,
+      setSearchOptions: this.props.setSearchOptions,
+      expanded: false,
+      hasPrefix: false,
+      DebuggerImage,
     });
   }
 
@@ -447,10 +455,12 @@ ProjectSearch.contextTypes = {
 const mapStateToProps = state => ({
   query: getProjectSearchQuery(state),
   navigateCounter: getNavigateCounter(state),
+  searchOptions: getSearchOptions(state, searchKeys.PROJECT_SEARCH),
 });
 
 export default connect(mapStateToProps, {
   searchSources: actions.searchSources,
   selectSpecificLocationOrSameUrl: actions.selectSpecificLocationOrSameUrl,
   doSearchForHighlight: actions.doSearchForHighlight,
+  setSearchOptions: actions.setSearchOptions,
 })(ProjectSearch);

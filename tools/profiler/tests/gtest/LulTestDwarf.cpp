@@ -1,4 +1,3 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -2526,6 +2525,12 @@ TEST_F(LulDwarfExpr, ExpressionOverrun) {
 #elif defined(GP_ARCH_amd64) || defined(GP_ARCH_x86)
 #  define TESTED_REG_STRUCT_NAME xbp
 #  define TESTED_REG_DWARF_NAME DW_REG_INTEL_XBP
+#elif defined(GP_ARCH_loongarch64)
+#  define TESTED_REG_STRUCT_NAME fp
+#  define TESTED_REG_DWARF_NAME DW_REG_LOONGARCH_FP
+#elif defined(GP_ARCH_riscv64)
+#  define TESTED_REG_STRUCT_NAME fp
+#  define TESTED_REG_DWARF_NAME DW_REG_RISCV_FP
 #else
 #  error "Unknown plat"
 #endif
@@ -2539,6 +2544,7 @@ struct EvaluatePfxExprFixture {
     // The test stack.
     si.mStartAvma = 0x12345678;
     si.mLen = 0;
+    si.mContents = mBacking;
 #define XX(_byte)                      \
   do {                                 \
     si.mContents[si.mLen++] = (_byte); \
@@ -2576,6 +2582,7 @@ struct EvaluatePfxExprFixture {
     regs.TESTED_REG_STRUCT_NAME = TaggedUWord(0x14141356);
   }
 
+  uint8_t mBacking[64]{};
   StackImage si;
   TaggedUWord initialCFA;
   UnwindRegs regs;

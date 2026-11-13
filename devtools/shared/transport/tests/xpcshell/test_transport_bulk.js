@@ -19,7 +19,7 @@ function run_test() {
   run_next_test();
 }
 
-/** * Tests ***/
+/*** Tests ***/
 
 /**
  * This tests a one-way bulk transfer at the transport layer.
@@ -67,7 +67,7 @@ var test_bulk_transfer_transport = async function (transportFactory) {
     Assert.equal(type, "file-stream");
     Assert.equal(length, reallyLong.length);
 
-    const outputFile = getTestTempFile("bulk-output", true);
+    const outputFile = getTestTempFile("bulk-output");
     outputFile.create(Ci.nsIFile.NORMAL_FILE_TYPE, parseInt("666", 8));
 
     const output = FileUtils.openSafeFileOutputStream(outputFile);
@@ -124,7 +124,7 @@ var test_bulk_transfer_transport = async function (transportFactory) {
   return Promise.all([clientDeferred, serverDeferred]);
 };
 
-/** * Test Utils ***/
+/*** Test Utils ***/
 
 function verify() {
   const reallyLong = really_long();
@@ -158,12 +158,12 @@ function verify() {
 }
 
 function cleanup_files() {
-  const inputFile = getTestTempFile("bulk-input", true);
+  const inputFile = getTestTempFile("bulk-input");
   if (inputFile.exists()) {
     inputFile.remove(false);
   }
 
-  const outputFile = getTestTempFile("bulk-output", true);
+  const outputFile = getTestTempFile("bulk-output");
   if (outputFile.exists()) {
     outputFile.remove(false);
   }

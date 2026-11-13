@@ -13,22 +13,17 @@ import { ViewPage } from "./viewpage.mjs";
 import "chrome://browser/content/migration/migration-wizard.mjs";
 // eslint-disable-next-line import/no-unassigned-import
 import "chrome://global/content/elements/moz-button.mjs";
+// eslint-disable-next-line import/no-unassigned-import
+import "chrome://global/content/elements/moz-label.mjs";
 
 const lazy = {};
 
 ChromeUtils.defineESModuleGetters(lazy, {
   HistoryController: "resource:///modules/HistoryController.sys.mjs",
-  ProfileAge: "resource://gre/modules/ProfileAge.sys.mjs",
+  PrivateBrowsingUtils: "resource://gre/modules/PrivateBrowsingUtils.sys.mjs",
 });
 
-let XPCOMUtils = ChromeUtils.importESModule(
-  "resource://gre/modules/XPCOMUtils.sys.mjs"
-).XPCOMUtils;
-
 const NEVER_REMEMBER_HISTORY_PREF = "browser.privatebrowsing.autostart";
-const HAS_IMPORTED_HISTORY_PREF = "browser.migrate.interactions.history";
-const IMPORT_HISTORY_DISMISSED_PREF =
-  "browser.tabs.firefox-view.importHistory.dismissed";
 
 const SEARCH_RESULTS_LIMIT = 300;
 
@@ -38,7 +33,6 @@ class HistoryInView extends ViewPage {
     this._started = false;
     // Setting maxTabsLength to -1 for no max
     this.maxTabsLength = -1;
-    this.profileAge = 8;
     this.fullyUpdated = false;
     this.cumulativeSearches = 0;
   }
@@ -56,37 +50,6 @@ class HistoryInView extends ViewPage {
     this.controller.updateCache();
 
     this.toggleVisibilityInCardContainer();
-  }
-
-  async connectedCallback() {
-    super.connectedCallback();
-    XPCOMUtils.defineLazyPreferenceGetter(
-      this,
-      "importHistoryDismissedPref",
-      IMPORT_HISTORY_DISMISSED_PREF,
-      false,
-      () => {
-        this.requestUpdate();
-      }
-    );
-    XPCOMUtils.defineLazyPreferenceGetter(
-      this,
-      "hasImportedHistoryPref",
-      HAS_IMPORTED_HISTORY_PREF,
-      false,
-      () => {
-        this.requestUpdate();
-      }
-    );
-
-    if (!this.importHistoryDismissedPref && !this.hasImportedHistoryPrefs) {
-      let profileAccessor = await lazy.ProfileAge();
-      let profileCreateTime = await profileAccessor.created;
-      let timeNow = new Date().getTime();
-      let profileAge = timeNow - profileCreateTime;
-      // Convert milliseconds to days
-      this.profileAge = profileAge / 1000 / 60 / 60 / 24;
-    }
   }
 
   stop() {
@@ -126,11 +89,6 @@ class HistoryInView extends ViewPage {
     panelList: "panel-list",
   };
 
-  static properties = {
-    // Making profileAge a reactive property for testing
-    profileAge: { type: Number },
-  };
-
   async getUpdateComplete() {
     await super.getUpdateComplete();
     await Promise.all(Array.from(this.cards).map(card => card.updateComplete));
@@ -147,6 +105,21 @@ class HistoryInView extends ViewPage {
       );
       this.cumulativeSearches = 0;
     }
+  }
+
+  async forgetAboutThisSite(e) {
+    let host = Services.io.newURI(this.triggerNode.url).host;
+    let baseDomain;
+    try {
+      baseDomain = Services.eTLD.getBaseDomainFromHost(host);
+    } catch (ex) {
+      // If there is no baseDomain we fall back to host
+    }
+    await this.getWindow().gDialogBox.open(
+      "chrome://browser/content/places/clearDataForSite.xhtml",
+      { host, hostOrBaseDomain: baseDomain ?? host }
+    );
+    this.recordContextMenuTelemetry("forget-about-this-site", e, "history");
   }
 
   onSecondaryAction(e) {
@@ -215,18 +188,6 @@ class HistoryInView extends ViewPage {
     migrationWizardDialog.showModal();
   }
 
-  shouldShowImportBanner() {
-    return (
-      this.profileAge < 8 &&
-      !this.hasImportedHistoryPref &&
-      !this.importHistoryDismissedPref
-    );
-  }
-
-  dismissImportHistory() {
-    Services.prefs.setBoolPref(IMPORT_HISTORY_DISMISSED_PREF, true);
-  }
-
   updated() {
     this.fullyUpdated = true;
     if (this.lists?.length) {
@@ -242,6 +203,11 @@ class HistoryInView extends ViewPage {
           data-l10n-id="firefoxview-history-context-delete"
           data-l10n-attrs="accesskey"
         ></panel-item>
+        <panel-item
+          @click=${this.forgetAboutThisSite}
+          data-l10n-id="firefoxview-history-context-forget-site"
+          data-l10n-attrs="accesskey"
+        ></panel-item>
         <hr />
         <panel-item
           @click=${this.openInNewWindow}
@@ -252,6 +218,7 @@ class HistoryInView extends ViewPage {
           @click=${this.openInNewPrivateWindow}
           data-l10n-id="fxviewtabrow-open-in-private-window"
           data-l10n-attrs="accesskey"
+          ?hidden=${!lazy.PrivateBrowsingUtils.enabled}
         ></panel-item>
         <hr />
         <panel-item
@@ -328,30 +295,42 @@ class HistoryInView extends ViewPage {
   }
 
   #emptyMessageTemplate() {
+    const nova = Services.prefs.getBoolPref("browser.nova.enabled", false);
     let descriptionHeader;
     let descriptionLabels;
     let descriptionLink;
     if (Services.prefs.getBoolPref(NEVER_REMEMBER_HISTORY_PREF, false)) {
       // History pref set to never remember history
-      descriptionHeader = "firefoxview-dont-remember-history-empty-header-2";
+      descriptionHeader = nova
+        ? "firefoxview-dont-remember-history-empty-header-3"
+        : "firefoxview-dont-remember-history-empty-header-2";
       descriptionLabels = [
-        "firefoxview-dont-remember-history-empty-description-one",
+        nova
+          ? "firefoxview-dont-remember-history-empty-description-2"
+          : "firefoxview-dont-remember-history-empty-description-one",
       ];
       descriptionLink = {
         url: "about:preferences#privacy",
         name: "history-settings-url-two",
       };
     } else {
-      descriptionHeader = "firefoxview-history-empty-header";
-      descriptionLabels = [
-        "firefoxview-history-empty-description",
-        "firefoxview-history-empty-description-two",
-      ];
+      descriptionHeader = nova
+        ? "firefoxview-history-empty-header-2"
+        : "firefoxview-history-empty-header";
+      descriptionLabels = nova
+        ? ["firefoxview-history-empty-description-2"]
+        : [
+            "firefoxview-history-empty-description",
+            "firefoxview-history-empty-description-two",
+          ];
       descriptionLink = {
         url: "about:preferences#privacy",
         name: "history-settings-url",
       };
     }
+    let asset = nova
+      ? "chrome://browser/skin/sidebar/kit-page-history.svg"
+      : "chrome://browser/content/firefoxview/history-empty.svg";
     return html`
       <fxview-empty-state
         headerLabel=${descriptionHeader}
@@ -359,7 +338,7 @@ class HistoryInView extends ViewPage {
         .descriptionLink=${descriptionLink}
         class="empty-state history"
         ?isSelectedTab=${this.selectedTab}
-        mainImageUrl="chrome://browser/content/firefoxview/history-empty.svg"
+        mainImageUrl=${asset}
       >
       </fxview-empty-state>
     `;
@@ -435,6 +414,7 @@ class HistoryInView extends ViewPage {
               @click=${this.onChangeSortOption}
             />
             <label
+              is="moz-label"
               for="sort-by-date"
               data-l10n-id="firefoxview-sort-history-by-date-label"
             ></label>
@@ -449,6 +429,7 @@ class HistoryInView extends ViewPage {
               @click=${this.onChangeSortOption}
             />
             <label
+              is="moz-label"
               for="sort-by-site"
               data-l10n-id="firefoxview-sort-history-by-site-label"
             ></label>
@@ -459,7 +440,7 @@ class HistoryInView extends ViewPage {
         <card-container
           class="import-history-banner"
           hideHeader="true"
-          ?hidden=${!this.shouldShowImportBanner()}
+          ?hidden=${!this.controller.shouldShowImportBanner}
           role="group"
           aria-labelledby="header"
           aria-describedby="description"
@@ -476,16 +457,17 @@ class HistoryInView extends ViewPage {
               ></span>
             </div>
             <div class="buttons">
-              <button
-                class="primary choose-browser"
+              <moz-button
+                type="primary"
+                class="choose-browser"
                 data-l10n-id="firefoxview-choose-browser-button"
                 @click=${this.openMigrationWizard}
-              ></button>
+              ></moz-button>
               <moz-button
                 class="close"
                 type="icon ghost"
                 data-l10n-id="firefoxview-import-history-close-button"
-                @click=${this.dismissImportHistory}
+                @click=${() => this.controller.dismissImportHistory()}
               ></moz-button>
             </div>
           </div>
@@ -496,12 +478,12 @@ class HistoryInView extends ViewPage {
         class="show-all-history-footer"
         ?hidden=${this.controller.isHistoryEmpty}
       >
-        <button
+        <moz-button
           class="show-all-history-button"
           data-l10n-id="firefoxview-show-all-history"
           @click=${this.showAllHistory}
           ?hidden=${this.controller.searchResults}
-        ></button>
+        ></moz-button>
       </div>
     `;
   }

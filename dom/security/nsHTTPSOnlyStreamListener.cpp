@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -34,7 +32,7 @@ nsHTTPSOnlyStreamListener::nsHTTPSOnlyStreamListener(
   // For Top-level document loads (which don't have a requesting window-context)
   // we compute these flags once we create the Document in nsSecureBrowserUI.
   if (wgp) {
-    wgp->TopWindowContext()->AddSecurityState(
+    wgp->TopWindowContext()->ApplySecurityStateToTop(
         nsIWebProgressListener::STATE_HTTPS_ONLY_MODE_UPGRADED);
   }
 }
@@ -43,12 +41,14 @@ NS_IMETHODIMP
 nsHTTPSOnlyStreamListener::OnDataAvailable(nsIRequest* aRequest,
                                            nsIInputStream* aInputStream,
                                            uint64_t aOffset, uint32_t aCount) {
-  return mListener->OnDataAvailable(aRequest, aInputStream, aOffset, aCount);
+  nsCOMPtr<nsIStreamListener> listener = mListener;
+  return listener->OnDataAvailable(aRequest, aInputStream, aOffset, aCount);
 }
 
 NS_IMETHODIMP
 nsHTTPSOnlyStreamListener::OnStartRequest(nsIRequest* request) {
-  return mListener->OnStartRequest(request);
+  nsCOMPtr<nsIStreamListener> listener = mListener;
+  return listener->OnStartRequest(request);
 }
 
 NS_IMETHODIMP
@@ -73,13 +73,14 @@ nsHTTPSOnlyStreamListener::OnStopRequest(nsIRequest* request,
               loadInfo->GetInnerWindowID());
 
       if (wgp) {
-        wgp->TopWindowContext()->AddSecurityState(
+        wgp->TopWindowContext()->ApplySecurityStateToTop(
             nsIWebProgressListener::STATE_HTTPS_ONLY_MODE_UPGRADE_FAILED);
       }
     }
   }
 
-  return mListener->OnStopRequest(request, aStatus);
+  nsCOMPtr<nsIStreamListener> listener = mListener;
+  return listener->OnStopRequest(request, aStatus);
 }
 
 void nsHTTPSOnlyStreamListener::RecordUpgradeTelemetry(nsIRequest* request,
@@ -237,6 +238,7 @@ void nsHTTPSOnlyStreamListener::RecordUpgradeTelemetry(nsIRequest* request,
       case ExtContentPolicy::TYPE_WEB_TRANSPORT:
       case ExtContentPolicy::TYPE_WEB_IDENTITY:
       case ExtContentPolicy::TYPE_JSON:
+      case ExtContentPolicy::TYPE_TEXT:
         break;
         // Do not add default: so that compilers can catch the missing case.
     }

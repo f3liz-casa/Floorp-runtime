@@ -10,19 +10,20 @@
 #include "HttpChannelParent.h"
 #include "MainThreadUtils.h"
 #include "NeckoCommon.h"
+#include "ParentChannelListener.h"
 #include "gfxPlatform.h"
 #include "mozilla/CORSMode.h"
-#include "mozilla/dom/Element.h"
-#include "mozilla/dom/nsCSPContext.h"
-#include "mozilla/dom/nsMixedContentBlocker.h"
-#include "mozilla/dom/ReferrerInfo.h"
-#include "mozilla/glean/NetwerkProtocolHttpMetrics.h"
-#include "mozilla/ipc/BackgroundUtils.h"
 #include "mozilla/LoadInfo.h"
 #include "mozilla/Logging.h"
+#include "mozilla/StaticPrefs_network.h"
+#include "mozilla/dom/Element.h"
+#include "mozilla/dom/ReferrerInfo.h"
+#include "mozilla/dom/nsCSPContext.h"
+#include "mozilla/dom/nsMixedContentBlocker.h"
+#include "mozilla/glean/NetwerkProtocolHttpMetrics.h"
+#include "mozilla/ipc/BackgroundUtils.h"
 #include "mozilla/net/EarlyHintRegistrar.h"
 #include "mozilla/net/NeckoChannelParams.h"
-#include "mozilla/StaticPrefs_network.h"
 #include "nsAttrValue.h"
 #include "nsCOMPtr.h"
 #include "nsContentPolicyUtils.h"
@@ -33,6 +34,7 @@
 #include "nsIAsyncVerifyRedirectCallback.h"
 #include "nsIChannel.h"
 #include "nsIContentSecurityPolicy.h"
+#include "nsICookieJarSettings.h"
 #include "nsIHttpChannel.h"
 #include "nsIInputStream.h"
 #include "nsILoadContext.h"
@@ -41,11 +43,9 @@
 #include "nsIReferrerInfo.h"
 #include "nsITimer.h"
 #include "nsIURI.h"
+#include "nsInterfaceRequestorAgg.h"
 #include "nsNetUtil.h"
 #include "nsQueryObject.h"
-#include "ParentChannelListener.h"
-#include "nsIChannel.h"
-#include "nsInterfaceRequestorAgg.h"
 
 //
 // To enable logging (see mozilla/Logging.h for full details):
@@ -144,9 +144,7 @@ Maybe<PreloadHashKey> EarlyHintPreloader::GenerateHashKey(
         aURI, aCorsMode, JS::loader::ScriptKind::eClassic));
   }
   if (aAs == ASDestination::DESTINATION_STYLE) {
-    return Some(PreloadHashKey::CreateAsStyle(
-        aURI, aPrincipal, aCorsMode,
-        css::SheetParsingMode::eAuthorSheetFeatures));
+    return Some(PreloadHashKey::CreateAsStyle(aURI, aPrincipal, aCorsMode));
   }
   if (aAs == ASDestination::DESTINATION_FETCH && aCorsMode != CORS_NONE) {
     return Some(PreloadHashKey::CreateAsFetch(aURI, aCorsMode));
@@ -221,6 +219,13 @@ void EarlyHintPreloader::MaybeCreateAndInsertPreload(
     return;
   }
 
+  // The image the document picks from imagesrcset can't be determined here,
+  // so it may differ from href.
+  if (destination == ASDestination::DESTINATION_IMAGE &&
+      !aLinkHeader.mSrcset.IsEmpty()) {
+    return;
+  }
+
   nsCOMPtr<nsIURI> uri;
   NS_ENSURE_SUCCESS_VOID(
       NS_NewURI(getter_AddRefs(uri), aLinkHeader.mHref, nullptr, aBaseURI));
@@ -249,11 +254,14 @@ void EarlyHintPreloader::MaybeCreateAndInsertPreload(
     return;
   }
 
+  // The document fetches compression dictionaries as fetch preloads.
   nsContentPolicyType contentPolicyType =
-      aIsModulepreload ? (IsScriptLikeOrInvalid(aLinkHeader.mAs)
-                              ? nsContentPolicyType::TYPE_SCRIPT
-                              : nsContentPolicyType::TYPE_INVALID)
-                       : AsValueToContentPolicy(as);
+      aLinkHeader.mRel.LowerCaseEqualsLiteral("compression-dictionary")
+          ? nsContentPolicyType::TYPE_INTERNAL_FETCH_PRELOAD
+      : aIsModulepreload ? (IsScriptLikeOrInvalid(aLinkHeader.mAs)
+                                ? nsContentPolicyType::TYPE_SCRIPT
+                                : nsContentPolicyType::TYPE_INVALID)
+                         : AsValueToContentPolicy(as);
 
   if (contentPolicyType == nsContentPolicyType::TYPE_INVALID) {
     return;
@@ -418,6 +426,9 @@ nsresult EarlyHintPreloader::OpenChannel(
 
   NS_ENSURE_SUCCESS(rv, rv);
 
+  mURI = aURI;
+  mLoadInfo = mChannel->LoadInfo();
+
   RefPtr<nsHttpChannel> httpChannelObject = do_QueryObject(mChannel);
   if (!httpChannelObject) {
     mChannel = nullptr;
@@ -438,11 +449,6 @@ nsresult EarlyHintPreloader::OpenChannel(
   mParentListener = new ParentChannelListener(this, nullptr);
 
   PriorizeAsPreload();
-
-  if (nsCOMPtr<nsIRaceCacheWithNetwork> rcwn = do_QueryInterface(httpChannel)) {
-    // Since this is an early hint, we should consult the cache first.
-    rcwn->SetAllowRacing(false);
-  }
 
   rv = mChannel->AsyncOpen(mParentListener);
   if (NS_FAILED(rv)) {
@@ -467,11 +473,11 @@ nsresult EarlyHintPreloader::OpenChannel(
 
 void EarlyHintPreloader::PriorizeAsPreload() {
   nsLoadFlags loadFlags = nsIRequest::LOAD_NORMAL;
-  Unused << mChannel->GetLoadFlags(&loadFlags);
-  Unused << mChannel->SetLoadFlags(loadFlags | nsIRequest::LOAD_BACKGROUND);
+  (void)mChannel->GetLoadFlags(&loadFlags);
+  (void)mChannel->SetLoadFlags(loadFlags | nsIRequest::LOAD_BACKGROUND);
 
   if (nsCOMPtr<nsIClassOfService> cos = do_QueryInterface(mChannel)) {
-    Unused << cos->AddClassFlags(nsIClassOfService::Unblocked);
+    (void)cos->AddClassFlags(nsIClassOfService::Unblocked);
   }
 }
 
@@ -481,6 +487,72 @@ void EarlyHintPreloader::SetLinkHeader(const LinkHeader& aLinkHeader) {
 
 bool EarlyHintPreloader::IsFromContentParent(dom::ContentParentId aCpId) const {
   return aCpId == mCpId;
+}
+
+bool EarlyHintPreloader::MatchesRequest(nsIURI* aURI,
+                                        nsILoadInfo* aLoadInfo) const {
+  if (!mURI || !mLoadInfo || !aURI || !aLoadInfo) {
+    return false;
+  }
+
+  bool equals = false;
+  if (NS_FAILED(mURI->EqualsExceptRef(aURI, &equals))) {
+    return false;
+  }
+
+  if (!equals) {
+    return false;
+  }
+
+  if (mLoadInfo->GetExternalContentPolicyType() !=
+      aLoadInfo->GetExternalContentPolicyType()) {
+    return false;
+  }
+
+  if (nsContentSecurityManager::SecurityModeToRequestMode(
+          mLoadInfo->GetSecurityMode()) !=
+      nsContentSecurityManager::SecurityModeToRequestMode(
+          aLoadInfo->GetSecurityMode())) {
+    return false;
+  }
+
+  if (mLoadInfo->GetCookiePolicy() != aLoadInfo->GetCookiePolicy()) {
+    return false;
+  }
+
+  nsIPrincipal* loadingPrincipal = aLoadInfo->GetLoadingPrincipal();
+  if (!loadingPrincipal) {
+    return false;
+  }
+
+  if (!mLoadInfo->GetLoadingPrincipal()->Equals(loadingPrincipal)) {
+    return false;
+  }
+
+  if (!mLoadInfo->TriggeringPrincipal()->Equals(
+          aLoadInfo->TriggeringPrincipal())) {
+    return false;
+  }
+
+  if (mLoadInfo->GetOriginAttributes() != aLoadInfo->GetOriginAttributes()) {
+    return false;
+  }
+
+  nsCOMPtr<nsICookieJarSettings> cjs;
+  if (NS_FAILED(mLoadInfo->GetCookieJarSettings(getter_AddRefs(cjs)))) {
+    return false;
+  }
+
+  nsCOMPtr<nsICookieJarSettings> otherCjs;
+  if (NS_FAILED(aLoadInfo->GetCookieJarSettings(getter_AddRefs(otherCjs)))) {
+    return false;
+  }
+
+  nsAutoString partitionKey;
+  nsAutoString otherPartitionKey;
+  cjs->GetPartitionKey(partitionKey);
+  otherCjs->GetPartitionKey(otherPartitionKey);
+  return partitionKey == otherPartitionKey;
 }
 
 bool EarlyHintPreloader::Register(dom::ContentParentId aCpId,
@@ -643,11 +715,11 @@ EarlyHintPreloader::OnStartRequest(nsIRequest* aRequest) {
   MOZ_DIAGNOSTIC_ASSERT(mChannel);
 
   nsresult status = NS_OK;
-  Unused << aRequest->GetStatus(&status);
+  (void)aRequest->GetStatus(&status);
 
-  if (mParent) {
+  if (nsCOMPtr<nsIParentChannel> parent = mParent) {
     SetParentChannel();
-    mParent->OnStartRequest(aRequest);
+    parent->OnStartRequest(aRequest);
     InvokeStreamListenerFunctions();
   } else {
     // Don't suspend the chanel when the channel got cancelled with

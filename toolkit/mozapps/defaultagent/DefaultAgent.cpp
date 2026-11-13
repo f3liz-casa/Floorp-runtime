@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim:set ts=2 sw=2 sts=2 et cindent: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -331,12 +329,13 @@ DefaultAgent::GetDefaultPdfHandler(nsAString& aDefaultPdfHandler) {
 }
 
 NS_IMETHODIMP
-DefaultAgent::SendPing(const nsAString& aDefaultBrowser,
-                       const nsAString& aPreviousDefaultBrowser,
-                       const nsAString& aDefaultPdfHandler,
-                       const nsAString& aNotificationShown,
-                       const nsAString& aNotificationAction,
-                       uint32_t daysSinceLastAppLaunch) {
+DefaultAgent::SendPing(
+    const nsAString& aDefaultBrowser, const nsAString& aPreviousDefaultBrowser,
+    const nsAString& aDefaultPdfHandler, const nsAString& aNotificationShown,
+    const nsAString& aNotificationAction, uint32_t daysSinceLastAppLaunch,
+    const nsAString& aIsTaskbarPinned, bool aHasWinPackageId,
+    const nsAString& aWinPackageFamilyName, const nsAString& aInstallerType,
+    bool aInstallerFromMsi, bool aInstallerSilent) {
   DefaultBrowserInfo browserInfo = {
       GetBrowserFromString(std::string(NS_ConvertUTF16toUTF8(aDefaultBrowser))),
       GetBrowserFromString(
@@ -353,8 +352,15 @@ DefaultAgent::SendPing(const nsAString& aDefaultBrowser,
   NotificationActivities activitiesPerformed = {NotificationType::Initial,
                                                 shown, action};
 
+  std::string isTaskbarPinned{NS_ConvertUTF16toUTF8(aIsTaskbarPinned).get()};
+  InstallInfo installInfo = {
+      aHasWinPackageId,
+      std::string(NS_ConvertUTF16toUTF8(aWinPackageFamilyName).get()),
+      std::string(NS_ConvertUTF16toUTF8(aInstallerType).get()),
+      aInstallerFromMsi, aInstallerSilent};
   HRESULT hr = SendDefaultAgentPing(browserInfo, pdfInfo, activitiesPerformed,
-                                    daysSinceLastAppLaunch);
+                                    daysSinceLastAppLaunch, isTaskbarPinned,
+                                    installInfo);
   return SUCCEEDED(hr) ? NS_OK : NS_ERROR_FAILURE;
 }
 

@@ -1,9 +1,9 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "AccAttributes.h"
+
 #include "StyleInfo.h"
 #include "mozilla/ToString.h"
 #include "nsAtom.h"
@@ -20,7 +20,7 @@ bool AccAttributes::GetAttribute(nsAtom* aAttrName,
   return false;
 }
 
-void AccAttributes::StringFromValueAndName(nsAtom* aAttrName,
+void AccAttributes::StringFromValueAndName(nsAtom* /*aAttrName*/,
                                            const AttrValueType& aValue,
                                            nsAString& aValueString) {
   aValueString.Truncate();
@@ -63,7 +63,7 @@ void AccAttributes::StringFromValueAndName(nsAtom* aAttrName,
       [&aValueString](const Color& val) {
         StyleInfo::FormatColor(val.mValue, aValueString);
       },
-      [&aValueString](const DeleteEntry& val) {
+      [&aValueString](const DeleteEntry& /*val*/) {
         aValueString.Append(u"-delete-entry-");
       },
       [&aValueString](const UniquePtr<nsString>& val) {
@@ -78,11 +78,14 @@ void AccAttributes::StringFromValueAndName(nsAtom* aAttrName,
         }
       },
       [&aValueString](const uint64_t& val) { aValueString.AppendInt(val); },
-      [&aValueString](const UniquePtr<AccGroupInfo>& val) {
+      [&aValueString](const UniquePtr<AccGroupInfo>& /*val*/) {
         aValueString.Assign(u"AccGroupInfo{...}");
       },
       [&aValueString](const UniquePtr<gfx::Matrix4x4>& val) {
         aValueString.AppendPrintf("Matrix4x4=%s", ToString(*val).c_str());
+      },
+      [&aValueString](const UniquePtr<nsRect>& val) {
+        aValueString.AppendPrintf("nsRect=%s", ToString(*val).c_str());
       },
       [&aValueString](const nsTArray<uint64_t>& val) {
         if (const size_t len = val.Length()) {
@@ -116,6 +119,23 @@ void AccAttributes::StringFromValueAndName(nsAtom* aAttrName,
               "Hmm, should we have used a DeleteEntry() for this instead?");
           aValueString.Append(u"[ ]");
         }
+      },
+      [&aValueString](const WritingMode& val) {
+        aValueString.AppendPrintf("WritingModes: %x", val.GetBits());
+      },
+      [&aValueString](const nsTArray<RefPtr<nsAtom>>& val) {
+        if (const size_t len = val.Length()) {
+          for (size_t i = 0; i < len - 1; i++) {
+            aValueString.Append(val[i]->GetUTF16String());
+            aValueString.Append(u" ");
+          }
+          aValueString.Append(val[len - 1]->GetUTF16String());
+        } else {
+          // The array is empty
+          NS_WARNING(
+              "Hmm, should we have used a DeleteEntry() for this instead?");
+          aValueString.Append(u"");
+        }
       });
 }
 
@@ -127,6 +147,29 @@ void AccAttributes::Update(AccAttributes* aOther) {
       mData.InsertOrUpdate(iter.Key(), std::move(iter.Data()));
     }
     iter.Remove();
+  }
+}
+
+void AccAttributes::RemoveIdentical(const AccAttributes* aOther) {
+  for (auto iter = mData.Iter(); !iter.Done(); iter.Next()) {
+    if (const auto otherEntry = aOther->mData.Lookup(iter.Key())) {
+      if (iter.Data().is<UniquePtr<nsString>>()) {
+        // Because we store nsString in a UniquePtr, we must handle it specially
+        // so we compare the string and not the pointer.
+        if (!otherEntry->is<UniquePtr<nsString>>()) {
+          continue;
+        }
+        const auto& thisStr = iter.Data().as<UniquePtr<nsString>>();
+        const auto& otherStr = otherEntry->as<UniquePtr<nsString>>();
+        if (*thisStr != *otherStr) {
+          continue;
+        }
+      } else if (iter.Data() != otherEntry.Data()) {
+        continue;
+      }
+
+      iter.Remove();
+    }
   }
 }
 
@@ -157,8 +200,12 @@ bool AccAttributes::Equal(const AccAttributes* aOther) const {
   return true;
 }
 
-void AccAttributes::CopyTo(AccAttributes* aDest) const {
+void AccAttributes::CopyTo(AccAttributes* aDest, bool aOnlyMissing) const {
   for (auto iter = mData.ConstIter(); !iter.Done(); iter.Next()) {
+    if (aOnlyMissing && aDest->HasAttribute(iter.Key())) {
+      continue;
+    }
+
     iter.Data().match(
         [&iter, &aDest](const bool& val) {
           aDest->mData.InsertOrUpdate(iter.Key(), AsVariant(val));
@@ -175,7 +222,7 @@ void AccAttributes::CopyTo(AccAttributes* aDest) const {
         [&iter, &aDest](const RefPtr<nsAtom>& val) {
           aDest->mData.InsertOrUpdate(iter.Key(), AsVariant(val));
         },
-        [](const nsTArray<int32_t>& val) {
+        [](const nsTArray<int32_t>& /*val*/) {
           // We don't copy arrays.
           MOZ_ASSERT_UNREACHABLE(
               "Trying to copy an AccAttributes containing an array");
@@ -189,7 +236,7 @@ void AccAttributes::CopyTo(AccAttributes* aDest) const {
         [&iter, &aDest](const Color& val) {
           aDest->mData.InsertOrUpdate(iter.Key(), AsVariant(val));
         },
-        [](const DeleteEntry& val) {
+        [](const DeleteEntry& /*val*/) {
           // We don't copy DeleteEntry.
           MOZ_ASSERT_UNREACHABLE(
               "Trying to copy an AccAttributes containing a DeleteEntry");
@@ -197,7 +244,7 @@ void AccAttributes::CopyTo(AccAttributes* aDest) const {
         [&iter, &aDest](const UniquePtr<nsString>& val) {
           aDest->SetAttributeStringCopy(iter.Key(), *val);
         },
-        [](const RefPtr<AccAttributes>& val) {
+        [](const RefPtr<AccAttributes>& /*val*/) {
           // We don't copy nested AccAttributes.
           MOZ_ASSERT_UNREACHABLE(
               "Trying to copy an AccAttributes containing an AccAttributes");
@@ -205,20 +252,32 @@ void AccAttributes::CopyTo(AccAttributes* aDest) const {
         [&iter, &aDest](const uint64_t& val) {
           aDest->mData.InsertOrUpdate(iter.Key(), AsVariant(val));
         },
-        [](const UniquePtr<AccGroupInfo>& val) {
+        [](const UniquePtr<AccGroupInfo>& /*val*/) {
           MOZ_ASSERT_UNREACHABLE(
               "Trying to copy an AccAttributes containing an AccGroupInfo");
         },
-        [](const UniquePtr<gfx::Matrix4x4>& val) {
+        [](const UniquePtr<gfx::Matrix4x4>& /*val*/) {
           MOZ_ASSERT_UNREACHABLE(
               "Trying to copy an AccAttributes containing a matrix");
         },
-        [](const nsTArray<uint64_t>& val) {
+        [](const UniquePtr<nsRect>& /*val*/) {
+          MOZ_ASSERT_UNREACHABLE(
+              "Trying to copy an AccAttributes containing a nsrect");
+        },
+        [](const nsTArray<uint64_t>& /*val*/) {
           // We don't copy arrays.
           MOZ_ASSERT_UNREACHABLE(
               "Trying to copy an AccAttributes containing an array");
         },
-        [](const nsTArray<TextOffsetAttribute>& val) {
+        [](const nsTArray<TextOffsetAttribute>& /*val*/) {
+          // We don't copy arrays.
+          MOZ_ASSERT_UNREACHABLE(
+              "Trying to copy an AccAttributes containing an array");
+        },
+        [&iter, &aDest](const WritingMode& val) {
+          aDest->mData.InsertOrUpdate(iter.Key(), AsVariant(val));
+        },
+        [](const nsTArray<RefPtr<nsAtom>>& /*val*/) {
           // We don't copy arrays.
           MOZ_ASSERT_UNREACHABLE(
               "Trying to copy an AccAttributes containing an array");
@@ -265,8 +324,13 @@ size_t AccAttributes::Entry::SizeOfExcludingThis(MallocSizeOf aMallocSizeOf) {
         aMallocSizeOf);
   } else if (mValue->is<UniquePtr<gfx::Matrix4x4>>()) {
     size += aMallocSizeOf(mValue->as<UniquePtr<gfx::Matrix4x4>>().get());
+  } else if (mValue->is<UniquePtr<nsRect>>()) {
+    size += aMallocSizeOf(mValue->as<UniquePtr<nsRect>>().get());
   } else if (mValue->is<nsTArray<uint64_t>>()) {
     size += mValue->as<nsTArray<uint64_t>>().ShallowSizeOfExcludingThis(
+        aMallocSizeOf);
+  } else if (mValue->is<nsTArray<RefPtr<nsAtom>>>()) {
+    size += mValue->as<nsTArray<RefPtr<nsAtom>>>().ShallowSizeOfExcludingThis(
         aMallocSizeOf);
   } else {
     // This type is stored directly and already counted or is an atom and

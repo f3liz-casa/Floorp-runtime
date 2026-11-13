@@ -1,23 +1,18 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include <algorithm>
 #include <cstdint>
-#include <cstdlib>
 #include <new>
 #include <numeric>
-#include <ostream>
 #include <string>
-#include <type_traits>
 #include <utility>
 #include <vector>
 
 #include "ErrorList.h"
+#include "gmock/gmock.h"
 #include "gtest/gtest.h"
-#include "mozilla/AlreadyAddRefed.h"
 #include "mozilla/Assertions.h"
 #include "mozilla/Attributes.h"
 #include "mozilla/FixedBufferOutputStream.h"
@@ -31,10 +26,10 @@
 #include "mozilla/dom/quota/EncryptedBlock.h"
 #include "mozilla/dom/quota/EncryptingOutputStream_impl.h"
 #include "mozilla/dom/quota/NSSCipherStrategy.h"
-#include "mozilla/fallible.h"
 #include "nsCOMPtr.h"
 #include "nsError.h"
 #include "nsICloneableInputStream.h"
+#include "nsIIPCSerializableInputStream.h"
 #include "nsIInputStream.h"
 #include "nsIOutputStream.h"
 #include "nsISeekableStream.h"
@@ -43,6 +38,7 @@
 #include "nsStreamUtils.h"
 #include "nsString.h"
 #include "nsStringFwd.h"
+#include "nsStringStream.h"
 #include "nsTArray.h"
 #include "nscore.h"
 #include "nss.h"
@@ -266,10 +262,12 @@ class DOM_Quota_EncryptedStream : public ::testing::Test {
   struct NSSInitContextDeleter {
     void operator()(NSSInitContext* p) { NSS_ShutdownContext(p); }
   };
-  MOZ_RUNINIT inline static std::unique_ptr<NSSInitContext,
-                                            NSSInitContextDeleter>
-      sNssContext;
+  static std::unique_ptr<NSSInitContext, NSSInitContextDeleter> sNssContext;
 };
+
+constinit std::unique_ptr<NSSInitContext,
+                          DOM_Quota_EncryptedStream::NSSInitContextDeleter>
+    DOM_Quota_EncryptedStream::sNssContext;
 
 enum struct FlushMode { AfterEachChunk, Never };
 enum struct ChunkSize { SingleByte, Unaligned, DataSize };
@@ -655,6 +653,56 @@ TEST_P(ParametrizedCryptTest, DummyCipherStrategy_IncompleteBlock) {
                            readData.Length(), &read));
 }
 
+TEST(DOM_Quota_EncryptedStream, DummyCipherStrategy_SerializeAfterClose)
+{
+  using CipherStrategy = DummyCipherStrategy;
+
+  nsCOMPtr<nsIInputStream> baseStream;
+  ASSERT_EQ(NS_OK,
+            NS_NewCStringInputStream(getter_AddRefs(baseStream), "data"_ns));
+
+  const auto inStream = MakeSafeRefPtr<DecryptingInputStream<CipherStrategy>>(
+      WrapNotNull(std::move(baseStream)), 4096, CipherStrategy::KeyType{});
+
+  nsCOMPtr<nsIIPCSerializableInputStream> serializable = do_QueryInterface(
+      static_cast<nsIInputStream*>(inStream.unsafeGetRawPtr()));
+  ASSERT_TRUE(serializable);
+
+  EXPECT_EQ(NS_OK, inStream->Close());
+
+  uint32_t sizeUsed = 0, pipes = 0, transferables = 0;
+  serializable->SerializedComplexity(UINT32_MAX, &sizeUsed, &pipes,
+                                     &transferables);
+  EXPECT_EQ(0u, sizeUsed);
+  EXPECT_EQ(0u, pipes);
+  EXPECT_EQ(0u, transferables);
+
+  mozilla::ipc::InputStreamParams params;
+  serializable->Serialize(params, UINT32_MAX, &sizeUsed);
+  ASSERT_EQ(mozilla::ipc::InputStreamParams::TEncryptedFileInputStreamParams,
+            params.type());
+  EXPECT_TRUE(params.get_EncryptedFileInputStreamParams()
+                  .inputStreamParams()
+                  .isNothing());
+  EXPECT_EQ(0u, sizeUsed);
+
+  nsCOMPtr<nsIInputStream> deserialized =
+      mozilla::ipc::InputStreamHelper::DeserializeInputStream(params);
+  ASSERT_TRUE(deserialized);
+
+  uint64_t available;
+  EXPECT_EQ(NS_BASE_STREAM_CLOSED, deserialized->Available(&available));
+
+  mozilla::ipc::InputStreamParams roundTripParams;
+  mozilla::ipc::InputStreamHelper::SerializeInputStream(
+      deserialized, roundTripParams, UINT32_MAX, &sizeUsed);
+  ASSERT_EQ(mozilla::ipc::InputStreamParams::TEncryptedFileInputStreamParams,
+            roundTripParams.type());
+  EXPECT_TRUE(roundTripParams.get_EncryptedFileInputStreamParams()
+                  .inputStreamParams()
+                  .isNothing());
+}
+
 TEST_P(ParametrizedCryptTest, zeroInitializedEncryptedBlock) {
   const TestParams& testParams = GetParam();
 
@@ -666,9 +714,7 @@ TEST_P(ParametrizedCryptTest, zeroInitializedEncryptedBlock) {
       encryptedBlock.WholeBlock().First<DummyCipherStrategy::BasicBlockSize>();
   auto unusedBytesInFirstBlock = firstBlock.from(sizeof(uint16_t));
 
-  EXPECT_TRUE(std::all_of(unusedBytesInFirstBlock.begin(),
-                          unusedBytesInFirstBlock.end(),
-                          [](const auto& e) { return 0ul == e; }));
+  EXPECT_THAT(unusedBytesInFirstBlock, testing::Each(0ul));
 }
 
 enum struct SeekOffset {

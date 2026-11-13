@@ -12,12 +12,19 @@ ChromeUtils.defineESModuleGetters(lazy, {
   CustomizableUI:
     "moz-src:///browser/components/customizableui/CustomizableUI.sys.mjs",
   LoginHelper: "resource://gre/modules/LoginHelper.sys.mjs",
+  NimbusFeatures: "resource://nimbus/ExperimentAPI.sys.mjs",
   PanelMultiView:
     "moz-src:///browser/components/customizableui/PanelMultiView.sys.mjs",
   RecentlyClosedTabsAndWindowsMenuUtils:
-    "resource:///modules/sessionstore/RecentlyClosedTabsAndWindowsMenuUtils.sys.mjs",
+    "moz-src:///browser/components/sessionstore/RecentlyClosedTabsAndWindowsMenuUtils.sys.mjs",
   Sanitizer: "resource:///modules/Sanitizer.sys.mjs",
-  SessionStore: "resource:///modules/sessionstore/SessionStore.sys.mjs",
+  ScreenshotsUtils:
+    "moz-src:///browser/components/screenshots/ScreenshotsUtils.sys.mjs",
+  SELECTION_MODES:
+    "moz-src:///browser/components/screenshots/ScreenshotsSelectionModes.sys.mjs",
+  SessionStore:
+    "moz-src:///browser/components/sessionstore/SessionStore.sys.mjs",
+  SharingUtils: "moz-src:///browser/components/sharing/SharingUtils.sys.mjs",
   ShortcutUtils: "resource://gre/modules/ShortcutUtils.sys.mjs",
 });
 
@@ -43,49 +50,53 @@ XPCOMUtils.defineLazyPreferenceGetter(
 );
 
 /**
- * A helper method to synchronize aNode's DOM attributes with the properties and
- * values in aAttrs. If aNode has an attribute that is false-y in aAttrs,
- * then this attribute is removed.
+ * Synchronizes aNode's DOM attributes with aAttrs: each key is set as an
+ * attribute with its value, or removed from aNode if the value is falsy.
  *
- * If aAttrs includes "shortcutId", the value is never set on aNode, but is
- * instead used when setting the "label" or "tooltiptext" attributes to include
- * the shortcut key combo. shortcutId should refer to the ID of the XUL <key>
- * element that acts as the shortcut.
+ * The following keys are not copied to aNode, but control how it is
+ * localized:
+ * - l10nId: Fluent identifier used to localize aNode.
+ * - tooltipL10nId: Fluent identifier of a message whose value is set,
+ *   asynchronously, as the "tooltiptext" attribute only. Use it instead of
+ *   l10nId when other localizable attributes, such as "label", are set by
+ *   other code, since Fluent would remove them.
+ * - shortcutId: ID of the XUL <key> element for the shortcut, passed to the
+ *   Fluent messages as the "$shortcut" variable.
  *
  * @param {Element} aNode
  *   The element to change the attributes of.
  * @param {object} aAttrs
- *   A set of key-value pairs where the key is set as the attribute name, and
- *   the value is set as the attribute value.
+ *   Attribute names mapped to their values, plus the special keys above.
  */
 function setAttributes(aNode, aAttrs) {
   let doc = aNode.ownerDocument;
   for (let [name, value] of Object.entries(aAttrs)) {
+    if (["l10nId", "tooltipL10nId", "shortcutId"].includes(name)) {
+      continue;
+    }
     if (!value) {
       if (aNode.hasAttribute(name)) {
         aNode.removeAttribute(name);
       }
     } else {
-      if (name == "shortcutId") {
-        continue;
-      }
-      if (name == "label" || name == "tooltiptext") {
-        let stringId = typeof value == "string" ? value : name;
-        let additionalArgs = [];
-        if (aAttrs.shortcutId) {
-          let shortcut = doc.getElementById(aAttrs.shortcutId);
-          if (shortcut) {
-            additionalArgs.push(lazy.ShortcutUtils.prettifyShortcut(shortcut));
-          }
-        }
-        value = lazy.CustomizableUI.getLocalizedProperty(
-          { id: aAttrs.id },
-          stringId,
-          additionalArgs
-        );
-      }
       aNode.setAttribute(name, value);
     }
+  }
+
+  let l10nArgs;
+  if (aAttrs.shortcutId) {
+    let shortcut = doc.getElementById(aAttrs.shortcutId);
+    if (shortcut) {
+      l10nArgs = { shortcut: lazy.ShortcutUtils.prettifyShortcut(shortcut) };
+    }
+  }
+  if (aAttrs.l10nId) {
+    doc.l10n.setAttributes(aNode, aAttrs.l10nId, l10nArgs);
+  }
+  if (aAttrs.tooltipL10nId) {
+    doc.l10n
+      .formatValue(aAttrs.tooltipL10nId, l10nArgs)
+      .then(tooltip => aNode.setAttribute("tooltiptext", tooltip));
   }
 }
 
@@ -100,8 +111,8 @@ export const CustomizableWidgets = [
     id: "history-panelmenu",
     type: "view",
     viewId: "PanelUI-history",
+    l10nId: "toolbar-button-history",
     shortcutId: "key_gotoHistory",
-    tooltiptext: "history-panelmenu.tooltiptext2",
     recentlyClosedTabsPanel: "appMenu-library-recentlyClosedTabs",
     recentlyClosedWindowsPanel: "appMenu-library-recentlyClosedWindows",
     handleEvent(event) {
@@ -117,7 +128,7 @@ export const CustomizableWidgets = [
           break;
         case "command": {
           let { target } = event;
-          let { PanelUI, PlacesCommandHook } = target.ownerGlobal;
+          let { PanelUI, PlacesCommandHook } = target.documentGlobal;
           if (target.id == "appMenuRecentlyClosedTabs") {
             PanelUI.showSubView(this.recentlyClosedTabsPanel, target);
           } else if (target.id == "appMenuRecentlyClosedWindows") {
@@ -270,10 +281,10 @@ export const CustomizableWidgets = [
   },
   {
     id: "find-button",
+    l10nId: "toolbar-button-find",
     shortcutId: "key_find",
-    tooltiptext: "find-button.tooltiptext3",
     onCommand(aEvent) {
-      let win = aEvent.target.ownerGlobal;
+      let win = aEvent.target.documentGlobal;
       if (win.gLazyFindCommand) {
         win.gLazyFindCommand("onFindCommand");
       }
@@ -293,7 +304,7 @@ export const CustomizableWidgets = [
     defaultArea: "nav-bar",
     _introducedByPref: "sidebar.revamp",
     onCommand(aEvent) {
-      const { SidebarController } = aEvent.target.ownerGlobal;
+      const { SidebarController } = aEvent.target.documentGlobal;
       if (lazy.sidebarRevampEnabled) {
         SidebarController.handleToolbarButtonClick();
       } else {
@@ -302,7 +313,7 @@ export const CustomizableWidgets = [
     },
     onCreated(aNode) {
       if (lazy.sidebarRevampEnabled) {
-        const { SidebarController } = aNode.ownerGlobal;
+        const { SidebarController } = aNode.documentGlobal;
         SidebarController.updateToolbarButton(aNode);
         aNode.setAttribute("overflows", "false");
         // Show the toolbar button badge by setting the badged attribute.
@@ -325,15 +336,13 @@ export const CustomizableWidgets = [
   {
     id: "zoom-controls",
     type: "custom",
-    tooltiptext: "zoom-controls.tooltiptext2",
     onBuild(aDocument) {
       let buttons = [
         {
           id: "zoom-out-button",
           command: "cmd_fullZoomReduce",
-          label: true,
           closemenu: "none",
-          tooltiptext: "tooltiptext2",
+          l10nId: "toolbar-button-zoom-out",
           shortcutId: "key_fullZoomReduce",
           class: "toolbarbutton-1 toolbarbutton-combined",
         },
@@ -341,7 +350,7 @@ export const CustomizableWidgets = [
           id: "zoom-reset-button",
           command: "cmd_fullZoomReset",
           closemenu: "none",
-          tooltiptext: "tooltiptext2",
+          tooltipL10nId: "toolbar-button-zoom-reset-tooltip",
           shortcutId: "key_fullZoomReset",
           class: "toolbarbutton-1 toolbarbutton-combined",
         },
@@ -349,8 +358,7 @@ export const CustomizableWidgets = [
           id: "zoom-in-button",
           command: "cmd_fullZoomEnlarge",
           closemenu: "none",
-          label: true,
-          tooltiptext: "tooltiptext2",
+          l10nId: "toolbar-button-zoom-in",
           shortcutId: "key_fullZoomEnlarge",
           class: "toolbarbutton-1 toolbarbutton-combined",
         },
@@ -358,14 +366,7 @@ export const CustomizableWidgets = [
 
       let node = aDocument.createXULElement("toolbaritem");
       node.setAttribute("id", "zoom-controls");
-      node.setAttribute(
-        "label",
-        lazy.CustomizableUI.getLocalizedProperty(this, "label")
-      );
-      node.setAttribute(
-        "title",
-        lazy.CustomizableUI.getLocalizedProperty(this, "tooltiptext")
-      );
+      aDocument.l10n.setAttributes(node, "toolbar-zoom-controls");
       // Set this as an attribute in addition to the property to make sure we can style correctly.
       node.setAttribute("removable", "true");
       node.classList.add("chromeclass-toolbar-additional");
@@ -385,30 +386,26 @@ export const CustomizableWidgets = [
   {
     id: "edit-controls",
     type: "custom",
-    tooltiptext: "edit-controls.tooltiptext2",
     onBuild(aDocument) {
       let buttons = [
         {
           id: "cut-button",
           command: "cmd_cut",
-          label: true,
-          tooltiptext: "tooltiptext2",
+          l10nId: "toolbar-button-cut",
           shortcutId: "key_cut",
           class: "toolbarbutton-1 toolbarbutton-combined",
         },
         {
           id: "copy-button",
           command: "cmd_copy",
-          label: true,
-          tooltiptext: "tooltiptext2",
+          l10nId: "toolbar-button-copy",
           shortcutId: "key_copy",
           class: "toolbarbutton-1 toolbarbutton-combined",
         },
         {
           id: "paste-button",
           command: "cmd_paste",
-          label: true,
-          tooltiptext: "tooltiptext2",
+          l10nId: "toolbar-button-paste",
           shortcutId: "key_paste",
           class: "toolbarbutton-1 toolbarbutton-combined",
         },
@@ -416,14 +413,7 @@ export const CustomizableWidgets = [
 
       let node = aDocument.createXULElement("toolbaritem");
       node.setAttribute("id", "edit-controls");
-      node.setAttribute(
-        "label",
-        lazy.CustomizableUI.getLocalizedProperty(this, "label")
-      );
-      node.setAttribute(
-        "title",
-        lazy.CustomizableUI.getLocalizedProperty(this, "tooltiptext")
-      );
+      aDocument.l10n.setAttributes(node, "toolbar-edit-controls");
       // Set this as an attribute in addition to the property to make sure we can style correctly.
       node.setAttribute("removable", "true");
       node.classList.add("chromeclass-toolbar-additional");
@@ -447,12 +437,12 @@ export const CustomizableWidgets = [
         },
         onWidgetOverflow(aWidgetNode) {
           if (aWidgetNode == node) {
-            node.ownerGlobal.updateEditUIVisibility();
+            node.documentGlobal.updateEditUIVisibility();
           }
         },
         onWidgetUnderflow(aWidgetNode) {
           if (aWidgetNode == node) {
-            node.ownerGlobal.updateEditUIVisibility();
+            node.documentGlobal.updateEditUIVisibility();
           }
         },
       };
@@ -486,6 +476,54 @@ export const CustomizableWidgets = [
   },
 ];
 
+if (
+  Services.prefs.getBoolPref("browser.toolbars.share-button.enabled", false)
+) {
+  CustomizableWidgets.push({
+    id: "share-tab-button",
+    type: "custom",
+    onBuild(aDocument) {
+      let node = aDocument.createXULElement("toolbarbutton");
+      node.setAttribute("id", "share-tab-button");
+      aDocument.l10n.setAttributes(node, "toolbar-button-share-tab");
+
+      node.classList.add("toolbarbutton-1");
+
+      if (AppConstants.platform == "macosx") {
+        node.classList.add("share-toolbar-picker");
+        node.addEventListener("command", () => {
+          let browser = aDocument.defaultView.gBrowser.selectedBrowser;
+          node.contextBrowserToShare = Cu.getWeakReference(browser);
+          node.browsersToShare = null;
+          lazy.SharingUtils.shareOnMacPicker(node, { injectQR: true });
+        });
+        return node;
+      }
+
+      // share-tab-url-item lets BrowserUsageTelemetry find the node carrying
+      // browsersToShare via .closest(".share-tab-url-item") when a
+      // .share-copy-link item inside the popup is clicked.
+      node.classList.add("share-tab-url-item");
+      node.setAttribute("type", "menu");
+
+      let popup = aDocument.createXULElement("menupopup");
+      popup.setAttribute("id", "share-tab-popup");
+      popup.setAttribute("accesskey-conflicts-bug", "2073899");
+      popup.addEventListener("popupshowing", () => {
+        let browser = aDocument.defaultView.gBrowser.selectedBrowser;
+        node.contextBrowserToShare = Cu.getWeakReference(browser);
+        node.browsersToShare = null;
+
+        lazy.SharingUtils.populateSharePopup(popup);
+      });
+
+      node.appendChild(popup);
+
+      return node;
+    },
+  });
+}
+
 if (Services.prefs.getBoolPref("identity.fxaccounts.enabled")) {
   CustomizableWidgets.push({
     id: "sync-button",
@@ -498,7 +536,7 @@ if (Services.prefs.getBoolPref("identity.fxaccounts.enabled")) {
 
       let syncNowBtn = panelview.querySelector(".syncnow-label");
       let l10nId = syncNowBtn.getAttribute(
-        panelview.ownerGlobal.gSync._isCurrentlySyncing
+        panelview.documentGlobal.gSync._isCurrentlySyncing
           ? "syncing-data-l10n-id"
           : "sync-now-data-l10n-id"
       );
@@ -511,6 +549,7 @@ if (Services.prefs.getBoolPref("identity.fxaccounts.enabled")) {
         lazy.PanelMultiView.getViewNode(doc, "PanelUI-remotetabs-tabslist")
       );
       panelview.addEventListener("command", this);
+      panelview.addEventListener("click", this);
       let syncNowButton = lazy.PanelMultiView.getViewNode(
         aEvent.target.ownerDocument,
         "PanelUI-remotetabs-syncnow"
@@ -522,6 +561,7 @@ if (Services.prefs.getBoolPref("identity.fxaccounts.enabled")) {
       panelview.syncedTabsPanelList.destroy();
       panelview.syncedTabsPanelList = null;
       panelview.removeEventListener("command", this);
+      panelview.removeEventListener("click", this);
       let syncNowButton = lazy.PanelMultiView.getViewNode(
         aEvent.target.ownerDocument,
         "PanelUI-remotetabs-syncnow"
@@ -530,7 +570,7 @@ if (Services.prefs.getBoolPref("identity.fxaccounts.enabled")) {
     },
     handleEvent(aEvent) {
       let button = aEvent.target;
-      let { gSync } = button.ownerGlobal;
+      let { gSync } = button.documentGlobal;
       switch (aEvent.type) {
         case "mouseover":
           gSync.refreshSyncButtonsTooltip();
@@ -543,6 +583,11 @@ if (Services.prefs.getBoolPref("identity.fxaccounts.enabled")) {
             case "PanelUI-remotetabs-view-managedevices":
               gSync.openDevicesManagementPage("syncedtabs-menupanel");
               break;
+          }
+          break;
+        }
+        case "click": {
+          switch (button.id) {
             case "PanelUI-remotetabs-tabsdisabledpane-button":
             case "PanelUI-remotetabs-setupsync-button":
             case "PanelUI-remotetabs-syncdisabled-button":
@@ -554,8 +599,99 @@ if (Services.prefs.getBoolPref("identity.fxaccounts.enabled")) {
               gSync.openConnectAnotherDevice("synced-tabs");
               break;
           }
+          break;
         }
       }
+    },
+  });
+
+  CustomizableWidgets.push({
+    id: "send-tab-button",
+    l10nId: "toolbar-button-send-tab",
+    type: "custom",
+    tabSpecific: true,
+    locationSpecific: true,
+    onBuild(aDocument) {
+      const node = aDocument.createXULElement("toolbarbutton");
+      node.setAttribute("id", this.id);
+      aDocument.l10n.setAttributes(node, "toolbar-button-send-tab");
+
+      node.classList.add("toolbarbutton-1");
+
+      node.setAttribute("type", "menu");
+
+      const enableDisableButton = () => {
+        node.disabled =
+          !aDocument.documentGlobal.gSync.sendTabToolbarButtonShouldBeEnabled(
+            aDocument.documentGlobal.gBrowser.currentURI
+          );
+      };
+
+      Services.obs.addObserver(
+        enableDisableButton,
+        "fxaccounts:devicelist_updated"
+      );
+      Services.obs.addObserver(enableDisableButton, "sync-ui-state:update");
+      Services.prefs.addObserver(
+        "identity.fxaccounts.enabled",
+        enableDisableButton
+      );
+      aDocument.documentGlobal.addEventListener(
+        "TabSelect",
+        enableDisableButton
+      );
+
+      const locationListener = {
+        onLocationChange(_browser, webProgress, _request, _uri) {
+          if (webProgress.isTopLevel) {
+            enableDisableButton();
+          }
+        },
+      };
+      aDocument.documentGlobal.gBrowser.addTabsProgressListener(
+        locationListener
+      );
+
+      enableDisableButton();
+
+      const widgetListener = {
+        onWidgetInstanceRemoved: (aWidgetId, aDoc) => {
+          if (aWidgetId != this.id || aDoc != aDocument) {
+            return;
+          }
+          lazy.CustomizableUI.removeListener(widgetListener);
+          Services.obs.removeObserver(
+            enableDisableButton,
+            "fxaccounts:devicelist_updated"
+          );
+          Services.obs.removeObserver(
+            enableDisableButton,
+            "sync-ui-state:update"
+          );
+          Services.prefs.removeObserver(
+            "identity.fxaccounts.enabled",
+            enableDisableButton
+          );
+          aDocument.documentGlobal.removeEventListener(
+            "TabSelect",
+            enableDisableButton
+          );
+          aDocument.documentGlobal.gBrowser.removeTabsProgressListener(
+            locationListener
+          );
+        },
+      };
+      lazy.CustomizableUI.addListener(widgetListener);
+
+      const popup = aDocument.createXULElement("menupopup");
+      popup.setAttribute("id", "send-tab-popup");
+      popup.addEventListener("popupshowing", () =>
+        aDocument.documentGlobal.gSync.populateSendTabToolbarButton(popup)
+      );
+
+      node.appendChild(popup);
+
+      return node;
     },
   });
 }
@@ -564,7 +700,7 @@ let preferencesButton = {
   id: "preferences-button",
   l10nId: "toolbar-settings-button",
   onCommand(aEvent) {
-    let win = aEvent.target.ownerGlobal;
+    let win = aEvent.target.documentGlobal;
     win.openPreferences(undefined);
   },
 };
@@ -578,6 +714,7 @@ if (Services.prefs.getBoolPref("privacy.panicButton.enabled")) {
     id: "panic-button",
     type: "view",
     viewId: "PanelUI-panicView",
+    l10nId: "toolbar-button-forget",
 
     forgetButtonCalled(aEvent) {
       let doc = aEvent.target.ownerDocument;
@@ -622,7 +759,7 @@ if (Services.prefs.getBoolPref("privacy.panicButton.enabled")) {
       }
     },
     onViewShowing(aEvent) {
-      let win = aEvent.target.ownerGlobal;
+      let win = aEvent.target.documentGlobal;
       let doc = win.document;
       let eventBlocker = null;
       eventBlocker = doc.l10n.translateElements([aEvent.target]);
@@ -647,14 +784,350 @@ if (Services.prefs.getBoolPref("privacy.panicButton.enabled")) {
   });
 }
 
+const kFireButtonNimbusFeature = "fireButton";
+const kFireButtonFlowVariable = "flow";
+// Show the confirmation panel, with its own delete action and a way into the
+// clear-data dialog.
+const kFireButtonFlowPanel = "panel";
+// Go straight to the clear-data dialog, which does its own confirming.
+const kFireButtonFlowDirect = "direct";
+
+if (Services.prefs.getBoolPref("browser.fireButton.enabled", false)) {
+  CustomizableWidgets.push({
+    id: "fire-button",
+    l10nId: "fire-button-toolbar-button",
+    type: "view",
+    viewId: "fire-button-panel",
+    defaultArea: "nav-bar",
+    // The button ships disabled, so it is introduced into existing profiles
+    // when the pref is flipped rather than at a fixed kVersion.
+    _introducedByPref: "browser.fireButton.enabled",
+    // Private windows have reset-pbm-toolbar-button, which clears the private
+    // session. Clearing the normal session from there would be surprising.
+    showInPrivateBrowsing: false,
+
+    /**
+     * The same set the panic button clears, but over all of history rather
+     * than a chosen time span. "openWindows" must stay in the list: it is what
+     * closes every browser window and opens a fresh one.
+     */
+    itemsToClear: [
+      "cookies",
+      "history",
+      "openWindows",
+      "formdata",
+      "sessions",
+      "cache",
+      "downloads",
+      "offlineApps",
+    ],
+
+    /**
+     * Open confirmation panels in which the user has not picked an action yet.
+     * Whatever is still here when the panel hides was dismissed.
+     */
+    _panelsAwaitingChoice: new WeakSet(),
+
+    onCreated(aNode) {
+      let doc = aNode.ownerDocument;
+      let box = doc.createXULElement("box");
+      box.className = "toolbarbutton-animatable-box";
+      for (let layer of ["rest", "flare", "settled"]) {
+        let flame = doc.createXULElement("box");
+        flame.className = `fire-button-flame fire-button-flame-${layer}`;
+        box.appendChild(flame);
+      }
+      aNode.appendChild(box);
+    },
+
+    handleEvent(aEvent) {
+      let panelview = aEvent.target.closest("panelview");
+      // The footer buttons are moz-buttons, which fire click. The "Choose…"
+      // link is a XUL button, which fires command.
+      if (aEvent.type == "command") {
+        if (aEvent.target.id == "fire-button-panel-choose-link") {
+          this._panelsAwaitingChoice.delete(panelview);
+          Glean.fireButton.chooseClicked.record();
+          this.onChoose(aEvent.target).catch(console.error);
+        }
+        return;
+      }
+      switch (aEvent.target.id) {
+        case "fire-button-panel-cancel-button":
+          this._panelsAwaitingChoice.delete(panelview);
+          this.recordFlowCompleted(kFireButtonFlowPanel, "cancelled", "panel");
+          lazy.CustomizableUI.hidePanelForNode(aEvent.target);
+          break;
+        case "fire-button-panel-confirm-button":
+          this._panelsAwaitingChoice.delete(panelview);
+          // Not awaited: sanitizing closes the window this handler is running
+          // in, so nothing here can report the failure to the user.
+          this.onConfirm(aEvent.target).catch(console.error);
+          break;
+      }
+    },
+    /**
+     * Which flow activating the button starts. Read fresh each time rather
+     * than cached, so an enrollment or an about:config change takes effect
+     * without a restart.
+     *
+     * @returns {string} One of the kFireButtonFlow* values.
+     */
+    get flow() {
+      return (
+        lazy.NimbusFeatures[kFireButtonNimbusFeature].getVariable(
+          kFireButtonFlowVariable
+        ) ?? kFireButtonFlowPanel
+      );
+    },
+
+    onViewShowing(aEvent) {
+      let panelview = aEvent.target;
+
+      let flow = this.flow;
+      Glean.fireButton.activated.record({ flow });
+
+      if (flow == kFireButtonFlowDirect) {
+        // Stop the panel from opening; the dialog is the confirmation.
+        aEvent.preventDefault();
+        lazy.CustomizableUI.hidePanelForNode(panelview);
+        this.openClearDataDialog(panelview, flow).catch(console.error);
+        return;
+      }
+
+      this._panelsAwaitingChoice.add(panelview);
+      panelview.addEventListener("click", this);
+      panelview.addEventListener("command", this);
+    },
+    onViewHiding(aEvent) {
+      let panelview = aEvent.target;
+      panelview.removeEventListener("click", this);
+      panelview.removeEventListener("command", this);
+      if (this._panelsAwaitingChoice.delete(panelview)) {
+        this.recordFlowCompleted(kFireButtonFlowPanel, "dismissed", "panel");
+      }
+    },
+
+    /**
+     * @param {string} aFlow - One of the kFireButtonFlow* values.
+     * @param {string} aOutcome - "deleted", "cancelled", "dismissed" or "aborted".
+     * @param {string} aSurface - "panel" or "dialog".
+     */
+    recordFlowCompleted(aFlow, aOutcome, aSurface) {
+      Glean.fireButton.flowCompleted.record({
+        flow: aFlow,
+        outcome: aOutcome,
+        surface: aSurface,
+      });
+    },
+
+    async onConfirm(aButton) {
+      lazy.CustomizableUI.hidePanelForNode(aButton);
+      let progress = {};
+      try {
+        await this.clearSession(progress);
+      } catch (ex) {
+        if (progress.openWindows != "aborted") {
+          throw ex;
+        }
+        this.recordFlowCompleted(kFireButtonFlowPanel, "aborted", "panel");
+        return;
+      }
+      this.recordFlowCompleted(kFireButtonFlowPanel, "deleted", "panel");
+      this.notifyComplete();
+    },
+
+    /**
+     * Hand off to the "Delete browsing data" dialog so the user can
+     * delete a subset instead of everything. The dialog does its own clearing,
+     * so all this adds is the same completion toast the panel's own confirm
+     * button shows.
+     *
+     * @param {Element} aLink - The "Choose…" link that was activated.
+     */
+    onChoose(aLink) {
+      lazy.CustomizableUI.hidePanelForNode(aLink);
+      return this.openClearDataDialog(aLink, kFireButtonFlowPanel);
+    },
+
+    /**
+     * Open the clear-data dialog and report completion. Shared by the panel's
+     * "Choose…" link and by the direct flow, which has no panel.
+     *
+     * @param {Element} aNode - Node identifying the window to parent to.
+     * @param {string} aFlow - The kFireButtonFlow* value of this activation.
+     */
+    async openClearDataDialog(aNode, aFlow) {
+      let win = aNode.documentGlobal;
+
+      // Armed before the dialog opens because the dialog reports "accept" from
+      // its dialogaccept listener, which runs while its clear is still in
+      // flight. Waiting for the sanitizer's own notification keeps the toast
+      // from claiming the data is gone before it is.
+      let observer;
+      let cleared = new Promise(resolve => {
+        observer = (subject, topic, data) => resolve(data != "aborted");
+        Services.obs.addObserver(observer, "sanitizer-sanitization-complete");
+      });
+
+      try {
+        let result = await lazy.Sanitizer.showUI(win, "clearSiteData", {
+          closeWindowsWithHistory: true,
+          entryPoint: lazy.Sanitizer.DIALOG_ENTRY_POINTS.FIRE_BUTTON,
+        });
+        if (result != "accept") {
+          this.recordFlowCompleted(aFlow, "cancelled", "dialog");
+          return;
+        }
+        if (!(await cleared)) {
+          this.recordFlowCompleted(aFlow, "aborted", "dialog");
+          return;
+        }
+        this.recordFlowCompleted(aFlow, "deleted", "dialog");
+        this.notifyComplete();
+      } finally {
+        Services.obs.removeObserver(
+          observer,
+          "sanitizer-sanitization-complete"
+        );
+      }
+    },
+
+    /**
+     * Clear the whole browsing session: history, cookies, cache, downloads and
+     * other site data, then close every browser window and open a new one.
+     *
+     * @param {object} aProgress - Receives the Sanitizer's progress.
+     * @returns {Promise<object>} The Sanitizer's progress object.
+     */
+    clearSession(aProgress) {
+      return lazy.Sanitizer.sanitize(this.itemsToClear, {
+        ignoreTimespan: true,
+        privateStateForNewWindow: "non-private",
+        progress: aProgress,
+      });
+    },
+
+    /**
+     * Show the completion toast. Clearing replaced every browser window, so
+     * this anchors in whichever window is current now rather than the one the
+     * action was triggered from. Sanitizer.sanitize only resolves once that
+     * window has finished its delayed startup.
+     */
+    notifyComplete() {
+      let win = Services.wm.getMostRecentWindow("navigator:browser");
+      let node = win?.closed
+        ? null
+        : lazy.CustomizableUI.getWidget(this.id)?.forWindow(win)?.node;
+      if (!node) {
+        return;
+      }
+      // If the button overflowed we can't anchor off it, so fall back to the
+      // overflow button that cui-anchorid points at.
+      let anchorId = node.getAttribute("cui-anchorid");
+      let anchor = anchorId ? win.document.getElementById(anchorId) : null;
+      win.ConfirmationHint.show(anchor ?? node, "fire-button-panel-complete", {
+        position: "bottomright topright",
+      });
+    },
+  });
+}
+
+/**
+ * Records fire button exposure at the first startup after enrollment, in every
+ * branch. That is when the button is first created or left out: an enrollment
+ * only changes the toolbar at the next startup, so exposure in the session
+ * that enrolled would count treatment clients who never had the button.
+ */
+export const FireButtonExposure = {
+  kEnrollmentPref: "browser.fireButton.enrollmentSlug",
+
+  /**
+   * @param {string} aSlugAtStartup - The kEnrollmentPref value read when the
+   *   toolbar was built, before Nimbus could enroll anything this session.
+   */
+  async init(aSlugAtStartup) {
+    let feature = lazy.NimbusFeatures[kFireButtonNimbusFeature];
+    await feature.ready();
+    this.recordExposure(aSlugAtStartup);
+    feature.onUpdate(() => this.update());
+  },
+
+  /**
+   * Records exposure if the current enrollment already existed at startup.
+   *
+   * @param {string} aSlugAtStartup - See init().
+   */
+  recordExposure(aSlugAtStartup) {
+    let feature = lazy.NimbusFeatures[kFireButtonNimbusFeature];
+    let slug = feature.getEnrollmentMetadata()?.slug;
+    if (slug && slug == aSlugAtStartup) {
+      feature.recordExposureEvent();
+    }
+    this.update();
+  },
+
+  /**
+   * Remembers the current enrollment, so the next startup knows it predates
+   * that session.
+   */
+  update() {
+    let slug =
+      lazy.NimbusFeatures[kFireButtonNimbusFeature].getEnrollmentMetadata()
+        ?.slug;
+    if (slug) {
+      Services.prefs.setStringPref(this.kEnrollmentPref, slug);
+    } else {
+      Services.prefs.clearUserPref(this.kEnrollmentPref);
+    }
+  },
+};
+
+FireButtonExposure.init(
+  Services.prefs.getStringPref(FireButtonExposure.kEnrollmentPref, "")
+).catch(console.error);
+
 if (PrivateBrowsingUtils.enabled) {
   CustomizableWidgets.push({
     id: "privatebrowsing-button",
     l10nId: "toolbar-button-new-private-window",
     shortcutId: "key_privatebrowsing",
     onCommand(e) {
-      let win = e.target.ownerGlobal;
+      let win = e.target.documentGlobal;
       win.OpenBrowserWindow({ private: true });
+    },
+  });
+}
+
+if (Services.prefs.getBoolPref("browser.toolbars.tab-groups.enabled", false)) {
+  CustomizableWidgets.push({
+    id: "tab-groups-button",
+    type: "view",
+    viewId: "toolbar-tabGroupsListView",
+    l10nId: "toolbar-button-tab-groups",
+  });
+}
+
+CustomizableWidgets.push({
+  id: "firefox-view-button",
+  l10nId: "toolbar-button-firefox-view-3",
+  onCreated(node) {
+    node.setAttribute("role", "button");
+    node.setAttribute("aria-pressed", "false");
+  },
+});
+
+if (Services.prefs.getBoolPref("browser.mini-window.enabled", false)) {
+  CustomizableWidgets.push({
+    id: "mini-window-button",
+    l10nId: "toolbar-button-mini-window",
+    onCommand(aEvent) {
+      let win = aEvent.currentTarget.documentGlobal;
+      lazy.ScreenshotsUtils.toggle(
+        win.gBrowser.selectedBrowser,
+        "MiniWindowToolbarButton",
+        { mode: lazy.SELECTION_MODES.MINI_WINDOW }
+      );
     },
   });
 }

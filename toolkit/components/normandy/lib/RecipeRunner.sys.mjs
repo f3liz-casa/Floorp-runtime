@@ -11,14 +11,15 @@ XPCOMUtils.defineLazyServiceGetter(
   lazy,
   "timerManager",
   "@mozilla.org/updates/timer-manager;1",
-  "nsIUpdateTimerManager"
+  Ci.nsIUpdateTimerManager
 );
 
 ChromeUtils.defineESModuleGetters(lazy, {
   ActionsManager: "resource://normandy/lib/ActionsManager.sys.mjs",
   BaseAction: "resource://normandy/actions/BaseAction.sys.mjs",
   CleanupManager: "resource://normandy/lib/CleanupManager.sys.mjs",
-  ClientEnvironment: "resource://normandy/lib/ClientEnvironment.sys.mjs",
+  ClientEnvironmentBase:
+    "resource://gre/modules/components-utils/ClientEnvironment.sys.mjs",
   FilterExpressions:
     "resource://gre/modules/components-utils/FilterExpressions.sys.mjs",
   LegacyHeartbeat: "resource://normandy/lib/LegacyHeartbeat.sys.mjs",
@@ -27,9 +28,7 @@ ChromeUtils.defineESModuleGetters(lazy, {
   RemoteSettings: "resource://services-settings/remote-settings.sys.mjs",
   RemoteSettingsClient:
     "resource://services-settings/RemoteSettingsClient.sys.mjs",
-  Storage: "resource://normandy/lib/Storage.sys.mjs",
   TargetingContext: "resource://messaging-system/targeting/Targeting.sys.mjs",
-  Uptake: "resource://normandy/lib/Uptake.sys.mjs",
   clearTimeout: "resource://gre/modules/Timer.sys.mjs",
   setTimeout: "resource://gre/modules/Timer.sys.mjs",
 });
@@ -44,7 +43,6 @@ const FIRST_RUN_PREF = "app.normandy.first_run";
 const SHIELD_ENABLED_PREF = "app.normandy.enabled";
 const DEV_MODE_PREF = "app.normandy.dev_mode";
 const API_URL_PREF = "app.normandy.api_url";
-const LAZY_CLASSIFY_PREF = "app.normandy.experiments.lazy_classify";
 const ONSYNC_SKEW_SEC_PREF = "app.normandy.onsync_skew_sec";
 
 // Timer last update preference.
@@ -310,54 +308,22 @@ export var RecipeRunner = {
       }
 
       this.clearCaches();
-      // Unless lazy classification is enabled, prep the classify cache.
-      if (!Services.prefs.getBoolPref(LAZY_CLASSIFY_PREF, false)) {
-        try {
-          await lazy.ClientEnvironment.getClientClassification();
-        } catch (err) {
-          // Try to go on without this data; the filter expressions will
-          // gracefully fail without this info if they need it.
-        }
-      }
-
-      // Fetch recipes before execution in case we fail and exit early.
-      let recipesAndSignatures;
-      try {
-        recipesAndSignatures = await lazy.gRemoteSettingsClient.get({
-          // Do not return an empty list if an error occurs.
-          emptyListFallback: false,
-        });
-      } catch (e) {
-        await lazy.Uptake.reportRunner(lazy.Uptake.RUNNER_SERVER_ERROR);
-        return;
-      }
 
       const actionsManager = new lazy.ActionsManager();
-
       const legacyHeartbeat = lazy.LegacyHeartbeat.getHeartbeatRecipe();
-      const noRecipes =
-        !recipesAndSignatures.length && legacyHeartbeat === null;
 
       // Execute recipes, if we have any.
-      if (noRecipes) {
+      if (legacyHeartbeat === null) {
         log.debug("No recipes to execute");
       } else {
-        for (const { recipe, signature } of recipesAndSignatures) {
-          let suitability = await this.getRecipeSuitability(recipe, signature);
-          await actionsManager.processRecipe(recipe, suitability);
-        }
-
-        if (legacyHeartbeat !== null) {
-          await actionsManager.processRecipe(
-            legacyHeartbeat,
-            lazy.BaseAction.suitability.FILTER_MATCH
-          );
-        }
+        await actionsManager.processRecipe(
+          legacyHeartbeat,
+          lazy.BaseAction.suitability.FILTER_MATCH
+        );
       }
 
-      await actionsManager.finalize({ noRecipes });
+      await actionsManager.finalize({ noRecipes: legacyHeartbeat === null });
 
-      await lazy.Uptake.reportRunner(lazy.Uptake.RUNNER_SUCCESS);
       Services.obs.notifyObservers(null, "recipe-runner:end");
     } finally {
       this.running = false;
@@ -371,7 +337,7 @@ export var RecipeRunner = {
   },
 
   getFilterContext(recipe) {
-    const environment = cacheProxy(lazy.ClientEnvironment);
+    const environment = cacheProxy(lazy.ClientEnvironmentBase);
     environment.recipe = {
       id: recipe.id,
       arguments: recipe.arguments,
@@ -388,7 +354,7 @@ export var RecipeRunner = {
    *
    * This is used to pre-filter recipes that aren't compatible with this client.
    *
-   * @returns {Set<String>} The capabilities supported by this client.
+   * @returns {Set<string>} The capabilities supported by this client.
    */
   getCapabilities() {
     let capabilities = new Set([
@@ -409,7 +375,7 @@ export var RecipeRunner = {
     // for the `normandy.` namespace, and another for the `env.` namespace.
     capabilities.add("jexl.context.env");
     capabilities.add("jexl.context.normandy");
-    let env = lazy.ClientEnvironment;
+    let env = lazy.ClientEnvironmentBase;
     while (env && env.name) {
       // Walk up the class chain for ClientEnvironment, collecting applicable
       // properties as we go. Stop when we get to an unnamed object, which is
@@ -464,7 +430,7 @@ export var RecipeRunner = {
    * @param {object} recipe
    * @param {object} signature
    * @param {string} recipe.filter_expression The expression to evaluate against the environment.
-   * @param {Set<String>} runnerCapabilities The capabilities provided by this runner.
+   * @param {Set<string>} runnerCapabilities The capabilities provided by this runner.
    * @return {Promise<BaseAction.suitability>} The recipe's suitability
    */
   async getRecipeSuitability(recipe, signature) {
@@ -476,18 +442,10 @@ export var RecipeRunner = {
     let { value: suitability } = await generator.next();
     switch (suitability) {
       case lazy.BaseAction.suitability.SIGNATURE_ERROR: {
-        await lazy.Uptake.reportRecipe(
-          recipe,
-          lazy.Uptake.RECIPE_INVALID_SIGNATURE
-        );
         break;
       }
 
       case lazy.BaseAction.suitability.CAPABILITIES_MISMATCH: {
-        await lazy.Uptake.reportRecipe(
-          recipe,
-          lazy.Uptake.RECIPE_INCOMPATIBLE_CAPABILITIES
-        );
         break;
       }
 
@@ -497,21 +455,10 @@ export var RecipeRunner = {
       }
 
       case lazy.BaseAction.suitability.FILTER_MISMATCH: {
-        // This represents a terminal state for the given recipe, so
-        // report its outcome. Others are reported when executed in
-        // ActionsManager.
-        await lazy.Uptake.reportRecipe(
-          recipe,
-          lazy.Uptake.RECIPE_DIDNT_MATCH_FILTER
-        );
         break;
       }
 
       case lazy.BaseAction.suitability.FILTER_ERROR: {
-        await lazy.Uptake.reportRecipe(
-          recipe,
-          lazy.Uptake.RECIPE_FILTER_BROKEN
-        );
         break;
       }
 
@@ -587,7 +534,6 @@ export var RecipeRunner = {
    * for a clean run.
    */
   clearCaches() {
-    lazy.ClientEnvironment.clearClassifyCache();
     lazy.NormandyApi.clearIndexCache();
   },
 
@@ -601,7 +547,6 @@ export var RecipeRunner = {
     Services.prefs.setCharPref(API_URL_PREF, baseApiUrl);
 
     try {
-      lazy.Storage.clearAllStorage();
       this.clearCaches();
       await this.run();
     } finally {

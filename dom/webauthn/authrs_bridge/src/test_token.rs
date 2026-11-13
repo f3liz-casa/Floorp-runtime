@@ -13,6 +13,7 @@ use authenticator::ctap2::{
     client_data::ClientDataHash,
     commands::{
         client_pin::{ClientPIN, ClientPinResponse, PINSubcommand},
+        credential_management::{CredentialManagement, CredentialManagementResponse},
         get_assertion::{
             GetAssertion, GetAssertionResponse, GetAssertionResult, HmacGetSecretOrPrf,
             HmacSecretExtension,
@@ -32,7 +33,9 @@ use authenticator::ctap2::{
 };
 use authenticator::errors::{AuthenticatorError, CommandError, HIDError, U2FTokenError};
 use authenticator::{ctap2, statecallback::StateCallback};
-use authenticator::{FidoDevice, FidoDeviceIO, FidoProtocol, VirtualFidoDevice};
+use authenticator::{
+    CtapVersionSupport, FidoDevice, FidoDeviceIO, FidoProtocol, VirtualFidoDevice,
+};
 use authenticator::{RegisterResult, SignResult, StatusUpdate};
 use base64::Engine;
 use moz_task::RunnableBuilder;
@@ -100,6 +103,11 @@ impl TestTokenCredential {
             signature,
             user,
             number_of_credentials: Some(1),
+            user_selected: None,
+            large_blob_key: None,
+            unsigned_extension_outputs: None,
+            ep_attestation: None,
+            att_stmt: None,
         })
     }
 }
@@ -174,7 +182,7 @@ impl TestToken {
         }
     }
 
-    fn get_credentials(&self) -> Ref<Vec<TestTokenCredential>> {
+    fn get_credentials(&self) -> Ref<'_, Vec<TestTokenCredential>> {
         self.credentials.borrow()
     }
 
@@ -245,8 +253,32 @@ impl FidoDevice for TestToken {
         self.protocol
     }
 
-    fn downgrade_to_ctap1(&mut self) {
-        self.protocol = FidoProtocol::CTAP1
+    fn downgrade_to_ctap1(&mut self) -> Result<(), HIDError> {
+        if self.supports_ctap1() {
+            self.protocol = FidoProtocol::CTAP1;
+            Ok(())
+        } else {
+            Err(HIDError::UnexpectedVersion)
+        }
+    }
+}
+
+impl CtapVersionSupport for TestToken {
+    fn supports_ctap1(&self) -> bool {
+        // FIXME: Bug 2082280: Spec doesn't say whether a CTAP2 device also
+        // supports CTAP1: https://github.com/w3c/webauthn/issues/2468
+        true
+    }
+
+    fn supports_ctap2(&self) -> bool {
+        self.versions.iter().any(|v| {
+            matches!(
+                v,
+                AuthenticatorVersion::FIDO_2_0
+                    | AuthenticatorVersion::FIDO_2_1
+                    | AuthenticatorVersion::FIDO_2_1_PRE
+            )
+        })
     }
 }
 
@@ -255,14 +287,15 @@ impl FidoDeviceIO for TestToken {
         &mut self,
         msg: &Req,
         keep_alive: &dyn Fn() -> bool,
+        status: Option<&Sender<StatusUpdate>>,
     ) -> Result<Out, HIDError> {
         if !self.initialized() {
             return Err(HIDError::DeviceNotInitialized);
         }
 
         match self.get_protocol() {
-            FidoProtocol::CTAP1 => self.send_ctap1_cancellable(msg, keep_alive),
-            FidoProtocol::CTAP2 => self.send_cbor_cancellable(msg, keep_alive),
+            FidoProtocol::CTAP1 => self.send_ctap1_cancellable(msg, keep_alive, status),
+            FidoProtocol::CTAP2 => self.send_cbor_cancellable(msg, keep_alive, status),
         }
     }
 
@@ -270,7 +303,12 @@ impl FidoDeviceIO for TestToken {
         &mut self,
         msg: &Req,
         _keep_alive: &dyn Fn() -> bool,
+        _status: Option<&Sender<StatusUpdate>>,
     ) -> Result<Req::Output, HIDError> {
+        if !self.supports_ctap2() {
+            return Err(HIDError::UnexpectedVersion);
+        }
+
         msg.send_to_virtual_device(self)
     }
 
@@ -278,7 +316,12 @@ impl FidoDeviceIO for TestToken {
         &mut self,
         msg: &Req,
         _keep_alive: &dyn Fn() -> bool,
+        _status: Option<&Sender<StatusUpdate>>,
     ) -> Result<Req::Output, HIDError> {
+        if !self.supports_ctap1() {
+            return Err(HIDError::UnexpectedVersion);
+        }
+
         msg.send_to_virtual_device(self)
     }
 }
@@ -455,6 +498,9 @@ impl VirtualFidoDevice for TestToken {
                         assertion: assertion.into(),
                         attachment: AuthenticatorAttachment::Unknown,
                         extensions: Default::default(),
+                        user_selected: None,
+                        large_blob_key: None,
+                        large_blob_array: None,
                     });
                     break;
                 }
@@ -481,6 +527,9 @@ impl VirtualFidoDevice for TestToken {
                     assertion: assertion.into(),
                     attachment: AuthenticatorAttachment::Unknown,
                     extensions: Default::default(),
+                    user_selected: None,
+                    large_blob_key: None,
+                    large_blob_array: None,
                 });
             }
         }
@@ -496,7 +545,11 @@ impl VirtualFidoDevice for TestToken {
     }
 
     fn get_info(&self) -> Result<AuthenticatorInfo, HIDError> {
-        // This is a CTAP2.1 device with internal user verification support
+        if !self.supports_ctap2() {
+            return Err(HIDError::UnsupportedCommand);
+        }
+
+        // This is a CTAP2 device which may have internal user verification support
         Ok(AuthenticatorInfo {
             versions: self.versions.clone(),
             options: AuthenticatorOptions {
@@ -511,7 +564,11 @@ impl VirtualFidoDevice for TestToken {
     }
 
     fn get_version(&self, _req: &GetVersion) -> Result<U2FInfo, HIDError> {
-        Err(HIDError::UnsupportedCommand)
+        if !self.supports_ctap1() {
+            return Err(HIDError::UnsupportedCommand);
+        }
+
+        Ok(U2FInfo::U2F_V2)
     }
 
     fn make_credentials(&self, req: &MakeCredentials) -> Result<MakeCredentialsResult, HIDError> {
@@ -681,6 +738,9 @@ impl VirtualFidoDevice for TestToken {
                 auth_data,
             },
             extensions: Default::default(),
+            ep_attestation: None,
+            large_blob_key: None,
+            unsigned_extension_outputs: None,
         };
         Ok(result)
     }
@@ -690,6 +750,14 @@ impl VirtualFidoDevice for TestToken {
     }
 
     fn selection(&self, _req: &Selection) -> Result<(), HIDError> {
+        Err(HIDError::UnsupportedCommand)
+    }
+
+    fn manage_credentials(
+        &mut self,
+        _req: &CredentialManagement,
+    ) -> Result<CredentialManagementResponse, HIDError> {
+        // TODO: https://bugzilla.mozilla.org/show_bug.cgi?id=1867285
         Err(HIDError::UnsupportedCommand)
     }
 }
@@ -810,6 +878,11 @@ impl TestTokenManager {
                 }
             };
         }
+    }
+
+    pub fn has_virtual_authenticator(&self, authenticator_id: &str) -> Result<bool, nsresult> {
+        let guard = self.state.lock().map_err(|_| NS_ERROR_FAILURE)?;
+        Ok(guard.contains_key(authenticator_id))
     }
 
     pub fn remove_virtual_authenticator(&self, authenticator_id: &str) -> Result<(), nsresult> {
@@ -990,14 +1063,14 @@ impl TestTokenManager {
         .dispatch_background_task();
     }
 
-    pub fn has_platform_authenticator(&self) -> bool {
+    pub fn has_user_verifying_platform_authenticator(&self) -> bool {
         if !static_prefs::pref!("security.webauth.webauthn_enable_softtoken") {
             return false;
         }
 
         for token in self.state.lock().unwrap().values_mut() {
             let _ = token.init();
-            if token.transport.as_str() == "internal" {
+            if token.transport.as_str() == "internal" && token.has_user_verification {
                 return true;
             }
         }

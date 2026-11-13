@@ -1,5 +1,4 @@
-/* -*- indent-tabs-mode: nil; js-indent-level: 2 -*-
- * This Source Code Form is subject to the terms of the Mozilla Public
+/* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
@@ -8,12 +7,7 @@ import { AppConstants } from "resource://gre/modules/AppConstants.sys.mjs";
 const lazy = {};
 
 ChromeUtils.defineESModuleGetters(lazy, {
-  CrashSubmit: "resource://gre/modules/CrashSubmit.sys.mjs",
-});
-
-ChromeUtils.defineLazyGetter(lazy, "gNavigatorBundle", function () {
-  const url = "chrome://browser/locale/browser.properties";
-  return Services.strings.createBundle(url);
+  CrashSubmit: "moz-src:///toolkit/crashreporter/CrashSubmit.sys.mjs",
 });
 
 export const PluginManager = {
@@ -141,17 +135,9 @@ export class PluginParent extends JSWindowActorParent {
     // Configure the notification bar
     let priority = notificationBox.PRIORITY_WARNING_MEDIUM;
     let iconURL = "chrome://global/skin/icons/plugin.svg";
-    let reloadLabel = lazy.gNavigatorBundle.GetStringFromName(
-      "crashedpluginsMessage.reloadButton.label"
-    );
-    let reloadKey = lazy.gNavigatorBundle.GetStringFromName(
-      "crashedpluginsMessage.reloadButton.accesskey"
-    );
-
     let buttons = [
       {
-        label: reloadLabel,
-        accessKey: reloadKey,
+        "l10n-id": "plugin-crashed-notification-reload-button",
         popup: null,
         callback() {
           browser.reload();
@@ -160,15 +146,8 @@ export class PluginParent extends JSWindowActorParent {
     ];
 
     if (AppConstants.MOZ_CRASHREPORTER) {
-      let submitLabel = lazy.gNavigatorBundle.GetStringFromName(
-        "crashedpluginsMessage.submitButton.label"
-      );
-      let submitKey = lazy.gNavigatorBundle.GetStringFromName(
-        "crashedpluginsMessage.submitButton.accesskey"
-      );
       let submitButton = {
-        label: submitLabel,
-        accessKey: submitKey,
+        "l10n-id": "plugin-crashed-notification-submit-button",
         popup: null,
         callback: () => {
           PluginManager.submitCrashReport(pluginCrashID);
@@ -181,20 +160,16 @@ export class PluginParent extends JSWindowActorParent {
     // Add the "learn more" link.
     let learnMoreLink = {
       supportPage: "plugin-crashed-notificationbar",
-      label: lazy.gNavigatorBundle.GetStringFromName(
-        "crashedpluginsMessage.learnMore"
-      ),
     };
     buttons.push(learnMoreLink);
 
-    let messageString = lazy.gNavigatorBundle.formatStringFromName(
-      "crashedpluginsMessage.title",
-      [report.pluginName]
-    );
     notificationBox.appendNotification(
       "plugin-crashed",
       {
-        label: messageString,
+        label: {
+          "l10n-id": "plugin-crashed-notification-message",
+          "l10n-args": { pluginName: report.pluginName },
+        },
         image: iconURL,
         priority,
       },

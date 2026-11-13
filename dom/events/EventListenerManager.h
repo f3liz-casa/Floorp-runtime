@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -8,6 +6,7 @@
 #define mozilla_EventListenerManager_h_
 
 #include "mozilla/BasicEvents.h"
+#include "mozilla/DoublyLinkedList.h"
 #include "mozilla/JSEventHandler.h"
 #include "mozilla/MemoryReporting.h"
 #include "mozilla/dom/AbortFollower.h"
@@ -153,7 +152,6 @@ class EventListenerManagerBase {
 
   EventMessage mNoListenerForEvents[3];
   uint16_t mMayHaveDOMActivateEventListener : 1;
-  uint16_t mMayHaveMutationListeners : 1;
   uint16_t mMayHaveCapturingListeners : 1;
   uint16_t mMayHaveSystemGroupListeners : 1;
   uint16_t mMayHaveTouchEventListener : 1;
@@ -167,14 +165,18 @@ class EventListenerManagerBase {
   uint16_t mClearingListeners : 1;
   uint16_t mIsMainThreadELM : 1;
   uint16_t mMayHaveListenersForUntrustedEvents : 1;
-  // 1 unused flag.
+  // 2 unused flag.
 };
 
 /*
  * Event listener manager
  */
 
-class EventListenerManager final : public EventListenerManagerBase {
+class EventListenerManager final
+    : public EventListenerManagerBase,
+      // The managers owned by nodes are kept in a list, see
+      // nsContentUtils::AddNodeListenerManager.
+      public DoublyLinkedListElement<EventListenerManager> {
   ~EventListenerManager();
 
  public:
@@ -411,18 +413,16 @@ class EventListenerManager final : public EventListenerManagerBase {
                                  const EventListenerFlags& aFlags);
 
   /**
-   * Sets the current "inline" event listener for aName to be a
-   * function compiled from aFunc if !aDeferCompilation.  If
-   * aDeferCompilation, then we assume that we can get the string from
-   * mTarget later and compile lazily.
+   * Sets the current "inline" event listener for aName to a handler that is
+   * compiled from aFunc the first time it is needed.
    *
-   * aElement, if not null, is the element the string is associated with.
+   * aElement is the element whose event handler content attribute aFunc is
+   * the value of.
    */
   // XXXbz does that play correctly with nodes being adopted across
   // documents?  Need to double-check the spec here.
   nsresult SetEventHandler(nsAtom* aName, const nsAString& aFunc,
-                           bool aDeferCompilation, bool aPermitUntrustedEvents,
-                           dom::Element* aElement);
+                           bool aPermitUntrustedEvents, dom::Element* aElement);
   /**
    * Remove the current "inline" event listener for aName.
    */
@@ -474,11 +474,6 @@ class EventListenerManager final : public EventListenerManagerBase {
   void Disconnect();
 
   /**
-   * Allows us to quickly determine if we have mutation listeners registered.
-   */
-  bool HasMutationListeners();
-
-  /**
    * Allows us to quickly determine whether we have unload listeners registered.
    */
   bool HasUnloadListeners();
@@ -488,15 +483,6 @@ class EventListenerManager final : public EventListenerManagerBase {
    * registered.
    */
   bool HasBeforeUnloadListeners();
-
-  /**
-   * Returns the mutation bits depending on which mutation listeners are
-   * registered to this listener manager.
-   * @note If a listener is an nsIDOMMutationListener, all possible mutation
-   *       event bits are returned. All bits are also returned if one of the
-   *       event listeners is registered to handle DOMSubtreeModified events.
-   */
-  uint32_t MutationListenerBits();
 
   /**
    * Returns true if there is at least one event listener for aEventName.
@@ -643,17 +629,14 @@ class EventListenerManager final : public EventListenerManagerBase {
   EventMessage GetEventMessageAndAtomForListener(const nsAString& aType,
                                                  nsAtom** aAtom);
 
-  void ProcessApzAwareEventListenerAdd();
+  void ProcessApzAwareEventListenerAdd(nsAtom* aEvent);
 
   /**
-   * Compile the "inline" event listener for aListener.  The
-   * body of the listener can be provided in aBody; if this is null we
-   * will look for it on mTarget.  If aBody is provided, aElement should be
-   * as well; otherwise it will also be inferred from mTarget.
+   * Compile the "inline" event listener for aListener.  The body of the
+   * listener is the pending source of its JSEventHandler if it has one, and is
+   * read from the attribute on mTarget otherwise.
    */
-  nsresult CompileEventHandlerInternal(Listener* aListener, nsAtom* aTypeAtom,
-                                       const nsAString* aBody,
-                                       dom::Element* aElement);
+  nsresult CompileEventHandlerInternal(Listener* aListener, nsAtom* aTypeAtom);
 
   /**
    * Find the Listener for the "inline" event listener for aTypeAtom.

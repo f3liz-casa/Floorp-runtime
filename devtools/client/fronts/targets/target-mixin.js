@@ -10,6 +10,12 @@ loader.lazyRequireGetter(
   "resource://devtools/shared/protocol.js",
   true
 );
+loader.lazyRequireGetter(
+  this,
+  "readSourceResponse",
+  "resource://devtools/client/fronts/source.js",
+  true
+);
 
 /**
  * A Target represents a debuggable context. It can be a browser tab, a tab on
@@ -197,8 +203,8 @@ function TargetMixin(parentClass) {
      * Returns a boolean indicating whether or not the specific actor
      * type exists.
      *
-     * @param {String} actorName
-     * @return {Boolean}
+     * @param {string} actorName
+     * @return {boolean}
      */
     hasActor(actorName) {
       if (this.targetForm) {
@@ -211,10 +217,13 @@ function TargetMixin(parentClass) {
      * Returns a trait from the target actor if it exists,
      * if not it will fallback to that on the root actor.
      *
-     * @param {String} traitName
+     * @param {string} traitName
      * @return {Mixed}
      */
     getTrait(traitName) {
+      if (this.isDestroyedOrBeingDestroyed()) {
+        return null;
+      }
       // If the targeted actor exposes traits and has a defined value for this
       // traits, override the root actor traits
       if (this.targetForm.traits && traitName in this.targetForm.traits) {
@@ -258,6 +267,45 @@ function TargetMixin(parentClass) {
       // ensure that the front is a front, and not async front
       if (front?.actorID) {
         return front;
+      }
+      return null;
+    }
+
+    /**
+     * This method gets the source content for a given resource.
+     *
+     * @param {string} resourceType - The resource type for which to get the source content.
+     * @param {string} [resourceId] - The ID of the resource actor. Optional if not applicable (e.g for html resources).
+     * @returns {Promise<{source: string, contentType: string}>}
+     */
+    async getSourceContentForResource(resourceType, resourceId) {
+      const { resourceCommand } = this.commands;
+      // @backward-compat { version 160 } `getSourceContentForResource` on the window global target actor is not supported on older servers.
+      // The `if` check for the trait as well as the fallback code (resourceType `switch check below) can be removed when 160 is no longer on
+      // the release channel.
+      if (this.getTrait("supportsGetSourceContentForResource")) {
+        const response = await super.getSourceContentForResource(
+          resourceType,
+          resourceId
+        );
+        // The source is transfered as a front, either an array buffer for wasm
+        // binaries or a long string for everything else.
+        return response ? readSourceResponse(response) : null;
+      }
+
+      switch (resourceType) {
+        case resourceCommand.TYPES.STYLESHEET: {
+          const stylesheetsFront = await this.getFront("stylesheets");
+          const sourceStr = await stylesheetsFront.getText(resourceId);
+          return { source: await sourceStr.string(), contentType: "text/css" };
+        }
+        case resourceCommand.TYPES.SOURCE: {
+          const sourceFront = this.threadFront.source({
+            actor: resourceId,
+          });
+          const { source, contentType } = await sourceFront.source();
+          return { source, contentType };
+        }
       }
       return null;
     }
@@ -497,7 +545,7 @@ function TargetMixin(parentClass) {
      *
      * @param {Error} e
      *        The real error object.
-     * @param {String} targetType
+     * @param {string} targetType
      *        The type of the target front ("worker", "browsing-context", ...)
      */
     logDetachError(e, targetType) {
@@ -551,9 +599,9 @@ function TargetMixin(parentClass) {
     /**
      * Log an error of some kind to the tab's console.
      *
-     * @param {String} text
+     * @param {string} text
      *                 The text to log.
-     * @param {String} category
+     * @param {string} category
      *                 The category of the message.  @see nsIScriptError.
      * @returns {Promise}
      */
@@ -568,9 +616,9 @@ function TargetMixin(parentClass) {
     /**
      * Log a warning of some kind to the tab's console.
      *
-     * @param {String} text
+     * @param {string} text
      *                 The text to log.
-     * @param {String} category
+     * @param {string} category
      *                 The category of the message.  @see nsIScriptError.
      * @returns {Promise}
      */

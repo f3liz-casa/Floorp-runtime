@@ -5,8 +5,9 @@
 let lazy = {};
 
 ChromeUtils.defineESModuleGetters(lazy, {
-  TaskbarTabs: "resource:///modules/taskbartabs/TaskbarTabs.sys.mjs",
-  TaskbarTabsUtils: "resource:///modules/taskbartabs/TaskbarTabsUtils.sys.mjs",
+  TaskbarTabs: "moz-src:///browser/components/taskbartabs/TaskbarTabs.sys.mjs",
+  TaskbarTabsUtils:
+    "moz-src:///browser/components/taskbartabs/TaskbarTabsUtils.sys.mjs",
 });
 
 ChromeUtils.defineLazyGetter(lazy, "logConsole", () => {
@@ -92,10 +93,10 @@ async function launchTaskbarTab(aContext) {
         Services.scriptSecurityManager.DEFAULT_USER_CONTEXT_ID;
     }
 
-    taskbarTab = await lazy.TaskbarTabs.findOrCreateTaskbarTab(
+    ({ taskbarTab } = await lazy.TaskbarTabs.findOrCreateTaskbarTab(
       aContext.url,
       aContext.userContextId
-    );
+    ));
   }
 
   await lazy.TaskbarTabs.openWindow(taskbarTab);

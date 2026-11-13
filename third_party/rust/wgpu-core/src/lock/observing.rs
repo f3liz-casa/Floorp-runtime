@@ -42,36 +42,36 @@ pub type RankData = Option<HeldLock>;
 
 /// A `Mutex` instrumented for lock acquisition order observation.
 ///
-/// This is just a wrapper around a [`parking_lot::Mutex`], along with
+/// This is just a wrapper around a [`wgpu_sync::Mutex`], along with
 /// its rank in the `wgpu_core` lock ordering.
 ///
 /// For details, see [the module documentation][self].
 pub struct Mutex<T> {
-    inner: parking_lot::Mutex<T>,
+    inner: wgpu_sync::Mutex<T>,
     rank: LockRank,
 }
 
 /// A guard produced by locking [`Mutex`].
 ///
-/// This is just a wrapper around a [`parking_lot::MutexGuard`], along
+/// This is just a wrapper around a [`wgpu_sync::MutexGuard`], along
 /// with the state needed to track lock acquisition.
 ///
 /// For details, see [the module documentation][self].
 pub struct MutexGuard<'a, T> {
-    inner: parking_lot::MutexGuard<'a, T>,
+    inner: wgpu_sync::MutexGuard<'a, T>,
     _state: LockStateGuard,
 }
 
 impl<T> Mutex<T> {
     pub fn new(rank: LockRank, value: T) -> Mutex<T> {
         Mutex {
-            inner: parking_lot::Mutex::new(value),
+            inner: wgpu_sync::Mutex::new(value),
             rank,
         }
     }
 
     #[track_caller]
-    pub fn lock(&self) -> MutexGuard<T> {
+    pub fn lock(&self) -> MutexGuard<'_, T> {
         let saved = acquire(self.rank, Location::caller());
         MutexGuard {
             inner: self.inner.lock(),
@@ -106,47 +106,47 @@ impl<T: core::fmt::Debug> core::fmt::Debug for Mutex<T> {
 
 /// An `RwLock` instrumented for lock acquisition order observation.
 ///
-/// This is just a wrapper around a [`parking_lot::RwLock`], along with
+/// This is just a wrapper around a [`wgpu_sync::RwLock`], along with
 /// its rank in the `wgpu_core` lock ordering.
 ///
 /// For details, see [the module documentation][self].
 pub struct RwLock<T> {
-    inner: parking_lot::RwLock<T>,
+    inner: wgpu_sync::RwLock<T>,
     rank: LockRank,
 }
 
 /// A read guard produced by locking [`RwLock`] for reading.
 ///
-/// This is just a wrapper around a [`parking_lot::RwLockReadGuard`], along with
+/// This is just a wrapper around a [`wgpu_sync::RwLockReadGuard`], along with
 /// the state needed to track lock acquisition.
 ///
 /// For details, see [the module documentation][self].
 pub struct RwLockReadGuard<'a, T> {
-    inner: parking_lot::RwLockReadGuard<'a, T>,
+    inner: wgpu_sync::RwLockReadGuard<'a, T>,
     _state: LockStateGuard,
 }
 
 /// A write guard produced by locking [`RwLock`] for writing.
 ///
-/// This is just a wrapper around a [`parking_lot::RwLockWriteGuard`], along
+/// This is just a wrapper around a [`wgpu_sync::RwLockWriteGuard`], along
 /// with the state needed to track lock acquisition.
 ///
 /// For details, see [the module documentation][self].
 pub struct RwLockWriteGuard<'a, T> {
-    inner: parking_lot::RwLockWriteGuard<'a, T>,
+    inner: wgpu_sync::RwLockWriteGuard<'a, T>,
     _state: LockStateGuard,
 }
 
 impl<T> RwLock<T> {
     pub fn new(rank: LockRank, value: T) -> RwLock<T> {
         RwLock {
-            inner: parking_lot::RwLock::new(value),
+            inner: wgpu_sync::RwLock::new(value),
             rank,
         }
     }
 
     #[track_caller]
-    pub fn read(&self) -> RwLockReadGuard<T> {
+    pub fn read(&self) -> RwLockReadGuard<'_, T> {
         let saved = acquire(self.rank, Location::caller());
         RwLockReadGuard {
             inner: self.inner.read(),
@@ -155,7 +155,7 @@ impl<T> RwLock<T> {
     }
 
     #[track_caller]
-    pub fn write(&self) -> RwLockWriteGuard<T> {
+    pub fn write(&self) -> RwLockWriteGuard<'_, T> {
         let saved = acquire(self.rank, Location::caller());
         RwLockWriteGuard {
             inner: self.inner.write(),
@@ -171,6 +171,14 @@ impl<T> RwLock<T> {
         release(data);
         unsafe { self.inner.force_unlock_read() };
     }
+
+    /// Returns a reference to the underlying [`wgpu_sync::RwLock`].
+    ///
+    /// Marked as unsafe because it allows bypassing the rank system,
+    /// defeating the purpose of this type.
+    pub unsafe fn underlying(&self) -> &wgpu_sync::RwLock<T> {
+        &self.inner
+    }
 }
 
 impl<'a, T> RwLockReadGuard<'a, T> {
@@ -182,15 +190,6 @@ impl<'a, T> RwLockReadGuard<'a, T> {
         core::mem::forget(this.inner);
 
         this._state.saved
-    }
-}
-
-impl<'a, T> RwLockWriteGuard<'a, T> {
-    pub fn downgrade(this: Self) -> RwLockReadGuard<'a, T> {
-        RwLockReadGuard {
-            inner: parking_lot::RwLockWriteGuard::downgrade(this.inner),
-            _state: this._state,
-        }
     }
 }
 
@@ -226,11 +225,11 @@ impl<'a, T> core::ops::DerefMut for RwLockWriteGuard<'a, T> {
 ///
 /// This type serves two purposes:
 ///
-/// - Operations like `RwLockWriteGuard::downgrade` would like to be able to
-///   destructure lock guards and reassemble their pieces into new guards, but
-///   if the guard type itself implements `Drop`, we can't destructure it
-///   without unsafe code or pointless `Option`s whose state is almost always
-///   statically known.
+/// - Operations would like to be able to destructure lock guards and
+///   reassemble their pieces into new guards, but if the guard type
+///   itself implements `Drop`, we can't destructure it without unsafe
+///   code or pointless `Option`s whose state is almost always statically
+///   known.
 ///
 /// - We can just implement `Drop` for this type once, and then use it in lock
 ///   guards, rather than implementing `Drop` separately for each guard type.
@@ -254,60 +253,64 @@ impl Drop for LockStateGuard {
 /// Return the `Option<HeldLock>` state that must be restored when this lock is
 /// released.
 fn acquire(new_rank: LockRank, location: &'static Location<'static>) -> Option<HeldLock> {
-    LOCK_STATE.with_borrow_mut(|state| match *state {
-        ThreadState::Disabled => None,
-        ThreadState::Initial => {
-            let Ok(dir) = std::env::var("WGPU_CORE_LOCK_OBSERVE_DIR") else {
-                *state = ThreadState::Disabled;
-                return None;
-            };
+    let result = LOCK_STATE.try_with(|refcell| {
+        let state = &mut *refcell.borrow_mut();
+        match *state {
+            ThreadState::Disabled => None,
+            ThreadState::Initial => {
+                let Ok(dir) = std::env::var("WGPU_CORE_LOCK_OBSERVE_DIR") else {
+                    *state = ThreadState::Disabled;
+                    return None;
+                };
 
-            // Create the observation log file.
-            let mut log = ObservationLog::create(dir)
-                .expect("Failed to open lock observation file (does the dir exist?)");
+                // Create the observation log file.
+                let mut log = ObservationLog::create(dir)
+                    .expect("Failed to open lock observation file (does the dir exist?)");
 
-            // Log the full set of lock ranks, so that the analysis can even see
-            // locks that are only acquired in isolation.
-            for rank in LockRankSet::all().iter() {
-                log.write_rank(rank);
+                // Log the full set of lock ranks, so that the analysis can even see
+                // locks that are only acquired in isolation.
+                for rank in LockRankSet::all().iter() {
+                    log.write_rank(rank);
+                }
+
+                // Update our state to reflect that we are logging acquisitions, and
+                // that we have acquired this lock.
+                *state = ThreadState::Enabled {
+                    held_lock: Some(HeldLock {
+                        rank: new_rank,
+                        location,
+                    }),
+                    log,
+                };
+
+                // Since this is the first acquisition on this thread, we know that
+                // there is no prior lock held, and thus nothing to log yet.
+                None
             }
+            ThreadState::Enabled {
+                ref mut held_lock,
+                ref mut log,
+            } => {
+                if let Some(ref held_lock) = held_lock {
+                    log.write_acquisition(held_lock, new_rank, location);
+                }
 
-            // Update our state to reflect that we are logging acquisitions, and
-            // that we have acquired this lock.
-            *state = ThreadState::Enabled {
-                held_lock: Some(HeldLock {
+                held_lock.replace(HeldLock {
                     rank: new_rank,
                     location,
-                }),
-                log,
-            };
-
-            // Since this is the first acquisition on this thread, we know that
-            // there is no prior lock held, and thus nothing to log yet.
-            None
-        }
-        ThreadState::Enabled {
-            ref mut held_lock,
-            ref mut log,
-        } => {
-            if let Some(ref held_lock) = held_lock {
-                log.write_acquisition(held_lock, new_rank, location);
+                })
             }
-
-            held_lock.replace(HeldLock {
-                rank: new_rank,
-                location,
-            })
         }
-    })
+    });
+    result.unwrap_or(None)
 }
 
 /// Record the release of a lock whose saved state was `saved`.
 fn release(saved: Option<HeldLock>) {
-    LOCK_STATE.with_borrow_mut(|state| {
+    let _ = LOCK_STATE.try_with(|refcell| {
         if let ThreadState::Enabled {
             ref mut held_lock, ..
-        } = *state
+        } = *refcell.borrow_mut()
         {
             *held_lock = saved;
         }
@@ -360,7 +363,6 @@ struct ObservationLog {
     buffer: String,
 }
 
-#[allow(trivial_casts)]
 impl ObservationLog {
     /// Create an observation log in `dir` for the current pid and thread.
     fn create(dir: impl AsRef<Path>) -> Result<Self, std::io::Error> {

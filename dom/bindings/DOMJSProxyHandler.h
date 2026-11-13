@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -7,7 +5,6 @@
 #ifndef mozilla_dom_DOMJSProxyHandler_h
 #define mozilla_dom_DOMJSProxyHandler_h
 
-#include "js/Object.h"  // JS::GetClass
 #include "js/Proxy.h"
 #include "jsapi.h"
 #include "mozilla/Assertions.h"
@@ -122,21 +119,17 @@ class DOMProxyHandler : public BaseDOMProxyHandler {
   static JSObject* GetExpandoObject(JSObject* obj);
 
   /*
-   * Clear the expando object for the given DOM proxy and return it.  This
-   * function will ensure that the returned object is exposed to active JS if
-   * the given object is exposed.
-   *
-   * GetAndClearExpandoObject does not DROP or clear the preserving wrapper
-   * flag.
-   */
-  static JSObject* GetAndClearExpandoObject(JSObject* obj);
-
-  /*
    * Ensure that the given proxy (obj) has an expando object, and return it.
    * Returns null on failure.
    */
   static JSObject* EnsureExpandoObject(JSContext* cx,
                                        JS::Handle<JSObject*> obj);
+
+  /*
+   * Clear the ExpandoAndGeneration from a proxy whose initialization failed.
+   * This must be called before releasing the native object.
+   */
+  static void ClearExpandoOnWrapFailure(JSObject* obj);
 
   static const char family;
 };

@@ -46,12 +46,19 @@ exports.LocalTabCommandsFactory = {
     const promise = CommandsFactory.forTab(tab);
     // Immediately set the commands's promise in cache to prevent race
     commandsMap.set(tab, promise);
-    commands = await promise;
+    try {
+      commands = await promise;
+    } catch (e) {
+      commandsMap.delete(tab);
+      throw e;
+    }
     // Then replace the promise with the commands object
     commandsMap.set(tab, commands);
 
     commands.descriptorFront.once("descriptor-destroyed", () => {
-      commandsMap.delete(tab);
+      // Do not use `tab` local variable as it may have been updated
+      // when moving toolbox to a new window
+      commandsMap.delete(commands.descriptorFront.localTab);
     });
     return commands;
   },
@@ -68,5 +75,19 @@ exports.LocalTabCommandsFactory = {
     // which will resolve a commands, or null if no commands was ever created
     // for this tab.
     return commandsMap.get(tab);
+  },
+
+  /**
+   * Called when moving a toolbox to a new window.
+   *
+   * @param {XULTab} previousTab
+   * @param {XULTab} newTab
+   */
+  swapTab(previousTab, newTab) {
+    const commands = commandsMap.get(previousTab);
+    if (commands) {
+      commandsMap.set(newTab, commands);
+      commandsMap.delete(previousTab);
+    }
   },
 };

@@ -6,7 +6,7 @@
   <head>
     <meta
       http-equiv="Content-Security-Policy"
-      content="default-src chrome:;img-src data:; object-src 'none'"
+      content="default-src chrome:; img-src data: moz-remote-image:; object-src 'none'"
     />
     <meta name="color-scheme" content="light dark" />
     <title data-l10n-id="about-processes-title"></title>
@@ -58,6 +58,13 @@
         </tr>
       </thead>
       <tbody id="process-tbody"></tbody>
+      <tfoot id="process-tfoot">
+        <tr class="totals-row">
+          <td class="totals-count"></td>
+          <td class="memory"></td>
+          <td class="cpu"></td>
+        </tr>
+      </tfoot>
     </table>
   </body>
 </html>

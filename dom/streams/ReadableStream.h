@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim:set ts=2 sw=2 sts=2 et cindent: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -11,6 +9,7 @@
 #include "js/Value.h"
 #include "mozilla/Attributes.h"
 #include "mozilla/ErrorResult.h"
+#include "mozilla/Span.h"
 #include "mozilla/dom/BindingDeclarations.h"
 #include "mozilla/dom/IterableIterator.h"
 #include "mozilla/dom/QueuingStrategyBinding.h"
@@ -103,7 +102,9 @@ class ReadableStream : public nsISupports, public nsWrapperCache {
   ReaderState State() const { return mState; }
   void SetState(const ReaderState& aState) { mState = aState; }
 
-  JS::Value StoredError() const { return mStoredError; }
+  void GetStoredError(JSContext* aCx, JS::MutableHandle<JS::Value> aStoredError,
+                      ErrorResult& aRv) const;
+  JS::Value UnsafeStoredError() const { return mStoredError; }
   void SetStoredError(JS::Handle<JS::Value> aStoredError) {
     mStoredError = aStoredError;
   }
@@ -115,6 +116,14 @@ class ReadableStream : public nsISupports, public nsWrapperCache {
       return algorithms->MaybeGetInputStreamIfUnread();
     }
     return nullptr;
+  }
+
+  void SetInputStreamIfUnread(nsIInputStream* aInput) {
+    MOZ_ASSERT(!Disturbed());
+    if (UnderlyingSourceAlgorithmsBase* algorithms =
+            Controller()->GetAlgorithms()) {
+      algorithms->SetInputStreamIfUnread(aInput);
+    }
   }
 
   // [Transferable]
@@ -177,6 +186,15 @@ class ReadableStream : public nsISupports, public nsWrapperCache {
                                  JS::MutableHandle<JSObject*> aView,
                                  ErrorResult& aRv);
 
+  // https://streams.spec.whatwg.org/#readablestream-pull-from-bytes
+  // Returns the number of bytes actually pulled (<= aBytes.Length()); the
+  // caller is responsible for handling any bytes left over. Meaningful only
+  // when aRv did not fail. 0 with aRv unset means the stream could not take
+  // the bytes yet and the caller should retry on the next pull.
+  MOZ_CAN_RUN_SCRIPT uint64_t PullFromBytes(JSContext* aCx,
+                                            mozilla::Span<const uint8_t> aBytes,
+                                            ErrorResult& aRv);
+
   // The following algorithms can be used on arbitrary ReadableStream instances,
   // including ones that are created by web developers. They can all fail in
   // various operation-specific ways, and these failures should be handled by
@@ -185,6 +203,10 @@ class ReadableStream : public nsISupports, public nsWrapperCache {
   // https://streams.spec.whatwg.org/#readablestream-get-a-reader
   already_AddRefed<mozilla::dom::ReadableStreamDefaultReader> GetReader(
       ErrorResult& aRv);
+
+  // https://streams.spec.whatwg.org/#readablestream-cancel
+  MOZ_CAN_RUN_SCRIPT already_AddRefed<Promise> CancelNative(
+      JSContext* aCx, JS::Handle<JS::Value> aReason, ErrorResult& aRv);
 
   // IDL layer functions
 
@@ -254,40 +276,6 @@ class ReadableStream : public nsISupports, public nsWrapperCache {
 
   HoldDropJSObjectsCaller mHoldDropCaller;
 };
-
-namespace streams_abstract {
-
-bool IsReadableStreamLocked(ReadableStream* aStream);
-
-double ReadableStreamGetNumReadRequests(ReadableStream* aStream);
-
-void ReadableStreamError(JSContext* aCx, ReadableStream* aStream,
-                         JS::Handle<JS::Value> aValue, ErrorResult& aRv);
-
-MOZ_CAN_RUN_SCRIPT void ReadableStreamClose(JSContext* aCx,
-                                            ReadableStream* aStream,
-                                            ErrorResult& aRv);
-
-MOZ_CAN_RUN_SCRIPT void ReadableStreamFulfillReadRequest(
-    JSContext* aCx, ReadableStream* aStream, JS::Handle<JS::Value> aChunk,
-    bool done, ErrorResult& aRv);
-
-void ReadableStreamAddReadRequest(ReadableStream* aStream,
-                                  ReadRequest* aReadRequest);
-void ReadableStreamAddReadIntoRequest(ReadableStream* aStream,
-                                      ReadIntoRequest* aReadIntoRequest);
-
-MOZ_CAN_RUN_SCRIPT already_AddRefed<Promise> ReadableStreamCancel(
-    JSContext* aCx, ReadableStream* aStream, JS::Handle<JS::Value> aError,
-    ErrorResult& aRv);
-
-already_AddRefed<ReadableStreamDefaultReader>
-AcquireReadableStreamDefaultReader(ReadableStream* aStream, ErrorResult& aRv);
-
-bool ReadableStreamHasBYOBReader(ReadableStream* aStream);
-bool ReadableStreamHasDefaultReader(ReadableStream* aStream);
-
-}  // namespace streams_abstract
 
 }  // namespace mozilla::dom
 

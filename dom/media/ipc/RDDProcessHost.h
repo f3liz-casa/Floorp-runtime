@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -108,8 +106,6 @@ class RDDProcessHost final : public mozilla::ipc::GeckoChildProcessHost {
   // Kill the remote process, triggering IPC shutdown.
   void KillHard(const char* aReason);
 
-  void DestroyProcess();
-
 #if defined(XP_MACOSX) && defined(MOZ_SANDBOX)
   static bool sLaunchWithMacSandbox;
 
@@ -140,13 +136,6 @@ class RDDProcessHost final : public mozilla::ipc::GeckoChildProcessHost {
   void RejectPromise();
   void ResolvePromise();
 
-  // Set to true on construction and to false just prior deletion.
-  // The RDDProcessHost isn't refcounted; so we can capture this by value in
-  // lambdas along with a strong reference to mLiveToken and check if that value
-  // is true before accessing "this".
-  // While a reference to mLiveToken can be taken on any thread; its value can
-  // only be read on the main thread.
-  const RefPtr<media::Refcountable<bool>> mLiveToken;
   RefPtr<GenericNonExclusivePromise::Private> mLaunchPromise;
   bool mLaunchPromiseSettled = false;
   // Will be set to true if we've exceeded the allowed startup time or if the

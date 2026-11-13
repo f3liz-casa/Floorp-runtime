@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -11,12 +9,13 @@
 #include <d3d11_4.h>
 #include <dxgi1_6.h>
 
+#include "mozilla/StaticPrefs_gfx.h"
 #include "mozilla/gfx/Logging.h"
 
 namespace mozilla {
 namespace layers {
 
-MOZ_RUNINIT RefPtr<ID3D11Device> mDevice;
+constinit RefPtr<ID3D11Device> mDevice;
 
 /* static */
 RefPtr<FenceD3D11> FenceD3D11::Create(ID3D11Device* aDevice) {
@@ -51,8 +50,8 @@ RefPtr<FenceD3D11> FenceD3D11::Create(ID3D11Device* aDevice) {
     return nullptr;
   }
 
-  RefPtr<gfx::FileHandleWrapper> handle =
-      new gfx::FileHandleWrapper(UniqueFileHandle(sharedHandle));
+  RefPtr handle =
+      MakeRefPtr<gfx::FileHandleWrapper>(UniqueFileHandle(sharedHandle));
   RefPtr<FenceD3D11> fence =
       new FenceD3D11(OwnsFence::Yes, aDevice, fenceD3D11, handle);
   return fence;
@@ -74,6 +73,12 @@ RefPtr<FenceD3D11> FenceD3D11::CreateFromHandle(
 
 /* static */
 bool FenceD3D11::IsSupported(ID3D11Device* aDevice) {
+  return StaticPrefs::gfx_direct3d11_fences_enabled_AtStartup() &&
+         IsSupportedByDevice(aDevice);
+}
+
+/* static */
+bool FenceD3D11::IsSupportedByDevice(ID3D11Device* aDevice) {
   MOZ_ASSERT(aDevice);
 
   if (!aDevice) {
@@ -87,8 +92,8 @@ bool FenceD3D11::IsSupported(ID3D11Device* aDevice) {
 
   // Check for IDXGIAdapter4:
   RefPtr<IDXGIDevice> dxgiDevice;
-  aDevice->QueryInterface((IDXGIDevice**)getter_AddRefs(dxgiDevice));
-  if (FAILED(hr)) {
+  hr = aDevice->QueryInterface((IDXGIDevice**)getter_AddRefs(dxgiDevice));
+  if (FAILED(hr) || !dxgiDevice) {
     return false;
   }
 
@@ -99,8 +104,9 @@ bool FenceD3D11::IsSupported(ID3D11Device* aDevice) {
   }
 
   RefPtr<IDXGIAdapter4> dxgiAdapter4;
-  dxgiAdapter->QueryInterface((IDXGIAdapter4**)getter_AddRefs(dxgiAdapter4));
-  if (FAILED(hr)) {
+  hr = dxgiAdapter->QueryInterface(
+      (IDXGIAdapter4**)getter_AddRefs(dxgiAdapter4));
+  if (FAILED(hr) || !dxgiAdapter4) {
     gfxCriticalNoteOnce << "Failed to get IDXGIAdapter4: " << gfx::hexa(hr);
     return false;
   }
@@ -128,8 +134,6 @@ FenceD3D11::FenceD3D11(const OwnsFence aOwnsFence,
   MOZ_ASSERT_IF(mOwnsFence == OwnsFence::Yes, mSignalFence);
   MOZ_ASSERT_IF(mOwnsFence == OwnsFence::No, !mSignalFence);
 }
-
-FenceD3D11::~FenceD3D11() {}
 
 RefPtr<FenceD3D11> FenceD3D11::CloneFromHandle() {
   RefPtr<FenceD3D11> fence = FenceD3D11::CreateFromHandle(mHandle, mDevice);
@@ -194,25 +198,29 @@ bool FenceD3D11::Wait(ID3D11Device* aDevice) {
   }
 
   RefPtr<ID3D11Fence> fence;
-  auto it = mWaitFenceMap.find(aDevice);
-  if (it == mWaitFenceMap.end()) {
-    RefPtr<ID3D11Device5> d3d11_5;
-    auto hr = aDevice->QueryInterface(__uuidof(ID3D11Device5),
-                                      getter_AddRefs(d3d11_5));
-    if (FAILED(hr)) {
-      gfxCriticalNoteOnce << "Failed to get ID3D11Device5: " << gfx::hexa(hr);
-      return false;
+  {
+    MutexAutoLock lock(mMutex);
+    auto it = mWaitFenceMap.find(aDevice);
+    if (it == mWaitFenceMap.end()) {
+      RefPtr<ID3D11Device5> d3d11_5;
+      auto hr = aDevice->QueryInterface(__uuidof(ID3D11Device5),
+                                        getter_AddRefs(d3d11_5));
+      if (FAILED(hr)) {
+        gfxCriticalNoteOnce << "Failed to get ID3D11Device5: " << gfx::hexa(hr);
+        return false;
+      }
+      hr = d3d11_5->OpenSharedFence(
+          mHandle->GetHandle(), __uuidof(ID3D11Fence),
+          (void**)(ID3D11Fence**)getter_AddRefs(fence));
+      if (FAILED(hr)) {
+        gfxCriticalNoteOnce << "Opening fence shared handle failed "
+                            << gfx::hexa(hr);
+        return false;
+      }
+      mWaitFenceMap.emplace(aDevice, fence);
+    } else {
+      fence = it->second;
     }
-    hr = d3d11_5->OpenSharedFence(mHandle->GetHandle(), __uuidof(ID3D11Fence),
-                                  (void**)(ID3D11Fence**)getter_AddRefs(fence));
-    if (FAILED(hr)) {
-      gfxCriticalNoteOnce << "Opening fence shared handle failed "
-                          << gfx::hexa(hr);
-      return false;
-    }
-    mWaitFenceMap.emplace(aDevice, fence);
-  } else {
-    fence = it->second;
   }
 
   if (!fence) {
@@ -237,6 +245,40 @@ bool FenceD3D11::Wait(ID3D11Device* aDevice) {
   }
 
   return true;
+}
+
+/* static */
+bool FenceD3D11::WaitD3D11Fence(RefPtr<Fence>& aFence, ID3D11Device* aDevice) {
+  if (!aFence) {
+    return true;
+  }
+  auto* fenceD3D11 = aFence->AsFenceD3D11();
+  if (!fenceD3D11) {
+    MOZ_ASSERT_UNREACHABLE("Unexpected fence type");
+    return false;
+  }
+  return fenceD3D11->Wait(aDevice);
+}
+
+/* static */
+void FenceD3D11::WaitD3D11Fences(const std::vector<RefPtr<Fence>>& aFences,
+                                 ID3D11Device* aDevice) {
+  MOZ_ASSERT(aDevice);
+
+  for (const auto& fence : aFences) {
+    if (!fence) {
+      MOZ_ASSERT_UNREACHABLE("unexpected to be called");
+      continue;
+    }
+
+    auto* fenceD3D11 = fence->AsFenceD3D11();
+    if (!fenceD3D11) {
+      MOZ_ASSERT_UNREACHABLE("Unexpected fence type");
+      continue;
+    }
+
+    fenceD3D11->Wait(aDevice);
+  }
 }
 
 }  // namespace layers

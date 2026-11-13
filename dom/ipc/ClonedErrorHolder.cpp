@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -14,6 +12,8 @@
 #include "mozilla/dom/DOMException.h"
 #include "mozilla/dom/DOMExceptionBinding.h"
 #include "mozilla/dom/Exceptions.h"
+#include "mozilla/dom/QuotaExceededError.h"
+#include "mozilla/dom/QuotaExceededErrorBinding.h"
 #include "mozilla/dom/StructuredCloneTags.h"
 #include "mozilla/dom/ToJSValue.h"
 #include "nsReadableUtils.h"
@@ -50,7 +50,8 @@ void ClonedErrorHolder::Init(JSContext* aCx, JS::Handle<JSObject*> aError,
                              ErrorResult& aRv) {
   JS::Rooted<JSObject*> stack(aCx);
 
-  if (JSErrorReport* err = JS_ErrorFromException(aCx, aError)) {
+  JS::BorrowedErrorReport err(aCx);
+  if (JS_ErrorFromException(aCx, aError, err)) {
     mType = Type::JSError;
     if (err->message()) {
       mMessage = err->message().c_str();
@@ -76,9 +77,16 @@ void ClonedErrorHolder::Init(JSContext* aCx, JS::Handle<JSObject*> aError,
 
     stack = JS::ExceptionStackOrNull(aError);
   } else {
+    RefPtr<QuotaExceededError> quotaExn;
     RefPtr<DOMException> domExn;
     RefPtr<Exception> exn;
-    if (NS_SUCCEEDED(UNWRAP_OBJECT(DOMException, aError, domExn))) {
+    if (NS_SUCCEEDED(UNWRAP_OBJECT(QuotaExceededError, aError, quotaExn))) {
+      mType = Type::QuotaExceededError;
+      mCode = quotaExn->Code();
+      mQuota = quotaExn->GetQuota();
+      mRequested = quotaExn->GetRequested();
+      exn = std::move(quotaExn);
+    } else if (NS_SUCCEEDED(UNWRAP_OBJECT(DOMException, aError, domExn))) {
       mType = Type::DOMException;
       mCode = domExn->Code();
       exn = std::move(domExn);
@@ -183,6 +191,10 @@ bool ClonedErrorHolder::WriteStructuredClone(JSContext* aCx,
          JS_WriteUint32Pair(aWriter, mTokenOffset, mErrorNumber) &&
          JS_WriteUint32Pair(aWriter, uint32_t(mType), uint32_t(mExnType)) &&
          JS_WriteUint32Pair(aWriter, mCode, uint32_t(mResult)) &&
+         JS_WriteUint32Pair(aWriter, !mQuota.IsNull(), !mRequested.IsNull()) &&
+         JS_WriteDouble(aWriter, mQuota.IsNull() ? 0.0 : mQuota.Value()) &&
+         JS_WriteDouble(aWriter,
+                        mRequested.IsNull() ? 0.0 : mRequested.Value()) &&
          JS_WriteUint32Pair(aWriter, data.Size(),
                             JS_STRUCTURED_CLONE_VERSION) &&
          data.ForEachDataChunk([&](const char* aData, size_t aSize) {
@@ -192,6 +204,8 @@ bool ClonedErrorHolder::WriteStructuredClone(JSContext* aCx,
 
 bool ClonedErrorHolder::Init(JSContext* aCx, JSStructuredCloneReader* aReader) {
   uint32_t type, exnType, result, code;
+  uint32_t hasQuota, hasRequested;
+  double quota, requested;
   if (!(ReadStringPair(aReader, mName, mMessage) &&
         ReadStringPair(aReader, mFilename, mSourceLine) &&
         JS_ReadUint32Pair(aReader, &mLineNumber,
@@ -199,6 +213,8 @@ bool ClonedErrorHolder::Init(JSContext* aCx, JSStructuredCloneReader* aReader) {
         JS_ReadUint32Pair(aReader, &mTokenOffset, &mErrorNumber) &&
         JS_ReadUint32Pair(aReader, &type, &exnType) &&
         JS_ReadUint32Pair(aReader, &code, &result) &&
+        JS_ReadUint32Pair(aReader, &hasQuota, &hasRequested) &&
+        JS_ReadDouble(aReader, &quota) && JS_ReadDouble(aReader, &requested) &&
         mStack.ReadStructuredCloneInternal(aCx, aReader))) {
     return false;
   }
@@ -212,6 +228,12 @@ bool ClonedErrorHolder::Init(JSContext* aCx, JSStructuredCloneReader* aReader) {
   mExnType = JSExnType(exnType);
   mResult = nsresult(result);
   mCode = code;
+  if (hasQuota) {
+    mQuota.SetValue(quota);
+  }
+  if (hasRequested) {
+    mRequested.SetValue(requested);
+  }
 
   return true;
 }
@@ -263,7 +285,7 @@ bool ClonedErrorHolder::ToErrorValue(JSContext* aCx,
   JS::Rooted<JSObject*> stack(aCx);
 
   IgnoredErrorResult rv;
-  mStack.Read(xpc::CurrentNativeGlobal(aCx), aCx, &stackVal, rv);
+  mStack.Read(aCx, &stackVal, rv);
   // Note: We continue even if reading the stack fails, since we can still
   // produce a useful error object even without a stack. That said, if decoding
   // the stack fails, there's a pretty good chance that the rest of the message
@@ -309,7 +331,8 @@ bool ClonedErrorHolder::ToErrorValue(JSContext* aCx,
 
     if (!mSourceLine.IsVoid()) {
       JS::Rooted<JSObject*> errObj(aCx, &aResult.toObject());
-      if (JSErrorReport* err = JS_ErrorFromException(aCx, errObj)) {
+      JS::BorrowedErrorReport err(aCx);
+      if (JS_ErrorFromException(aCx, errObj, err)) {
         NS_ConvertUTF8toUTF16 sourceLine(mSourceLine);
         // Because this string ends up being consumed as an nsDependentString
         // in nsXPCComponents_Utils::ReportError, this needs to be a null
@@ -320,8 +343,8 @@ bool ClonedErrorHolder::ToErrorValue(JSContext* aCx,
           // Corrupt data, leave linebuf unset.
         } else if (JS::UniqueTwoByteChars buffer =
                        ToNullTerminatedJSStringBuffer(aCx, sourceLine)) {
-          err->initOwnedLinebuf(buffer.release(), sourceLine.Length(),
-                                mTokenOffset);
+          err.get()->initOwnedLinebuf(buffer.release(), sourceLine.Length(),
+                                      mTokenOffset);
         } else {
           // Just ignore OOM and continue if the string copy failed.
           JS_ClearPendingException(aCx);
@@ -337,6 +360,8 @@ bool ClonedErrorHolder::ToErrorValue(JSContext* aCx,
   RefPtr<Exception> exn;
   if (mType == Type::Exception) {
     exn = new Exception(mMessage, mResult, mName, frame, nullptr);
+  } else if (mType == Type::QuotaExceededError) {
+    exn = new QuotaExceededError(mResult, mMessage, mQuota, mRequested, frame);
   } else {
     MOZ_ASSERT(mType == Type::DOMException);
     exn = new DOMException(mResult, mMessage, mName, mCode, frame);

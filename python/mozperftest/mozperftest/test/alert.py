@@ -85,7 +85,7 @@ class RaptorTestCommand:
             if "MOZ_FETCHES_DIR" in str(value):
                 # Skip CI-specific options
                 continue
-            if arg == "t" or arg == "test":
+            if arg in {"t", "test"}:
                 # Don't add the test argument, it's added
                 # by setup_test
                 continue
@@ -305,7 +305,7 @@ class AlertTestRunner(Layer):
     }
 
     def __init__(self, env, mach_cmd):
-        super(AlertTestRunner, self).__init__(env, mach_cmd)
+        super().__init__(env, mach_cmd)
         self.perfherder_data = {}
 
     def _get_task_info(self, task_id):
@@ -384,9 +384,22 @@ class AlertTestRunner(Layer):
                     f"Regression for {test} may not be reproducible on your machine."
                 )
 
+            task_id = None
             if self.get_arg("alert_exact"):
+                # The alerting push may have no task (e.g. backfills that never
+                # ran), so fall back to the task from the previous push.
+                task_id = (alert.get("taskcluster_metadata") or {}).get("task_id") or (
+                    alert.get("prev_taskcluster_metadata") or {}
+                ).get("task_id")
+                if task_id is None:
+                    self.warning(
+                        f"No task found for {test} in the alert, running it "
+                        f"without --alert-exact options."
+                    )
+
+            if task_id is not None:
                 exact_options = self._get_exact_options(
-                    alert["taskcluster_metadata"]["task_id"],
+                    task_id,
                     series_signature,
                     test_command_klass,
                 )
@@ -462,12 +475,10 @@ class AlertTestRunner(Layer):
                     text=False,
                 )
                 if test not in self.perfherder_data:
-                    failed_commands.append(
-                        {
-                            "cmd": cmd,
-                            "test": test,
-                        }
-                    )
+                    failed_commands.append({
+                        "cmd": cmd,
+                        "test": test,
+                    })
 
         # Output results in a more readable manner
         for test, perfherder_data in self.perfherder_data.items():

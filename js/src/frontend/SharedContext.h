@@ -1,6 +1,4 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- * vim: set ts=8 sts=2 et sw=2 tw=80:
- * This Source Code Form is subject to the terms of the Mozilla Public
+/* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
@@ -10,6 +8,7 @@
 #include "mozilla/Assertions.h"
 #include "mozilla/Attributes.h"
 #include "mozilla/Maybe.h"
+#include "mozilla/Span.h"
 
 #include <stddef.h>
 #include <stdint.h>
@@ -65,6 +64,7 @@ enum class StatementKind : uint8_t {
   Class,
 
   // Used only by BytecodeEmitter.
+  Destructuring,
   Spread,
   YieldStar,
 };
@@ -84,27 +84,19 @@ static inline bool StatementKindIsUnlabeledBreakTarget(StatementKind kind) {
 // (ES5 15.1).
 class Directives {
   bool strict_;
-  bool asmJS_;
 
  public:
-  explicit Directives(bool strict) : strict_(strict), asmJS_(false) {}
+  explicit Directives(bool strict) : strict_(strict) {}
   explicit Directives(ParseContext* parent);
 
   void setStrict() { strict_ = true; }
   bool strict() const { return strict_; }
 
-  void setAsmJS() { asmJS_ = true; }
-  bool asmJS() const { return asmJS_; }
-
   Directives& operator=(Directives rhs) {
     strict_ = rhs.strict_;
-    asmJS_ = rhs.asmJS_;
     return *this;
   }
-  bool operator==(const Directives& rhs) const {
-    return strict_ == rhs.strict_ && asmJS_ == rhs.asmJS_;
-  }
-  bool operator!=(const Directives& rhs) const { return !(*this == rhs); }
+  bool operator==(const Directives& rhs) const = default;
 };
 
 // The kind of this-binding for the current scope. Note that arrow functions
@@ -318,6 +310,11 @@ inline EvalSharedContext* SharedContext::asEvalContext() {
 
 enum class HasHeritage { No, Yes };
 
+struct InlinedZeroField {
+  TaggedParserAtomIndex name;
+  bool isPrivate;
+};
+
 class SuspendableContext : public SharedContext {
  public:
   SuspendableContext(FrontendContext* fc, Kind kind,
@@ -388,10 +385,10 @@ class FunctionBox : public SuspendableContext {
   // copy.
   MemberInitializers memberInitializers_ = MemberInitializers::Invalid();
 
- public:
-  // Back pointer used by asm.js for error messages.
-  FunctionNode* functionNode = nullptr;
+  // See: MemberInitializers::hasInlinedZeroFields
+  mozilla::Span<const InlinedZeroField> inlinedZeroFields_;
 
+ public:
   // True if bytecode will be emitted for this function in the current
   // compilation.
   bool emitBytecode : 1;
@@ -403,10 +400,6 @@ class FunctionBox : public SuspendableContext {
 
   // Need to emit a synthesized Annex B assignment
   bool isAnnexB : 1;
-
-  // Track if we saw "use asm".
-  // If we successfully validated it, `flags_` is seto to `AsmJS` kind.
-  bool useAsm : 1;
 
   // Analysis of parameter list
   bool hasParameterExprs : 1;
@@ -489,10 +482,6 @@ class FunctionBox : public SuspendableContext {
       copyUpdatedWasEmitted();
     }
   }
-
-  [[nodiscard]] bool setUseAsm();
-  [[nodiscard]] bool setAsmJSModule(const JS::WasmModule* module);
-  bool isAsmJSModule() const { return flags_.isAsmJSNative(); }
 
   bool hasEnclosingScopeIndex() const { return enclosingScopeIndex_.isSome(); }
   ScopeIndex getEnclosingScopeIndex() const { return *enclosingScopeIndex_; }
@@ -630,13 +619,6 @@ class FunctionBox : public SuspendableContext {
     return !strict() && hasSimpleParameterList();
   }
 
-  // Return whether this or an enclosing function is being parsed and
-  // validated as asm.js. Note: if asm.js validation fails, this will be false
-  // while the function is being reparsed. This flag can be used to disable
-  // certain parsing features that are necessary in general, but unnecessary
-  // for validated asm.js.
-  bool useAsmOrInsideUseAsm() const { return useAsm; }
-
   void setStart(uint32_t offset, uint32_t line,
                 JS::LimitedColumnNumberOneOrigin column) {
     MOZ_ASSERT(!isScriptExtraFieldCopiedToStencil);
@@ -703,6 +685,13 @@ class FunctionBox : public SuspendableContext {
       copyUpdatedImmutableFlags();
       copyUpdatedMemberInitializers();
     }
+  }
+
+  mozilla::Span<const InlinedZeroField> inlinedZeroFields() const {
+    return inlinedZeroFields_;
+  }
+  void setInlinedZeroFields(mozilla::Span<const InlinedZeroField> fields) {
+    inlinedZeroFields_ = fields;
   }
 
   ScriptIndex index() const { return funcDataIndex_; }

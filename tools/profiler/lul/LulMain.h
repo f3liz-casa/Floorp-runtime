@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -7,7 +5,7 @@
 #ifndef LulMain_h
 #define LulMain_h
 
-#include "PlatformMacros.h"
+#include "mozilla/ProfilerPlatformMacros.h"
 #include "mozilla/Atomics.h"
 #include "mozilla/MemoryReporting.h"
 #include "mozilla/ProfilerUtils.h"
@@ -153,6 +151,17 @@ struct UnwindRegs {
   TaggedUWord sp;
   TaggedUWord fp;
   TaggedUWord pc;
+#elif defined(GP_ARCH_loongarch64)
+  TaggedUWord ra;
+  TaggedUWord sp;
+  TaggedUWord fp;
+  TaggedUWord s0;
+  TaggedUWord pc;
+#elif defined(GP_ARCH_riscv64)
+  TaggedUWord ra;
+  TaggedUWord sp;
+  TaggedUWord fp;
+  TaggedUWord pc;
 #else
 #  error "Unknown plat"
 #endif
@@ -167,12 +176,15 @@ struct UnwindRegs {
 static const size_t N_STACK_BYTES = 160 * 1024;
 
 // The stack chunk image that will be unwound.
+// mContents points at the stack memory to unwind. In production it points
+// directly at the target thread's stack (zero-copy); tests may point it at
+// a separate buffer.
 struct StackImage {
   // [start_avma, +len) specify the address range in the buffer.
   // Obviously we require 0 <= len <= N_STACK_BYTES.
   uintptr_t mStartAvma;
   size_t mLen;
-  uint8_t mContents[N_STACK_BYTES];
+  uint8_t* mContents;
 };
 
 // Statistics collection for the unwinder.

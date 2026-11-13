@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -17,13 +15,11 @@
 #include "mozilla/dom/XULMenuElement.h"
 #include "mozilla/dom/XULPopupElementBinding.h"
 #include "nsCOMPtr.h"
-#include "nsGkAtoms.h"
-#include "nsICSSDeclaration.h"
+#include "nsDOMCSSDeclaration.h"
 #include "nsIContent.h"
 #include "nsMenuPopupFrame.h"
 #include "nsNameSpaceManager.h"
 #include "nsStringFwd.h"
-#include "nsView.h"
 #ifdef MOZ_WAYLAND
 #  include "mozilla/WidgetUtilsGtk.h"
 #endif
@@ -31,7 +27,7 @@
 namespace mozilla::dom {
 
 nsXULElement* NS_NewXULPopupElement(
-    already_AddRefed<mozilla::dom::NodeInfo>&& aNodeInfo) {
+    already_AddRefed<mozilla::dom::NodeInfo> aNodeInfo) {
   RefPtr<mozilla::dom::NodeInfo> nodeInfo(aNodeInfo);
   auto* nim = nodeInfo->NodeInfoManager();
   return new (nim) XULPopupElement(nodeInfo.forget());
@@ -86,6 +82,12 @@ void XULPopupElement::OpenPopup(Element* aAnchorElement,
 void XULPopupElement::OpenPopupAtScreen(int32_t aXPos, int32_t aYPos,
                                         bool aIsContextMenu,
                                         Event* aTriggerEvent) {
+  if (NodeInfo()->NameAtom() == nsGkAtoms::panel) {
+    // TODO(bug 2038354): Remove this and make the front-end set the attribute
+    // explicitly.
+    SetAttr(kNameSpaceID_None, nsGkAtoms::nonnative, u"true"_ns, true,
+            IsKnownNewAttr::No);
+  }
   nsXULPopupManager* pm = nsXULPopupManager::GetInstance();
   if (pm) {
     pm->ShowPopupAtScreen(this, aXPos, aYPos, aIsContextMenu, aTriggerEvent);
@@ -99,6 +101,12 @@ void XULPopupElement::OpenPopupAtScreenRect(const nsAString& aPosition,
                                             bool aAttributesOverride,
                                             Event* aTriggerEvent) {
   nsXULPopupManager* pm = nsXULPopupManager::GetInstance();
+  if (NodeInfo()->NameAtom() == nsGkAtoms::panel) {
+    // TODO(bug 2038354): Remove this and make the front-end set the attribute
+    // explicitly.
+    SetAttr(kNameSpaceID_None, nsGkAtoms::nonnative, u"true"_ns, true,
+            IsKnownNewAttr::No);
+  }
   if (pm) {
     pm->ShowPopupAtScreenRect(
         this, aPosition, nsIntRect(aXPos, aYPos, aWidth, aHeight),
@@ -199,6 +207,18 @@ void XULPopupElement::ActivateItem(Element& aItemElement,
   MOZ_KnownLive(item)->ExecuteMenu(modifiers, aOptions.mButton, trusted);
 }
 
+void XULPopupElement::GetMenuItems(const GetMenuItemsOptions& aOptions,
+                                   nsTArray<RefPtr<Element>>& aItems) {
+  // Items without a frame are skipped, so build frames for new items first.
+  // During popupshowing this takes over work from the frame flush that
+  // nsXULPopupManager::BeginShowingPopup does right after the event.
+  OwnerDoc()->FlushPendingNotifications(FlushType::Frames);
+  for (auto* item = GetFirstMenuItem(aOptions); item;
+       item = GetNextMenuItemFrom(*item, aOptions)) {
+    aItems.AppendElement(item);
+  }
+}
+
 void XULPopupElement::MoveTo(int32_t aLeft, int32_t aTop) {
   if (nsMenuPopupFrame* menuPopupFrame = do_QueryFrame(GetPrimaryFrame())) {
     menuPopupFrame->MoveTo(CSSIntPoint(aLeft, aTop), true);
@@ -223,7 +243,7 @@ void XULPopupElement::SizeTo(int32_t aWidth, int32_t aHeight) {
   height.AppendInt(aHeight);
   height.AppendLiteral("px");
 
-  nsCOMPtr<nsICSSDeclaration> style = Style();
+  nsCOMPtr<nsDOMCSSDeclaration> style = Style();
   style->SetProperty("width"_ns, width, ""_ns, IgnoreErrors());
   style->SetProperty("height"_ns, height, ""_ns, IgnoreErrors());
 
@@ -294,14 +314,10 @@ already_AddRefed<DOMRect> XULPopupElement::GetOuterScreenRect() {
     // instead, which at least has the position at which we were intending to
     // open the menu.
     screenRect = Some(CSSRect(menuPopupFrame->GetScreenAnchorRect()));
-  } else {
+  } else if (nsIWidget* widget = menuPopupFrame->GetWidget()) {
     // For non-native menus, query the bounds from the widget.
-    if (nsView* view = menuPopupFrame->GetView()) {
-      if (nsIWidget* widget = view->GetWidget()) {
-        screenRect = Some(widget->GetScreenBounds() /
-                          menuPopupFrame->PresContext()->CSSToDevPixelScale());
-      }
-    }
+    screenRect = Some(widget->GetScreenBounds() /
+                      menuPopupFrame->PresContext()->CSSToDevPixelScale());
   }
 
   if (screenRect) {
@@ -335,6 +351,13 @@ bool XULPopupElement::IsWaylandPopup() const {
 #else
   return false;
 #endif
+}
+
+bool XULPopupElement::IsNativeMenu() const {
+  if (nsMenuPopupFrame* menuPopupFrame = do_QueryFrame(GetPrimaryFrame())) {
+    return menuPopupFrame->IsNativeMenu();
+  }
+  return false;
 }
 
 }  // namespace mozilla::dom

@@ -2,16 +2,17 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-import {
-  ActionsProvider,
-  ActionsResult,
-} from "resource:///modules/ActionsProvider.sys.mjs";
+import { ActionsProvider } from "moz-src:///browser/components/urlbar/ActionsProvider.sys.mjs";
+import { XPCOMUtils } from "resource://gre/modules/XPCOMUtils.sys.mjs";
 
-const lazy = {};
-ChromeUtils.defineESModuleGetters(lazy, {
+/**
+ * @import {ActionsResult} from "moz-src:///browser/components/urlbar/ActionsProvider.sys.mjs"
+ */
+
+const lazy = XPCOMUtils.declareLazy({
   QuickActionsLoaderDefault:
-    "resource:///modules/QuickActionsLoaderDefault.sys.mjs",
-  UrlbarPrefs: "resource:///modules/UrlbarPrefs.sys.mjs",
+    "moz-src:///browser/components/urlbar/QuickActionsLoaderDefault.sys.mjs",
+  UrlbarPrefs: "moz-src:///browser/components/urlbar/UrlbarPrefs.sys.mjs",
 });
 
 // These prefs are relative to the `browser.urlbar` branch.
@@ -27,9 +28,17 @@ const MIN_SEARCH_PREF = "quickactions.minimumSearchString";
  *   The URI of the icon associated with this command.
  * @property {string} label
  *   The id of the label for the result element.
- * @property {() => boolean} [isVisible]
- *   A function to call to check if this action should be visible or not.
- * @property {() => null|{focusContent: boolean}} onPick
+ * @property {() => boolean} [isUnsupported]
+ *   Called to check whether this action's underlying feature or capability is
+ *   unavailable, e.g. disabled by a pref or policy, or missing on this build.
+ *   When it returns true the action is hidden everywhere, including the full
+ *   actions list shown in search mode. Defaults to supported.
+ * @property {() => boolean} [isInactive]
+ *   Called to check whether this action, though supported, can't be used right
+ *   now, e.g. mute when no tab is playing audio. When it returns true the
+ *   action is hidden from the urlbar but still shown, as a disabled entry, in
+ *   the full actions list used for feature discoverability. Defaults to active.
+ * @property {(queryContext, controller, window) => null|{focusContent: boolean}} onPick
  *   The function to call when the quick action is picked. It may return an object
  *   with property focusContent to indicate if the content area should be focussed
  *   after the pick.
@@ -43,19 +52,30 @@ class ProviderQuickActions extends ActionsProvider {
     return "ActionsProviderQuickActions";
   }
 
-  isActive(queryContext) {
+  /**
+   * @param {UrlbarQueryContext} queryContext
+   * @param {UrlbarParentController} _controller
+   * @returns {boolean}
+   */
+  isActive(queryContext, _controller) {
     return (
+      queryContext.sapName == "urlbar" &&
       lazy.UrlbarPrefs.get(ENABLED_PREF) &&
-      !queryContext.searchMode &&
+      !queryContext.restrictInSearchMode() &&
       queryContext.trimmedSearchString.length < 50 &&
       queryContext.trimmedSearchString.length >=
         lazy.UrlbarPrefs.get(MIN_SEARCH_PREF)
     );
   }
 
-  async queryActions(queryContext) {
+  /**
+   * @param {UrlbarQueryContext} queryContext
+   * @param {UrlbarParentController} _controller
+   * @returns {Promise<ActionsResult[]>}
+   */
+  async queryActions(queryContext, _controller) {
     let input = queryContext.trimmedLowerCaseSearchString;
-    let results = await this.getActions(input);
+    let results = await this.getActions({ input });
 
     if (lazy.UrlbarPrefs.get(MATCH_IN_PHRASE_PREF)) {
       for (let [keyword, keys] of this.#keywords) {
@@ -65,10 +85,10 @@ class ProviderQuickActions extends ActionsProvider {
       }
     }
 
-    // Remove invisible actions.
+    // Remove actions that are unsupported or currently inactive.
     results.forEach(key => {
       const action = this.#actions.get(key);
-      if (!(action.isVisible?.() ?? true)) {
+      if (action.isUnsupported?.() || action.isInactive?.()) {
         results.delete(key);
       }
     });
@@ -79,7 +99,8 @@ class ProviderQuickActions extends ActionsProvider {
 
     return [...results].map(key => {
       let action = this.#actions.get(key);
-      return new ActionsResult({
+      return /** @type {ActionsResult} */ ({
+        providerName: this.name,
         key,
         l10nId: action.label,
         icon: action.icon,
@@ -87,27 +108,42 @@ class ProviderQuickActions extends ActionsProvider {
           action: key,
           inputLength: queryContext.trimmedSearchString.length,
         },
-        onPick: action.onPick,
       });
     });
   }
 
-  async getActions(prefix) {
+  async getActions({ input, includesExactMatch = false }) {
     await lazy.QuickActionsLoaderDefault.ensureLoaded();
-    return this.#prefixes.get(prefix) ?? new Set();
+
+    let results = new Set(this.#prefixes.get(input));
+
+    if (includesExactMatch) {
+      let actions = this.#keywords.get(input);
+      actions?.forEach(action => results.add(action));
+    }
+
+    return results;
   }
 
   getAction(key) {
     return this.#actions.get(key);
   }
 
-  pickAction(_queryContext, _controller, element) {
-    let action = element.dataset.action;
-    let inputLength = Math.min(element.dataset.inputLength, 10);
-    Glean.urlbarQuickaction.picked[`${action}-${inputLength}`].add(1);
-    let options = this.#actions.get(action).onPick();
+  onPick(queryContext, controller, actionResult, _details) {
+    this.pickAction(
+      queryContext,
+      controller,
+      actionResult.key,
+      actionResult.dataset.inputLength
+    );
+  }
+
+  pickAction(queryContext, controller, key, inputLength) {
+    inputLength = Math.min(inputLength, 10);
+    Glean.urlbarQuickaction.picked[`${key}-${inputLength}`].add(1);
+    let options = this.#actions.get(key).onPick(queryContext, controller);
     if (options?.focusContent) {
-      element.ownerGlobal.gBrowser.selectedBrowser.focus();
+      controller.browserWindow.gBrowser.selectedBrowser.focus();
     }
   }
 

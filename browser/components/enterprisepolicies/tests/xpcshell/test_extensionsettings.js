@@ -2,11 +2,14 @@
  * http://creativecommons.org/publicdomain/zero/1.0/ */
 "use strict";
 
+const { AddonManager } = ChromeUtils.importESModule(
+  "resource://gre/modules/AddonManager.sys.mjs"
+);
 const { AddonTestUtils } = ChromeUtils.importESModule(
   "resource://testing-common/AddonTestUtils.sys.mjs"
 );
-const { AddonManager } = ChromeUtils.importESModule(
-  "resource://gre/modules/AddonManager.sys.mjs"
+const { PolicyFailures } = ChromeUtils.importESModule(
+  "resource://gre/modules/PoliciesHelpers.sys.mjs"
 );
 
 AddonTestUtils.init(this);
@@ -117,6 +120,111 @@ add_task(async function test_extensionsettings() {
   );
 });
 
+add_task(async function test_force_installed_updates_disabled() {
+  await setupPolicyEngineWithJson({
+    policies: {
+      ExtensionSettings: {
+        "force@mozilla.com": {
+          installation_mode: "force_installed",
+          install_url: "https://example.com/test.xpi",
+        },
+        "force_explicit@mozilla.com": {
+          installation_mode: "force_installed",
+          install_url: "https://example.com/test.xpi",
+          updates_disabled: true,
+        },
+        "normal@mozilla.com": {
+          installation_mode: "normal_installed",
+          install_url: "https://example.com/test.xpi",
+        },
+      },
+    },
+  });
+
+  equal(
+    Services.policies.getExtensionSettings("force@mozilla.com")
+      .updates_disabled,
+    false,
+    "force_installed with no updates_disabled should default to false"
+  );
+  equal(
+    Services.policies.getExtensionSettings("force_explicit@mozilla.com")
+      .updates_disabled,
+    true,
+    "force_installed with explicit updates_disabled: true should be respected"
+  );
+  ok(
+    !(
+      "updates_disabled" in
+      Services.policies.getExtensionSettings("normal@mozilla.com")
+    ),
+    "non-force_installed should not synthesize updates_disabled"
+  );
+});
+
+add_task(async function test_invalid_entry_does_not_discard_the_others() {
+  await setupPolicyEngineWithJson({
+    policies: {
+      ExtensionSettings: {
+        "*": {
+          blocked_install_message: "Generic error message.",
+        },
+        "broken@mozilla.com": {
+          update_url: "not-a-valid-url",
+        },
+        "good@mozilla.com": {
+          blocked_install_message: "Good error message.",
+        },
+      },
+    },
+  });
+
+  equal(
+    Services.policies.getExtensionSettings("good@mozilla.com")
+      .blocked_install_message,
+    "Good error message.",
+    "A valid entry still applies alongside an invalid one."
+  );
+  equal(
+    Services.policies.getExtensionSettings("broken@mozilla.com")
+      .blocked_install_message,
+    "Generic error message.",
+    "The invalid entry is dropped and falls back to the generic one."
+  );
+});
+
+add_task(async function test_quoted_booleans_are_accepted() {
+  await setupPolicyEngineWithJson({
+    policies: {
+      ExtensionSettings: {
+        "force@mozilla.com": {
+          installation_mode: "force_installed",
+          install_url: "https://example.com/test.xpi",
+          updates_disabled: "true",
+        },
+        "normal@mozilla.com": {
+          installation_mode: "normal_installed",
+          install_url: "https://example.com/test.xpi",
+          private_browsing: "false",
+        },
+      },
+    },
+  });
+
+  strictEqual(
+    Services.policies.getExtensionSettings("force@mozilla.com")
+      .updates_disabled,
+    true,
+    'updates_disabled: "true" is read as the boolean true'
+  );
+  strictEqual(
+    Services.policies.getExtensionSettings("normal@mozilla.com")
+      .private_browsing,
+    false,
+    'private_browsing: "false" is read as the boolean false'
+  );
+});
+
 add_task(async function test_addon_blocked() {
   await setupPolicyEngineWithJson({
     policies: {
@@ -159,7 +267,7 @@ add_task(async function test_addon_allowed() {
   await assertManagementAPIInstallType(install.addon.id, "normal");
   equal(install.addon.appDisabled, false, "Addon should not be disabled");
   equal(
-    install.addon.isInstalledByEnterprisePolicy,
+    Services.policies.isAddonRequiredByPolicy(install.addon.id),
     false,
     "Addon should NOT be marked as installed by enterprise policy"
   );
@@ -219,6 +327,121 @@ add_task(async function test_addon_forceinstalled() {
   );
   await assertManagementAPIInstallType(addon.id, "admin");
 
+  await addon.uninstall();
+});
+
+add_task(async function test_addon_uninstalled_by_allowed_types() {
+  let install = await AddonManager.getInstallForURL(
+    BASE_URL + "/policy_test.xpi"
+  );
+  await install.install();
+  notEqual(install.addon, null, "Addon should not be null");
+
+  await Promise.all([
+    AddonTestUtils.promiseAddonEvent("onUninstalled"),
+    setupPolicyEngineWithJson({
+      policies: {
+        ExtensionSettings: {
+          "*": {
+            allowed_types: ["theme"],
+          },
+        },
+      },
+    }),
+  ]);
+  let addon = await AddonManager.getAddonByID(addonID);
+  equal(
+    addon,
+    null,
+    "Addon should be uninstalled due to allowed_types restriction"
+  );
+});
+
+add_task(async function test_addon_allowed_exempted_from_allowed_types() {
+  let install = await AddonManager.getInstallForURL(
+    BASE_URL + "/policy_test.xpi"
+  );
+  await install.install();
+  notEqual(install.addon, null, "Addon should not be null");
+
+  await setupPolicyEngineWithJson({
+    policies: {
+      ExtensionSettings: {
+        [addonID]: {
+          installation_mode: "allowed",
+        },
+        "*": {
+          allowed_types: ["theme"],
+        },
+      },
+    },
+  });
+  let addon = await AddonManager.getAddonByID(addonID);
+  notEqual(
+    addon,
+    null,
+    "Explicitly allowed addon should survive allowed_types restriction"
+  );
+  await addon.uninstall();
+});
+
+add_task(async function test_allowed_types_blocks_new_install() {
+  await setupPolicyEngineWithJson({
+    policies: {
+      ExtensionSettings: {
+        "*": {
+          allowed_types: ["theme"],
+        },
+      },
+    },
+  });
+  let install = await AddonManager.getInstallForURL(
+    BASE_URL + "/policy_test.xpi"
+  );
+  await install.install();
+  notEqual(install.addon, null, "Addon should not be null");
+  equal(
+    install.addon.appDisabled,
+    true,
+    "Addon should be disabled due to allowed_types restriction"
+  );
+  await install.addon.uninstall();
+});
+
+add_task(async function test_allowed_type_survives_allowed_types() {
+  let themeFile = AddonTestUtils.createTempWebExtensionFile({
+    manifest: {
+      browser_specific_settings: {
+        gecko: {
+          id: themeID,
+        },
+      },
+      theme: {},
+    },
+  });
+  server.registerFile("/data/policy_theme_survives.xpi", themeFile);
+
+  let install = await AddonManager.getInstallForURL(
+    BASE_URL + "/policy_theme_survives.xpi"
+  );
+  await install.install();
+  notEqual(install.addon, null, "Theme should be installed");
+
+  await setupPolicyEngineWithJson({
+    policies: {
+      ExtensionSettings: {
+        "*": {
+          allowed_types: ["theme"],
+        },
+      },
+    },
+  });
+  let addon = await AddonManager.getAddonByID(themeID);
+  notEqual(
+    addon,
+    null,
+    "Theme should survive allowed_types: ['theme'] restriction"
+  );
   await addon.uninstall();
 });
 
@@ -584,102 +807,135 @@ add_task(async function test_policy_installed_only_addon() {
   );
 });
 
-add_task(async function test_private_browsing() {
-  async function assertPrivateBrowsingAccess({
-    addonId,
-    extensionSettings,
-    extensionManifest = {},
-    expectedPrivateBrowsingAccess,
-    message,
-  }) {
-    await setupPolicyEngineWithJson({
-      policies: {
-        ExtensionSettings: {
-          [addonId]: { ...extensionSettings },
-        },
-      },
-    });
+// If the addon ID provided in the policy does not match the downloaded addon,
+// the addon should not be installed, and a useful policy failure message
+// should be logged.
+add_task(async function test_addon_install_id_mismatch() {
+  const installURLs = {
+    file: fileURL.spec,
+    http: BASE_URL + "/policy_test.xpi",
+  };
 
-    let ext = ExtensionTestUtils.loadExtension({
-      manifest: {
-        browser_specific_settings: {
-          gecko: { id: addonId },
-        },
-        ...extensionManifest,
-      },
-      useAddonManager: "temporary",
-      background() {
-        browser.test.onMessage.addListener(async msg => {
-          switch (msg) {
-            case "checkPrivateBrowsing": {
-              let isAllowed =
-                await browser.extension.isAllowedIncognitoAccess();
-              browser.test.sendMessage("privateBrowsing", isAllowed);
-              break;
-            }
-          }
-        });
-      },
-    });
+  for (const installMode of ["normal_installed", "force_installed"]) {
+    for (const [installProtocol, installURL] of Object.entries(installURLs)) {
+      // Run the test case.
+      const descriptionPrefix = `[${installMode}, ${installProtocol}]: `;
+      const {
+        messages,
+        result: [[install]],
+      } = await AddonTestUtils.promiseConsoleOutput(() =>
+        Promise.all([
+          AddonTestUtils.promiseInstallEvent("onDownloadFailed"),
+          setupPolicyEngineWithJson({
+            policies: {
+              ExtensionSettings: {
+                "incorrect-id@mozilla.com": {
+                  installation_mode: installMode,
+                  install_url: installURL,
+                },
+              },
+            },
+          }),
+        ])
+      );
 
-    await ext.startup();
-
-    ext.sendMessage("checkPrivateBrowsing");
-    let isAllowedIncognitoAccess = await ext.awaitMessage("privateBrowsing");
-    Assert.equal(
-      isAllowedIncognitoAccess,
-      expectedPrivateBrowsingAccess,
-      message
-    );
-
-    let addon = await AddonManager.getAddonByID(ext.id);
-    // Sanity check (to ensure the test extension used in this test are not privileged).
-    ok(!addon.isPrivileged, "Addon should not be privileged");
-
-    let expectLocked = typeof extensionSettings?.private_browsing === "boolean";
-    Assert.equal(
-      !(
-        addon.permissions & AddonManager.PERM_CAN_CHANGE_PRIVATEBROWSING_ACCESS
-      ),
-      expectLocked,
-      `Addon should ${expectLocked ? "NOT" : ""} be able to change private browsing setting.`
-    );
-
-    await ext.unload();
+      // Check that the addon was rejected with the right errors.
+      const addon = await AddonManager.getAddonByID(addonID);
+      equal(
+        addon,
+        null,
+        descriptionPrefix + "Addon should not be installed when the ID is wrong"
+      );
+      equal(
+        AddonManager.errorToString(install.error),
+        "ERROR_INCORRECT_ID",
+        descriptionPrefix + "Correct install.error type should be given"
+      );
+      ok(
+        messages.some(({ message }) =>
+          message.includes(
+            "Expected addon ID incorrect-id@mozilla.com instead of policytest2@mozilla.com"
+          )
+        ),
+        descriptionPrefix + "Addon ID mismatch error should be logged"
+      );
+      ok(
+        PolicyFailures.getAll().ExtensionSettings.some(message =>
+          message.includes(
+            `Download failed - ERROR_INCORRECT_ID - ${installURL} - ` +
+              "Expected incorrect-id@mozilla.com instead of policytest2@mozilla.com"
+          )
+        ),
+        descriptionPrefix +
+          "Failure policy should be logged with addon ID mismatch details"
+      );
+    }
   }
+});
 
-  await assertPrivateBrowsingAccess({
-    addonId: "privatebrowsing-granted-nonprivileged@test",
-    extensionSettings: { private_browsing: true },
-    expectedPrivateBrowsingAccess: true,
-    message:
-      "Should have access to private browsing (set to true in policy extension setting)",
-  });
-
-  await assertPrivateBrowsingAccess({
-    addonId: "privatebrowsing-revoked-nonprivileged@test",
-    extensionSettings: { private_browsing: false },
-    expectedPrivateBrowsingAccess: false,
-    message:
-      "Should NOT have access to private browsing (set to false in policy extension setting)",
-  });
-
-  await assertPrivateBrowsingAccess({
-    addonId: "privatebrowsing-nosetting-nonprivileged@test",
-    extensionSettings: {},
-    expectedPrivateBrowsingAccess: false,
-    message:
-      "Should NOT have access to private browsing (NOT set in policy extension setting)",
-  });
-
-  await assertPrivateBrowsingAccess({
-    addonId: "privatebrowsing-notallowed-nonprivileged@test",
-    extensionSettings: { private_browsing: true },
-    extensionManifest: {
-      incognito: "not_allowed",
+// Test the edge-case of an incompatible file: addon policy install, where the
+// addon ID provided by the policy also does not match.
+add_task(async function test_addon_install_id_mismatch_incompatible_file() {
+  const incompatibleFile = AddonTestUtils.createTempWebExtensionFile({
+    manifest: {
+      browser_specific_settings: {
+        gecko: {
+          id: addonID,
+          strict_min_version: "9999",
+        },
+      },
     },
-    expectedPrivateBrowsingAccess: false,
-    message:
-      "incognito 'not_allowed' extensions should NOT have access to private browser",
   });
+  const installURL = Services.io.newFileURI(incompatibleFile).spec;
+
+  const {
+    messages,
+    result: [[install]],
+  } = await AddonTestUtils.promiseConsoleOutput(() =>
+    Promise.all([
+      AddonTestUtils.promiseInstallEvent("onDownloadFailed"),
+      setupPolicyEngineWithJson({
+        policies: {
+          ExtensionSettings: {
+            "incorrect-id@mozilla.com": {
+              installation_mode: "normal_installed",
+              install_url: installURL,
+            },
+          },
+        },
+      }),
+    ])
+  );
+
+  ok(install.addon.appDisabled, "The add-on is incompatible");
+
+  // Check that the addon was rejected with the right errors.
+  const addon = await AddonManager.getAddonByID(addonID);
+  equal(
+    addon,
+    null,
+    "An incompatible addon should not be installed when the ID is also wrong"
+  );
+  equal(
+    AddonManager.errorToString(install.error),
+    "ERROR_INCORRECT_ID",
+    "Correct install.error type should be given"
+  );
+  ok(
+    messages.some(({ message }) =>
+      message.includes(
+        "Expected addon ID incorrect-id@mozilla.com instead of policytest2@mozilla.com"
+      )
+    ),
+    "Addon ID mismatch error should still be logged for incompatible addons"
+  );
+  ok(
+    PolicyFailures.getAll().ExtensionSettings.some(message =>
+      message.includes(
+        `Download failed - ERROR_INCORRECT_ID - ${installURL} - ` +
+          "Expected incorrect-id@mozilla.com instead of policytest2@mozilla.com"
+      )
+    ),
+    "Failure policy should be logged with addon ID mismatch details"
+  );
 });

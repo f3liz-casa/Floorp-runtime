@@ -2,6 +2,8 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
+/** @import {Store} from "resource://newtab/lib/Store.sys.mjs" */
+
 import {
   actionTypes as at,
   actionCreators as ac,
@@ -14,7 +16,6 @@ const lazy = {};
 
 ChromeUtils.defineESModuleGetters(lazy, {
   NewTabUtils: "resource://gre/modules/NewTabUtils.sys.mjs",
-  pktApi: "chrome://pocket/content/pktApi.sys.mjs",
 });
 
 export const STORIES_UPDATE_TIME = 30 * 60 * 1000; // 30 minutes
@@ -37,6 +38,9 @@ const MAX_LIFETIME_CAP = 500; // Guard against misconfiguration on the server
 const DISCOVERY_STREAM_PREF = "discoverystream.config";
 
 export class TopStoriesFeed {
+  /** @type {Store} */
+  store = null;
+
   constructor(ds) {
     // Use discoverystream config pref default values for fast path and
     // if needed lazy load activity stream top stories feed based on
@@ -121,14 +125,6 @@ export class TopStoriesFeed {
     SectionsManager.disableSection(SECTION_ID);
   }
 
-  getPocketState(target) {
-    const action = {
-      type: at.POCKET_LOGGED_IN,
-      data: lazy.pktApi.isUserLoggedIn(),
-    };
-    this.store.dispatch(ac.OnlyToOneContent(action, target));
-  }
-
   dispatchPocketCta(data, shouldBroadcast) {
     const action = { type: at.POCKET_CTA, data: JSON.parse(data) };
     this.store.dispatch(
@@ -150,8 +146,8 @@ export class TopStoriesFeed {
    *                   but clear stories if none are available. Because of this, if no
    *                   stories are passed, we instead use the existing stories in state.
    *
-   * @param {Object} This is an object with potential new stories or topics.
-   * @param {Boolean} shouldBroadcast If we should update existing tabs or not. For first page
+   * @param {object} This is an object with potential new stories or topics.
+   * @param {boolean} shouldBroadcast If we should update existing tabs or not. For first page
    *                  loads or pref changes, we want to update existing tabs,
    *                  for system tick or other updates we do not.
    */
@@ -190,6 +186,7 @@ export class TopStoriesFeed {
         );
       }
 
+      /** @type {object} */
       const body = await response.json();
       this.updateSettings(body.settings);
       this.stories = this.rotate(this.transform(body.recommendations));
@@ -291,6 +288,7 @@ export class TopStoriesFeed {
           `Topics endpoint returned unexpected status: ${response.status}`
         );
       }
+      /** @type {object} */
       const body = await response.json();
       const { topics } = body;
       if (topics) {
@@ -649,7 +647,7 @@ export class TopStoriesFeed {
       case at.INIT:
         this.lazyLoadTopStories();
         break;
-      case at.SYSTEM_TICK:
+      case at.SYSTEM_TICK: {
         let stories;
         let topics;
         if (Date.now() - this.storiesLastUpdated >= STORIES_UPDATE_TIME) {
@@ -660,11 +658,11 @@ export class TopStoriesFeed {
         }
         this.doContentUpdate({ stories, topics }, false);
         break;
+      }
       case at.UNINIT:
         this.uninit();
         break;
       case at.NEW_TAB_REHYDRATED:
-        this.getPocketState(action.meta.fromTarget);
         this.maybeAddSpoc(action.meta.fromTarget);
         break;
       case at.SECTION_OPTIONS_CHANGED:

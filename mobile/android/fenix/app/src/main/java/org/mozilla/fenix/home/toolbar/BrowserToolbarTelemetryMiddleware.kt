@@ -9,20 +9,48 @@ import mozilla.components.compose.browser.toolbar.store.BrowserToolbarAction
 import mozilla.components.compose.browser.toolbar.store.BrowserToolbarInteraction.BrowserToolbarEvent.Source
 import mozilla.components.compose.browser.toolbar.store.BrowserToolbarState
 import mozilla.components.lib.state.Middleware
-import mozilla.components.lib.state.MiddlewareContext
-import org.mozilla.fenix.GleanMetrics.Events
+import mozilla.components.lib.state.Store
+import org.mozilla.fenix.GleanMetrics.Toolbar
+import org.mozilla.fenix.components.AppStore
 import org.mozilla.fenix.home.toolbar.DisplayActions.MenuClicked
 import org.mozilla.fenix.home.toolbar.TabCounterInteractions.AddNewPrivateTab
 import org.mozilla.fenix.home.toolbar.TabCounterInteractions.AddNewTab
 import org.mozilla.fenix.home.toolbar.TabCounterInteractions.TabCounterClicked
 import org.mozilla.fenix.home.toolbar.TabCounterInteractions.TabCounterLongClicked
+import org.mozilla.fenix.search.EditPageEndActionsInteractions.LensButtonClicked
+import org.mozilla.fenix.search.EditPageEndActionsInteractions.QrScannerClicked
+import org.mozilla.fenix.telemetry.ACTION_ADD_NEW_PRIVATE_TAB
+import org.mozilla.fenix.telemetry.ACTION_ADD_NEW_TAB
+import org.mozilla.fenix.telemetry.ACTION_MENU_CLICKED
+import org.mozilla.fenix.telemetry.ACTION_QR_CLICKED
+import org.mozilla.fenix.telemetry.ACTION_TAB_COUNTER_CLICKED
+import org.mozilla.fenix.telemetry.ACTION_TAB_COUNTER_LONG_CLICKED
+import org.mozilla.fenix.telemetry.SOURCE_ADDRESS_BAR
+import org.mozilla.fenix.telemetry.SOURCE_BROWSER_END
+import org.mozilla.fenix.telemetry.SOURCE_BROWSER_START
+import org.mozilla.fenix.telemetry.SOURCE_NAVIGATION_BAR
+import org.mozilla.fenix.telemetry.SOURCE_PAGE_END
+import org.mozilla.fenix.telemetry.SOURCE_PAGE_START
+import org.mozilla.fenix.telemetry.SURFACE_HOME
+import org.mozilla.fenix.telemetry.recordAddressBarButtonTapped
+import org.mozilla.fenix.telemetry.recordLensButtonTapped
+import org.mozilla.fenix.utils.Settings
 
 /**
  * [Middleware] responsible for recording telemetry of actions triggered by compose toolbars.
+ *
+ * @param appStore [AppStore] used to determine the surface on which the search was started.
+ * @param settings [Settings] used to determine the last selected Lens camera mode.
  */
-class BrowserToolbarTelemetryMiddleware : Middleware<BrowserToolbarState, BrowserToolbarAction> {
+class BrowserToolbarTelemetryMiddleware(
+    private val appStore: AppStore,
+    private val settings: Settings,
+) : Middleware<BrowserToolbarState, BrowserToolbarAction> {
+    private val sourceTabId: String?
+        get() = appStore.state.searchState.sourceTabId
+
     override fun invoke(
-        context: MiddlewareContext<BrowserToolbarState, BrowserToolbarAction>,
+        store: Store<BrowserToolbarState, BrowserToolbarAction>,
         next: (BrowserToolbarAction) -> Unit,
         action: BrowserToolbarAction,
     ) {
@@ -42,6 +70,8 @@ class BrowserToolbarTelemetryMiddleware : Middleware<BrowserToolbarState, Browse
             is MenuClicked -> {
                 trackToolbarEvent(ToolbarActionRecord.MenuClicked, action.source)
             }
+            is QrScannerClicked -> recordAddressBarButtonTapped(ACTION_QR_CLICKED, sourceTabId)
+            is LensButtonClicked -> recordLensButtonTapped(settings.lensCameraLastMode, sourceTabId)
             else -> {}
         }
         next(action)
@@ -49,31 +79,50 @@ class BrowserToolbarTelemetryMiddleware : Middleware<BrowserToolbarState, Browse
 
     @VisibleForTesting
     internal sealed class ToolbarActionRecord(val action: String) {
-        data object MenuClicked : ToolbarActionRecord("menu_press")
-        data object TabCounterClicked : ToolbarActionRecord("tabs_tray")
-        data object TabCounterLongClicked : ToolbarActionRecord("tabs_tray_long_press")
-        data object AddNewTab : ToolbarActionRecord("add_new_tab")
-        data object AddNewPrivateTab : ToolbarActionRecord("add_new_private_tab")
+        data object MenuClicked : ToolbarActionRecord(ACTION_MENU_CLICKED)
+
+        data object TabCounterClicked : ToolbarActionRecord(ACTION_TAB_COUNTER_CLICKED)
+
+        data object TabCounterLongClicked : ToolbarActionRecord(ACTION_TAB_COUNTER_LONG_CLICKED)
+
+        data object AddNewTab : ToolbarActionRecord(ACTION_ADD_NEW_TAB)
+
+        data object AddNewPrivateTab : ToolbarActionRecord(ACTION_ADD_NEW_PRIVATE_TAB)
     }
 
     private fun trackToolbarEvent(
         toolbarActionRecord: ToolbarActionRecord,
-        source: Source = Source.AddressBar,
+        source: Source = Source.Unknown,
     ) {
         when (source) {
-            Source.AddressBar ->
-                Events.browserToolbarAction.record(
-                    Events.BrowserToolbarActionExtra(
+            is Source.AddressBar ->
+                Toolbar.buttonTapped.record(
+                    Toolbar.ButtonTappedExtra(
+                        source = SOURCE_ADDRESS_BAR,
                         item = toolbarActionRecord.action,
-                    ),
+                        extra = source.telemetryName(),
+                        surface = SURFACE_HOME,
+                    )
                 )
 
             Source.NavigationBar ->
-                Events.browserNavbarAction.record(
-                    Events.BrowserNavbarActionExtra(
+                Toolbar.buttonTapped.record(
+                    Toolbar.ButtonTappedExtra(
+                        source = SOURCE_NAVIGATION_BAR,
                         item = toolbarActionRecord.action,
-                    ),
+                        surface = SURFACE_HOME,
+                    )
                 )
+
+            Source.Unknown -> return
         }
     }
 }
+
+internal fun Source.AddressBar.telemetryName(): String =
+    when (this) {
+        Source.AddressBar.BrowserStart -> SOURCE_BROWSER_START
+        Source.AddressBar.PageStart -> SOURCE_PAGE_START
+        Source.AddressBar.PageEnd -> SOURCE_PAGE_END
+        Source.AddressBar.BrowserEnd -> SOURCE_BROWSER_END
+    }

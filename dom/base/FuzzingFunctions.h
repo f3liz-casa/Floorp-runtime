@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -30,6 +28,8 @@ class FuzzingFunctions final {
   static void Crash(const GlobalObject& aGlobalObject,
                     const nsAString& aKeyValue);
 
+  static void KillGPUProcess(const GlobalObject&);
+
   static void CycleCollect(const GlobalObject&);
 
   static void MemoryPressure(const GlobalObject&);
@@ -43,6 +43,12 @@ class FuzzingFunctions final {
       const KeyboardEventInit& aKeyboardEvent, ErrorResult& aRv);
 
   static void SpinEventLoopFor(const GlobalObject&, uint32_t aMilliseconds);
+
+  static void Dump(const GlobalObject&, const nsAString& aMessage);
+
+  static int32_t ProcId(const GlobalObject&);
+
+  static void GetRemoteType(const GlobalObject&, nsAString& aRemoteType);
 
  private:
   /**

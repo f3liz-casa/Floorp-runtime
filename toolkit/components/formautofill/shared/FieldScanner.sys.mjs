@@ -101,6 +101,7 @@ export class FieldDetail {
       fathomConfidence = null,
       isVisible = true,
       isLookup = false,
+      mlData = null,
     } = {}
   ) {
     const fieldDetail = new FieldDetail(element);
@@ -121,7 +122,10 @@ export class FieldDetail {
     }
 
     if (!fieldDetail.fieldName) {
-      fieldDetail.reason = "unknown";
+      // An autocomplete attribute the parser could not resolve still tells us
+      // the site had something to say about this field, unlike one we simply
+      // failed to classify.
+      fieldDetail.reason = autocompleteInfo ? "autocomplete" : "unknown";
     } else if (autocompleteInfo) {
       fieldDetail.reason = "autocomplete";
       fieldDetail.section = autocompleteInfo.section;
@@ -137,13 +141,15 @@ export class FieldDetail {
       fieldDetail.reason = "regex-heuristic";
     }
 
+    fieldDetail.mlData = mlData;
+
     try {
       fieldDetail.browsingContextId =
         element.localName == "iframe"
           ? element.browsingContext.id
-          : BrowsingContext.getFromWindow(element.ownerGlobal).id;
+          : BrowsingContext.getFromWindow(element.documentGlobal).id;
     } catch {
-      /* unit test doesn't have ownerGlobal */
+      /* unit test doesn't have documentGlobal */
     }
 
     fieldDetail.isVisible = isVisible;
@@ -223,6 +229,19 @@ export class FieldScanner {
     }
 
     return this.#fieldDetails[index];
+  }
+
+  getFieldsMatching(matchFn, includeInvisible = false) {
+    let fields = [];
+
+    for (let idx = 0; this.elementExisting(idx); idx++) {
+      let field = this.#fieldDetails[idx];
+      if ((includeInvisible || field.isVisible) && matchFn(field)) {
+        fields.push(field);
+      }
+    }
+
+    return fields;
   }
 
   /**

@@ -1,13 +1,13 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 #ifndef mozilla_gfx_config_gfxFeature_h
 #define mozilla_gfx_config_gfxFeature_h
 
-#include <functional>
 #include <stdint.h>
+
+#include <functional>
+
 #include "gfxTelemetry.h"
 #include "mozilla/Assertions.h"
 #include "mozilla/Maybe.h"
@@ -21,7 +21,6 @@ namespace gfx {
   _(HW_COMPOSITING, Feature, "Compositing")                                  \
   _(D3D11_COMPOSITING, Feature, "Direct3D11 Compositing")                    \
   _(OPENGL_COMPOSITING, Feature, "OpenGL Compositing")                       \
-  _(DIRECT2D, Feature, "Direct2D")                                           \
   _(D3D11_HW_ANGLE, Feature, "Direct3D11 hardware ANGLE")                    \
   _(DIRECT_DRAW, Feature, "DirectDraw")                                      \
   _(GPU_PROCESS, Feature, "GPU Process")                                     \
@@ -34,12 +33,13 @@ namespace gfx {
   _(WEBRENDER_DCOMP_PRESENT, Feature, "WebRender DirectComposition")         \
   _(WEBRENDER_SCISSORED_CACHE_CLEARS, Feature,                               \
     "WebRender scissored cache clears")                                      \
-  _(OMTP, Feature, "Off Main Thread Painting")                               \
   _(WEBGPU, Feature, "WebGPU")                                               \
   _(X11_EGL, Feature, "X11 EGL")                                             \
   _(DMABUF, Feature, "DMABUF")                                               \
   _(WINDOW_OCCLUSION, Feature, "WINDOW_OCCLUSION")                           \
   _(HARDWARE_VIDEO_DECODING, Feature, "Hardware video decoding")             \
+  _(HARDWARE_VIDEO_DECODING_VULKAN, Feature,                                 \
+    "Hardware video decoding (Vulkan)")                                      \
   _(HARDWARE_VIDEO_ENCODING, Feature, "Hardware video encoding")             \
   _(VIDEO_HARDWARE_OVERLAY, Feature, "hardware decoded video overlay")       \
   _(VIDEO_SOFTWARE_OVERLAY, Feature, "software decoded video overlay")       \
@@ -48,13 +48,13 @@ namespace gfx {
   _(VP9_HW_DECODE, Feature, "VP9 hardware decoding")                         \
   _(DMABUF_SURFACE_EXPORT, Feature, "WebGL DMABuf surface export")           \
   _(REUSE_DECODER_DEVICE, Feature, "Reuse decoder device")                   \
+  _(D3D11_FENCES, Feature, "D3D11 fences")                                   \
   _(BACKDROP_FILTER, Feature, "Backdrop filter")                             \
   _(CANVAS_RENDERER_THREAD, Feature, "canvas renderer thread")               \
   _(ACCELERATED_CANVAS2D, Feature, "Accelerated Canvas2D")                   \
   _(H264_HW_DECODE, Feature, "H.264 hardware decoding")                      \
   _(AV1_HW_DECODE, Feature, "AV1 hardware decoding")                         \
   _(HEVC_HW_DECODE, Feature, "HEVC hardware decoding")                       \
-  _(REMOTE_CANVAS, Feature, "Remote canvas")                                 \
   _(DMABUF_WEBGL, Feature, "DMABuf for WebGL")                               \
   _(VP8_HW_ENCODE, Feature, "VP8 hardware encoding")                         \
   _(VP9_HW_ENCODE, Feature, "VP9 hardware encoding")                         \
@@ -64,6 +64,11 @@ namespace gfx {
   _(WMF_HW_DRM, Feature, "Windows Media Foundation hardware DRM")            \
   _(GL_NORM16_TEXTURES, Feature, "OpenGL normalized 16-bit texture formats") \
   _(WEBGPU_EXTERNAL_TEXTURE, Feature, "WebGPU external textures")            \
+  _(MESA_THREADING, Feature, "Mesa glthread enabled")                        \
+  _(WEBGL, Feature, "WebGL")                                                 \
+  _(VIDEO_HDR, Feature, "HDR video supported")                               \
+  _(WEBRENDER_ANGLE_METAL, Feature, "WebRender ANGLE Metal")                 \
+  _(WEBRENDER_ANGLE_GL, Feature, "WebRender ANGLE OpenGL")                   \
   /* Add new entries above this comment */
 
 enum class Feature : uint32_t {

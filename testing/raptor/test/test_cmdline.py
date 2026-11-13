@@ -12,7 +12,7 @@ sys.path.insert(0, raptor_dir)
 
 from argparse import ArgumentParser, Namespace
 
-from cmdline import create_parser, verify_options
+from cmdline import create_parser, default_desktop_binary, verify_options
 
 
 def test_verify_options(filedir):
@@ -27,7 +27,6 @@ def test_verify_options(filedir):
         browsertime_video=False,
         browsertime_visualmetrics=False,
         fission=True,
-        fission_mobile=False,
         test_bytecode_cache=False,
         webext=False,
         extra_prefs=[],
@@ -36,6 +35,7 @@ def test_verify_options(filedir):
         benchmark_branch=None,
         post_startup_delay=None,
         power_test=False,
+        simpleperf=False,
     )
     parser = ArgumentParser()
 
@@ -57,7 +57,6 @@ def test_verify_options(filedir):
         browsertime_video=False,
         browsertime_visualmetrics=False,
         fission=True,
-        fission_mobile=False,
         test_bytecode_cache=False,
         webext=False,
         extra_prefs=[],
@@ -66,6 +65,7 @@ def test_verify_options(filedir):
         benchmark_branch=None,
         post_startup_delay=None,
         power_test=False,
+        simpleperf=False,
     )
     verify_options(parser, args)  # assert no exception
 
@@ -81,7 +81,6 @@ def test_verify_options(filedir):
         browsertime_video=False,
         browsertime_visualmetrics=False,
         fission=True,
-        fission_mobile=False,
         test_bytecode_cache=False,
         webext=False,
         extra_prefs=[],
@@ -90,6 +89,7 @@ def test_verify_options(filedir):
         benchmark_branch=None,
         post_startup_delay=None,
         power_test=False,
+        simpleperf=False,
     )
     verify_options(parser, args)  # assert no exception
 
@@ -105,7 +105,6 @@ def test_verify_options(filedir):
         browsertime_video=False,
         browsertime_visualmetrics=False,
         fission=True,
-        fission_mobile=False,
         test_bytecode_cache=False,
         webext=False,
         extra_prefs=[],
@@ -114,6 +113,7 @@ def test_verify_options(filedir):
         benchmark_branch=None,
         post_startup_delay=None,
         power_test=False,
+        simpleperf=False,
     )
     verify_options(parser, args)  # assert no exception
 
@@ -129,7 +129,6 @@ def test_verify_options(filedir):
         browsertime_video=False,
         browsertime_visualmetrics=False,
         fission=True,
-        fission_mobile=False,
         test_bytecode_cache=False,
         webext=False,
         extra_prefs=[],
@@ -138,6 +137,7 @@ def test_verify_options(filedir):
         benchmark_branch=None,
         post_startup_delay=None,
         power_test=False,
+        simpleperf=False,
     )
     verify_options(parser, args)  # assert no exception
 
@@ -153,7 +153,6 @@ def test_verify_options(filedir):
         browsertime_video=False,
         browsertime_visualmetrics=False,
         fission=True,
-        fission_mobile=False,
         test_bytecode_cache=False,
         webext=False,
         extra_prefs=[],
@@ -162,6 +161,7 @@ def test_verify_options(filedir):
         benchmark_branch=None,
         post_startup_delay=None,
         power_test=False,
+        simpleperf=False,
     )
     parser = ArgumentParser()
 
@@ -246,6 +246,75 @@ def test_perftest_setup_with_args(ConcretePerftest, args, settings_to_check):
 
 
 @pytest.mark.parametrize(
+    "args, expected",
+    [
+        [[], []],
+        [
+            ["--install-extension", "uBlock0@raymondhill.net"],
+            ["uBlock0@raymondhill.net"],
+        ],
+        [
+            [
+                "--install-extension",
+                "uBlock0@raymondhill.net",
+                "--install-extension",
+                "https://example.com/a.xpi",
+            ],
+            ["uBlock0@raymondhill.net", "https://example.com/a.xpi"],
+        ],
+    ],
+)
+def test_install_extension_arg(args, expected):
+    parser = create_parser()
+    parsed = parser.parse_args(
+        ["--test", "test-page-1", "--binary", "invalid/path"] + args
+    )
+    assert parsed.install_extensions == expected
+
+
+@mock.patch("perftest.Perftest.build_browser_profile", new=mock.MagicMock())
+def test_install_extension_reaches_config(ConcretePerftest):
+    parser = create_parser()
+    args = parser.parse_args([
+        "--test",
+        "test-page-1",
+        "--binary",
+        "invalid/path",
+        "--install-extension",
+        "uBlock0@raymondhill.net",
+    ])
+    perftest = ConcretePerftest(**vars(args))
+    assert perftest.config["install_extensions"] == ["uBlock0@raymondhill.net"]
+
+
+@mock.patch("perftest.Perftest.build_browser_profile", new=mock.MagicMock())
+def test_install_extra_extensions_flattens_csv(ConcretePerftest):
+    parser = create_parser()
+    args = parser.parse_args([
+        "--test",
+        "test-page-1",
+        "--binary",
+        "invalid/path",
+        # mach try perf forwards multiple extensions as one comma-separated value
+        "--install-extension",
+        "https://amo/a.xpi,https://amo/b.xpi",
+        "--install-extension",
+        "https://amo/c.xpi",
+    ])
+    perftest = ConcretePerftest(**vars(args))
+    perftest.profile = mock.MagicMock()
+    with mock.patch("condprof.util.download_file", side_effect=lambda url, **kw: url):
+        perftest.install_extra_extensions()
+    perftest.profile.addons.install.assert_called_once_with([
+        "https://amo/a.xpi",
+        "https://amo/b.xpi",
+        "https://amo/c.xpi",
+    ])
+    # Each installed addon's details are looked up so its id/version is logged.
+    assert perftest.profile.addons.addon_details.call_count == 3
+
+
+@pytest.mark.parametrize(
     "args, expected_failure",
     [
         # Test that post_startup_delay is 30s as expected
@@ -262,7 +331,6 @@ def test_perftest_setup_with_args(ConcretePerftest, args, settings_to_check):
                 "browsertime_video": False,
                 "browsertime_visualmetrics": False,
                 "fission": True,
-                "fission_mobile": False,
                 "test_bytecode_cache": False,
                 "webext": False,
                 "extra_prefs": [],
@@ -271,6 +339,7 @@ def test_perftest_setup_with_args(ConcretePerftest, args, settings_to_check):
                 "benchmark_branch": None,
                 "post_startup_delay": None,
                 "power_test": True,
+                "simpleperf": False,
             },
             SystemExit,
         ],
@@ -281,6 +350,60 @@ def test_verify_options_failure(ConcretePerftest, args, expected_failure):
     parser = ArgumentParser()
     with pytest.raises(expected_failure):
         verify_options(parser, args)
+
+
+@pytest.mark.parametrize(
+    "app,platform,env,which,expected",
+    [
+        (
+            "chrome",
+            "darwin",
+            {},
+            {},
+            "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+        ),
+        (
+            "chrome",
+            "win32",
+            {"PROGRAMFILES": "C:\\Program Files"},
+            {},
+            os.path.join(
+                "C:\\Program Files", "Google", "Chrome", "Application", "chrome.exe"
+            ),
+        ),
+        (
+            "chrome",
+            "linux",
+            {},
+            {"google-chrome-stable": "/opt/bin/google-chrome-stable"},
+            "/opt/bin/google-chrome-stable",
+        ),
+        ("safari", "darwin", {}, {}, "/Applications/Safari.app/Contents/MacOS/Safari"),
+        ("safari", "linux", {}, {}, None),
+        (
+            "safari-tp",
+            "darwin",
+            {},
+            {},
+            "/Applications/Safari Technology Preview.app/Contents/MacOS/"
+            "Safari Technology Preview",
+        ),
+        ("safari-tp", "linux", {}, {}, None),
+        ("custom-car", "darwin", {}, {}, None),
+    ],
+)
+def test_default_desktop_binary(app, platform, env, which, expected):
+    with mock.patch("cmdline.sys.platform", platform):
+        with mock.patch.dict(os.environ, env, clear=True):
+            with mock.patch("cmdline.shutil.which", side_effect=which.get):
+                with mock.patch("cmdline.os.path.isfile", return_value=True):
+                    assert default_desktop_binary(app) == expected
+
+
+def test_default_desktop_binary_not_installed():
+    with mock.patch("cmdline.sys.platform", "darwin"):
+        with mock.patch("cmdline.os.path.isfile", return_value=False):
+            assert default_desktop_binary("chrome") is None
 
 
 if __name__ == "__main__":

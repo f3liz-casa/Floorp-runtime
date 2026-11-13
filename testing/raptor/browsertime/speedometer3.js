@@ -2,9 +2,7 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-/* eslint-env node */
-
-const { logTest, logTask } = require("./utils/profiling");
+const { deferBackgroundTasks, logTest, logTask } = require("./utils/profiling");
 const {
   initializeMeasurements,
   startMeasurements,
@@ -19,7 +17,6 @@ module.exports = logTest(
     let url = context.options.browsertime.url;
     let page_cycles = context.options.browsertime.page_cycles;
     let page_cycle_delay = context.options.browsertime.page_cycle_delay;
-    let post_startup_delay = context.options.browsertime.post_startup_delay;
     let page_timeout = context.options.timeouts.pageLoad;
     let expose_profiler = context.options.browsertime.expose_profiler;
 
@@ -31,11 +28,20 @@ module.exports = logTest(
       true
     );
 
-    context.log.info(
-      "Waiting for %d ms (post_startup_delay)",
-      post_startup_delay
-    );
-    await commands.wait.byTime(post_startup_delay);
+    if (
+      context.options.browser === "firefox" &&
+      !context.options.android?.enabled
+    ) {
+      context.log.info("Deferring background tasks before Speedometer");
+      await deferBackgroundTasks(context, commands);
+    } else {
+      const post_startup_delay = context.options.browsertime.post_startup_delay;
+      context.log.info(
+        "Waiting for %d ms (post_startup_delay)",
+        post_startup_delay
+      );
+      await commands.wait.byTime(post_startup_delay);
+    }
 
     for (let count = 0; count < page_cycles; count++) {
       await logTask(context, "cycle " + count, async function () {
@@ -61,10 +67,13 @@ module.exports = logTest(
         await commands.measure.start(url);
         await startMeasurements(context, commands);
 
-        // A feature mask of 0x1C000000 will enable only
-        // the GC perfstats counters.
+        // Measure the GC perfstats counters over the entire sp3 run.
         if (context.options.browser === "firefox") {
-          await commands.perfStats.start(0x1c_00_00_00);
+          await commands.perfStats.start([
+            "MinorGC",
+            "MajorGC",
+            "NonIdleMajorGC",
+          ]);
         }
 
         await commands.js.runAndWait(`
@@ -84,9 +93,16 @@ module.exports = logTest(
             wait_time
           );
           await commands.wait.byTime(wait_time);
-          data_exists = await commands.js.run(
-            "return !(this.benchmarkClient._isRunning)"
-          );
+          // Newer Speedometer revisions expose completion through
+          // `hasFinished()` instead of `_isRunning`. Since `start()` is
+          // asynchronous, the wait above lets the client leave its initial
+          // finished state before polling begins.
+          data_exists = await commands.js.run(`
+            const client = this.benchmarkClient;
+            return typeof client.hasFinished === "function"
+              ? client.hasFinished()
+              : !client._isRunning;
+          `);
         }
         if (expose_profiler === "true") {
           context.log.info("Custom profiler stop!");

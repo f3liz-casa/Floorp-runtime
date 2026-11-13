@@ -1,4 +1,3 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -85,7 +84,8 @@ class MOZ_STACK_CLASS HTMLEditor::AutoInlineStyleSetter final
    * See comments in the definition what this does.
    */
   Result<EditorRawDOMRange, nsresult> ExtendOrShrinkRangeToApplyTheStyle(
-      const HTMLEditor& aHTMLEditor, const EditorDOMRange& aRange) const;
+      const HTMLEditor& aHTMLEditor, const EditorDOMRange& aRange,
+      const Element& aEditingHost) const;
 
   /**
    * Returns next/previous sibling of aContent or an ancestor of it if it's
@@ -741,7 +741,8 @@ class MOZ_STACK_CLASS HTMLEditor::AutoInsertParagraphHandler final {
    */
   [[nodiscard]] EditorDOMPoint GetBetterPointToSplitParagraph(
       const Element& aBlockElementToSplit,
-      const EditorDOMPoint& aCandidatePointToSplit);
+      const EditorDOMPoint& aCandidatePointToSplit,
+      const Element& aEditingHost);
 
   enum class IgnoreBlockBoundaries : bool { No, Yes };
 
@@ -877,12 +878,14 @@ class MOZ_STACK_CLASS HTMLEditor::AutoDeleteRangesHandler final {
       const Element& aEditingHost);
 
  private:
+  enum class ComputeRangeFor : bool { GetTargetRanges, ToDeleteTheRange };
+
   [[nodiscard]] bool IsHandlingRecursively() const {
     return mParent != nullptr;
   }
 
   [[nodiscard]] bool CanFallbackToDeleteRangeWithTransaction(
-      const nsRange& aRangeToDelete) const;
+      const dom::Range& aRangeToDelete) const;
 
   [[nodiscard]] bool CanFallbackToDeleteRangesWithTransaction(
       const AutoClonedSelectionRangeArray& aRangesToDelete) const;
@@ -1039,7 +1042,9 @@ class MOZ_STACK_CLASS HTMLEditor::AutoDeleteRangesHandler final {
   [[nodiscard]] Result<EditorRawDOMRange, nsresult> ExtendOrShrinkRangeToDelete(
       const HTMLEditor& aHTMLEditor,
       const LimitersAndCaretData& aLimitersAndCaretData,
-      const EditorDOMRangeType& aRangeToDelete) const;
+      const EditorDOMRangeType& aRangeToDelete,
+      SelectionWasCollapsed aSelectionWasCollapsed,
+      ComputeRangeFor aComputeRangeFor, const Element& aEditingHost) const;
 
   /**
    * Extend the start boundary of aRangeToDelete to contain ancestor inline
@@ -1061,7 +1066,7 @@ class MOZ_STACK_CLASS HTMLEditor::AutoDeleteRangesHandler final {
    */
   [[nodiscard]] static Result<bool, nsresult>
   ExtendRangeToContainAncestorInlineElementsAtStart(
-      nsRange& aRangeToDelete, const Element& aEditingHost);
+      dom::Range& aRangeToDelete, const Element& aEditingHost);
 
   /**
    * A helper method for ExtendOrShrinkRangeToDelete().  This returns shrunken
@@ -1070,7 +1075,8 @@ class MOZ_STACK_CLASS HTMLEditor::AutoDeleteRangesHandler final {
    */
   [[nodiscard]] static EditorRawDOMRange
   GetRangeToAvoidDeletingAllListItemsIfSelectingAllOverListElements(
-      const EditorRawDOMRange& aRangeToDelete);
+      const EditorRawDOMRange& aRangeToDelete,
+      ComputeRangeFor aComputeRangeFor);
 
   /**
    * DeleteUnnecessaryNodes() removes unnecessary nodes around aRange.
@@ -1108,7 +1114,7 @@ class MOZ_STACK_CLASS HTMLEditor::AutoDeleteRangesHandler final {
 
   [[nodiscard]] MOZ_CAN_RUN_SCRIPT Result<CaretPoint, nsresult>
   FallbackToDeleteRangeWithTransaction(HTMLEditor& aHTMLEditor,
-                                       nsRange& aRangeToDelete) const {
+                                       dom::Range& aRangeToDelete) const {
     MOZ_ASSERT(aHTMLEditor.IsEditActionDataAvailable());
     MOZ_ASSERT(CanFallbackToDeleteRangeWithTransaction(aRangeToDelete));
     Result<CaretPoint, nsresult> caretPointOrError =
@@ -1134,14 +1140,14 @@ class MOZ_STACK_CLASS HTMLEditor::AutoDeleteRangesHandler final {
    */
   nsresult ComputeRangeToDeleteRangeWithTransaction(
       const HTMLEditor& aHTMLEditor, nsIEditor::EDirection aDirectionAndAmount,
-      nsRange& aRange, const Element& aEditingHost) const;
+      dom::Range& aRange, const Element& aEditingHost) const;
   nsresult ComputeRangesToDeleteRangesWithTransaction(
       const HTMLEditor& aHTMLEditor, nsIEditor::EDirection aDirectionAndAmount,
       AutoClonedSelectionRangeArray& aRangesToDelete,
       const Element& aEditingHost) const;
 
   nsresult FallbackToComputeRangeToDeleteRangeWithTransaction(
-      const HTMLEditor& aHTMLEditor, nsRange& aRangeToDelete,
+      const HTMLEditor& aHTMLEditor, dom::Range& aRangeToDelete,
       const Element& aEditingHost) const {
     MOZ_ASSERT(aHTMLEditor.IsEditActionDataAvailable());
     MOZ_ASSERT(CanFallbackToDeleteRangeWithTransaction(aRangeToDelete));
@@ -1246,7 +1252,7 @@ HTMLEditor::AutoDeleteRangesHandler::AutoBlockElementsJoiner final {
    *                                  deletion.
    */
   [[nodiscard]] bool PrepareToDeleteNonCollapsedRange(
-      const HTMLEditor& aHTMLEditor, const nsRange& aRangeToDelete,
+      const HTMLEditor& aHTMLEditor, const dom::Range& aRangeToDelete,
       const Element& aEditingHost);
 
   /**
@@ -1263,13 +1269,13 @@ HTMLEditor::AutoDeleteRangesHandler::AutoBlockElementsJoiner final {
   [[nodiscard]] MOZ_CAN_RUN_SCRIPT Result<EditActionResult, nsresult> Run(
       HTMLEditor& aHTMLEditor, nsIEditor::EDirection aDirectionAndAmount,
       nsIEditor::EStripWrappers aStripWrappers,
-      const EditorDOMPoint& aCaretPoint, nsRange& aRangeToDelete,
+      const EditorDOMPoint& aCaretPoint, dom::Range& aRangeToDelete,
       const Element& aEditingHost);
 
   nsresult ComputeRangeToDelete(const HTMLEditor& aHTMLEditor,
                                 nsIEditor::EDirection aDirectionAndAmount,
                                 const EditorDOMPoint& aCaretPoint,
-                                nsRange& aRangeToDelete,
+                                dom::Range& aRangeToDelete,
                                 const Element& aEditingHost) const;
 
   /**
@@ -1290,14 +1296,14 @@ HTMLEditor::AutoDeleteRangesHandler::AutoBlockElementsJoiner final {
       HTMLEditor& aHTMLEditor,
       const LimitersAndCaretData& aLimitersAndCaretData,
       nsIEditor::EDirection aDirectionAndAmount,
-      nsIEditor::EStripWrappers aStripWrappers, nsRange& aRangeToDelete,
+      nsIEditor::EStripWrappers aStripWrappers, dom::Range& aRangeToDelete,
       AutoDeleteRangesHandler::SelectionWasCollapsed aSelectionWasCollapsed,
       const Element& aEditingHost);
 
   nsresult ComputeRangeToDelete(
       const HTMLEditor& aHTMLEditor,
       const AutoClonedSelectionRangeArray& aRangesToDelete,
-      nsIEditor::EDirection aDirectionAndAmount, nsRange& aRangeToDelete,
+      nsIEditor::EDirection aDirectionAndAmount, dom::Range& aRangeToDelete,
       AutoDeleteRangesHandler::SelectionWasCollapsed aSelectionWasCollapsed,
       const Element& aEditingHost) const;
 
@@ -1314,13 +1320,13 @@ HTMLEditor::AutoDeleteRangesHandler::AutoBlockElementsJoiner final {
                                      const Element& aEditingHost);
   nsresult ComputeRangeToDeleteAtCurrentBlockBoundary(
       const HTMLEditor& aHTMLEditor, const EditorDOMPoint& aCaretPoint,
-      nsRange& aRangeToDelete, const Element& aEditingHost) const;
+      dom::Range& aRangeToDelete, const Element& aEditingHost) const;
   [[nodiscard]] MOZ_CAN_RUN_SCRIPT Result<EditActionResult, nsresult>
   HandleDeleteAtOtherBlockBoundary(HTMLEditor& aHTMLEditor,
                                    nsIEditor::EDirection aDirectionAndAmount,
                                    nsIEditor::EStripWrappers aStripWrappers,
                                    const EditorDOMPoint& aCaretPoint,
-                                   nsRange& aRangeToDelete,
+                                   dom::Range& aRangeToDelete,
                                    const Element& aEditingHost);
   // FYI: This method may modify selection, but it won't cause running
   //      script because of `AutoHideSelectionChanges` which blocks
@@ -1328,46 +1334,45 @@ HTMLEditor::AutoDeleteRangesHandler::AutoBlockElementsJoiner final {
   //      dispatcher.
   MOZ_CAN_RUN_SCRIPT_BOUNDARY nsresult ComputeRangeToDeleteAtOtherBlockBoundary(
       const HTMLEditor& aHTMLEditor, nsIEditor::EDirection aDirectionAndAmount,
-      const EditorDOMPoint& aCaretPoint, nsRange& aRangeToDelete,
+      const EditorDOMPoint& aCaretPoint, dom::Range& aRangeToDelete,
       const Element& aEditingHost) const;
   [[nodiscard]] MOZ_CAN_RUN_SCRIPT Result<EditActionResult, nsresult>
   JoinBlockElementsInSameParent(
       HTMLEditor& aHTMLEditor,
       const LimitersAndCaretData& aLimitersAndCaretData,
       nsIEditor::EDirection aDirectionAndAmount,
-      nsIEditor::EStripWrappers aStripWrappers, nsRange& aRangeToDelete,
+      nsIEditor::EStripWrappers aStripWrappers, dom::Range& aRangeToDelete,
       AutoDeleteRangesHandler::SelectionWasCollapsed aSelectionWasCollapsed,
       const Element& aEditingHost);
   nsresult ComputeRangeToJoinBlockElementsInSameParent(
       const HTMLEditor& aHTMLEditor, nsIEditor::EDirection aDirectionAndAmount,
-      nsRange& aRangeToDelete, const Element& aEditingHost) const;
+      dom::Range& aRangeToDelete, const Element& aEditingHost) const;
   [[nodiscard]] MOZ_CAN_RUN_SCRIPT Result<EditActionResult, nsresult>
   HandleDeleteLineBreak(HTMLEditor& aHTMLEditor,
                         nsIEditor::EDirection aDirectionAndAmount,
                         const EditorDOMPoint& aCaretPoint,
                         const Element& aEditingHost);
-  enum class ComputeRangeFor : bool { GetTargetRanges, ToDeleteTheRange };
   nsresult ComputeRangeToDeleteLineBreak(
-      const HTMLEditor& aHTMLEditor, nsRange& aRangeToDelete,
+      const HTMLEditor& aHTMLEditor, dom::Range& aRangeToDelete,
       const Element& aEditingHost, ComputeRangeFor aComputeRangeFor) const;
   [[nodiscard]] MOZ_CAN_RUN_SCRIPT Result<EditActionResult, nsresult>
   DeleteContentInRange(HTMLEditor& aHTMLEditor,
                        const LimitersAndCaretData& aLimitersAndCaretData,
                        nsIEditor::EDirection aDirectionAndAmount,
                        nsIEditor::EStripWrappers aStripWrappers,
-                       nsRange& aRangeToDelete, const Element& aEditingHost);
+                       dom::Range& aRangeToDelete, const Element& aEditingHost);
   nsresult ComputeRangeToDeleteContentInRange(
       const HTMLEditor& aHTMLEditor, nsIEditor::EDirection aDirectionAndAmount,
-      nsRange& aRange, const Element& aEditingHost) const;
+      dom::Range& aRange, const Element& aEditingHost) const;
   [[nodiscard]] MOZ_CAN_RUN_SCRIPT Result<EditActionResult, nsresult>
   HandleDeleteNonCollapsedRange(
       HTMLEditor& aHTMLEditor, nsIEditor::EDirection aDirectionAndAmount,
-      nsIEditor::EStripWrappers aStripWrappers, nsRange& aRangeToDelete,
+      nsIEditor::EStripWrappers aStripWrappers, dom::Range& aRangeToDelete,
       AutoDeleteRangesHandler::SelectionWasCollapsed aSelectionWasCollapsed,
       const Element& aEditingHost);
   nsresult ComputeRangeToDeleteNonCollapsedRange(
       const HTMLEditor& aHTMLEditor, nsIEditor::EDirection aDirectionAndAmount,
-      nsRange& aRangeToDelete,
+      dom::Range& aRangeToDelete,
       AutoDeleteRangesHandler::SelectionWasCollapsed aSelectionWasCollapsed,
       const Element& aEditingHost) const;
 
@@ -1403,15 +1408,10 @@ HTMLEditor::AutoDeleteRangesHandler::AutoBlockElementsJoiner final {
       HTMLEditor& aHTMLEditor,
       const nsTArray<OwningNonNull<nsIContent>>& aArrayOfContent,
       PutCaretTo aPutCaretTo);
-  [[nodiscard]] bool
-  NeedsToJoinNodesAfterDeleteNodesEntirelyInRangeButKeepTableStructure(
-      const HTMLEditor& aHTMLEditor,
-      const nsTArray<OwningNonNull<nsIContent>>& aArrayOfContents,
-      AutoDeleteRangesHandler::SelectionWasCollapsed aSelectionWasCollapsed)
-      const;
+  [[nodiscard]] bool NeedsToJoinNodesAfterDeleteNodesEntirelyInRange() const;
   Result<bool, nsresult>
   ComputeRangeToDeleteNodesEntirelyInRangeButKeepTableStructure(
-      const HTMLEditor& aHTMLEditor, nsRange& aRange,
+      const HTMLEditor& aHTMLEditor, dom::Range& aRange,
       AutoDeleteRangesHandler::SelectionWasCollapsed aSelectionWasCollapsed)
       const;
 
@@ -1433,7 +1433,7 @@ HTMLEditor::AutoDeleteRangesHandler::AutoBlockElementsJoiner final {
    * aRange is in a text node.
    */
   [[nodiscard]] MOZ_CAN_RUN_SCRIPT Result<DeleteRangeResult, nsresult>
-  DeleteTextAtStartAndEndOfRange(HTMLEditor& aHTMLEditor, nsRange& aRange,
+  DeleteTextAtStartAndEndOfRange(HTMLEditor& aHTMLEditor, dom::Range& aRange,
                                  PutCaretTo aPutCaretTo);
 
   /**
@@ -1454,7 +1454,7 @@ HTMLEditor::AutoDeleteRangesHandler::AutoBlockElementsJoiner final {
    * line but the range starts after it.
    */
   void ExtendRangeToDeleteNonCollapsedRange(
-      const HTMLEditor& aHTMLEditor, nsRange& aRangeToDelete,
+      const HTMLEditor& aHTMLEditor, dom::Range& aRangeToDelete,
       const Element& aEditingHost, ComputeRangeFor aComputeRangeFor) const;
 
   /**
@@ -1550,9 +1550,9 @@ class MOZ_STACK_CLASS HTMLEditor::AutoDeleteRangesHandler::
    * boundaries between joining blocks.  If they won't be joined, this
    * collapses the range to aCaretPoint.
    */
-  [[nodiscard]] nsresult ComputeRangeToDelete(const HTMLEditor& aHTMLEditor,
-                                              const EditorDOMPoint& aCaretPoint,
-                                              nsRange& aRangeToDelete) const;
+  [[nodiscard]] nsresult ComputeRangeToDelete(
+      const HTMLEditor& aHTMLEditor, const EditorDOMPoint& aCaretPoint,
+      dom::Range& aRangeToDelete, const Element& aEditingHost) const;
 
   /**
    * Join inclusive ancestor block elements which are found by preceding
@@ -1690,8 +1690,8 @@ HTMLEditor::AutoDeleteRangesHandler::AutoEmptyBlockAncestorDeleter final {
    * `mEmptyInclusiveAncestorBlockElement`.
    */
   [[nodiscard]] Result<CaretPoint, nsresult> GetNewCaretPosition(
-      const HTMLEditor& aHTMLEditor,
-      nsIEditor::EDirection aDirectionAndAmount) const;
+      const HTMLEditor& aHTMLEditor, nsIEditor::EDirection aDirectionAndAmount,
+      const Element& aEditingHost) const;
 
   RefPtr<Element> mEmptyInclusiveAncestorBlockElement;
 };
@@ -2064,6 +2064,31 @@ struct MOZ_STACK_CLASS HTMLEditor::ReplaceWhiteSpacesData final {
   // Then, they may want to keep the position for putting caret or something.
   // So, this may store a specific offset in the text node after replacing.
   const uint32_t mNewOffsetAfterReplace = UINT32_MAX;
+};
+
+/******************************************************************************
+ * A runnable to run HTMLEditor::OnModifiedDocument when it's safe.
+ ******************************************************************************/
+
+class HTMLEditor::DocumentModifiedEvent final : public Runnable {
+ public:
+  explicit DocumentModifiedEvent(HTMLEditor& aHTMLEditor)
+      : Runnable("DocumentModifiedEvent"), mHTMLEditor(aHTMLEditor) {}
+
+  MOZ_CAN_RUN_SCRIPT_BOUNDARY NS_IMETHOD Run() {
+    (void)MOZ_KnownLive(mHTMLEditor)->OnModifyDocument(*this);
+    return NS_OK;
+  }
+
+  const nsTArray<EditorDOMPointInText>& NewInvisibleWhiteSpacesRef() const {
+    return mNewInvisibleWhiteSpaces;
+  }
+
+ private:
+  ~DocumentModifiedEvent() = default;
+
+  const OwningNonNull<HTMLEditor> mHTMLEditor;
+  nsTArray<EditorDOMPointInText> mNewInvisibleWhiteSpaces;
 };
 
 }  // namespace mozilla

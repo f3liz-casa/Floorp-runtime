@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -11,11 +9,11 @@
 #include "mozilla/StaticPrefs_dom.h"
 #include "mozilla/dom/Document.h"
 #include "mozilla/dom/Element.h"
-#include "mozilla/dom/FeaturePolicyUtils.h"
 #include "mozilla/dom/MerchantValidationEvent.h"
 #include "mozilla/dom/PaymentMethodChangeEvent.h"
 #include "mozilla/dom/PaymentRequestChild.h"
 #include "mozilla/dom/PaymentRequestManager.h"
+#include "mozilla/dom/PermissionsPolicyUtils.h"
 #include "mozilla/dom/RootedDictionary.h"
 #include "mozilla/dom/UserActivation.h"
 #include "mozilla/dom/WindowContext.h"
@@ -608,9 +606,10 @@ already_AddRefed<PaymentRequest> PaymentRequest::Constructor(
     return nullptr;
   }
 
-  if (!FeaturePolicyUtils::IsFeatureAllowed(doc, u"payment"_ns)) {
+  if (!PermissionsPolicyUtils::IsFeatureAllowed(doc, u"payment"_ns)) {
     aRv.ThrowSecurityError(
-        "Document's Feature Policy does not allow to create a PaymentRequest");
+        "Document's Permissions Policy does not allow to create a "
+        "PaymentRequest");
     return nullptr;
   }
 
@@ -701,7 +700,7 @@ already_AddRefed<Promise> PaymentRequest::CanMakePayment(ErrorResult& aRv) {
     return nullptr;
   }
 
-  nsIGlobalObject* global = GetOwnerGlobal();
+  nsIGlobalObject* global = GetRelevantGlobal();
   RefPtr<Promise> promise = Promise::Create(global, aRv);
   if (aRv.Failed()) {
     return nullptr;
@@ -730,7 +729,7 @@ already_AddRefed<Promise> PaymentRequest::Show(
     return nullptr;
   }
 
-  nsIGlobalObject* global = GetOwnerGlobal();
+  nsIGlobalObject* global = GetRelevantGlobal();
   nsCOMPtr<nsPIDOMWindowInner> win = do_QueryInterface(global);
   Document* doc = win->GetExtantDoc();
 
@@ -848,7 +847,7 @@ already_AddRefed<Promise> PaymentRequest::Abort(ErrorResult& aRv) {
     return nullptr;
   }
 
-  nsIGlobalObject* global = GetOwnerGlobal();
+  nsIGlobalObject* global = GetRelevantGlobal();
   RefPtr<Promise> promise = Promise::Create(global, aRv);
   if (aRv.Failed()) {
     return nullptr;
@@ -1164,7 +1163,7 @@ void PaymentRequest::RejectedCallback(JSContext* aCx,
 }
 
 bool PaymentRequest::InFullyActiveDocument() {
-  nsIGlobalObject* global = GetOwnerGlobal();
+  nsIGlobalObject* global = GetRelevantGlobal();
   if (!global) {
     return false;
   }

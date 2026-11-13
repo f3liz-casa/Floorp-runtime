@@ -1,4 +1,3 @@
-// -*- indent-tabs-mode: nil; js-indent-level: 2 -*-
 // This Source Code Form is subject to the terms of the Mozilla Public
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at http://mozilla.org/MPL/2.0/.
@@ -9,14 +8,6 @@
 // make use of cached intermediates to build a trust path.
 
 do_get_profile(); // must be called before getting nsIX509CertDB
-
-registerCleanupFunction(() => {
-  let certDir = Services.dirsvc.get("CurWorkD", Ci.nsIFile);
-  certDir.append("bad_certs");
-  Assert.ok(certDir.exists(), "bad_certs should exist");
-  let args = ["-D", "-n", "manually-added-missing-intermediate"];
-  run_certutil_on_directory(certDir.path, args, false);
-});
 
 function run_test() {
   add_tls_server_setup("BadCertAndPinningServer", "bad_certs");
@@ -38,10 +29,7 @@ function run_test() {
       "-t",
       ",,",
     ];
-    let certDir = Services.dirsvc.get("CurWorkD", Ci.nsIFile);
-    certDir.append("bad_certs");
-    Assert.ok(certDir.exists(), "bad_certs should exist");
-    run_certutil_on_directory(certDir.path, args);
+    run_certutil_on_directory(getCertDirCopy("bad_certs").path, args);
     run_next_test();
   });
 

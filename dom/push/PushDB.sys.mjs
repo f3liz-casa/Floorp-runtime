@@ -2,7 +2,7 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-import { IndexedDBHelper } from "resource://gre/modules/IndexedDBHelper.sys.mjs";
+import { IndexedDBHelper } from "moz-src:///dom/base/IndexedDBHelper.sys.mjs";
 
 const lazy = {};
 
@@ -79,7 +79,7 @@ PushDB.prototype = {
     }
   },
 
-  /*
+  /**
    * @param aRecord
    *        The record to be added.
    */
@@ -116,7 +116,7 @@ PushDB.prototype = {
     );
   },
 
-  /*
+  /**
    * @param aKeyID
    *        The ID of record to be deleted.
    */
@@ -223,18 +223,18 @@ PushDB.prototype = {
   /**
    * Iterates over all records associated with an origin.
    *
-   * @param {String} origin The origin, matched as a prefix against the scope.
-   * @param {String} originAttributes Additional origin attributes. Requires
+   * @param {string} origin The origin, matched as a prefix against the scope.
+   * @param {string} originAttributes Additional origin attributes. Requires
    *  an exact match.
    * @param {Function} callback A function with the signature `(record,
    *  cursor)`, called for each record. `record` is the registration, and
    *  `cursor` is an `IDBCursor`.
    * @returns {Promise} Resolves once all records have been processed.
    */
-  forEachOrigin(origin, originAttributes, callback) {
+  async forEachOrigin(origin, originAttributes, callback) {
     lazy.console.debug("forEachOrigin()");
-
-    return new Promise((resolve, reject) =>
+    let error;
+    await new Promise((resolve, reject) =>
       this.newTxn(
         "readwrite",
         this._dbStoreName,
@@ -251,7 +251,15 @@ PushDB.prototype = {
             if (!cursor) {
               return;
             }
-            callback(this.toPushRecord(cursor.value), cursor);
+            try {
+              callback(this.toPushRecord(cursor.value), cursor);
+            } catch (e) {
+              // If the callback throws, still continue with other records.
+              lazy.console.error(`forEachOrigin() callback: ${e}`);
+              if (!error) {
+                error = e;
+              }
+            }
             cursor.continue();
           };
         },
@@ -259,6 +267,9 @@ PushDB.prototype = {
         reject
       )
     );
+    if (error) {
+      throw error;
+    }
   },
 
   // Perform a unique match against { scope, originAttributes }
@@ -305,7 +316,7 @@ PushDB.prototype = {
           // It seems ok to use getAll here, since unlike contacts or other
           // high storage APIs, we don't expect more than a handful of
           // registrations per domain, and usually only one.
-          let getAllReq = index.mozGetAll(aKeyValue);
+          let getAllReq = index.getAll(aKeyValue);
           getAllReq.onsuccess = aEvent => {
             aTxn.result = aEvent.target.result.map(record =>
               this.toPushRecord(record)
@@ -335,7 +346,7 @@ PushDB.prototype = {
         this._dbStoreName,
         (aTxn, aStore) => {
           aTxn.result = undefined;
-          aStore.mozGetAll().onsuccess = event => {
+          aStore.getAll().onsuccess = event => {
             aTxn.result = event.target.result.map(record =>
               this.toPushRecord(record)
             );
@@ -385,7 +396,7 @@ PushDB.prototype = {
   /**
    * Updates an existing push registration.
    *
-   * @param {String} aKeyID The registration ID.
+   * @param {string} aKeyID The registration ID.
    * @param {Function} aUpdateFunc A function that receives the existing
    *  registration record as its argument, and returns a new record.
    * @returns {Promise} A promise resolved with either the updated record.

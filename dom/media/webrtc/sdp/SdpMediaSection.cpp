@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -22,7 +20,7 @@ const SdpFmtpAttributeList::Parameters* SdpMediaSection::FindFmtp(
 }
 
 void SdpMediaSection::SetFmtp(const SdpFmtpAttributeList::Fmtp& fmtpToSet) {
-  UniquePtr<SdpFmtpAttributeList> fmtps(new SdpFmtpAttributeList);
+  auto fmtps = MakeUnique<SdpFmtpAttributeList>();
 
   if (GetAttributeList().HasAttribute(SdpAttribute::kFmtpAttribute)) {
     *fmtps = GetAttributeList().GetFmtp();
@@ -40,11 +38,11 @@ void SdpMediaSection::SetFmtp(const SdpFmtpAttributeList::Fmtp& fmtpToSet) {
     fmtps->mFmtps.push_back(fmtpToSet);
   }
 
-  GetAttributeList().SetAttribute(fmtps.release());
+  GetAttributeList().SetAttribute(std::move(fmtps));
 }
 
 void SdpMediaSection::RemoveFmtp(const std::string& pt) {
-  UniquePtr<SdpFmtpAttributeList> fmtps(new SdpFmtpAttributeList);
+  auto fmtps = MakeUnique<SdpFmtpAttributeList>();
 
   SdpAttributeList& attrList = GetAttributeList();
   if (attrList.HasAttribute(SdpAttribute::kFmtpAttribute)) {
@@ -58,7 +56,30 @@ void SdpMediaSection::RemoveFmtp(const std::string& pt) {
     }
   }
 
-  attrList.SetAttribute(fmtps.release());
+  attrList.SetAttribute(std::move(fmtps));
+}
+
+void SdpMediaSection::RemoveUnlistedPayloadTypeAttributes() {
+  SdpAttributeList& attrList = GetAttributeList();
+
+  if (attrList.HasAttribute(SdpAttribute::kFmtpAttribute)) {
+    auto fmtps = MakeUnique<SdpFmtpAttributeList>(attrList.GetFmtp());
+    std::erase_if(fmtps->mFmtps, [&](const SdpFmtpAttributeList::Fmtp& aFmtp) {
+      return !HasFormat(aFmtp.format);
+    });
+    if (fmtps->mFmtps.empty()) {
+      attrList.RemoveAttribute(SdpAttribute::kFmtpAttribute);
+    } else {
+      attrList.SetAttribute(std::move(fmtps));
+    }
+  }
+
+  SdpRtcpFbAttributeList rtcpfbs(GetRtcpFbs());
+  std::erase_if(rtcpfbs.mFeedbacks,
+                [&](const SdpRtcpFbAttributeList::Feedback& aFeedback) {
+                  return aFeedback.pt != "*" && !HasFormat(aFeedback.pt);
+                });
+  SetRtcpFbs(rtcpfbs);
 }
 
 const SdpRtpmapAttributeList::Rtpmap* SdpMediaSection::FindRtpmap(
@@ -112,7 +133,7 @@ bool SdpMediaSection::GetMaxMessageSize(uint32_t* size) const {
 }
 
 bool SdpMediaSection::HasRtcpFb(const std::string& pt,
-                                SdpRtcpFbAttributeList::Type type,
+                                const SdpRtcpFbAttributeList::Type type,
                                 const std::string& subType) const {
   const SdpAttributeList& attrs(GetAttributeList());
 
@@ -147,7 +168,7 @@ void SdpMediaSection::SetRtcpFbs(const SdpRtcpFbAttributeList& rtcpfbs) {
     return;
   }
 
-  GetAttributeList().SetAttribute(new SdpRtcpFbAttributeList(rtcpfbs));
+  GetAttributeList().SetAttribute(MakeUnique<SdpRtcpFbAttributeList>(rtcpfbs));
 }
 
 void SdpMediaSection::SetSsrcs(const std::vector<uint32_t>& ssrcs,
@@ -157,7 +178,7 @@ void SdpMediaSection::SetSsrcs(const std::vector<uint32_t>& ssrcs,
     return;
   }
 
-  UniquePtr<SdpSsrcAttributeList> ssrcAttr(new SdpSsrcAttributeList);
+  auto ssrcAttr = MakeUnique<SdpSsrcAttributeList>();
   for (auto ssrc : ssrcs) {
     // When using ssrc attributes, we are required to at least have a cname.
     // (See https://tools.ietf.org/html/rfc5576#section-6.1)
@@ -166,17 +187,17 @@ void SdpMediaSection::SetSsrcs(const std::vector<uint32_t>& ssrcs,
     ssrcAttr->PushEntry(ssrc, cnameAttr);
   }
 
-  GetAttributeList().SetAttribute(ssrcAttr.release());
+  GetAttributeList().SetAttribute(std::move(ssrcAttr));
 }
 
 void SdpMediaSection::AddMsid(const std::string& id,
                               const std::string& appdata) {
-  UniquePtr<SdpMsidAttributeList> msids(new SdpMsidAttributeList);
+  auto msids = MakeUnique<SdpMsidAttributeList>();
   if (GetAttributeList().HasAttribute(SdpAttribute::kMsidAttribute)) {
     msids->mMsids = GetAttributeList().GetMsid().mMsids;
   }
   msids->PushEntry(id, appdata);
-  GetAttributeList().SetAttribute(msids.release());
+  GetAttributeList().SetAttribute(std::move(msids));
 }
 
 const SdpRidAttributeList::Rid* SdpMediaSection::FindRid(

@@ -1,6 +1,4 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- * vim: set ts=8 sts=2 et sw=2 tw=80:
- * This Source Code Form is subject to the terms of the Mozilla Public
+/* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
@@ -9,8 +7,7 @@
 #include "mozilla/BinarySearch.h"
 #include "mozilla/CheckedInt.h"
 
-#include "jsnum.h"  // Int32ToCStringBuf
-
+#include "builtin/Number.h"  // Int32ToCStringBuf
 #include "vm/Logging.h"
 
 using mozilla::CheckedInt;
@@ -223,9 +220,9 @@ static bool AppendFunctionIndexName(uint32_t funcIndex, UTF8Bytes* bytes) {
          bytes->append(afterFuncIndex, strlen(afterFuncIndex));
 }
 
-bool CodeMetadata::getFuncNameForWasm(NameContext ctx, uint32_t funcIndex,
-                                      const ShareableBytes* nameSectionPayload,
-                                      UTF8Bytes* name) const {
+bool CodeMetadata::getFuncName(NameContext ctx, uint32_t funcIndex,
+                               const ShareableBytes* nameSectionPayload,
+                               UTF8Bytes* name) const {
   if (nameSection && nameSection->moduleName.length != 0) {
     if (!AppendName(nameSectionPayload->vector, nameSection->moduleName,
                     name)) {
@@ -236,10 +233,13 @@ bool CodeMetadata::getFuncNameForWasm(NameContext ctx, uint32_t funcIndex,
     }
   }
 
-  if (nameSection && funcIndex < nameSection->funcNames.length() &&
-      nameSection->funcNames[funcIndex].length != 0) {
-    return AppendName(nameSectionPayload->vector,
-                      nameSection->funcNames[funcIndex], name);
+  if (nameSection) {
+    if (auto funcName =
+            nameSection->funcNames.readonlyThreadsafeLookup(funcIndex)) {
+      if (funcName->value().length != 0) {
+        return AppendName(nameSectionPayload->vector, funcName->value(), name);
+      }
+    }
   }
 
   if (ctx == NameContext::BeforeLocation) {
@@ -247,6 +247,24 @@ bool CodeMetadata::getFuncNameForWasm(NameContext ctx, uint32_t funcIndex,
   }
 
   return AppendFunctionIndexName(funcIndex, name);
+}
+
+CoreExternType CodeMetadata::getExternType(DefinitionKind kind,
+                                           uint32_t index) const {
+  switch (kind) {
+    case DefinitionKind::Function:
+      return CoreExternType::func(getFuncTypeDef(index));
+    case DefinitionKind::Table:
+      return CoreExternType::table(tables[index].type);
+    case DefinitionKind::Memory:
+      return CoreExternType::memory(memories[index].limits);
+    case DefinitionKind::Global:
+      return CoreExternType::global(globals[index].globalType());
+    case DefinitionKind::Tag:
+      return CoreExternType::tag(tags[index].type);
+    default:
+      MOZ_CRASH();
+  }
 }
 
 // CodeMetadata helpers -- memory accounting.
@@ -261,7 +279,6 @@ size_t CodeMetadata::sizeOfExcludingThis(
          SizeOfMaybeExcludingThis(nameSection, mallocSizeOf) +
          funcs.sizeOfExcludingThis(mallocSizeOf) +
          elemSegmentTypes.sizeOfExcludingThis(mallocSizeOf) +
-         asmJSSigToTableIndex.sizeOfExcludingThis(mallocSizeOf) +
          customSectionRanges.sizeOfExcludingThis(mallocSizeOf);
 }
 
@@ -279,6 +296,44 @@ CodeTailMetadata::CodeTailMetadata(const CodeMetadata& codeMeta)
   this->codeMeta = &codeMeta;
   inliningBudget.lock().get() =
       InliningHeuristics::moduleInliningBudget(codeMeta.codeSectionSize());
+}
+
+bool ModuleMetadata::buildModuleType(SharedCoreModuleType* result) const {
+  // Imported items come first in each index space, in import order.
+  CoreImportTypeVector importTypes;
+  if (!importTypes.reserve(imports.length())) {
+    return false;
+  }
+  uint32_t numImportsOfKind[size_t(DefinitionKind::Tag) + 1] = {};
+  for (const Import& imp : imports) {
+    uint32_t index = numImportsOfKind[size_t(imp.kind)]++;
+    CacheableName module;
+    CacheableName field;
+    if (!imp.module.clone(&module) || !imp.field.clone(&field)) {
+      return false;
+    }
+    importTypes.infallibleAppend(
+        CoreImportType{std::move(module), std::move(field),
+                       codeMeta->getExternType(imp.kind, index)});
+  }
+
+  MutableCoreInstanceType instanceType = js_new<CoreInstanceType>();
+  if (!instanceType) {
+    return false;
+  }
+  for (const Export& exp : exports) {
+    CacheableName name;
+    if (!exp.fieldName().clone(&name) ||
+        !instanceType->addExport(
+            std::move(name),
+            codeMeta->getExternType(exp.kind(), exp.index()))) {
+      return false;
+    }
+  }
+
+  *result = js_new<CoreModuleType>(codeMeta->types, std::move(importTypes),
+                                   std::move(instanceType));
+  return !!*result;
 }
 
 // ModuleMetadata helpers -- memory accounting.
@@ -301,8 +356,14 @@ bool ModuleMetadata::addDefinedFunc(
   if (!codeMeta->types->addType(std::move(funcType))) {
     return false;
   }
+  return addDefinedFuncWithType(typeIndex, declareForRef,
+                                std::move(optionalExportedName));
+}
 
-  FuncDesc funcDesc = FuncDesc(typeIndex);
+bool ModuleMetadata::addDefinedFuncWithType(
+    uint32_t funcTypeIndex, bool declareForRef,
+    mozilla::Maybe<CacheableName>&& optionalExportedName) {
+  FuncDesc funcDesc = FuncDesc(funcTypeIndex);
   uint32_t funcIndex = codeMeta->funcs.length();
   if (!codeMeta->funcs.append(funcDesc)) {
     return false;

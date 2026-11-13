@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim:set ts=2 sw=2 sts=2 et cindent: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -8,6 +6,7 @@
 #define MOZILLA_DOM_WEBCODECS_WEBCODECSUTILS_H
 
 #include "ErrorList.h"
+#include "ImagePixelFormat.h"
 #include "MediaData.h"
 #include "PlatformEncoderModule.h"
 #include "js/TypeDecls.h"
@@ -35,7 +34,7 @@ class VideoDecoderConfigInternal;
 #define WEBCODECS_MARKER(codecType, desc, options, markerType, ...)    \
   do {                                                                 \
     if (profiler_is_collecting_markers()) {                            \
-      nsFmtCString marker(FMT_STRING("{}{}"), codecType, desc);        \
+      nsFmtCString marker("{}{}", codecType, desc);                    \
       PROFILER_MARKER(                                                 \
           ProfilerString8View::WrapNullTerminatedString(marker.get()), \
           MEDIA_RT, options, markerType, __VA_ARGS__);                 \
@@ -138,6 +137,10 @@ class AsyncDurationTracker {
   std::deque<Entry> mEntries;
   const nsCOMPtr<nsISerialEventTarget> mOwningThread;
 };
+
+namespace layers {
+class Image;
+}  // namespace layers
 
 namespace gfx {
 enum class ColorRange : uint8_t;
@@ -279,14 +282,12 @@ Maybe<VideoColorPrimaries> ToPrimaries(const gfx::ColorSpace2& aColorSpace);
  * VideoPixelFormats.
  */
 
-enum class ImageBitmapFormat : uint8_t;
 enum class VideoPixelFormat : uint8_t;
 
-Maybe<VideoPixelFormat> SurfaceFormatToVideoPixelFormat(
-    gfx::SurfaceFormat aFormat);
+// Nothing() for formats the web cannot name, such as NV21.
+Maybe<VideoPixelFormat> ToVideoPixelFormat(ImagePixelFormat aFormat);
 
-Maybe<VideoPixelFormat> ImageBitmapFormatToVideoPixelFormat(
-    ImageBitmapFormat aFormat);
+Maybe<VideoPixelFormat> GuessVideoPixelFormat(layers::Image* aImage);
 
 template <typename T>
 class MessageRequestHolder {

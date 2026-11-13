@@ -1,6 +1,4 @@
-/* -*- Mode: Java; c-basic-offset: 4; tab-width: 20; indent-tabs-mode: nil; -*-
- * vim: ts=4 sw=4 expandtab:
- * This Source Code Form is subject to the terms of the Mozilla Public
+/* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
@@ -18,6 +16,7 @@ import java.util.Arrays;
 import java.util.Collection;
 import org.mozilla.gecko.util.GeckoBundle;
 
+/** Configuration settings for a GeckoSession. */
 @AnyThread
 public final class GeckoSessionSettings implements Parcelable {
 
@@ -26,12 +25,16 @@ public final class GeckoSessionSettings implements Parcelable {
   public static final class Builder {
     private final GeckoSessionSettings mSettings;
 
-    @SuppressWarnings("checkstyle:javadocmethod")
+    /** Creates a new Builder with default settings. */
     public Builder() {
       mSettings = new GeckoSessionSettings();
     }
 
-    @SuppressWarnings("checkstyle:javadocmethod")
+    /**
+     * Creates a Builder initialized from an existing GeckoSessionSettings instance.
+     *
+     * @param settings the existing settings to copy
+     */
     public Builder(final GeckoSessionSettings settings) {
       mSettings = new GeckoSessionSettings(settings);
     }
@@ -188,6 +191,19 @@ public final class GeckoSessionSettings implements Parcelable {
       mSettings.setViewportMode(mode);
       return this;
     }
+
+    /**
+     * Opens the session where it can clone the video a picture-in-picture window was asked for,
+     * which is the browsing context group and content process that video lives in.
+     *
+     * @param token The token the picture-in-picture request was made with.
+     * @return This Builder instance.
+     */
+    @ExperimentalGeckoViewApi
+    public @NonNull Builder pictureInPictureToken(final @NonNull String token) {
+      mSettings.setPictureInPictureToken(token);
+      return this;
+    }
   }
 
   private static final String LOGTAG = "GeckoSessionSettings";
@@ -195,6 +211,7 @@ public final class GeckoSessionSettings implements Parcelable {
 
   /** This value is for the display member of Web App Manifests */
   @Retention(RetentionPolicy.SOURCE)
+  /** Display mode type definitions for web app manifest display modes. */
   @IntDef({
     DISPLAY_MODE_BROWSER,
     DISPLAY_MODE_MINIMAL_UI,
@@ -216,7 +233,7 @@ public final class GeckoSessionSettings implements Parcelable {
   /** "fullscreen" value of the display member in Web App Manifests */
   public static final int DISPLAY_MODE_FULLSCREEN = 3;
 
-  /** The user agent string mode */
+  /** User agent mode type definitions for user agent string modes. */
   @Retention(RetentionPolicy.SOURCE)
   @IntDef({
     USER_AGENT_MODE_MOBILE,
@@ -254,6 +271,11 @@ public final class GeckoSessionSettings implements Parcelable {
    */
   public static final int VIEWPORT_MODE_DESKTOP = 1;
 
+  /**
+   * Typed key for GeckoSessionSettings entries.
+   *
+   * @param <T> the type of values allowed for this key
+   */
   public static class Key<T> {
     /* package */ final String name;
     /* package */ final boolean initOnly;
@@ -345,15 +367,22 @@ public final class GeckoSessionSettings implements Parcelable {
   private static final Key<String> UNSAFE_CONTEXT_ID =
       new Key<String>("unsafeSessionContextId", /* initOnly */ true, /* values */ null);
 
+  private static final Key<String> PICTURE_IN_PICTURE_TOKEN =
+      new Key<String>("pictureInPictureToken", /* initOnly */ true, /* values */ null);
+
   private final GeckoSession mSession;
   private final GeckoBundle mBundle;
 
-  @SuppressWarnings("checkstyle:javadocmethod")
+  /** Creates a new GeckoSessionSettings with default configuration. */
   public GeckoSessionSettings() {
     this(null, null);
   }
 
-  @SuppressWarnings("checkstyle:javadocmethod")
+  /**
+   * Creates a copy of the given GeckoSessionSettings.
+   *
+   * @param settings The existing settings to copy.
+   */
   public GeckoSessionSettings(final @NonNull GeckoSessionSettings settings) {
     this(settings, null);
   }
@@ -382,6 +411,7 @@ public final class GeckoSessionSettings implements Parcelable {
     mBundle.putInt(DISPLAY_MODE.name, DISPLAY_MODE_BROWSER);
     mBundle.putString(CONTEXT_ID.name, null);
     mBundle.putString(UNSAFE_CONTEXT_ID.name, null);
+    mBundle.putString(PICTURE_IN_PICTURE_TOKEN.name, null);
   }
 
   /**
@@ -626,6 +656,10 @@ public final class GeckoSessionSettings implements Parcelable {
     setString(CONTEXT_ID, StorageController.createSafeSessionContextId(value));
   }
 
+  /* package */ void setPictureInPictureToken(final @NonNull String token) {
+    setString(PICTURE_IN_PICTURE_TOKEN, token);
+  }
+
   private void setString(final Key<String> key, final String value) {
     synchronized (mBundle) {
       if (valueChangedLocked(key, value)) {
@@ -709,12 +743,16 @@ public final class GeckoSessionSettings implements Parcelable {
     mBundle.writeToParcel(out, flags);
   }
 
-  // AIDL code may call readFromParcel even though it's not part of Parcelable.
-  @SuppressWarnings("checkstyle:javadocmethod")
+  /**
+   * Reads session settings from the given Parcel. This may be called by AIDL code.
+   *
+   * @param source Parcel containing the serialized GeckoSessionSettings.
+   */
   public void readFromParcel(final @NonNull Parcel source) {
     mBundle.readFromParcel(source);
   }
 
+  /** Creator used by the Android framework to deserialize GeckoSessionSettings from a Parcel. */
   public static final Parcelable.Creator<GeckoSessionSettings> CREATOR =
       new Parcelable.Creator<GeckoSessionSettings>() {
         @Override

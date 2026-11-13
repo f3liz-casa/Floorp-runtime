@@ -1,4 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -11,7 +10,6 @@
 #include "nsToolkitCompsCID.h"
 #include "nsCategoryCache.h"
 #include "nsTHashtable.h"
-#include "mozilla/Attributes.h"
 #include "prtime.h"
 
 class nsNavBookmarks;
@@ -46,11 +44,6 @@ struct ItemVisitData {
   int64_t visitId;
   uint32_t transitionType;
   PRTime time;
-};
-
-struct TombstoneData {
-  nsCString guid;
-  PRTime dateRemoved;
 };
 
 typedef void (nsNavBookmarks::*ItemVisitMethod)(const ItemVisitData&);
@@ -101,46 +94,6 @@ class nsNavBookmarks final : public nsINavBookmarksService,
                    bool aHidden, uint32_t aVisitCount, uint32_t aTyped,
                    const nsAString& aLastKnownTitle);
 
-  // Find all the children of a folder, using the given query and options.
-  // For each child, a ResultNode is created and added to |children|.
-  // The results are ordered by folder position.
-  nsresult QueryFolderChildren(int64_t aFolderId,
-                               nsNavHistoryQueryOptions* aOptions,
-                               nsCOMArray<nsNavHistoryResultNode>* children);
-
-  /**
-   * Turns aRow into a node and appends it to aChildren if it is appropriate to
-   * do so.
-   *
-   * @param aRow
-   *        A Storage statement (in the case of synchronous execution) or row of
-   *        a result set (in the case of asynchronous execution).
-   * @param aOptions
-   *        The options of the parent folder node. These are the options used
-   *        to fill the parent node.
-   * @param aChildren
-   *        The children of the parent folder node.
-   * @param aCurrentIndex
-   *        The index of aRow within the results.  When called on the first row,
-   *        this should be set to -1.
-   */
-  nsresult ProcessFolderNodeRow(mozIStorageValueArray* aRow,
-                                nsNavHistoryQueryOptions* aOptions,
-                                nsCOMArray<nsNavHistoryResultNode>* aChildren,
-                                int32_t& aCurrentIndex);
-
-  /**
-   * The async version of QueryFolderChildren.
-   *
-   * @param aNode
-   *        The folder node that will receive the children.
-   * @param _pendingStmt
-   *        The Storage pending statement that will be used to control async
-   *        execution.
-   */
-  nsresult QueryFolderChildrenAsync(nsNavHistoryFolderResultNode* aNode,
-                                    mozIStoragePendingStatement** _pendingStmt);
-
   /**
    * Fetches information about the specified id from the database.
    *
@@ -150,16 +103,6 @@ class nsNavBookmarks final : public nsINavBookmarksService,
    *        BookmarkData to store the information.
    */
   nsresult FetchItemInfo(int64_t aItemId, BookmarkData& _bookmark);
-
-  /**
-   * Fetches information about the specified GUID from the database.
-   *
-   * @param aGUID
-   *        GUID of the item to fetch information for.
-   * @param aBookmark
-   *        BookmarkData to store the information.
-   */
-  nsresult FetchItemInfo(const nsCString& aGUID, BookmarkData& _bookmark);
 
   /**
    * Notifies that a bookmark has been visited.
@@ -228,10 +171,6 @@ class nsNavBookmarks final : public nsINavBookmarksService,
   // Inserts a tombstone for a removed synced item.
   nsresult InsertTombstone(const BookmarkData& aBookmark);
 
-  // Inserts tombstones for removed synced items.
-  nsresult InsertTombstones(
-      const nsTArray<mozilla::places::TombstoneData>& aTombstones);
-
   // Removes a stale synced bookmark tombstone.
   nsresult RemoveTombstone(const nsACString& aGUID);
 
@@ -247,15 +186,6 @@ class nsNavBookmarks final : public nsINavBookmarksService,
   nsresult SetItemDateInternal(enum mozilla::places::BookmarkDate aDateType,
                                int64_t aSyncChangeDelta, int64_t aItemId,
                                PRTime aValue);
-
-  MOZ_CAN_RUN_SCRIPT
-  nsresult RemoveFolderChildren(int64_t aFolderId, uint16_t aSource);
-
-  // Recursive method to build an array of folder's children
-  nsresult GetDescendantChildren(int64_t aFolderId,
-                                 const nsACString& aFolderGuid,
-                                 int64_t aGrandParentId,
-                                 nsTArray<BookmarkData>& aFolderChildrenArray);
 
   enum ItemType {
     BOOKMARK = TYPE_BOOKMARK,

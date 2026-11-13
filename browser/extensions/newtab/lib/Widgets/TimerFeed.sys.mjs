@@ -2,7 +2,10 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
+/** @import {Store} from "resource://newtab/lib/Store.sys.mjs" */
+
 const lazy = {};
+
 ChromeUtils.defineESModuleGetters(lazy, {
   PersistentCache: "resource://newtab/lib/PersistentCache.sys.mjs",
 });
@@ -15,18 +18,32 @@ import {
   actionTypes as at,
   actionCreators as ac,
 } from "resource://newtab/common/Actions.mjs";
+import {
+  isWidgetAddable,
+  PREF_WIDGETS_SYSTEM_TIMER_ENABLED as PREF_SYSTEM_TIMER_ENABLED,
+  PREF_WIDGETS_TIMER_ENABLED as PREF_TIMER_ENABLED,
+  WIDGET_REGISTRY,
+} from "resource://newtab/common/WidgetsRegistry.mjs";
 
-const PREF_TIMER_ENABLED = "widgets.timer.enabled";
-const PREF_SYSTEM_TIMER_ENABLED = "widgets.system.timer.enabled";
 const PREF_TIMER_SHOW_NOTIFICATIONS =
   "widgets.focusTimer.showSystemNotifications";
 const CACHE_KEY = "timer_widget";
+const TIMER_ENTRY = WIDGET_REGISTRY.find(w => w.id === "focusTimer");
+
+const AlertNotification = Components.Constructor(
+  "@mozilla.org/alert-notification;1",
+  "nsIAlertNotification",
+  "initWithObject"
+);
 
 /**
  * Class for the Timer widget, which manages the changes to the Timer widget
  * and syncs with PersistentCache
  */
 export class TimerFeed {
+  /** @type {Store} */
+  store = null;
+
   constructor() {
     this.initialized = false;
     this.cache = this.PersistentCache(CACHE_KEY, true);
@@ -49,14 +66,11 @@ export class TimerFeed {
         Ci.nsIAlertsService
       );
 
-      // TODO: Add more readable args as defined in toolkit/components/alerts/nsIAlertsService.idl
-      alertsService.showAlertNotification(
-        "chrome://branding/content/icon64.png",
-        title,
-        body,
-        false,
-        "",
-        null
+      alertsService.showAlert(
+        new AlertNotification({
+          title,
+          text: body,
+        })
       );
     } catch (err) {
       console.error("Failed to show system notification", err);
@@ -65,7 +79,12 @@ export class TimerFeed {
 
   get enabled() {
     const prefs = this.store.getState()?.Prefs.values;
-    return prefs?.[PREF_TIMER_ENABLED] && prefs?.[PREF_SYSTEM_TIMER_ENABLED];
+    const nimbusTimerEnabled = prefs.widgetsConfig?.timerEnabled;
+
+    return (
+      prefs?.[PREF_TIMER_ENABLED] &&
+      (isWidgetAddable(TIMER_ENTRY, prefs) || nimbusTimerEnabled)
+    );
   }
 
   async init() {
@@ -91,6 +110,26 @@ export class TimerFeed {
     );
   }
 
+  /**
+   * @param {object} action - The action object containing pref change data
+   * @param {object} action.data
+   * @param {string} action.data.name - The name of the pref that changed
+   */
+  async onPrefChangedAction(action) {
+    switch (action.data.name) {
+      case PREF_TIMER_ENABLED:
+      case PREF_SYSTEM_TIMER_ENABLED:
+      case "region":
+      case "trainhopConfig":
+      case "widgetsConfig": {
+        if (this.enabled && !this.initialized) {
+          await this.init();
+        }
+        break;
+      }
+    }
+  }
+
   async onAction(action) {
     switch (action.type) {
       case at.INIT:
@@ -99,15 +138,7 @@ export class TimerFeed {
         }
         break;
       case at.PREF_CHANGED:
-        if (
-          (action.data.name === PREF_TIMER_ENABLED ||
-            action.data.name === PREF_SYSTEM_TIMER_ENABLED) &&
-          action.data.value
-        ) {
-          if (this.enabled) {
-            await this.init();
-          }
-        }
+        await this.onPrefChangedAction(action);
         break;
       case at.WIDGETS_TIMER_END:
         {

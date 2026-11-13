@@ -46,7 +46,7 @@ class TestFirefoxRefresh(MarionetteTestCase):
             """
           let [username, password, resolve] = arguments;
           let myLogin = new global.LoginInfo(
-            "test.marionette.mozilla.com",
+            "http://test.marionette.mozilla.com",
             "http://test.marionette.mozilla.com/some/form/",
             null,
             username,
@@ -182,7 +182,7 @@ class TestFirefoxRefresh(MarionetteTestCase):
           const COMPLETE_STATE = Ci.nsIWebProgressListener.STATE_STOP +
                                  Ci.nsIWebProgressListener.STATE_IS_NETWORK;
           let { TabStateFlusher } = ChromeUtils.importESModule(
-            "resource:///modules/sessionstore/TabStateFlusher.sys.mjs"
+            "moz-src:///browser/components/sessionstore/TabStateFlusher.sys.mjs"
           );
           let expectedURLs = Array.from(arguments[0])
           let expectedOpenGroupID = arguments[1];
@@ -229,7 +229,7 @@ class TestFirefoxRefresh(MarionetteTestCase):
           let resolve = arguments[arguments.length - 1];
           let expectedSavedGroups = Array.from(arguments[0]);
           let { TabStateFlusher } = ChromeUtils.importESModule(
-            "resource:///modules/sessionstore/TabStateFlusher.sys.mjs"
+            "moz-src:///browser/components/sessionstore/TabStateFlusher.sys.mjs"
           );
 
           let savePromises = [];
@@ -256,7 +256,7 @@ class TestFirefoxRefresh(MarionetteTestCase):
             });
             savePromises.push(Promise.allSettled([groupSaved, groupRemoved]));
           }
-          TabStateFlusher.flushWindow(gBrowser.ownerGlobal).then(() => {
+          TabStateFlusher.flushWindow(gBrowser.documentGlobal).then(() => {
             groups.forEach(group => {
               group.saveAndClose();
             })
@@ -303,13 +303,14 @@ class TestFirefoxRefresh(MarionetteTestCase):
         )
 
     def checkPassword(self):
+        # Only match on the origin: the Rust backend normalizes formActionOrigin
+        # to an origin on insert, the JSON backend stores it verbatim.
         loginInfo = self.runAsyncCode(
             """
           let [resolve] = arguments;
           Services.logins.searchLoginsAsync({
-            origin: "test.marionette.mozilla.com",
-            formActionOrigin: "http://test.marionette.mozilla.com/some/form/",
-          }).then(ary => resolve(ary.length ? ary : {username: "null", password: "null"}));
+            origin: "http://test.marionette.mozilla.com",
+          }).then(resolve);
         """
         )
         self.assertEqual(len(loginInfo), 1)
@@ -389,7 +390,7 @@ class TestFirefoxRefresh(MarionetteTestCase):
         self.assertEqual(
             formFieldResultCount,
             1,
-            "Should have exactly 1 entry for this field, got %d" % formFieldResultCount,
+            f"Should have exactly 1 entry for this field, got {formFieldResultCount}",
         )
         if formFieldResultCount == 1:
             self.assertEqual(formFieldResults[0]["value"], self._formHistoryValue)
@@ -424,7 +425,7 @@ class TestFirefoxRefresh(MarionetteTestCase):
         self.assertEqual(
             formAutofillAddressCount,
             1,
-            "Should have exactly 1 saved address, got %d" % formAutofillAddressCount,
+            f"Should have exactly 1 saved address, got {formAutofillAddressCount}",
         )
         if formAutofillAddressCount == 1:
             self.assertEqual(
@@ -568,7 +569,7 @@ class TestFirefoxRefresh(MarionetteTestCase):
         result = self.runCode(
             """
           let { MigrationUtils } = ChromeUtils.importESModule(
-            "resource:///modules/MigrationUtils.sys.mjs"
+            "moz-src:///browser/components/migration/MigrationUtils.sys.mjs"
           );
           return MigrationUtils.isStartupMigration;
         """
@@ -583,6 +584,18 @@ class TestFirefoxRefresh(MarionetteTestCase):
         )
         self.assertTrue(refreshPromptDisabled)
 
+    def checkProfileSource(self, expected_source):
+        result = self.runAsyncCode(
+            """
+            let resolve = arguments[arguments.length - 1]
+            let { ProfileAge } = ChromeUtils.importESModule(
+              "resource://gre/modules/ProfileAge.sys.mjs"
+            );
+            ProfileAge().then(age => age.source).then(resolve)
+            """
+        )
+        self.assertEqual(result, expected_source)
+
     def checkProfile(self, has_migrated=False, expect_sync_user=True):
         self.checkPassword()
         self.checkBookmarkInMenu()
@@ -592,6 +605,7 @@ class TestFirefoxRefresh(MarionetteTestCase):
         self.checkCookie()
         self.checkFxA()
         self.checkSync(expect_sync_user)
+        self.checkProfileSource("reset" if has_migrated else "pre-reset")
         if has_migrated:
             self.checkBookmarkToolbarVisibility()
             self.checkSession()
@@ -599,6 +613,7 @@ class TestFirefoxRefresh(MarionetteTestCase):
             self.checkRefreshPromptDisabled()
 
     def createProfileData(self):
+        self.setProfileSource()
         self.savePassword()
         self.createBookmarkInMenu()
         self.createBookmarksOnToolbar()
@@ -609,6 +624,21 @@ class TestFirefoxRefresh(MarionetteTestCase):
         self.createSession()
         self.createFxa()
         self.createSync()
+
+    def setProfileSource(self):
+        self.runAsyncCode(
+            """
+            let resolve = arguments[arguments.length - 1];
+            let { ProfileAge } = ChromeUtils.importESModule(
+              "resource://gre/modules/ProfileAge.sys.mjs"
+            );
+
+            ProfileAge().then(times => {
+              times._times.source = "pre-reset";
+              return times.writeTimes();
+            }).then(resolve).catch(console.error);
+            """
+        )
 
     def setUpScriptData(self):
         self.marionette.set_context(self.marionette.CONTEXT_CHROME)
@@ -700,7 +730,7 @@ class TestFirefoxRefresh(MarionetteTestCase):
           // Ensure the current (temporary) profile is in profiles.ini:
           let profD = Services.dirsvc.get("ProfD", Ci.nsIFile);
           let profileName = arguments[1];
-          let myProfile = global.profSvc.createProfile(profD, profileName);
+          let myProfile = global.profSvc.createProfile(profD, profileName, "pre-reset");
           global.profSvc.flush()
 
           // Now add the reset parameters:
@@ -793,3 +823,289 @@ class TestFirefoxRefresh(MarionetteTestCase):
 
         self.checkFxA()
         self.checkSync(False)
+
+
+class TestSelectableProfileFirefoxRefresh(TestFirefoxRefresh):
+    def runAsync(self, script, *args, **kwargs):
+        wrappedScript = """
+            let args = Array.from(arguments);
+            let outerResolve = args.pop();
+            (async () => {
+                try {
+                    let fn = async () => {
+
+            """
+        wrappedScript += f"{script}"
+        wrappedScript += """
+
+                    };
+                    let innerResults = await fn(args);
+                    if (!Array.isArray(innerResults)) {
+                        innerResults = [innerResults];
+                    }
+                    innerResults.unshift("OK");
+                    return innerResults;
+                } catch(ex) {
+                    return ["ERROR", ex.name, ex.message, ex.stack];
+                }
+            })().then(outerResolve);
+        """
+
+        results = self.runAsyncCode(wrappedScript, *args, **kwargs)
+        self.assertEqual("OK", results[0], "something went wrong: " + str(results))
+        del results[0]
+        return results
+
+    def check_selectable_profile_service(self):
+        pref_value = self.runCode(
+            """
+            return Services.prefs.getStringPref("toolkit.profiles.storeID", null);
+        """,
+            script_args=(self.marionette.instance.profile.profile,),
+        )
+
+        self.assertEqual(pref_value, self.storeID)
+
+        [profile_path, profile_name, storeID, profile_count, profile_id] = (
+            self.runAsync(
+                """
+                let profileCount = (await SelectableProfileService.getAllProfiles()).length;
+                let profile = SelectableProfileService.currentProfile;
+
+                return [profile.path, profile.name, SelectableProfileService.storeID, profileCount, profile.id];
+            """,
+                script_args=(self.marionette.instance.profile.profile,),
+            )
+        )
+
+        self.assertNotEqual(
+            profile_path, self.profile_path
+        )  # The path should be different after migration
+        self.assertEqual(profile_name, self.profile_name)
+        self.assertEqual(storeID, self.storeID)
+        self.assertEqual(profile_count, self.profile_count)
+        self.assertEqual(profile_id, self.profile_id)
+
+    def doReset(self):
+        profileName = "marionette-test-profile-" + str(int(time.time() * 1000))
+        cleanup = PendingCleanup(profileName)
+
+        self.runCode(
+            """
+          // Ensure the current (temporary) profile is in profiles.ini:
+          let profD = Services.dirsvc.get("ProfD", Ci.nsIFile);
+          let profileName = arguments[1];
+          let myProfile = global.profSvc.createProfile(profD, profileName, "pre-reset");
+          global.profSvc.flush()
+
+          // Now add the reset parameters:
+          let prefsToKeep = Array.from(Services.prefs.getChildList("marionette."));
+          // Add all the modified preferences set from geckoinstance.py to avoid
+          // non-local connections.
+          prefsToKeep = prefsToKeep.concat(JSON.parse(
+              Services.env.get("MOZ_MARIONETTE_REQUIRED_PREFS")));
+          let prefObj = {};
+          for (let pref of prefsToKeep) {
+            prefObj[pref] = global.Preferences.get(pref);
+          }
+          Services.env.set("MOZ_MARIONETTE_PREF_STATE_ACROSS_RESTARTS", JSON.stringify(prefObj));
+        """,
+            script_args=(
+                self.marionette.instance.profile.profile,
+                profileName,
+            ),
+        )
+        # restart so we can create some profiles
+        self.marionette.restart(clean=False, in_app=True)
+
+        [profile_path, profile_name, storeID, profile_count, profile_id] = (
+            self.runAsync(
+                """
+                let newProfile = await SelectableProfileService.createNewProfile(false, null, "tests");
+
+                let profileCount = (await SelectableProfileService.getAllProfiles()).length;
+
+                let profile = SelectableProfileService.currentProfile;
+
+                return [profile.path, profile.name, SelectableProfileService.storeID, profileCount, profile.id];
+        """,
+                script_args=(self.marionette.instance.profile.profile,),
+            )
+        )
+
+        self.profile_path = profile_path
+        self.profile_name = profile_name
+        self.storeID = storeID
+        self.profile_count = profile_count
+        self.profile_id = profile_id
+
+        self.runCode(
+            """
+          Services.env.set("SELECTABLE_PROFILE_RESET_PATH", SelectableProfileService?.currentProfile.path);
+          Services.env.set("SELECTABLE_PROFILE_RESET_STORE_ID", SelectableProfileService?.storeID);
+          Services.env.set("MOZ_RESET_PROFILE_RESTART", "1");
+          Services.env.set("XRE_PROFILE_PATH", arguments[0]);
+        """,
+            script_args=(
+                self.marionette.instance.profile.profile,
+                profileName,
+            ),
+        )
+
+        profileLeafName = os.path.basename(
+            os.path.normpath(self.marionette.instance.profile.profile)
+        )
+
+        # Now restart the browser to get it reset:
+        self.marionette.restart(clean=False, in_app=True)
+        self.setUpScriptData()
+
+        # Determine the new profile path (we'll need to remove it when we're done)
+        [cleanup.reset_profile_path, cleanup.reset_profile_local_path] = self.runCode(
+            """
+          let profD = Services.dirsvc.get("ProfD", Ci.nsIFile);
+          let localD = Services.dirsvc.get("ProfLD", Ci.nsIFile);
+          return [profD.path, localD.path];
+        """
+        )
+
+        # Determine the backup path
+        cleanup.desktop_backup_path = self.runCode(
+            """
+          let container;
+          try {
+            container = Services.dirsvc.get("Desk", Ci.nsIFile);
+          } catch (ex) {
+            container = Services.dirsvc.get("Home", Ci.nsIFile);
+          }
+          let bundle = Services.strings.createBundle("chrome://mozapps/locale/profile/profileSelection.properties");
+          let dirName = bundle.formatStringFromName("resetBackupDirectory", [Services.appinfo.name]);
+          container.append(dirName);
+          container.append(arguments[0]);
+          return container.path;
+        """,  # NOQA: E501
+            script_args=(profileLeafName,),
+        )
+
+        self.assertTrue(
+            os.path.isdir(cleanup.reset_profile_path),
+            "Reset profile path should be present",
+        )
+        self.assertTrue(
+            os.path.isdir(cleanup.desktop_backup_path),
+            "Backup profile path should be present",
+        )
+        self.assertIn(cleanup.profile_name_to_remove, cleanup.reset_profile_path)
+        return cleanup
+
+    def checkProfile(self, has_migrated=False, expect_sync_user=True):
+        self.checkPassword()
+        self.checkBookmarkInMenu()
+        self.checkHistory()
+        self.checkFormHistory()
+        self.checkFormAutofill()
+        self.checkCookie()
+        self.checkFxA()
+        self.checkSync(expect_sync_user)
+        if has_migrated:
+            self.checkBookmarkToolbarVisibility()
+            self.checkSession()
+            self.checkStartupMigrationStateCleared()
+            self.checkRefreshPromptDisabled()
+
+
+class TestFirefoxRefreshEncryptedSession(TestFirefoxRefresh):
+    """Refresh a profile whose session store data is encrypted.
+
+    The migrator has to carry the lockstore keys and the enabled pref into
+    the new profile so the encrypted session can be decrypted there,
+    converted and written back, encrypted only if the new profile's build
+    supports it.
+    """
+
+    _availablePref = "browser.sessionstore.encryption.available"
+    _enabledPref = "browser.sessionstore.encryption.enabled"
+    # Header IOUtils writes in front of encrypted files.
+    _encryptedFileMagic = b"mozEnc0\x00"
+
+    # Inherited test that does not involve session data.
+    testFxANoSync = None
+
+    def enableSessionEncryption(self):
+        # SessionStartup locks the available pref at startup so that only its
+        # default value is honoured. Unlock it so the user values set here
+        # take effect for the rest of this session and the source session is
+        # written encrypted. Both values are saved to prefs.js, but the
+        # migrator only picks up the enabled one.
+        self.runCode(
+            """
+          Services.prefs.unlockPref(arguments[0]);
+          Services.prefs.setBoolPref(arguments[0], true);
+          Services.prefs.setBoolPref(arguments[1], true);
+        """,
+            script_args=(self._availablePref, self._enabledPref),
+        )
+
+    def createProfileData(self):
+        self.enableSessionEncryption()
+        super().createProfileData()
+
+    def doReset(self):
+        cleanup = super().doReset()
+        self._sourceProfilePath = cleanup.desktop_backup_path
+        self._resetProfilePath = cleanup.reset_profile_path
+        return cleanup
+
+    def readSessionFileHeader(self, profileDir):
+        # SessionWriter moves sessionstore.jsonlz4 to the backups directory
+        # on its first write, so accept either location.
+        candidates = [
+            os.path.join(profileDir, "sessionstore.jsonlz4"),
+            os.path.join(profileDir, "sessionstore-backups", "previous.jsonlz4"),
+        ]
+        for path in candidates:
+            if os.path.exists(path):
+                with open(path, "rb") as f:
+                    return path, f.read(len(self._encryptedFileMagic))
+        self.fail(f"No session file found in {profileDir}")
+
+    def checkSessionFilesEncrypted(self):
+        path, header = self.readSessionFileHeader(self._sourceProfilePath)
+        self.assertEqual(
+            header, self._encryptedFileMagic, f"{path} should be encrypted"
+        )
+
+        available = self.runCode(
+            "return Services.prefs.getBoolPref(arguments[0]);",
+            script_args=(self._availablePref,),
+        )
+        path, header = self.readSessionFileHeader(self._resetProfilePath)
+        if available:
+            self.assertEqual(
+                header, self._encryptedFileMagic, f"{path} should be encrypted"
+            )
+        else:
+            self.assertNotEqual(
+                header, self._encryptedFileMagic, f"{path} should be plaintext"
+            )
+
+    def checkEncryptionPrefsMigrated(self):
+        [available_has_user_value, enabled] = self.runCode(
+            """
+          return [
+            Services.prefs.prefHasUserValue(arguments[0]),
+            Services.prefs.getBoolPref(arguments[1]),
+          ];
+        """,
+            script_args=(self._availablePref, self._enabledPref),
+        )
+        self.assertFalse(
+            available_has_user_value, "available pref should not be migrated"
+        )
+        self.assertTrue(enabled, "enabled pref should have been migrated")
+
+    def checkProfile(self, has_migrated=False, expect_sync_user=True):
+        if has_migrated:
+            self.checkSessionFilesEncrypted()
+            self.checkEncryptionPrefsMigrated()
+        super().checkProfile(has_migrated, expect_sync_user)

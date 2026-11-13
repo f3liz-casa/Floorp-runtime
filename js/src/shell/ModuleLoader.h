@@ -1,6 +1,4 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- * vim: set ts=8 sts=2 et sw=2 tw=80:
- * This Source Code Form is subject to the terms of the Mozilla Public
+/* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
@@ -26,18 +24,15 @@ class ModuleLoader {
   void clearModules(JSContext* cx);
 
  private:
-  static bool LoadImportedModule(JSContext* cx, JS::Handle<JSScript*> referrer,
+  static bool LoadImportedModule(JSContext* cx, JS::Handle<JS::Value> referrer,
                                  HandleObject moduleRequest,
-                                 HandleValue hostDefined, HandleValue payload);
+                                 HandleValue hostDefined, HandleValue payload,
+                                 uint32_t lineNumber,
+                                 JS::ColumnNumberOneOrigin columnNumber);
 
-  static bool GetImportMetaProperties(JSContext* cx, HandleValue privateValue,
+  static bool GetImportMetaProperties(JSContext* cx, HandleObject moduleRecord,
                                       HandleObject metaObject);
   static bool ImportMetaResolve(JSContext* cx, unsigned argc, Value* vp);
-
-  static bool DynamicImportDelayFulfilled(JSContext* cx, unsigned argc,
-                                          Value* vp);
-  static bool DynamicImportDelayRejected(JSContext* cx, unsigned argc,
-                                         Value* vp);
 
   bool loadAndExecute(JSContext* cx, HandleString path,
                       HandleObject moduleRequestArg, MutableHandleValue rval);
@@ -46,26 +41,29 @@ class ModuleLoader {
   static bool LoadResolved(JSContext* cx, HandleValue hostDefined);
   static bool LoadRejected(JSContext* cx, HandleValue hostDefined,
                            HandleValue error);
-  bool loadImportedModule(JSContext* cx, HandleScript referrer,
+  static bool DynamicImportLoadResolved(JSContext* cx, unsigned argc,
+                                        Value* vp);
+  static bool DynamicImportLoadRejected(JSContext* cx, unsigned argc,
+                                        Value* vp);
+  bool loadImportedModule(JSContext* cx, HandleValue referrer,
                           HandleObject moduleRequest, HandleValue payload);
-  bool populateImportMeta(JSContext* cx, HandleValue privateValue,
+  bool populateImportMeta(JSContext* cx, JS::HandleObject moduleRecord,
                           HandleObject metaObject);
   bool importMetaResolve(JSContext* cx,
                          JS::Handle<JS::Value> referencingPrivate,
                          JS::Handle<JSString*> specifier,
                          JS::MutableHandle<JSString*> urlOut);
-  bool dynamicImport(JSContext* cx, HandleScript referrer,
-                     HandleObject moduleRequest, HandleValue payload);
-  bool doDynamicImport(JSContext* cx, HandleScript referrer,
-                       HandleObject moduleRequest, HandleValue payload);
+  JSObject* getOrLoadModule(JSContext* cx, HandleValue referrer,
+                            HandleObject moduleRequest);
   JSObject* loadAndParse(JSContext* cx, HandleString path,
                          HandleObject moduleRequestArg);
+  JSObject* getOrCreateTest262ModuleSourceModule(JSContext* cx);
   bool lookupModuleInRegistry(JSContext* cx, JS::ModuleType moduleType,
                               HandleString path, MutableHandleObject moduleOut);
   bool addModuleToRegistry(JSContext* cx, JS::ModuleType moduleType,
                            HandleString path, HandleObject module);
   JSLinearString* resolve(JSContext* cx, HandleObject moduleRequestArg,
-                          HandleScript referrer);
+                          HandleValue referrer);
   JSLinearString* resolve(JSContext* cx, HandleString specifier,
                           HandleValue referencingInfo);
   bool getScriptPath(JSContext* cx, HandleValue privateValue,
@@ -80,6 +78,15 @@ class ModuleLoader {
 
   // The slot stored in ImportMetaResolve function.
   enum { ModulePrivateSlot = 0, SlotCount };
+
+  static const uint32_t LoadReactionHostDefinedSlot = 0;
+
+  // The number of args in the dynamic import reactions.
+  static const uint32_t DynamicImportLoadResolvedNumArgs = 0;
+  static const uint32_t DynamicImportLoadRejectedNumArgs = 1;
+
+  // The index of the 'error' argument in DynamicImportLoadRejected.
+  static const uint32_t DynamicImportLoadRejectedErrorArg = 0;
 
   // The number of args in ImportMetaResolve.
   static const uint32_t ImportMetaResolveNumArgs = 1;

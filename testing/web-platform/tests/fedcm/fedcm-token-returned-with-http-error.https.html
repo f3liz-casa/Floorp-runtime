@@ -1,5 +1,6 @@
 <!DOCTYPE html>
 <title>Federated Credential Management API token response tests</title>
+<meta name="pac" content="/fedcm/support/proxy.sub.pac">
 <link rel="help" href="https://fedidcg.github.io/FedCM">
 <script src="/resources/testharness.js"></script>
 <script src="/resources/testharnessreport.js"></script>
@@ -26,7 +27,7 @@ fedcm_test(async t => {
   } catch (e) {
     assert_true(e instanceof DOMException);
     assert_equals(e.name, "IdentityCredentialError");
-    assert_equals(e.code, "");
+    assert_equals(e.error, "");
     assert_equals(e.url, "");
   }
 }, 'Test that the promise will be rejected if the response has http error');

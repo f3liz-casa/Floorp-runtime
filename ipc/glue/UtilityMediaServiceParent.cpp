@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=2 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -22,11 +20,6 @@
 #  include "mozilla/sandboxTarget.h"
 #  include "mozilla/ipc/UtilityProcessImpl.h"
 #endif  // defined(XP_WIN) && defined(MOZ_SANDBOX)
-
-#ifdef MOZ_WIDGET_ANDROID
-#  include "mozilla/StaticPrefs_media.h"
-#  include "AndroidDecoderModule.h"
-#endif
 
 #include "mozilla/ipc/UtilityProcessChild.h"
 #include "mozilla/RemoteDecodeUtils.h"
@@ -104,7 +97,7 @@ void UtilityMediaServiceParent::WMFPreloadForSandbox() {
 
 #  if defined(NS_FREE_PERMANENT_DATA)
   // WMF Shutdown requires this or it will badly crash
-  UtilityProcessImpl::LoadLibraryOrCrash(L"ole32.dll");
+  UtilityProcessImpl::LoadLibraryOrCrash(L"user32.dll");
 #  endif  // defined(NS_FREE_PERMANENT_DATA)
 
   auto rv = wmf::MediaFoundationInitializer::HasInitialized();
@@ -122,15 +115,9 @@ void UtilityMediaServiceParent::Start(
   DebugOnly<bool> ok = std::move(aEndpoint).Bind(this);
   MOZ_ASSERT(ok);
 
-#ifdef MOZ_WIDGET_ANDROID
-  if (StaticPrefs::media_utility_android_media_codec_enabled()) {
-    AndroidDecoderModule::SetSupportedMimeTypes();
-  }
-#endif
-
   auto supported = media::MCSInfo::GetSupportFromFactory();
-  Unused << SendUpdateMediaCodecsSupported(GetRemoteMediaInFromKind(mKind),
-                                           supported);
+  (void)SendUpdateMediaCodecsSupported(GetRemoteMediaInFromKind(mKind),
+                                       supported);
   PROFILER_MARKER_UNTYPED("UtilityMediaServiceParent::Start", IPC,
                           MarkerOptions(MarkerTiming::IntervalUntilNowFrom(
                               mUtilityMediaServiceParentStart)));
@@ -163,7 +150,6 @@ mozilla::ipc::IPCResult UtilityMediaServiceParent::RecvInitVideoBridge(
           gfx::Feature::HW_COMPOSITING,
           gfx::Feature::D3D11_COMPOSITING,
           gfx::Feature::OPENGL_COMPOSITING,
-          gfx::Feature::DIRECT2D,
       },
       aContentDeviceData.prefs());
 
@@ -173,7 +159,7 @@ mozilla::ipc::IPCResult UtilityMediaServiceParent::RecvInitVideoBridge(
     }
   }
 
-  Unused << SendCompleteCreatedVideoBridge();
+  (void)SendCompleteCreatedVideoBridge();
   return IPC_OK();
 }
 #endif
@@ -190,7 +176,7 @@ IPCResult UtilityMediaServiceParent::RecvUpdateVar(
                 "UtilityMediaServiceParent::UpdateMediaCodecsSupported",
                 [self, supported = media::MCSInfo::GetSupportFromFactory(
                            true /* force refresh */)]() {
-                  Unused << self->SendUpdateMediaCodecsSupported(
+                  (void)self->SendUpdateMediaCodecsSupported(
                       GetRemoteMediaInFromKind(self->mKind), supported);
                 }));
           }),

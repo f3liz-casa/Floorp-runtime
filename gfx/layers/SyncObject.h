@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -7,8 +5,8 @@
 #ifndef MOZILLA_GFX_LAYERS_SYNCOBJECT_H
 #define MOZILLA_GFX_LAYERS_SYNCOBJECT_H
 
-#include "mozilla/gfx/FileHandleWrapper.h"
 #include "mozilla/RefCounted.h"
+#include "mozilla/gfx/FileHandleWrapper.h"
 
 struct ID3D11Device;
 
@@ -21,7 +19,7 @@ typedef RefPtr<gfx::FileHandleWrapper> SyncHandle;
 typedef uintptr_t SyncHandle;
 #endif  // XP_WIN
 
-class SyncObjectHost : public RefCounted<SyncObjectHost> {
+class SyncObjectHost : public external::AtomicRefCounted<SyncObjectHost> {
  public:
   MOZ_DECLARE_REFCOUNTED_VIRTUAL_TYPENAME(SyncObjectHost)
   virtual ~SyncObjectHost() = default;

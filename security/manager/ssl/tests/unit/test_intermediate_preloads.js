@@ -1,4 +1,3 @@
-// -*- indent-tabs-mode: nil; js-indent-level: 2 -*-
 // This Source Code Form is subject to the terms of the Mozilla Public
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at http://mozilla.org/MPL/2.0/.
@@ -307,17 +306,16 @@ add_task(async function test_preload_basic() {
   // certificate but doesn't send the intermediate.
   await asyncStartTLSTestServer(
     "BadCertAndPinningServer",
-    "test_intermediate_preloads"
+    "test_intermediate_preloads",
+    false
   );
   // This ensures the test server doesn't include the intermediate in the
   // handshake.
-  let certDir = Services.dirsvc.get("CurWorkD", Ci.nsIFile);
-  certDir.append("test_intermediate_preloads");
-  Assert.ok(certDir.exists(), "test_intermediate_preloads should exist");
   let args = ["-D", "-n", "int"];
-  // If the certdb is cached from a previous run, the intermediate will have
-  // already been deleted, so this may "fail".
-  run_certutil_on_directory(certDir.path, args, false);
+  run_certutil_on_directory(
+    getCertDirCopy("test_intermediate_preloads").path,
+    args
+  );
 
   await checkCertErrorGeneric(
     certDB,

@@ -1,4 +1,3 @@
-/* -*- Mode: IDL; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -24,6 +23,11 @@ dictionary ActivateMenuItemOptions {
   boolean ctrlKey = false;
   boolean shiftKey = false;
   short button = 0;
+};
+
+dictionary GetMenuItemsOptions {
+  // Whether to include disabled items where keyboard navigation skips them.
+  boolean includeDisabled = false;
 };
 
 typedef (DOMString or OpenPopupOptions) StringOrOpenPopupOptions;
@@ -140,6 +144,13 @@ interface XULPopupElement : XULElement
                          optional ActivateMenuItemOptions options = {});
 
   /**
+   * Returns the items that keyboard navigation in this menu reaches, in order.
+   * Hidden items are left out, and so are disabled items where the platform
+   * passes over them, unless options.includeDisabled is set.
+   */
+  sequence<Element> getMenuItems(optional GetMenuItemsOptions options = {});
+
+  /**
    * Attribute getter and setter for label.
    */
   [SetterThrows]
@@ -202,4 +213,9 @@ interface XULPopupElement : XULElement
 
   readonly attribute boolean isWaylandDragSource;
   readonly attribute boolean isWaylandPopup;
+
+  /**
+   * Whether the popup is being displayed as an OS-native menu.
+   */
+  readonly attribute boolean isNativeMenu;
 };

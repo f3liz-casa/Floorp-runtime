@@ -1,16 +1,15 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "RenderAndroidSurfaceTextureHost.h"
 
+#include "AndroidSurfaceTexture.h"
+#include "GLContext.h"
 #include "GLReadTexImageHelper.h"
 #include "mozilla/gfx/Logging.h"
+#include "mozilla/gfx/gfxVars.h"
 #include "mozilla/webrender/RenderThread.h"
-#include "GLContext.h"
-#include "AndroidSurfaceTexture.h"
 
 namespace mozilla {
 namespace wr {
@@ -27,6 +26,7 @@ RenderAndroidSurfaceTextureHost::RenderAndroidSurfaceTextureHost(
       mPrepareStatus(STATUS_NONE),
       mAttachedToGLContext(false),
       mIsRemoteTexture(aIsRemoteTexture) {
+  MOZ_ASSERT(!gfx::gfxVars::ForceAImageReaderAndroid());
   MOZ_COUNT_CTOR_INHERITED(RenderAndroidSurfaceTextureHost, RenderTextureHost);
 
   if (mSurfTex) {
@@ -153,6 +153,14 @@ void RenderAndroidSurfaceTextureHost::PrepareForUse() {
 void RenderAndroidSurfaceTextureHost::NotifyForUse() {
   MOZ_ASSERT(RenderThread::IsInRenderThread());
 
+  if (mPrepareStatus == STATUS_NONE) {
+    // This happens either for RemoteTextureHost or when we lose a race to call
+    // PrepareForUse with a GPUVideoTextureHost when the content process
+    // attempts to use said texture host before the decoding process has setup
+    // the underlying SurfaceTextureHost. See bug 1986472.
+    PrepareForUse();
+  }
+
   if (mPrepareStatus == STATUS_MIGHT_BE_USED_BY_WR) {
     // This happens when SurfaceTexture of video is rendered on WebRender.
     // There is a case that SurfaceTexture is not rendered on WebRender, instead
@@ -198,12 +206,7 @@ void RenderAndroidSurfaceTextureHost::NotifyNotUsed() {
 void RenderAndroidSurfaceTextureHost::UpdateTexImageIfNecessary() {
   if (mIsRemoteTexture) {
     EnsureAttachedToGLContext();
-    if (mPrepareStatus == STATUS_NONE) {
-      PrepareForUse();
-    }
-    if (mPrepareStatus == STATUS_MIGHT_BE_USED_BY_WR) {
-      NotifyForUse();
-    }
+    NotifyForUse();
   }
 
   if (mContinuousUpdate) {
@@ -303,9 +306,8 @@ gfx::Matrix4x4 RenderAndroidSurfaceTextureHost::GetTextureTransform() const {
 
   // GetTransformMatrix() returns the transform set by the producer side of the
   // SurfaceTexture that must be applied to texture coordinates when
-  // sampling. In some cases we may have set an override value, such as in
-  // AndroidNativeWindowTextureData where we own the producer side, or for
-  // MediaCodec output on devices where where we know the value is incorrect.
+  // sampling. In some cases we may have set an override value, such as for
+  // MediaCodec output on devices where we know the value is incorrect.
   if (mTransformOverride) {
     transform = *mTransformOverride;
   } else if (mSurfTex) {

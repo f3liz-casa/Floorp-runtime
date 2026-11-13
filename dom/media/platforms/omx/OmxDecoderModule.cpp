@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim:set ts=2 sw=2 sts=2 et cindent: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -32,18 +30,16 @@ OmxDecoderModule* OmxDecoderModule::Create() {
   return nullptr;
 }
 
-already_AddRefed<MediaDataDecoder> OmxDecoderModule::CreateVideoDecoder(
-    const CreateDecoderParams& aParams) {
-  RefPtr<OmxDataDecoder> decoder = new OmxDataDecoder(
-      aParams.mConfig, aParams.mImageContainer, aParams.mTrackingId);
-  return decoder.forget();
-}
-
-already_AddRefed<MediaDataDecoder> OmxDecoderModule::CreateAudioDecoder(
-    const CreateDecoderParams& aParams) {
-  RefPtr<OmxDataDecoder> decoder =
-      new OmxDataDecoder(aParams.mConfig, nullptr, aParams.mTrackingId);
-  return decoder.forget();
+RefPtr<PlatformDecoderModule::CreateDecoderPromise>
+OmxDecoderModule::AsyncCreateDecoder(const CreateDecoderParams& aParams) {
+  RefPtr<MediaDataDecoder> decoder;
+  if (aParams.IsVideo()) {
+    decoder = new OmxDataDecoder(aParams.mConfig, aParams.mImageContainer,
+                                 aParams.mTrackingId);
+  } else if (aParams.IsAudio()) {
+    decoder = new OmxDataDecoder(aParams.mConfig, nullptr, aParams.mTrackingId);
+  }
+  return CreateDecoderPromiseFrom(decoder.forget(), aParams);
 }
 
 media::DecodeSupportSet OmxDecoderModule::SupportsMimeType(

@@ -1,4 +1,3 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -48,14 +47,21 @@ class XULButtonAccessible : public AccessibleWrap {
   virtual ~XULButtonAccessible();
 
   // LocalAccessible
+  virtual ENameValueFlag NativeName(nsString& aName) const override;
   virtual bool AttributeChangesState(nsAtom* aAttribute) override;
   virtual void DOMAttributeChanged(int32_t aNameSpaceID, nsAtom* aAttribute,
-                                   int32_t aModType,
+                                   AttrModType aModType,
                                    const nsAttrValue* aOldValue,
                                    uint64_t aOldState) override;
 
   // XULButtonAccessible
   bool ContainsMenu() const;
+
+  /**
+   * Whether the button has an accessible for a XUL label child, which means the
+   * label is visible and the name can be computed from the subtree.
+   */
+  bool HasVisibleLabel() const;
 };
 
 /**
@@ -149,9 +155,6 @@ class XULToolbarButtonAccessible : public XULButtonAccessible {
 
   // nsXULToolbarButtonAccessible
   static bool IsSeparator(LocalAccessible* aAccessible);
-
-  // Widgets
-  virtual bool IsAcceptableChild(nsIContent* aEl) const override;
 
  protected:
   // LocalAccessible

@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -17,6 +15,18 @@ NS_IMPL_ISUPPORTS(WebAuthnRegisterArgs, nsIWebAuthnRegisterArgs)
 NS_IMETHODIMP
 WebAuthnRegisterArgs::GetOrigin(nsAString& aOrigin) {
   aOrigin = NS_ConvertUTF8toUTF16(mOrigin);
+  return NS_OK;
+}
+
+NS_IMETHODIMP
+WebAuthnRegisterArgs::GetTopOrigin(nsACString& aTopOrigin) {
+  aTopOrigin = mTopOrigin;
+  return NS_OK;
+}
+
+NS_IMETHODIMP
+WebAuthnRegisterArgs::GetIsCrossOrigin(bool* aIsCrossOrigin) {
+  *aIsCrossOrigin = mIsCrossOrigin;
   return NS_OK;
 }
 
@@ -246,11 +256,50 @@ WebAuthnRegisterArgs::GetLargeBlobSupportRequired(
   return NS_ERROR_NOT_AVAILABLE;
 }
 
+NS_IMETHODIMP
+WebAuthnRegisterArgs::GetHints(nsTArray<nsString>& aHints) {
+  aHints.Assign(mInfo.Hints());
+  return NS_OK;
+}
+
+NS_IMETHODIMP
+WebAuthnRegisterArgs::GetJson(nsAString& aJSON) {
+  aJSON = mInfo.Json();
+  return NS_OK;
+}
+
 NS_IMPL_ISUPPORTS(WebAuthnSignArgs, nsIWebAuthnSignArgs)
+
+NS_IMETHODIMP
+WebAuthnSignArgs::CloneWithSelectedCredential(
+    const nsTArray<uint8_t>& aCredentialId, nsIWebAuthnSignArgs** aResult) {
+  WebAuthnGetAssertionInfo info = mInfo;
+  info.AllowList().Clear();
+  WebAuthnScopedCredential cred;
+  cred.id().Assign(aCredentialId);
+  info.AllowList().AppendElement(std::move(cred));
+  RefPtr<WebAuthnSignArgs> result =
+      new WebAuthnSignArgs(mOrigin, mTopOrigin, mIsCrossOrigin, mClientDataJSON,
+                           mPrivateBrowsing, info);
+  result.forget(aResult);
+  return NS_OK;
+}
 
 NS_IMETHODIMP
 WebAuthnSignArgs::GetOrigin(nsAString& aOrigin) {
   aOrigin = NS_ConvertUTF8toUTF16(mOrigin);
+  return NS_OK;
+}
+
+NS_IMETHODIMP
+WebAuthnSignArgs::GetTopOrigin(nsACString& aTopOrigin) {
+  aTopOrigin = mTopOrigin;
+  return NS_OK;
+}
+
+NS_IMETHODIMP
+WebAuthnSignArgs::GetIsCrossOrigin(bool* aIsCrossOrigin) {
+  *aIsCrossOrigin = mIsCrossOrigin;
   return NS_OK;
 }
 
@@ -483,6 +532,18 @@ WebAuthnSignArgs::GetLargeBlobWrite(nsTArray<uint8_t>& aLargeBlobWrite) {
     return NS_OK;
   }
   return NS_ERROR_NOT_AVAILABLE;
+}
+
+NS_IMETHODIMP
+WebAuthnSignArgs::GetHints(nsTArray<nsString>& aHints) {
+  aHints.Assign(mInfo.Hints());
+  return NS_OK;
+}
+
+NS_IMETHODIMP
+WebAuthnSignArgs::GetJson(nsAString& aJSON) {
+  aJSON = mInfo.Json();
+  return NS_OK;
 }
 
 }  // namespace mozilla::dom

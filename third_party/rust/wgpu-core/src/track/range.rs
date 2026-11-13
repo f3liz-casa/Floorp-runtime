@@ -9,7 +9,7 @@ use core::{fmt::Debug, iter, ops::Range};
 /// are often grouped together linearly.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct RangedStates<I, T> {
-    /// List of ranges, each associated with a singe value.
+    /// List of ranges, each associated with a single value.
     /// Ranges of keys have to be non-intersecting and ordered.
     ranges: SmallVec<[(Range<I>, T); 1]>,
 }
@@ -90,10 +90,6 @@ impl<I: Copy + Ord, T: Copy + PartialEq> RangedStates<I, T> {
     ///
     /// Gaps in the ranges are filled with `default` value.
     pub fn isolate(&mut self, index: &Range<I>, default: T) -> &mut [(Range<I>, T)] {
-        //TODO: implement this in 2 passes:
-        // 1. scan the ranges to figure out how many extra ones need to be inserted
-        // 2. go through the ranges by moving them them to the right and inserting the missing ones
-
         let mut start_pos = match self.ranges.iter().position(|pair| pair.0.end > index.start) {
             Some(pos) => pos,
             None => {

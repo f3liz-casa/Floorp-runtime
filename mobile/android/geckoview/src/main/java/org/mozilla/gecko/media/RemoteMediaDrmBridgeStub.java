@@ -5,7 +5,6 @@
 package org.mozilla.gecko.media;
 
 import android.media.MediaCrypto;
-import android.os.Build;
 import android.os.IBinder;
 import android.os.RemoteException;
 import android.util.Log;
@@ -18,7 +17,7 @@ final class RemoteMediaDrmBridgeStub extends IMediaDrmBridge.Stub
   private volatile IMediaDrmBridgeCallbacks mCallbacks = null;
 
   // Underlying bridge implmenetaion, i.e. GeckoMediaDrmBrdigeV21.
-  private GeckoMediaDrm mBridge = null;
+  private GeckoMediaDrmBridge mBridge = null;
 
   // mStubId is initialized during stub construction. It should be a unique
   // string which is generated in MediaDrmProxy in Fennec App process and is
@@ -143,13 +142,11 @@ final class RemoteMediaDrmBridgeStub extends IMediaDrmBridge.Stub
 
   RemoteMediaDrmBridgeStub(final String keySystem, final String stubId) throws RemoteException {
     try {
-      if (Build.VERSION.SDK_INT < 23) {
-        mBridge = new GeckoMediaDrmBridgeV21(keySystem);
-      } else {
-        mBridge = new GeckoMediaDrmBridgeV23(keySystem);
-      }
+      mBridge = new GeckoMediaDrmBridge(keySystem);
       mStubId = stubId;
-      mBridgeStubs.add(this);
+      synchronized (RemoteMediaDrmBridgeStub.class) {
+        mBridgeStubs.add(this);
+      }
     } catch (final Exception e) {
       throw new RemoteException("RemoteMediaDrmBridgeStub cannot create bridge implementation.");
     }
@@ -226,7 +223,9 @@ final class RemoteMediaDrmBridgeStub extends IMediaDrmBridge.Stub
   @Override
   public synchronized void release() {
     if (DEBUG) Log.d(LOGTAG, "release()");
-    mBridgeStubs.remove(this);
+    synchronized (RemoteMediaDrmBridgeStub.class) {
+      mBridgeStubs.remove(this);
+    }
     if (mBridge != null) {
       mBridge.release();
       mBridge = null;
@@ -242,6 +241,16 @@ final class RemoteMediaDrmBridgeStub extends IMediaDrmBridge.Stub
       mBridge.setServerCertificate(cert);
     } catch (final IllegalStateException e) {
       Log.e(LOGTAG, "Failed to setServerCertificate.", e);
+      throw e;
+    }
+  }
+
+  @Override
+  public synchronized void setOriginID(final String originID) {
+    try {
+      mBridge.setOriginID(originID);
+    } catch (final IllegalStateException e) {
+      Log.e(LOGTAG, "Failed to setOriginID.", e);
       throw e;
     }
   }

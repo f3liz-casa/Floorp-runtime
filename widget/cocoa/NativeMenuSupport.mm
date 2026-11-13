@@ -1,4 +1,3 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -6,9 +5,10 @@
 #include "mozilla/widget/NativeMenuSupport.h"
 
 #include "MainThreadUtils.h"
+#include "NativeMenuMac.h"
+#include "gfxPlatform.h"
 #include "mozilla/StaticPrefs_browser.h"
 #include "mozilla/StaticPrefs_widget.h"
-#include "NativeMenuMac.h"
 #include "nsCocoaWindow.h"
 #include "nsMenuBarX.h"
 
@@ -28,13 +28,19 @@ void NativeMenuSupport::CreateNativeMenuBar(nsIWidget* aParent,
       MakeRefPtr<nsMenuBarX>(aMenuBarElement));
 }
 
-already_AddRefed<NativeMenu> NativeMenuSupport::CreateNativeContextMenu(
+already_AddRefed<NativeMenu> NativeMenuSupport::CreateNativePopupMenu(
     dom::Element* aPopup) {
   return MakeAndAddRef<NativeMenuMac>(aPopup);
 }
 
+bool NativeMenuSupport::ShouldUseNativeAnchoredMenus() {
+  return !gfxPlatform::IsHeadless() &&
+         StaticPrefs::widget_macos_native_anchored_menus();
+}
+
 bool NativeMenuSupport::ShouldUseNativeContextMenus() {
-  return StaticPrefs::widget_macos_native_context_menus();
+  return !gfxPlatform::IsHeadless() &&
+         StaticPrefs::widget_macos_native_context_menus();
 }
 
 }  // namespace mozilla::widget

@@ -14,12 +14,13 @@
 #include <stddef.h>
 
 #include <memory>
-#include <optional>
 
+#include "absl/base/nullability.h"
+#include "api/environment/environment.h"
 #include "api/sequence_checker.h"
-#include "api/units/time_delta.h"
 #include "rtc_base/async_packet_socket.h"
 #include "rtc_base/buffer.h"
+#include "rtc_base/clock_aligner.h"
 #include "rtc_base/socket.h"
 #include "rtc_base/socket_address.h"
 #include "rtc_base/socket_factory.h"
@@ -32,17 +33,16 @@ namespace webrtc {
 // buffered since it is acceptable to drop packets under high load.
 class AsyncUDPSocket : public AsyncPacketSocket {
  public:
-  // Binds `socket` and creates AsyncUDPSocket for it. Takes ownership
-  // of `socket`. Returns null if bind() fails (`socket` is destroyed
-  // in that case).
-  static AsyncUDPSocket* Create(Socket* socket,
-                                const SocketAddress& bind_address);
   // Creates a new socket for sending asynchronous UDP packets using an
   // asynchronous socket from the given factory.
-  static AsyncUDPSocket* Create(SocketFactory* factory,
-                                const SocketAddress& bind_address);
-  explicit AsyncUDPSocket(Socket* socket);
-  ~AsyncUDPSocket() = default;
+  static absl_nullable std::unique_ptr<AsyncUDPSocket> Create(
+      const Environment& env,
+      const SocketAddress& bind_address,
+      SocketFactory& factory);
+
+  AsyncUDPSocket(const Environment& env,
+                 absl_nonnull std::unique_ptr<Socket> socket);
+  ~AsyncUDPSocket() override = default;
 
   SocketAddress GetLocalAddress() const override;
   SocketAddress GetRemoteAddress() const override;
@@ -62,27 +62,22 @@ class AsyncUDPSocket : public AsyncPacketSocket {
   void SetError(int error) override;
 
  private:
+  // called when the underlying socket is connected - DTLS handshake case
+  void OnConnectEvent(Socket* socket);
   // Called when the underlying socket is ready to be read from.
   void OnReadEvent(Socket* socket);
   // Called when the underlying socket is ready to send.
   void OnWriteEvent(Socket* socket);
 
+  const Environment env_;
   RTC_NO_UNIQUE_ADDRESS SequenceChecker sequence_checker_;
   std::unique_ptr<Socket> socket_;
   bool has_set_ect1_options_ = false;
   Buffer buffer_ RTC_GUARDED_BY(sequence_checker_);
-  std::optional<TimeDelta> socket_time_offset_
-      RTC_GUARDED_BY(sequence_checker_);
+  ClockAligner clock_aligner_ RTC_GUARDED_BY(sequence_checker_);
 };
 
 }  //  namespace webrtc
 
-// Re-export symbols from the webrtc namespace for backwards compatibility.
-// TODO(bugs.webrtc.org/4222596): Remove once all references are updated.
-#ifdef WEBRTC_ALLOW_DEPRECATED_NAMESPACES
-namespace rtc {
-using ::webrtc::AsyncUDPSocket;
-}  // namespace rtc
-#endif  // WEBRTC_ALLOW_DEPRECATED_NAMESPACES
 
 #endif  // RTC_BASE_ASYNC_UDP_SOCKET_H_

@@ -128,12 +128,6 @@ void ResourceAdaptationProcessor::AddResource(
   RTC_LOG(LS_INFO) << "Registered resource \"" << resource->Name() << "\".";
 }
 
-std::vector<scoped_refptr<Resource>> ResourceAdaptationProcessor::GetResources()
-    const {
-  MutexLock crit(&resources_lock_);
-  return resources_;
-}
-
 void ResourceAdaptationProcessor::RemoveResource(
     scoped_refptr<Resource> resource) {
   RTC_DCHECK(resource);
@@ -326,7 +320,8 @@ std::pair<std::vector<scoped_refptr<Resource>>,
 ResourceAdaptationProcessor::FindMostLimitedResources() const {
   std::vector<scoped_refptr<Resource>> most_limited_resources;
   VideoStreamAdapter::RestrictionsWithCounters most_limited_restrictions{
-      VideoSourceRestrictions(), VideoAdaptationCounters()};
+      .restrictions = VideoSourceRestrictions(),
+      .counters = VideoAdaptationCounters()};
 
   for (const auto& resource_and_adaptation_limit_ :
        adaptation_limits_by_resources_) {
@@ -355,7 +350,7 @@ void ResourceAdaptationProcessor::UpdateResourceLimitations(
       adaptation_limits.counters == counters) {
     return;
   }
-  adaptation_limits = {restrictions, counters};
+  adaptation_limits = {.restrictions = restrictions, .counters = counters};
 
   std::map<scoped_refptr<Resource>, VideoAdaptationCounters> limitations;
   for (const auto& p : adaptation_limits_by_resources_) {

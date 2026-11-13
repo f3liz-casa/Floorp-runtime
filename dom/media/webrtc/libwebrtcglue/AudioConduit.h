@@ -6,6 +6,7 @@
 #define AUDIO_SESSION_H_
 
 #include "MediaConduitInterface.h"
+#include "modules/rtp_rtcp/source/source_tracker.h"
 #include "mozilla/Attributes.h"
 #include "mozilla/RWLock.h"
 #include "mozilla/ReentrantMonitor.h"
@@ -126,6 +127,9 @@ class WebrtcAudioConduit : public AudioSessionConduit,
 
   virtual ~WebrtcAudioConduit();
 
+  WebrtcAudioConduit(const WebrtcAudioConduit& other) = delete;
+  void operator=(const WebrtcAudioConduit& other) = delete;
+
   // Call thread.
   void InitControl(AudioConduitControlInterface* aControl) override;
 
@@ -150,7 +154,7 @@ class WebrtcAudioConduit : public AudioSessionConduit,
   /**
    * Override the remote ssrc configured on mRecvStreamConfig.
    *
-   * Recreates and restarts the recv stream if needed. The overriden value is
+   * Recreates and restarts the recv stream if needed. The overridden value is
    * overwritten the next time the mControl.mRemoteSsrc mirror changes value.
    *
    * Call thread only.
@@ -163,7 +167,7 @@ class WebrtcAudioConduit : public AudioSessionConduit,
   Maybe<webrtc::AudioReceiveStreamInterface::Stats> GetReceiverStats()
       const override;
   Maybe<webrtc::AudioSendStream::Stats> GetSenderStats() const override;
-  Maybe<webrtc::CallBasicStats> GetCallStats() const override;
+  Maybe<webrtc::Call::Stats> GetCallStats() const override;
 
   bool IsSamplingFreqSupported(int freq) const override;
 
@@ -176,9 +180,6 @@ class WebrtcAudioConduit : public AudioSessionConduit,
   const std::vector<webrtc::RtpSource>& GetUpstreamRtpSources() const override;
 
  private:
-  WebrtcAudioConduit(const WebrtcAudioConduit& other) = delete;
-  void operator=(const WebrtcAudioConduit& other) = delete;
-
   // Generate block size in sample length for a given sampling frequency
   unsigned int GetNum10msSamplesForFrequency(int samplingFreqHz) const;
 
@@ -225,6 +226,10 @@ class WebrtcAudioConduit : public AudioSessionConduit,
   // Written only on the Call thread. Guarded by mLock, except for reads on the
   // Call thread.
   webrtc::AudioReceiveStreamInterface* mRecvStream;
+
+  // Fed by mRecvStreamConfig.on_frame_delivered_callback. Call thread only,
+  // since webrtc::SourceTracker itself is not thread-safe.
+  webrtc::SourceTracker mSourceTracker;
 
   // Accessed only on the Call thread.
   webrtc::AudioSendStream::Config mSendStreamConfig;

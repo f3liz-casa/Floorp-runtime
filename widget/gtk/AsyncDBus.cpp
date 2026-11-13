@@ -1,12 +1,12 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "AsyncDBus.h"
+
 #include "gio/gio.h"
-#include "mozilla/UniquePtrExtensions.h"
 #include "mozilla/XREAppData.h"
+#include "nsAppShell.h"
 
 namespace mozilla::widget {
 
@@ -22,6 +22,7 @@ static void CreateProxyCallback(GObject*, GAsyncResult* aResult,
   } else {
     promise->Reject(std::move(error), __func__);
   }
+  nsAppShell::DBusConnectionCheck();
 }
 
 RefPtr<DBusProxyPromise> CreateDBusProxyForBus(
@@ -29,6 +30,7 @@ RefPtr<DBusProxyPromise> CreateDBusProxyForBus(
     GDBusInterfaceInfo* aInterfaceInfo, const char* aName,
     const char* aObjectPath, const char* aInterfaceName,
     GCancellable* aCancellable) {
+  nsAppShell::DBusConnectionCheck();
   auto promise = MakeRefPtr<DBusProxyPromise::Private>(__func__);
   g_dbus_proxy_new_for_bus(aBusType, aFlags, aInterfaceInfo, aName, aObjectPath,
                            aInterfaceName, aCancellable, CreateProxyCallback,
@@ -48,6 +50,7 @@ static void ProxyCallCallback(GObject* aSourceObject, GAsyncResult* aResult,
   } else {
     promise->Reject(std::move(error), __func__);
   }
+  nsAppShell::DBusConnectionCheck();
 }
 
 RefPtr<DBusCallPromise> DBusProxyCall(GDBusProxy* aProxy, const char* aMethod,
@@ -55,6 +58,7 @@ RefPtr<DBusCallPromise> DBusProxyCall(GDBusProxy* aProxy, const char* aMethod,
                                       gint aTimeout,
                                       GCancellable* aCancellable) {
   auto promise = MakeRefPtr<DBusCallPromise::Private>(__func__);
+  nsAppShell::DBusConnectionCheck();
   g_dbus_proxy_call(aProxy, aMethod, aArgs, aFlags, aTimeout, aCancellable,
                     ProxyCallCallback, do_AddRef(promise).take());
   return promise.forget();
@@ -63,26 +67,30 @@ RefPtr<DBusCallPromise> DBusProxyCall(GDBusProxy* aProxy, const char* aMethod,
 static void ProxyCallWithUnixFDListCallback(GObject* aSourceObject,
                                             GAsyncResult* aResult,
                                             gpointer aUserData) {
-  RefPtr<DBusCallPromise::Private> promise =
-      dont_AddRef(static_cast<DBusCallPromise::Private*>(aUserData));
+  RefPtr<DBusCallFDListPromise::Private> promise =
+      dont_AddRef(static_cast<DBusCallFDListPromise::Private*>(aUserData));
   GUniquePtr<GError> error;
-  GUnixFDList** aFDList = nullptr;
+  RefPtr<GUnixFDList> fdList;
   RefPtr<GVariant> result =
       dont_AddRef(g_dbus_proxy_call_with_unix_fd_list_finish(
-          G_DBUS_PROXY(aSourceObject), aFDList, aResult,
+          G_DBUS_PROXY(aSourceObject), getter_AddRefs(fdList), aResult,
           getter_Transfers(error)));
   if (result) {
-    promise->Resolve(std::move(result), __func__);
+    auto pair = std::make_pair<RefPtr<GVariant>, RefPtr<GUnixFDList>>(
+        std::move(result), std::move(fdList));
+    promise->Resolve(std::move(pair), __func__);
   } else {
     promise->Reject(std::move(error), __func__);
   }
+  nsAppShell::DBusConnectionCheck();
 }
 
-RefPtr<DBusCallPromise> DBusProxyCallWithUnixFDList(
+RefPtr<DBusCallFDListPromise> DBusProxyCallWithUnixFDList(
     GDBusProxy* aProxy, const char* aMethod, GVariant* aArgs,
     GDBusCallFlags aFlags, gint aTimeout, GUnixFDList* aFDList,
     GCancellable* aCancellable) {
-  auto promise = MakeRefPtr<DBusCallPromise::Private>(__func__);
+  auto promise = MakeRefPtr<DBusCallFDListPromise::Private>(__func__);
+  nsAppShell::DBusConnectionCheck();
   g_dbus_proxy_call_with_unix_fd_list(
       aProxy, aMethod, aArgs, aFlags, aTimeout, aFDList, aCancellable,
       ProxyCallWithUnixFDListCallback, do_AddRef(promise).take());
@@ -139,6 +147,7 @@ struct PortalResponseData {
                     const gchar* object_path, const gchar* interface_name,
                     const gchar* signal_name, GVariant* parameters,
                     gpointer user_data) {
+    nsAppShell::DBusConnectionCheck();
     auto* data = static_cast<PortalResponseData*>(user_data);
     auto callback = std::move(data->mCallback);
     g_dbus_connection_signal_unsubscribe(connection, data->mSubscriptionId);
@@ -149,6 +158,7 @@ struct PortalResponseData {
 
 guint OnDBusPortalResponse(GDBusProxy* aProxy, const nsCString& aRequestToken,
                            PortalResponseListener aCallback) {
+  nsAppShell::DBusConnectionCheck();
   auto boxedData = MakeUnique<PortalResponseData>(std::move(aCallback));
 
   nsAutoCString requestPath;

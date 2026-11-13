@@ -2,10 +2,10 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef mozilla_dom_SpeechSynthesisChild_h
-#define mozilla_dom_SpeechSynthesisChild_h
+#ifndef DOM_MEDIA_WEBSPEECH_SYNTH_IPC_SPEECHSYNTHESISCHILD_H_
+#define DOM_MEDIA_WEBSPEECH_SYNTH_IPC_SPEECHSYNTHESISCHILD_H_
 
-#include "mozilla/Attributes.h"
+#include "mozilla/dom/AudioFocusInterrupt.h"
 #include "mozilla/dom/PSpeechSynthesisChild.h"
 #include "mozilla/dom/PSpeechSynthesisRequestChild.h"
 #include "nsSpeechTask.h"
@@ -15,6 +15,7 @@ namespace mozilla::dom {
 class nsSynthVoiceRegistry;
 class SpeechSynthesisRequestChild;
 class SpeechTaskChild;
+class MediaSharedKeysListener;
 
 class SpeechSynthesisChild : public PSpeechSynthesisChild {
   friend class nsSynthVoiceRegistry;
@@ -102,10 +103,32 @@ class SpeechTaskChild : public nsSpeechTask {
 
   void SetAudioOutputVolume(float aVolume) override;
 
+  // Pause/resume driven by an audio-focus interruption. ResumeFromMediaControl
+  // only resumes a task a transient interruption paused; if the page called
+  // pause()/resume() in the meantime it has taken over and we leave it alone.
+  // A permanent interruption leaves its pause, and any resume() the page asked
+  // for during the interruption, to the page.
+  void PauseFromMediaControl(AudioSessionInterruptKind aKind);
+  void ResumeFromMediaControl();
+
+ protected:
+  virtual ~SpeechTaskChild();
+
+  void StartMediaControl() override;
+  void StopMediaControl() override;
+
  private:
   SpeechSynthesisRequestChild* mActor;
+
+  // Surfaces a speaking utterance to media control: reports the tab as audible
+  // and lets media control pause/resume the speech.
+  RefPtr<MediaSharedKeysListener> mSharedKeysListener;
+
+  // Set while an audio-focus interruption owns the paused state; cleared once
+  // the page issues its own pause()/resume().
+  bool mPausedByMediaControl = false;
 };
 
 }  // namespace mozilla::dom
 
-#endif
+#endif  // DOM_MEDIA_WEBSPEECH_SYNTH_IPC_SPEECHSYNTHESISCHILD_H_

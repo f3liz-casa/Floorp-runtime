@@ -23,6 +23,14 @@ sanitize-dialog-title-everything =
     .title = Clear All History
     .style = min-width: 34em
 
+# Title used whenever this dialog is opened to delete data, whichever entry
+# point it was opened from. sanitize-dialog-title2 is still used for the clear
+# on shutdown context, which saves preferences rather than deleting anything.
+# Keep the .style in sync with it.
+sanitize-dialog-delete-title =
+    .title = Delete browsing data
+    .style = min-width: 34em
+
 clear-data-settings-label = When closed, { -brand-short-name } should automatically clear all
 
 sanitize-on-shutdown-description = Automatically clear all checked items when { -brand-short-name } closes.
@@ -149,11 +157,18 @@ window-close =
 sanitize-button-ok =
     .label = Clear Now
 
-sanitize-button-ok2 =
-    .label = Clear
-
 sanitize-button-ok-on-shutdown =
     .label = Save Changes
+
+# Confirm button used whenever this dialog is opened to delete data, whichever
+# entry point it was opened from.
+sanitize-button-delete =
+    .label = Delete
+
+# Icon-only button in the dialog's top right corner. Dismisses the dialog
+# without deleting anything, the same as the Cancel button.
+sanitize-dialog-close-button =
+    .title = Close
 
 # The label for the default button between the user clicking it and the window
 # closing.  Indicates the items are being cleared.
@@ -169,3 +184,7 @@ sanitize-everything-warning = All history will be cleared.
 # Recent History dialog, provided that the user has modified the default set of
 # history items to clear.
 sanitize-selected-warning = All selected items will be cleared.
+
+# Label shown next to the loading spinner while calculating the size of cached data
+# and cookies in the clear data dialog.
+sanitize-calculating-size = Calculating…

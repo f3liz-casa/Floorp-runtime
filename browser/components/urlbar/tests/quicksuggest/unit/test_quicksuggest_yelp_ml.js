@@ -7,7 +7,7 @@
 "use strict";
 
 ChromeUtils.defineESModuleGetters(this, {
-  MLSuggest: "resource:///modules/urlbar/private/MLSuggest.sys.mjs",
+  MLSuggest: "moz-src:///browser/components/urlbar/private/MLSuggest.sys.mjs",
 });
 
 const REMOTE_SETTINGS_RECORDS = [
@@ -54,7 +54,7 @@ add_setup(async function init() {
     prefs: [
       ["browser.ml.enable", true],
       ["quicksuggest.mlEnabled", true],
-      ["suggest.quicksuggest.nonsponsored", true],
+      ["suggest.quicksuggest.all", true],
       ["suggest.quicksuggest.sponsored", true],
       ["yelp.mlEnabled", true],
       ["yelp.serviceResultDistinction", false],
@@ -87,28 +87,28 @@ add_task(async function yelpDisabled() {
     {
       prefs: {
         "suggest.quicksuggest.sponsored": true,
-        "suggest.quicksuggest.nonsponsored": true,
+        "suggest.quicksuggest.all": true,
       },
       expected: true,
     },
     {
       prefs: {
         "suggest.quicksuggest.sponsored": true,
-        "suggest.quicksuggest.nonsponsored": false,
-      },
-      expected: true,
-    },
-    {
-      prefs: {
-        "suggest.quicksuggest.sponsored": false,
-        "suggest.quicksuggest.nonsponsored": true,
+        "suggest.quicksuggest.all": false,
       },
       expected: false,
     },
     {
       prefs: {
         "suggest.quicksuggest.sponsored": false,
-        "suggest.quicksuggest.nonsponsored": false,
+        "suggest.quicksuggest.all": true,
+      },
+      expected: false,
+    },
+    {
+      prefs: {
+        "suggest.quicksuggest.sponsored": false,
+        "suggest.quicksuggest.all": false,
       },
       expected: false,
     },
@@ -366,6 +366,32 @@ add_task(async function searchString() {
   );
 });
 
+// `MLSuggest.makeSuggestions()` should not be called when the search string is
+// empty.
+add_task(async function searchStringLengthThreshold() {
+  let searchStrings = [];
+  gMakeSuggestionsStub.callsFake(str => {
+    searchStrings.push(str);
+    return null;
+  });
+
+  let controller = UrlbarTestUtils.mockChildController();
+  for (let searchString of ["", " ", "x", " X ", "xx"]) {
+    await controller.startQuery(
+      createContext(searchString, {
+        providers: [UrlbarProviderQuickSuggest.name],
+        isPrivate: false,
+      })
+    );
+  }
+
+  Assert.deepEqual(
+    searchStrings,
+    ["x", "x", "xx"],
+    "MLSuggest should be called only for non-empty search strings"
+  );
+});
+
 // The metadata cache should be populated from the "coffee" Rust suggestion when
 // it's present in remote settings.
 add_task(async function cache_fromRust() {
@@ -457,8 +483,8 @@ async function doCacheTest({ expectedScore, expectedRust }) {
   );
 }
 
-// Tests the "Not relevant" command: a dismissed suggestion shouldn't be added.
-add_task(async function notRelevant() {
+// Tests the "Dismiss" command: a dismissed suggestion shouldn't be added.
+add_task(async function dismiss() {
   let burgersIntent = { intent: "yelp_intent", subject: "burgers" };
   let waterlooIntent = {
     intent: "yelp_intent",
@@ -483,7 +509,7 @@ add_task(async function notRelevant() {
   );
   triggerCommand({
     result,
-    command: "not_relevant",
+    command: "dismiss",
     feature: QuickSuggest.getFeature("YelpSuggestions"),
     expectedCountsByCall: {
       removeResult: 1,
@@ -559,7 +585,9 @@ function makeExpectedResult({
   source = "ml",
   provider = "yelp_intent",
   originalUrl = undefined,
-  displayUrl = undefined,
+  // Expect index -1 for amp results because we test
+  // without the search suggestions provider.
+  suggestedIndex = -1,
 }) {
   return QuickSuggestTestUtils.yelpResult({
     url,
@@ -567,6 +595,6 @@ function makeExpectedResult({
     source,
     provider,
     originalUrl,
-    displayUrl,
+    suggestedIndex,
   });
 }

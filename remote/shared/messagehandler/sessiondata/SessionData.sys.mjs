@@ -27,8 +27,19 @@ ChromeUtils.defineLazyGetter(lazy, "logger", () => lazy.Log.get());
  * @enum {SessionDataCategory}
  */
 export const SessionDataCategory = {
+  DownloadBehaviorOverride: "download-behavior-override",
   Event: "event",
+  GeolocationOverride: "geolocation-override",
+  LocaleOverride: "locale-override",
+  MediaFeaturesOverride: "media-features-override",
+  NetworkConditions: "network-conditions",
   PreloadScript: "preload-script",
+  ResponseCollector: "response-collector",
+  ScreenOrientationOverride: "screen-orientation-override",
+  ScreenSettingsOverride: "screen-settings-override",
+  TimezoneOverride: "timezone-override",
+  UserAgentOverride: "user-agent-override",
+  ViewportOverride: "viewport-override",
 };
 
 /**
@@ -48,8 +59,8 @@ export const SessionDataMethod = {
 
 export const SESSION_DATA_SHARED_DATA_KEY = "MessageHandlerSessionData";
 
-// This is a map from session id to session data, which will be persisted and
-// propagated to all processes using Services' sharedData.
+// This is a map from internal session id to session data, which will be
+// persisted and propagated to all processes using Services' sharedData.
 // We have to store this as a unique object under a unique shared data key
 // because new MessageHandlers in other processes will need to access this data
 // without any notion of a specific session.
@@ -145,7 +156,7 @@ export class SessionData {
 
   destroy() {
     // Update the sessionDataMap singleton.
-    sessionDataMap.delete(this.#messageHandler.sessionId);
+    sessionDataMap.delete(this.#messageHandler.internalSessionId);
 
     // Update sharedData and flush to force consistency.
     Services.ppmm.sharedData.set(SESSION_DATA_SHARED_DATA_KEY, sessionDataMap);
@@ -225,6 +236,63 @@ export class SessionData {
   }
 
   /**
+   * Generate session data item update (remove existing items and add new)
+   * for a given module, category, contextDescriptor and new value.
+   *
+   * @param {string} moduleName
+   *     The name of the module.
+   * @param {string} category
+   *     The session data category.
+   * @param {ContextDescriptor=} contextDescriptor
+   *     The context descriptor.
+   * @param {boolean} onlyRemove
+   *     If it's set to "true" do not add a new session data item.
+   * @param {(string|number|boolean)} newValue
+   *     The new value of the session data item.
+   *
+   * @returns {Array<SessionDataItemUpdate>} sessionDataItemUpdates
+   *     Array of session data item updates.
+   */
+  generateSessionDataItemUpdate(
+    moduleName,
+    category,
+    contextDescriptor,
+    onlyRemove,
+    newValue
+  ) {
+    const sessionDataUpdate = [];
+    const sessionData = this.getSessionData(
+      moduleName,
+      category,
+      contextDescriptor
+    );
+
+    if (sessionData.length) {
+      for (const item of sessionData) {
+        sessionDataUpdate.push({
+          category,
+          moduleName,
+          values: [item.value],
+          contextDescriptor,
+          method: SessionDataMethod.Remove,
+        });
+      }
+    }
+
+    if (!onlyRemove) {
+      sessionDataUpdate.push({
+        category,
+        moduleName,
+        values: [newValue],
+        contextDescriptor,
+        method: SessionDataMethod.Add,
+      });
+    }
+
+    return sessionDataUpdate;
+  }
+
+  /**
    * Retrieve the SessionDataItems for a given module and type.
    *
    * @param {string} moduleName
@@ -240,6 +308,32 @@ export class SessionData {
   getSessionData(moduleName, category, contextDescriptor) {
     return this.#data.filter(item =>
       this.#matchItem(item, moduleName, category, contextDescriptor)
+    );
+  }
+
+  /**
+   * Retrieve the SessionDataItems for a given module, type and
+   * with context descriptors which would match the provided
+   * browsing context.
+   *
+   * @param {string} moduleName
+   *     The name of the module.
+   * @param {string} category
+   *     The session data category.
+   * @param {BrowsingContext} context
+   *     The browsing context.
+   * @returns {Array<SessionDataItem>}
+   *     Array of SessionDataItems for the provided module, type
+   *     and browsing context.
+   */
+  getSessionDataForContext(moduleName, category, context) {
+    return this.#data.filter(
+      item =>
+        this.#matchItem(item, moduleName, category) &&
+        this.#messageHandler.contextsMatchDescriptor(
+          [context],
+          item.contextDescriptor
+        )
     );
   }
 
@@ -411,7 +505,7 @@ export class SessionData {
 
   #persist() {
     // Update the sessionDataMap singleton.
-    sessionDataMap.set(this.#messageHandler.sessionId, this.#data);
+    sessionDataMap.set(this.#messageHandler.internalSessionId, this.#data);
 
     // Update sharedData and flush to force consistency.
     Services.ppmm.sharedData.set(SESSION_DATA_SHARED_DATA_KEY, sessionDataMap);

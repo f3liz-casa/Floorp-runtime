@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -9,6 +7,7 @@
 #include "js/ForOfIterator.h"  // JS::ForOfIterator
 #include "json/json.h"
 #include "mozilla/dom/AutoEntryScript.h"
+#include "mozilla/dom/Document.h"
 #include "mozilla/dom/Element.h"
 #include "mozilla/dom/L10nOverlays.h"
 #include "mozilla/intl/L10nRegistry.h"
@@ -45,6 +44,12 @@ DOMLocalization::DOMLocalization(nsIGlobalObject* aGlobal, bool aSync)
 DOMLocalization::DOMLocalization(nsIGlobalObject* aGlobal, bool aIsSync,
                                  const ffi::LocalizationRc* aRaw)
     : Localization(aGlobal, aIsSync, aRaw) {
+  mMutations = new L10nMutations(this);
+}
+
+DOMLocalization::DOMLocalization(nsIGlobalObject* aGlobal, bool aIsSync,
+                                 const nsTArray<nsCString>& aLocales)
+    : Localization(aGlobal, aIsSync, aLocales) {
   mMutations = new L10nMutations(this);
 }
 
@@ -106,7 +111,7 @@ bool DOMLocalization::HasPendingMutations() const {
  */
 
 void DOMLocalization::ConnectRoot(nsINode& aNode) {
-  nsCOMPtr<nsIGlobalObject> global = aNode.GetOwnerGlobal();
+  nsCOMPtr<nsIGlobalObject> global = aNode.GetDocumentGlobal();
   if (!global) {
     return;
   }
@@ -150,7 +155,8 @@ void DOMLocalization::SetAttributes(
     }
     if (!aElement.AttrValueIs(kNameSpaceID_None, nsGkAtoms::datal10nargs, data,
                               eCaseMatters)) {
-      aElement.SetAttr(kNameSpaceID_None, nsGkAtoms::datal10nargs, data, true);
+      aElement.SetAttr(kNameSpaceID_None, nsGkAtoms::datal10nargs, data, true,
+                       IsKnownNewAttr::No);
     }
   } else {
     aElement.UnsetAttr(kNameSpaceID_None, nsGkAtoms::datal10nargs, true);
@@ -158,7 +164,8 @@ void DOMLocalization::SetAttributes(
 
   if (!aElement.AttrValueIs(kNameSpaceID_None, nsGkAtoms::datal10nid, aId,
                             eCaseMatters)) {
-    aElement.SetAttr(kNameSpaceID_None, nsGkAtoms::datal10nid, aId, true);
+    aElement.SetAttr(kNameSpaceID_None, nsGkAtoms::datal10nid, aId, true,
+                     IsKnownNewAttr::No);
   }
 }
 
@@ -172,7 +179,8 @@ void DOMLocalization::GetAttributes(Element& aElement, L10nIdArgs& aResult,
   }
 
   if (aElement.GetAttr(nsGkAtoms::datal10nargs, l10nArgs)) {
-    ConvertStringToL10nArgs(l10nArgs, aResult.mArgs.SetValue(), aRv);
+    ConvertStringToL10nArgs(aResult.mId, l10nArgs, aResult.mArgs.SetValue(),
+                            aRv);
   }
 }
 
@@ -189,7 +197,8 @@ void DOMLocalization::SetArgs(JSContext* aCx, Element& aElement,
     }
     if (!aElement.AttrValueIs(kNameSpaceID_None, nsGkAtoms::datal10nargs, data,
                               eCaseMatters)) {
-      aElement.SetAttr(kNameSpaceID_None, nsGkAtoms::datal10nargs, data, true);
+      aElement.SetAttr(kNameSpaceID_None, nsGkAtoms::datal10nargs, data, true,
+                       IsKnownNewAttr::No);
     }
   } else {
     aElement.UnsetAttr(kNameSpaceID_None, nsGkAtoms::datal10nargs, true);
@@ -399,7 +408,7 @@ already_AddRefed<Promise> DOMLocalization::TranslateElements(
  */
 class L10nRootTranslationHandler final : public PromiseNativeHandler {
  public:
-  NS_DECL_CYCLE_COLLECTING_ISUPPORTS
+  NS_DECL_CYCLE_COLLECTING_ISUPPORTS_FINAL
   NS_DECL_CYCLE_COLLECTION_CLASS(L10nRootTranslationHandler)
 
   explicit L10nRootTranslationHandler(Element* aRoot) : mRoot(aRoot) {}
@@ -484,20 +493,19 @@ void DOMLocalization::SetRootInfo(Element* aElement) {
   nsAutoCString primaryLocale;
   LocaleService::GetInstance()->GetAppLocaleAsBCP47(primaryLocale);
   aElement->SetAttr(kNameSpaceID_None, nsGkAtoms::lang,
-                    NS_ConvertUTF8toUTF16(primaryLocale), true);
+                    NS_ConvertUTF8toUTF16(primaryLocale), true,
+                    IsKnownNewAttr::No);
 
-  nsAutoString dir;
-  if (LocaleService::GetInstance()->IsAppLocaleRTL()) {
-    nsGkAtoms::rtl->ToString(dir);
-  } else {
-    nsGkAtoms::ltr->ToString(dir);
-  }
+  const nsAtom* dirValue = LocaleService::GetInstance()->IsAppLocaleRTL()
+                               ? nsGkAtoms::rtl
+                               : nsGkAtoms::ltr;
 
   uint32_t nameSpace = aElement->GetNameSpaceID();
   nsAtom* dirAtom =
       nameSpace == kNameSpaceID_XUL ? nsGkAtoms::localedir : nsGkAtoms::dir;
 
-  aElement->SetAttr(kNameSpaceID_None, dirAtom, dir, true);
+  aElement->SetAttr(kNameSpaceID_None, dirAtom, nsDependentAtomString(dirValue),
+                    true, IsKnownNewAttr::No);
 }
 
 bool DOMLocalization::ApplyTranslations(
@@ -640,7 +648,8 @@ void DOMLocalization::ReportL10nOverlaysErrors(
   }
 }
 
-void DOMLocalization::ConvertStringToL10nArgs(const nsString& aInput,
+void DOMLocalization::ConvertStringToL10nArgs(const nsCString& aL10nId,
+                                              const nsString& aInput,
                                               intl::L10nArgs& aRetVal,
                                               ErrorResult& aRv) {
   if (aInput.IsEmpty()) {
@@ -653,7 +662,7 @@ void DOMLocalization::ConvertStringToL10nArgs(const nsString& aInput,
 
   if (!jsonReader.parse(NS_ConvertUTF16toUTF8(aInput).get(), args, false)) {
     nsTArray<nsCString> errors{
-        "[dom/l10n] Failed to parse l10n-args JSON: "_ns +
+        "[dom/l10n] Failed to parse l10n-args JSON ("_ns + aL10nId + "): "_ns +
             NS_ConvertUTF16toUTF8(aInput),
     };
     MaybeReportErrorsToGecko(errors, aRv, GetParentObject());
@@ -662,8 +671,8 @@ void DOMLocalization::ConvertStringToL10nArgs(const nsString& aInput,
 
   if (!args.isObject()) {
     nsTArray<nsCString> errors{
-        "[dom/l10n] Failed to parse l10n-args JSON: "_ns +
-            NS_ConvertUTF16toUTF8(aInput),
+        "[dom/l10n] Failed to parse l10n-args as JSON object ("_ns + aL10nId +
+            "): "_ns + NS_ConvertUTF16toUTF8(aInput),
     };
     MaybeReportErrorsToGecko(errors, aRv, GetParentObject());
     return;
@@ -692,8 +701,8 @@ void DOMLocalization::ConvertStringToL10nArgs(const nsString& aInput,
       newEntry->mValue.SetNull();
     } else {
       nsTArray<nsCString> errors{
-          "[dom/l10n] Failed to convert l10n-args JSON: "_ns +
-              NS_ConvertUTF16toUTF8(aInput),
+          "[dom/l10n] Failed to convert l10n-args JSON ("_ns + aL10nId +
+              "): "_ns + NS_ConvertUTF16toUTF8(aInput),
       };
       MaybeReportErrorsToGecko(errors, aRv, GetParentObject());
     }

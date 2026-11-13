@@ -1,22 +1,18 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set sw=2 ts=8 et tw=80 : */
-
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 // HttpLog.h should generally be included first
-#include "HttpLog.h"
-
 #include "HttpBackgroundChannelParent.h"
 
 #include "HttpChannelParent.h"
-#include "mozilla/ipc/BackgroundParent.h"
+#include "HttpLog.h"
 #include "mozilla/IntegerPrintfMacros.h"
-#include "mozilla/Unused.h"
+#include "mozilla/ipc/BackgroundParent.h"
 #include "mozilla/net/BackgroundChannelRegistrar.h"
 #include "mozilla/net/ChannelEventQueue.h"
 #include "nsNetCID.h"
+#include "nsProxyRelease.h"
 #include "nsQueryObject.h"
 #include "nsThreadUtils.h"
 
@@ -83,11 +79,14 @@ HttpBackgroundChannelParent::~HttpBackgroundChannelParent() {
   MOZ_ASSERT(!mIPCOpened);
 }
 
-nsresult HttpBackgroundChannelParent::Init(const uint64_t& aChannelId) {
+nsresult HttpBackgroundChannelParent::Init(const dom::ContentParentId& aCpId,
+                                           const uint64_t& aChannelId) {
   LOG(("HttpBackgroundChannelParent::Init [this=%p channelId=%" PRIu64 "]\n",
        this, aChannelId));
   AssertIsInMainProcess();
   AssertIsOnBackgroundThread();
+
+  mContentParentId = aCpId;
 
   RefPtr<ContinueAsyncOpenRunnable> runnable =
       new ContinueAsyncOpenRunnable(this, aChannelId);
@@ -135,12 +134,12 @@ void HttpBackgroundChannelParent::OnChannelClosed() {
                 return;
               }
 
-              Unused << self->Send__delete__(self);
+              (void)self->Send__delete__(self);
             }),
         NS_DISPATCH_NORMAL);
   }
 
-  Unused << NS_WARN_IF(NS_FAILED(rv));
+  (void)NS_WARN_IF(NS_FAILED(rv));
 }
 
 bool HttpBackgroundChannelParent::OnStartRequest(
@@ -177,16 +176,16 @@ bool HttpBackgroundChannelParent::OnStartRequest(
   HttpChannelAltDataStream altData;
   if (aAltDataSource) {
     nsAutoCString altDataType;
-    Unused << aAltDataSource->GetAltDataType(altDataType);
+    (void)aAltDataSource->GetAltDataType(altDataType);
 
     if (!altDataType.IsEmpty()) {
       nsCOMPtr<nsIInputStream> inputStream;
       nsresult rv = aAltDataSource->OpenAlternativeInputStream(
           altDataType, getter_AddRefs(inputStream));
       if (NS_SUCCEEDED(rv)) {
-        Unused << mozilla::ipc::SerializeIPCStream(inputStream.forget(),
-                                                   altData.altDataInputStream(),
-                                                   /* aAllowLazy */ true);
+        (void)mozilla::ipc::SerializeIPCStream(inputStream.forget(),
+                                               altData.altDataInputStream(),
+                                               /* aAllowLazy */ true);
       }
     }
   }
@@ -228,7 +227,7 @@ bool HttpBackgroundChannelParent::OnTransportAndData(
        aOnDataAvailableStart](const nsDependentCSubstring& aData,
                               uint64_t aOffset, uint32_t aCount) {
         return self->SendOnTransportAndData(aChannelStatus, aTransportStatus,
-                                            aOffset, aCount, aData, false,
+                                            aOffset, aData, false,
                                             aOnDataAvailableStart);
       };
 
@@ -471,6 +470,7 @@ bool HttpBackgroundChannelParent::OnSetClassifierMatchedTrackingInfo(
 }
 
 nsISerialEventTarget* HttpBackgroundChannelParent::GetBackgroundTarget() {
+  MutexAutoLock lock(mBgThreadMutex);
   MOZ_ASSERT(mBackgroundThread);
   return mBackgroundThread.get();
 }
@@ -494,6 +494,7 @@ auto HttpBackgroundChannelParent::AttachStreamFilter(
 auto HttpBackgroundChannelParent::DetachStreamFilters()
     -> RefPtr<GenericPromise> {
   LOG(("HttpBackgroundChannelParent::DetachStreamFilters [this=%p]\n", this));
+  MOZ_ASSERT(IsOnBackgroundThread());
   if (NS_WARN_IF(!mIPCOpened) || !SendDetachStreamFilters()) {
     return GenericPromise::CreateAndReject(NS_ERROR_FAILURE, __func__);
   }
@@ -509,18 +510,26 @@ void HttpBackgroundChannelParent::ActorDestroy(ActorDestroyReason aWhy) {
   mIPCOpened = false;
 
   RefPtr<HttpBackgroundChannelParent> self = this;
-  DebugOnly<nsresult> rv = NS_DispatchToMainThread(NS_NewRunnableFunction(
-      "net::HttpBackgroundChannelParent::ActorDestroy", [self]() {
-        MOZ_ASSERT(NS_IsMainThread());
+  nsresult rv = NS_DispatchToMainThread(
+      NS_NewRunnableFunction("net::HttpBackgroundChannelParent::ActorDestroy",
+                             [self]() {
+                               MOZ_ASSERT(NS_IsMainThread());
 
-        RefPtr<HttpChannelParent> channelParent =
-            std::move(self->mChannelParent);
+                               RefPtr<HttpChannelParent> channelParent =
+                                   std::move(self->mChannelParent);
 
-        if (channelParent) {
-          channelParent->OnBackgroundParentDestroyed();
-        }
-      }));
-  MOZ_ASSERT(NS_SUCCEEDED(rv));
+                               if (channelParent) {
+                                 channelParent->OnBackgroundParentDestroyed();
+                               }
+                             }),
+      NS_DISPATCH_FALLIBLE);
+  if (NS_FAILED(rv)) {
+    // HttpChannelParent is not thread-safe refcounted, so don't let it be
+    // released here when the main thread is gone.
+    nsCOMPtr<nsIParentChannel> channelParent = mChannelParent.forget();
+    NS_ReleaseOnMainThread("HttpBackgroundChannelParent::mChannelParent",
+                           channelParent.forget());
+  }
 }
 
 }  // namespace net

@@ -10,10 +10,9 @@ use crate::error_recording::{record_error, test_get_num_recorded_errors, ErrorTy
 use crate::metrics::time_unit::TimeUnit;
 use crate::metrics::Metric;
 use crate::metrics::MetricType;
-use crate::storage::StorageManager;
 use crate::util::{get_iso_time_string, local_now_with_offset};
-use crate::CommonMetricData;
 use crate::Glean;
+use crate::{CommonMetricData, TestGetValue};
 
 use chrono::{DateTime, Datelike, FixedOffset, NaiveTime, TimeZone, Timelike};
 use malloc_size_of_derive::MallocSizeOf;
@@ -218,37 +217,15 @@ impl DatetimeMetric {
     ) -> Option<(ChronoDatetime, TimeUnit)> {
         let queried_ping_name = ping_name.unwrap_or_else(|| &self.meta().inner.send_in_pings[0]);
 
-        match StorageManager.snapshot_metric(
-            glean.storage(),
+        match glean.storage().get_metric(
+            #[cfg(not(feature = "sqlite"))]
+            glean,
+            self.meta(),
             queried_ping_name,
-            &self.meta.identifier(glean),
-            self.meta.inner.lifetime,
         ) {
             Some(Metric::Datetime(d, tu)) => Some((d, tu)),
             _ => None,
         }
-    }
-
-    /// **Test-only API (exported for FFI purposes).**
-    ///
-    /// Gets the stored datetime value.
-    ///
-    /// The precision of this value is truncated to the `time_unit` precision.
-    ///
-    /// # Arguments
-    ///
-    /// * `ping_name` - the optional name of the ping to retrieve the metric
-    ///                 for. Defaults to the first value in `send_in_pings`.
-    ///
-    /// # Returns
-    ///
-    /// The stored value or `None` if nothing stored.
-    pub fn test_get_value(&self, ping_name: Option<String>) -> Option<Datetime> {
-        crate::block_on_dispatcher();
-        crate::core::with_glean(|glean| {
-            let dt = self.get_value(glean, ping_name.as_deref());
-            dt.map(Datetime::from)
-        })
     }
 
     /// **Test-only API (exported for FFI purposes).**
@@ -295,6 +272,32 @@ impl DatetimeMetric {
 
         crate::core::with_glean(|glean| {
             test_get_num_recorded_errors(glean, self.meta(), error).unwrap_or(0)
+        })
+    }
+}
+
+impl TestGetValue for DatetimeMetric {
+    type Output = Datetime;
+
+    /// **Test-only API (exported for FFI purposes).**
+    ///
+    /// Gets the stored datetime value.
+    ///
+    /// The precision of this value is truncated to the `time_unit` precision.
+    ///
+    /// # Arguments
+    ///
+    /// * `ping_name` - the optional name of the ping to retrieve the metric
+    ///                 for. Defaults to the first value in `send_in_pings`.
+    ///
+    /// # Returns
+    ///
+    /// The stored value or `None` if nothing stored.
+    fn test_get_value(&self, ping_name: Option<String>) -> Option<Datetime> {
+        crate::block_on_dispatcher();
+        crate::core::with_glean(|glean| {
+            let dt = self.get_value(glean, ping_name.as_deref());
+            dt.map(Datetime::from)
         })
     }
 }

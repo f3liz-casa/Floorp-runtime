@@ -277,7 +277,17 @@ bool OpenTypeGLYF::ParseCompositeGlyph(
   std::vector<edit_rec> edits;
   unsigned prev_start = 0;
   bool we_have_instructions = false;
+  unsigned num_components = 0;
   do {
+    if (++num_components > 0x7fff) {
+      Warning("Too many components in composite: discarding glyph %u", glyph_id);
+      // Reset the buffer position such that all the glyph data will be dropped,
+      // making it an empty (non-composite) glyph.
+      glyph.set_offset(0);
+      component_point_count->gid_stack.clear();
+      return true;
+    }
+
     unsigned start = glyph.offset();
 
     if (!glyph.ReadU16(&flags) || !glyph.ReadU16(&gid)) {
@@ -462,12 +472,12 @@ bool OpenTypeGLYF::Parse(const uint8_t *data, size_t length) {
       GetFont()->GetTypedTable(OTS_TAG_LOCA));
   OpenTypeHEAD *head = static_cast<OpenTypeHEAD*>(
       GetFont()->GetTypedTable(OTS_TAG_HEAD));
-  if (!maxp || !loca || !head) {
-    return Error("Missing maxp or loca or head table needed by glyf table");
-  }
-
   OpenTypeNAME *name = static_cast<OpenTypeNAME*>(
       GetFont()->GetTypedTable(OTS_TAG_NAME));
+  if (!maxp || !loca || !head || !name) {
+    return Error("Missing maxp or loca or head or name table needed by glyf table");
+  }
+
   bool is_tricky = name->IsTrickyFont();
 
   this->loca = loca;

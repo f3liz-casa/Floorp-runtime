@@ -11,11 +11,25 @@
 #ifndef PC_RTP_SENDER_PROXY_H_
 #define PC_RTP_SENDER_PROXY_H_
 
+#include <cstdint>
 #include <memory>
 #include <string>
 #include <vector>
 
+#include "api/crypto/frame_encryptor_interface.h"
+#include "api/dtls_transport_interface.h"
+#include "api/dtmf_sender_interface.h"
+#include "api/encoded_audio_frame_injector_interface.h"
+#include "api/encoded_video_frame_injector_interface.h"
+#include "api/frame_transformer_interface.h"
+#include "api/media_stream_interface.h"
+#include "api/media_types.h"
+#include "api/rtc_error.h"
+#include "api/rtp_parameters.h"
 #include "api/rtp_sender_interface.h"
+#include "api/scoped_refptr.h"
+#include "api/sframe/sframe_encryptor_interface.h"
+#include "api/video_codecs/video_encoder_factory.h"
 #include "pc/proxy.h"
 
 namespace webrtc {
@@ -47,9 +61,26 @@ PROXY_METHOD1(void, SetStreams, const std::vector<std::string>&)
 PROXY_METHOD1(void,
               SetFrameTransformer,
               scoped_refptr<FrameTransformerInterface>)
+PROXY_METHOD1(RTCErrorOr<scoped_refptr<SframeEncryptorInterface>>,
+              CreateSframeEncryptorOrError,
+              const SframeEncryptorInit&)
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
 PROXY_METHOD1(void,
               SetEncoderSelector,
               std::unique_ptr<VideoEncoderFactory::EncoderSelectorInterface>)
+#pragma clang diagnostic pop
+PROXY_METHOD1(void,
+              SetEncoderSelector,
+              scoped_refptr<VideoEncoderFactory::EncoderSelectorInterface>)
+PROXY_METHOD1(RTCError, GenerateKeyFrame, const std::vector<std::string>&)
+PROXY_METHOD2(scoped_refptr<EncodedVideoFrameInjectorInterface>,
+              CreateEncodedVideoFrameInjector,
+              KeyFrameCallback,
+              BitrateInfoCallback)
+PROXY_METHOD1(scoped_refptr<EncodedAudioFrameInjectorInterface>,
+              CreateEncodedAudioFrameInjector,
+              TargetBitrateCallback)
 END_PROXY_MAP(RtpSender)
 
 }  // namespace webrtc

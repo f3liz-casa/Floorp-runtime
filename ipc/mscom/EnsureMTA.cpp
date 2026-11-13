@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -7,6 +5,7 @@
 #include "mozilla/mscom/EnsureMTA.h"
 
 #include "mozilla/Assertions.h"
+#include "mozilla/Atomics.h"
 #include "mozilla/ClearOnShutdown.h"
 #include "mozilla/DebugOnly.h"
 #include "mozilla/mscom/COMWrappers.h"
@@ -58,6 +57,10 @@ class BackgroundMTAData {
   nsCOMPtr<nsIThread> mThread;
 };
 
+// Points to the static owning the persistent MTA thread once it was created.
+static mozilla::Atomic<mozilla::StaticLocalAutoPtr<BackgroundMTAData>*>
+    sMTAData;
+
 }  // anonymous namespace
 
 namespace mozilla {
@@ -83,7 +86,7 @@ EnsureMTA::EnsureMTA() {
   if (SUCCEEDED(hr)) {
     if (NS_SUCCEEDED(rv)) {
       // Start the persistent MTA thread (mostly) asynchronously.
-      Unused << GetPersistentMTAThread();
+      (void)GetPersistentMTAThread();
     }
 
     return;
@@ -109,11 +112,11 @@ EnsureMTA::EnsureMTA() {
 
 /* static */
 nsCOMPtr<nsIThread> EnsureMTA::GetPersistentMTAThread() {
-  static StaticLocalAutoPtr<BackgroundMTAData> sMTAData(
+  static StaticLocalAutoPtr<BackgroundMTAData> sMTADataOwner(
       []() -> BackgroundMTAData* {
         BackgroundMTAData* bgData = new BackgroundMTAData();
 
-        auto setClearOnShutdown = [ptr = &sMTAData]() -> void {
+        auto setClearOnShutdown = [ptr = &sMTADataOwner]() -> void {
           ClearOnShutdown(ptr, ShutdownPhase::XPCOMShutdownThreads);
         };
 
@@ -129,9 +132,21 @@ nsCOMPtr<nsIThread> EnsureMTA::GetPersistentMTAThread() {
         return bgData;
       }());
 
-  MOZ_ASSERT(sMTAData);
+  MOZ_ASSERT(sMTADataOwner);
 
-  return sMTAData->GetThread();
+  if (!sMTAData) {
+    sMTAData = &sMTADataOwner;
+  }
+
+  return sMTADataOwner->GetThread();
+}
+
+/* static */
+void EnsureMTA::ShutdownPersistentMTAThread() {
+  MOZ_ASSERT(NS_IsMainThread());
+  if (StaticLocalAutoPtr<BackgroundMTAData>* data = sMTAData) {
+    *data = nullptr;
+  }
 }
 
 /* static */

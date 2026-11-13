@@ -1,19 +1,15 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#include "InterfaceInitFuncs.h"
-
 #include "AccessibleWrap.h"
+#include "InterfaceInitFuncs.h"
+#include "RemoteAccessible.h"
+#include "mozilla/Likely.h"
 #include "mozilla/a11y/TableAccessible.h"
 #include "nsAccessibilityService.h"
 #include "nsMai.h"
-#include "RemoteAccessible.h"
 #include "nsTArray.h"
-
-#include "mozilla/Likely.h"
 
 using namespace mozilla;
 using namespace mozilla::a11y;
@@ -162,7 +158,7 @@ static AtkObject* getRowHeaderCB(AtkTable* aTable, gint aRowIdx) {
   return header ? GetWrapperFor(header) : nullptr;
 }
 
-static AtkObject* getSummaryCB(AtkTable* aTable) {
+static AtkObject* getSummaryCB(AtkTable* /*aTable*/) {
   // Neither html:table nor xul:tree nor ARIA grid/tree have an ability to
   // link an accessible object to specify a summary. There is closes method
   // in TableAccessible::summary to get a summary as a string which is not

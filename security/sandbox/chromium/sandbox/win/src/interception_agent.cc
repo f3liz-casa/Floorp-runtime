@@ -2,6 +2,11 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#ifdef UNSAFE_BUFFERS_BUILD
+// TODO(crbug.com/351564777): Remove this and convert code to safer constructs.
+#pragma allow_unsafe_buffers
+#endif
+
 // For information about interceptions as a whole see
 // http://dev.chromium.org/developers/design-documents/sandbox .
 
@@ -103,8 +108,7 @@ bool InterceptionAgent::OnDllLoad(const UNICODE_STRING* full_path,
   if (dlls_[i])
     return true;
 
-  size_t buffer_bytes = offsetof(DllInterceptionData, thunks) +
-                        dll_info->num_functions * sizeof(ThunkData);
+  size_t buffer_bytes = GetDllInterceptionDataSize(dll_info->num_functions);
   dlls_[i] = reinterpret_cast<DllInterceptionData*>(
       new (NT_PAGE, base_address) char[buffer_bytes]);
 
@@ -178,9 +182,9 @@ bool InterceptionAgent::PatchDll(const DllPatchInfo* dll_info,
       return false;
     }
 
-    DCHECK_NT(!g_originals[function->id] ||
-              g_originals[function->id] == &thunks->thunks[i]);
-    g_originals[function->id] = &thunks->thunks[i];
+    DCHECK_NT(!g_originals.functions[function->id] ||
+              g_originals.functions[function->id] == &thunks->thunks[i]);
+    g_originals.functions[function->id] = &thunks->thunks[i];
 
     thunks->num_thunks++;
     thunks->used_bytes += sizeof(ThunkData);

@@ -1,21 +1,20 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "SocketProcessHost.h"
 
+#include "ProfilerParent.h"
 #include "SocketProcessParent.h"
 #include "mozilla/dom/ContentParent.h"
+#include "mozilla/ipc/Endpoint.h"
 #include "mozilla/ipc/FileDescriptor.h"
+#include "mozilla/ipc/ProcessChild.h"
 #include "mozilla/ipc/ProcessUtils.h"
 #include "nsAppRunner.h"
 #include "nsIOService.h"
 #include "nsIObserverService.h"
-#include "ProfilerParent.h"
 #include "nsNetUtil.h"
-#include "mozilla/ipc/Endpoint.h"
-#include "mozilla/ipc/ProcessChild.h"
 
 #if defined(XP_LINUX) && defined(MOZ_SANDBOX)
 #  include "mozilla/SandboxBroker.h"
@@ -36,6 +35,10 @@ using namespace mozilla::ipc;
 namespace mozilla {
 namespace net {
 
+#if defined(XP_MACOSX) || defined(XP_IOS)
+static bool sAppleFastDatapathProbeAllowed = true;
+#endif
+
 #if defined(XP_MACOSX) && defined(MOZ_SANDBOX)
 bool SocketProcessHost::sLaunchWithMacSandbox = false;
 #endif
@@ -43,7 +46,6 @@ bool SocketProcessHost::sLaunchWithMacSandbox = false;
 SocketProcessHost::SocketProcessHost(Listener* aListener)
     : GeckoChildProcessHost(GeckoProcessType_Socket),
       mListener(aListener),
-      mTaskFactory(Some(this)),
       mLaunchPhase(LaunchPhase::Unlaunched),
       mShutdownRequested(false),
       mChannelClosed(false) {
@@ -70,7 +72,7 @@ bool SocketProcessHost::Launch() {
 
   SharedPreferenceSerializer prefSerializer;
   if (!prefSerializer.SerializeToSharedMemory(GeckoProcessType_VR,
-                                              /* remoteType */ ""_ns)) {
+                                              /* remoteType */ {})) {
     return false;
   }
   prefSerializer.AddSharedPrefCmdLineArgs(*this, extraArgs);
@@ -85,43 +87,20 @@ bool SocketProcessHost::Launch() {
   return true;
 }
 
-static void HandleErrorAfterDestroy(
-    RefPtr<SocketProcessHost::Listener>&& aListener) {
-  if (!aListener) {
-    return;
-  }
-
-  NS_DispatchToMainThread(NS_NewRunnableFunction(
-      "HandleErrorAfterDestroy", [listener = std::move(aListener)]() {
-        listener->OnProcessLaunchComplete(nullptr, false);
-      }));
-}
-
 void SocketProcessHost::OnChannelConnected(base::ProcessId peer_pid) {
   MOZ_ASSERT(!NS_IsMainThread());
 
   GeckoChildProcessHost::OnChannelConnected(peer_pid);
 
-  // Post a task to the main thread. Take the lock because mTaskFactory is not
-  // thread-safe.
-  RefPtr<Runnable> runnable;
-  {
-    MonitorAutoLock lock(mMonitor);
-    if (!mTaskFactory) {
-      HandleErrorAfterDestroy(std::move(mListener));
-      return;
-    }
-    runnable =
-        (*mTaskFactory)
-            .NewRunnableMethod(&SocketProcessHost::OnChannelConnectedTask);
-  }
-  NS_DispatchToMainThread(runnable);
+  NS_DispatchToMainThread(
+      NewRunnableMethod("SocketProcessHost::OnChannelConnectedTask", this,
+                        &SocketProcessHost::OnChannelConnectedTask));
 }
 
 void SocketProcessHost::OnChannelConnectedTask() {
   MOZ_ASSERT(NS_IsMainThread());
 
-  if (mLaunchPhase == LaunchPhase::Waiting) {
+  if (!mShutdownRequested && mLaunchPhase == LaunchPhase::Waiting) {
     InitAfterConnect(true);
   }
 }
@@ -143,7 +122,7 @@ void SocketProcessHost::InitAfterConnect(bool aSucceeded) {
   DebugOnly<bool> rv = TakeInitialEndpoint().Bind(mSocketProcessParent.get());
   MOZ_ASSERT(rv);
 
-  SocketPorcessInitAttributes attributes;
+  SocketProcessInitAttributes attributes;
   nsCOMPtr<nsIIOService> ioService(do_GetIOService());
   MOZ_ASSERT(ioService, "No IO service?");
   DebugOnly<nsresult> result = ioService->GetOffline(&attributes.mOffline());
@@ -170,16 +149,20 @@ void SocketProcessHost::InitAfterConnect(bool aSucceeded) {
                                 attributes.mSandboxBroker().ref());
       // This is unlikely to fail and probably indicates OS resource
       // exhaustion.
-      Unused << NS_WARN_IF(mSandboxBroker == nullptr);
+      (void)NS_WARN_IF(mSandboxBroker == nullptr);
       MOZ_ASSERT(attributes.mSandboxBroker().ref().IsValid());
     }
     attributes.mInitSandbox() = true;
   }
 #endif  // XP_LINUX && MOZ_SANDBOX
 
-  Unused << GetActor()->SendInit(attributes);
+#if defined(XP_MACOSX) || defined(XP_IOS)
+  attributes.mAppleFastDatapathProbeAllowed() = sAppleFastDatapathProbeAllowed;
+#endif
 
-  Unused << GetActor()->SendInitProfiler(
+  (void)GetActor()->SendInit(attributes);
+
+  (void)GetActor()->SendInitProfiler(
       ProfilerParent::CreateForProcess(GetActor()->OtherPid()));
 
   if (mListener) {
@@ -192,48 +175,36 @@ void SocketProcessHost::Shutdown() {
   MOZ_ASSERT(NS_IsMainThread());
 
   mListener = nullptr;
+  mShutdownRequested = true;
 
   if (mSocketProcessParent) {
-    // OnChannelClosed uses this to check if the shutdown was expected or
-    // unexpected.
-    mShutdownRequested = true;
-
     // The channel might already be closed if we got here unexpectedly.
     if (!mChannelClosed) {
       mSocketProcessParent->Close();
+      MOZ_ASSERT(!mSocketProcessParent);
     }
-
-    return;
   }
-
-  DestroyProcess();
 }
 
 void SocketProcessHost::OnChannelClosed() {
   MOZ_ASSERT(NS_IsMainThread());
+
+#if defined(XP_MACOSX) || defined(XP_IOS)
+  if (!mShutdownRequested && !mAppleFastDatapathProbeResultReceived) {
+    sAppleFastDatapathProbeAllowed = false;
+  }
+#endif
 
   mChannelClosed = true;
 
   if (!mShutdownRequested && mListener) {
     // This is an unclean shutdown. Notify our listener that we're going away.
     mListener->OnProcessUnexpectedShutdown(this);
-  } else {
-    DestroyProcess();
   }
 
   // Release the actor.
   SocketProcessParent::Destroy(std::move(mSocketProcessParent));
   MOZ_ASSERT(!mSocketProcessParent);
-}
-
-void SocketProcessHost::DestroyProcess() {
-  {
-    MonitorAutoLock lock(mMonitor);
-    mTaskFactory.reset();
-  }
-
-  GetCurrentSerialEventTarget()->Dispatch(NS_NewRunnableFunction(
-      "DestroySocketProcessRunnable", [this] { Destroy(); }));
 }
 
 #if defined(XP_MACOSX) && defined(MOZ_SANDBOX)

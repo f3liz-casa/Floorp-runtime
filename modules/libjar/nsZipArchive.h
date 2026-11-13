@@ -1,12 +1,9 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #ifndef nsZipArchive_h_
 #define nsZipArchive_h_
-
-#include "mozilla/Attributes.h"
 
 #define ZIP_TABSIZE 256
 #define ZIP_BUFLEN \
@@ -85,6 +82,9 @@ class nsZipArchive final {
   ~nsZipArchive();
 
  public:
+  nsZipArchive& operator=(const nsZipArchive& rhs) = delete;
+  nsZipArchive(const nsZipArchive& rhs) = delete;
+
   static const char* sFileCorruptedReason;
 
   /**
@@ -92,10 +92,17 @@ class nsZipArchive final {
    *
    * @param   aZipHandle  The nsZipHandle used to access the zip
    * @param   aFd         Optional PRFileDesc for Windows readahead optimization
+   * @param   aAllowOptimizedLayout
+   *                      Whether to trust the Central Directory found at
+   *                      offset 4 (the omni.jar layout from bug 559961)
+   *                      instead of the one found via the normal End Of
+   *                      Central Directory scan. Only pass true for our
+   *                      own build-generated omni.jar.
    * @return  status code
    */
-  static already_AddRefed<nsZipArchive> OpenArchive(nsZipHandle* aZipHandle,
-                                                    PRFileDesc* aFd = nullptr);
+  static already_AddRefed<nsZipArchive> OpenArchive(
+      nsZipHandle* aZipHandle, PRFileDesc* aFd = nullptr,
+      bool aAllowOptimizedLayout = false);
 
   /**
    * OpenArchive
@@ -103,9 +110,11 @@ class nsZipArchive final {
    * Convenience function that generates nsZipHandle
    *
    * @param   aFile         The file used to access the zip
+   * @param   aAllowOptimizedLayout See the other OpenArchive overload.
    * @return  status code
    */
-  static already_AddRefed<nsZipArchive> OpenArchive(nsIFile* aFile);
+  static already_AddRefed<nsZipArchive> OpenArchive(
+      nsIFile* aFile, bool aAllowOptimizedLayout = false);
 
   /**
    * Test the integrity of items in this archive by running
@@ -183,7 +192,8 @@ class nsZipArchive final {
   NS_METHOD_(MozExternalRefCountType) Release(void);
 
  private:
-  nsZipArchive(nsZipHandle* aZipHandle, PRFileDesc* aFd, nsresult& aRv);
+  nsZipArchive(nsZipHandle* aZipHandle, PRFileDesc* aFd,
+               bool aAllowOptimizedLayout, nsresult& aRv);
 
   //--- private members ---
   mozilla::ThreadSafeAutoRefCnt mRefCnt; /* ref count */
@@ -209,11 +219,8 @@ class nsZipArchive final {
  private:
   //--- private methods ---
   nsZipItem* CreateZipItem() MOZ_REQUIRES(mLock);
-  nsresult BuildFileList(PRFileDesc* aFd = nullptr);
+  nsresult BuildFileList(PRFileDesc* aFd, bool aAllowOptimizedLayout);
   nsresult BuildSynthetics();
-
-  nsZipArchive& operator=(const nsZipArchive& rhs) = delete;
-  nsZipArchive(const nsZipArchive& rhs) = delete;
 };
 
 /**
@@ -226,6 +233,9 @@ class nsZipFind final {
   nsZipFind(nsZipArchive* aZip, char* aPattern, bool regExp);
   ~nsZipFind();
 
+  nsZipFind& operator=(const nsZipFind& rhs) = delete;
+  nsZipFind(const nsZipFind& rhs) = delete;
+
   nsresult FindNext(const char** aResult, uint16_t* aNameLen);
 
  private:
@@ -234,9 +244,6 @@ class nsZipFind final {
   nsZipItem* mItem;
   uint16_t mSlot;
   bool mRegExp;
-
-  nsZipFind& operator=(const nsZipFind& rhs) = delete;
-  nsZipFind(const nsZipFind& rhs) = delete;
 };
 
 /**

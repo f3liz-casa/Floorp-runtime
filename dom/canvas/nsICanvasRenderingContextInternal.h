@@ -1,10 +1,9 @@
-/* -*- Mode: C++; tab-width: 40; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef nsICanvasRenderingContextInternal_h___
-#define nsICanvasRenderingContextInternal_h___
+#ifndef nsICanvasRenderingContextInternal_h_
+#define nsICanvasRenderingContextInternal_h_
 
 #include "gfxRect.h"
 #include "mozilla/EventForwards.h"
@@ -21,7 +20,6 @@
 #include "nsIDocShell.h"
 #include "nsIInputStream.h"
 #include "nsISupports.h"
-#include "nsRFPService.h"
 #include "nsRefreshObservers.h"
 
 #define NS_ICANVASRENDERINGCONTEXTINTERNAL_IID \
@@ -37,6 +35,9 @@ class nsDisplayListBuilder;
 class ClientWebGLContext;
 class PresShell;
 class WebGLFramebufferJS;
+namespace dom {
+class CanvasRenderingContextOptions;
+}  // namespace dom
 namespace ipc {
 class IProtocol;
 }  // namespace ipc
@@ -98,9 +99,11 @@ class nsICanvasRenderingContextInternal : public nsISupports,
   virtual int32_t GetWidth() = 0;
   virtual int32_t GetHeight() = 0;
 
-  // Sets the dimensions of the canvas, in pixels.  Called
-  // whenever the size of the element changes.
+  // Sets the dimensions of the canvas, in pixels.  Called whenever the size of
+  // the element changes.
   NS_IMETHOD SetDimensions(int32_t width, int32_t height) = 0;
+  // Trigger a deferred context creation error from SetDimensions.
+  NS_IMETHOD MaybeThrowContextCreationError() { return NS_OK; }
 
   // Initializes the canvas after the object is constructed.
   virtual nsresult Initialize() { return NS_OK; }
@@ -122,10 +125,10 @@ class nsICanvasRenderingContextInternal : public nsISupports,
   // If the image format does not support transparency or includeTransparency
   // is false, alpha will be discarded and the result will be the image
   // composited on black.
-  NS_IMETHOD GetInputStream(const char* mimeType,
-                            const nsAString& encoderOptions,
-                            mozilla::CanvasUtils::ImageExtraction spoofing,
-                            nsIInputStream** stream) = 0;
+  NS_IMETHOD GetInputStream(
+      const char* mimeType, const nsAString& encoderOptions,
+      mozilla::CanvasUtils::ImageExtraction extractionBehavior,
+      const nsACString& randomizationKey, nsIInputStream** stream) = 0;
 
   // This gets an Azure SourceSurface for the canvas, this will be a snapshot
   // of the canvas at the time it was called.
@@ -149,6 +152,13 @@ class nsICanvasRenderingContextInternal : public nsISupports,
 
   virtual RefPtr<mozilla::gfx::SourceSurface> GetFrontBufferSnapshot(bool) {
     return GetSurfaceSnapshot();
+  }
+
+  virtual bool SupportAsyncSnapshot() { return false; };
+
+  virtual RefPtr<mozilla::dom::HTMLCanvasElement::SurfaceSnapshotPromise>
+  GetSurfaceSnapshotAsync() {
+    return nullptr;
   }
 
   // If this is called with true, the backing store of the canvas should
@@ -194,8 +204,8 @@ class nsICanvasRenderingContextInternal : public nsISupports,
   // Redraw the dirty rectangle of this canvas.
   NS_IMETHOD Redraw(const gfxRect& dirty) = 0;
 
-  NS_IMETHOD SetContextOptions(JSContext* cx, JS::Handle<JS::Value> options,
-                               mozilla::ErrorResult& aRvForDictionaryInit) {
+  NS_IMETHOD SetContextOptions(
+      const mozilla::dom::CanvasRenderingContextOptions& aOptions) {
     return NS_OK;
   }
 
@@ -203,6 +213,8 @@ class nsICanvasRenderingContextInternal : public nsISupports,
 
   virtual void OnBeforePaintTransaction() {}
   virtual void OnDidPaintTransaction() {}
+
+  virtual void OnWindowDestroy() {}
 
   virtual mozilla::layers::PersistentBufferProvider* GetBufferProvider() {
     return nullptr;
@@ -229,8 +241,12 @@ class nsICanvasRenderingContextInternal : public nsISupports,
   // Checking if fingerprinting protection is enable for the given target.
   bool ShouldResistFingerprinting(mozilla::RFPTarget aTarget) const;
 
-  bool DispatchEvent(const nsAString& eventName, mozilla::CanBubble aCanBubble,
-                     mozilla::Cancelable aIsCancelable) const;
+  MOZ_CAN_RUN_SCRIPT bool DispatchEvent(
+      const nsAString& eventName, mozilla::CanBubble aCanBubble,
+      mozilla::Cancelable aIsCancelable) const;
+
+  void RecordCanvasUsage(mozilla::CanvasExtractionAPI aAPI,
+                         mozilla::CSSIntSize size) const;
 
  protected:
   RefPtr<mozilla::dom::HTMLCanvasElement> mCanvasElement;
@@ -238,4 +254,4 @@ class nsICanvasRenderingContextInternal : public nsISupports,
   RefPtr<nsRefreshDriver> mRefreshDriver;
 };
 
-#endif /* nsICanvasRenderingContextInternal_h___ */
+#endif /* nsICanvasRenderingContextInternal_h_ */

@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim:set ts=2 sw=2 sts=2 et cindent: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -10,7 +8,6 @@
 #include "PlatformDecoderModule.h"
 #include "WMF.h"
 #include "WMFUtils.h"
-#include "mozilla/Atomics.h"
 
 namespace mozilla {
 
@@ -24,10 +21,7 @@ class WMFDecoderModule : public PlatformDecoderModule {
   // Initializes the module, loads required dynamic libraries, etc.
   nsresult Startup() override;
 
-  already_AddRefed<MediaDataDecoder> CreateVideoDecoder(
-      const CreateDecoderParams& aParams) override;
-
-  already_AddRefed<MediaDataDecoder> CreateAudioDecoder(
+  RefPtr<CreateDecoderPromise> AsyncCreateDecoder(
       const CreateDecoderParams& aParams) override;
 
   bool SupportsColorDepth(
@@ -55,6 +49,11 @@ class WMFDecoderModule : public PlatformDecoderModule {
  private:
   WMFDecoderModule() = default;
   virtual ~WMFDecoderModule() = default;
+
+  already_AddRefed<MediaDataDecoder> CreateVideoDecoder(
+      const CreateDecoderParams& aParams, MediaResult* aError);
+  already_AddRefed<MediaDataDecoder> CreateAudioDecoder(
+      const CreateDecoderParams& aParams);
 
   static inline StaticMutex sMutex;
   static inline bool sSupportedTypesInitialized MOZ_GUARDED_BY(sMutex) = false;

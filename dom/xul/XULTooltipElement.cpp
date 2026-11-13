@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -20,7 +18,7 @@
 namespace mozilla::dom {
 
 nsXULElement* NS_NewXULTooltipElement(
-    already_AddRefed<mozilla::dom::NodeInfo>&& aNodeInfo) {
+    already_AddRefed<mozilla::dom::NodeInfo> aNodeInfo) {
   RefPtr<mozilla::dom::NodeInfo> nodeInfo(aNodeInfo);
   auto* nim = nodeInfo->NodeInfoManager();
   RefPtr<XULTooltipElement> tooltip =
@@ -40,7 +38,7 @@ nsresult XULTooltipElement::Init() {
                                  dom::NOT_FROM_PARSER);
   NS_ENSURE_SUCCESS(rv, rv);
   description->SetAttr(kNameSpaceID_None, nsGkAtoms::_class,
-                       u"tooltip-label"_ns, false);
+                       u"tooltip-label"_ns, false, IsKnownNewAttr::Yes);
   ErrorResult error;
   AppendChild(*description, error);
 
@@ -62,7 +60,8 @@ void XULTooltipElement::AfterSetAttr(int32_t aNameSpaceID, nsAtom* aName,
         aValue->ToString(value);
       }
       nsContentUtils::AddScriptRunner(NS_NewRunnableFunction(
-          "XULTooltipElement::AfterSetAttr", [description, value]() {
+          "XULTooltipElement::AfterSetAttr",
+          [description, value = std::move(value)]() {
             Element* descriptionElement = description->AsElement();
             descriptionElement->SetTextContent(value, IgnoreErrors());
           }));
@@ -92,8 +91,10 @@ nsresult XULTooltipElement::PostHandleEvent(EventChainPostVisitor& aVisitor) {
                                 getter_Copies(direction), &shouldChange);
     }
     if (shouldChange) {
-      SetAttr(kNameSpaceID_None, nsGkAtoms::label, text, true);
-      SetAttr(kNameSpaceID_None, nsGkAtoms::direction, direction, true);
+      SetAttr(kNameSpaceID_None, nsGkAtoms::label, text, true,
+              IsKnownNewAttr::No);
+      SetAttr(kNameSpaceID_None, nsGkAtoms::direction, direction, true,
+              IsKnownNewAttr::No);
     } else {
       aVisitor.mEventStatus = nsEventStatus_eConsumeNoDefault;
       aVisitor.mEvent->PreventDefault();

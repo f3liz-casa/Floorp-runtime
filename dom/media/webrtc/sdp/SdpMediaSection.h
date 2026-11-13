@@ -1,13 +1,13 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef _SDPMEDIASECTION_H_
-#define _SDPMEDIASECTION_H_
+#ifndef DOM_MEDIA_WEBRTC_SDP_SDPMEDIASECTION_H_
+#define DOM_MEDIA_WEBRTC_SDP_SDPMEDIASECTION_H_
 
-#include <sstream>
+#include <algorithm>
+#include <cctype>
+#include <ostream>
 #include <string>
 #include <vector>
 
@@ -23,9 +23,54 @@ class SdpConnection;
 
 class SdpMediaSection {
  public:
-  enum MediaType { kAudio, kVideo, kText, kApplication, kMessage };
-  // don't add to enum to avoid warnings about unhandled enum values
-  static const size_t kMediaTypes = static_cast<size_t>(kMessage) + 1;
+  // Don't add to enum without updating kMediaTypes to avoid warnings about
+  // unhandled enum values
+  enum MediaType { kAudio, kVideo, kText, kApplication, kMessage, kUnknown };
+
+  struct UnknownMediaTypeData {
+    std::string name;
+    std::string formatString;
+
+    // Use MediaTypeInfo::MatchesTypeOf or MediaTypeInfo::IdenticalTo, which
+    // spell out which parts are being compared.
+    bool operator==(const UnknownMediaTypeData& aOther) const = delete;
+  };
+
+  struct MediaTypeInfo {
+    MediaType type;
+    // Unknown media types should be reproduced
+    Maybe<UnknownMediaTypeData> unknown = Nothing();
+
+    // There is more than one useful notion of equivalence here, so callers
+    // have to say which one they mean.
+    bool operator==(const MediaTypeInfo& aOther) const = delete;
+
+    // Compares the media type alone. The format list is a separate subfield of
+    // the m= line, not part of the media type.
+    bool MatchesTypeOf(const MediaTypeInfo& aOther) const {
+      // Media type names are case-insensitive, and the name of an unknown
+      // media type is kept in the case it was received in.
+      const auto lowerCaseName = [](const UnknownMediaTypeData& aData) {
+        std::string name = aData.name;
+        std::transform(name.begin(), name.end(), name.begin(), ::tolower);
+        return name;
+      };
+      return type == aOther.type &&
+             unknown.map(lowerCaseName) == aOther.unknown.map(lowerCaseName);
+    }
+
+    // Compares the media type and, for an unknown media type, the format list
+    // that goes with it. The format list is kept verbatim because we cannot
+    // parse it, so it is compared verbatim too.
+    bool IdenticalTo(const MediaTypeInfo& aOther) const {
+      const auto formatString = [](const UnknownMediaTypeData& aData) {
+        return aData.formatString;
+      };
+      return MatchesTypeOf(aOther) &&
+             unknown.map(formatString) == aOther.unknown.map(formatString);
+    }
+  };
+  static const size_t kMediaTypes = static_cast<size_t>(kUnknown) + 1;
 
   enum Protocol {
     kRtpAvp,             // RTP/AVP [RFC4566]
@@ -73,6 +118,7 @@ class SdpMediaSection {
   explicit SdpMediaSection(size_t level) : mLevel(level) {}
 
   virtual MediaType GetMediaType() const = 0;
+  virtual MediaTypeInfo GetMediaTypeInfo() const = 0;
   virtual unsigned int GetPort() const = 0;
   virtual void SetPort(unsigned int port) = 0;
   virtual unsigned int GetPortCount() const = 0;
@@ -104,7 +150,7 @@ class SdpMediaSection {
 
   inline bool IsSending() const { return GetDirection() & sdp::kSend; }
 
-  inline void SetReceiving(bool receiving) {
+  inline void SetReceiving(const bool receiving) {
     auto direction = GetDirection();
     if (direction & sdp::kSend) {
       SetDirection(receiving ? SdpDirectionAttribute::kSendrecv
@@ -115,7 +161,7 @@ class SdpMediaSection {
     }
   }
 
-  inline void SetSending(bool sending) {
+  inline void SetSending(const bool sending) {
     auto direction = GetDirection();
     if (direction & sdp::kRecv) {
       SetDirection(sending ? SdpDirectionAttribute::kSendrecv
@@ -126,8 +172,9 @@ class SdpMediaSection {
     }
   }
 
-  inline void SetDirection(SdpDirectionAttribute::Direction direction) {
-    GetAttributeList().SetAttribute(new SdpDirectionAttribute(direction));
+  inline void SetDirection(const SdpDirectionAttribute::Direction direction) {
+    GetAttributeList().SetAttribute(
+        MakeUnique<SdpDirectionAttribute>(direction));
   }
 
   inline SdpDirectionAttribute::Direction GetDirection() const {
@@ -137,11 +184,13 @@ class SdpMediaSection {
   const SdpFmtpAttributeList::Parameters* FindFmtp(const std::string& pt) const;
   void SetFmtp(const SdpFmtpAttributeList::Fmtp& fmtp);
   void RemoveFmtp(const std::string& pt);
+  // Removes fmtp and rtcp-fb entries for payload types not in GetFormats().
+  void RemoveUnlistedPayloadTypeAttributes();
   const SdpRtpmapAttributeList::Rtpmap* FindRtpmap(const std::string& pt) const;
   const SdpSctpmapAttributeList::Sctpmap* GetSctpmap() const;
   uint32_t GetSctpPort() const;
   bool GetMaxMessageSize(uint32_t* size) const;
-  bool HasRtcpFb(const std::string& pt, SdpRtcpFbAttributeList::Type type,
+  bool HasRtcpFb(const std::string& pt, const SdpRtcpFbAttributeList::Type type,
                  const std::string& subType) const;
   SdpRtcpFbAttributeList GetRtcpFbs() const;
   void SetRtcpFbs(const SdpRtcpFbAttributeList& rtcpfbs);
@@ -163,8 +212,8 @@ inline std::ostream& operator<<(std::ostream& os, const SdpMediaSection& ms) {
 }
 
 inline std::ostream& operator<<(std::ostream& os,
-                                SdpMediaSection::MediaType t) {
-  switch (t) {
+                                const SdpMediaSection::MediaTypeInfo t) {
+  switch (t.type) {
     case SdpMediaSection::kAudio:
       return os << "audio";
     case SdpMediaSection::kVideo:
@@ -175,12 +224,18 @@ inline std::ostream& operator<<(std::ostream& os,
       return os << "application";
     case SdpMediaSection::kMessage:
       return os << "message";
+    case SdpMediaSection::kUnknown: {
+      if (t.unknown) {
+        return os << t.unknown.value().name;
+      }
+    }
   }
   MOZ_ASSERT(false, "Unknown MediaType");
   return os << "?";
 }
 
-inline std::ostream& operator<<(std::ostream& os, SdpMediaSection::Protocol p) {
+inline std::ostream& operator<<(std::ostream& os,
+                                const SdpMediaSection::Protocol p) {
   switch (p) {
     case SdpMediaSection::kRtpAvp:
       return os << "RTP/AVP";
@@ -269,10 +324,10 @@ inline std::ostream& operator<<(std::ostream& os, SdpMediaSection::Protocol p) {
 
 class SdpConnection {
  public:
-  SdpConnection(sdp::AddrType addrType, std::string addr, uint8_t ttl = 0,
-                uint32_t count = 0)
-      : mAddrType(addrType), mAddr(addr), mTtl(ttl), mCount(count) {}
-  ~SdpConnection() {}
+  SdpConnection(const sdp::AddrType addrType, std::string addr,
+                const uint8_t ttl = 0, const uint32_t count = 0)
+      : mAddrType(addrType), mAddr(std::move(addr)), mTtl(ttl), mCount(count) {}
+  ~SdpConnection() = default;
 
   sdp::AddrType GetAddrType() const { return mAddrType; }
   const std::string& GetAddress() const { return mAddr; }

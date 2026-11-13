@@ -4,17 +4,42 @@
 
 /* import-globals-from head_channels.js */
 /* import-globals-from head_cookies.js */
-/* import-globals-from head_servers.js */
+
+const {
+  HTTP3Server: HeadHTTP3Server,
+  NodeHTTP2ProxyServer: HeadNodeHTTP2ProxyServer,
+  startOnSharedPort: headStartOnSharedPort,
+} = ChromeUtils.importESModule("resource://testing-common/NodeServer.sys.mjs");
+
+const SERVER_PATH = Services.env.get("MOZ_HTTP3_SERVER_PATH");
+const CERT_DB_PATH = Services.env.get("MOZ_HTTP3_CERT_DB_PATH");
+
+async function with_http3_server(selectPort) {
+  const server = new HeadHTTP3Server();
+  const h3Port = await server.start(SERVER_PATH, CERT_DB_PATH);
+  registerCleanupFunction(() => server.stop()); // returns a Promise; cleanup will await it
+  return selectPort(server, h3Port);
+}
 
 async function create_h3_server() {
-  let h3ServerPath = Services.env.get("MOZ_HTTP3_SERVER_PATH");
-  let h3DBPath = Services.env.get("MOZ_HTTP3_CERT_DB_PATH");
-  let server = new HTTP3Server();
-  let h3Port = await server.start(h3ServerPath, h3DBPath);
-  registerCleanupFunction(async () => {
+  return with_http3_server((_, h3Port) => h3Port);
+}
+
+// Also starts the HTTP/2 proxy that MASQUE falls back to, on the same port.
+async function create_masque_proxy_server() {
+  const server = new HeadHTTP3Server();
+  const fallbackProxy = new HeadNodeHTTP2ProxyServer();
+  const stop = async () => {
+    await fallbackProxy.stop();
     await server.stop();
-  });
-  return h3Port;
+  };
+  await headStartOnSharedPort(
+    () => server.start(SERVER_PATH, CERT_DB_PATH),
+    () => fallbackProxy.startWithoutProxyFilter(server.masque_proxy_port()),
+    stop
+  );
+  registerCleanupFunction(stop);
+  return { masqueProxyPort: server.masque_proxy_port() };
 }
 
 async function http3_setup_tests(http3version, reload) {

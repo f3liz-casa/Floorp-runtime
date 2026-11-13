@@ -1,4 +1,3 @@
-/* -*- Mode: rust; rust-indent-offset: 4 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -14,10 +13,12 @@ use core_foundation::error::*;
 use core_foundation::number::*;
 use core_foundation::string::*;
 use libloading::{Library, Symbol};
+use log::error;
 use pkcs11_bindings::*;
-use rsclientcerts::error::{Error, ErrorType};
+use rsclientcerts::cryptoki::*;
 use rsclientcerts::manager::{ClientCertsBackend, CryptokiObject, Sign};
-use rsclientcerts::util::*;
+use rsclientcerts_util::error::{Error, ErrorType};
+use rsclientcerts_util::*;
 use std::collections::BTreeMap;
 use std::convert::TryInto;
 use std::os::raw::c_void;
@@ -226,6 +227,9 @@ fn sec_key_create_signature(
         )
     };
     if signature.is_null() {
+        if error.is_null() {
+            return Err(error_here!(ErrorType::ExternalError));
+        }
         let error = unsafe { CFError::wrap_under_create_rule(error) };
         return Err(error_here!(
             ErrorType::ExternalError,
@@ -235,8 +239,12 @@ fn sec_key_create_signature(
     Ok(unsafe { CFData::wrap_under_create_rule(signature) })
 }
 
-fn sec_key_copy_attributes<T: TCFType>(key: &SecKey) -> CFDictionary<CFString, T> {
-    unsafe { CFDictionary::wrap_under_create_rule(SecKeyCopyAttributes(key.as_concrete_TypeRef())) }
+fn sec_key_copy_attributes<T: TCFType>(key: &SecKey) -> Result<CFDictionary<CFString, T>, Error> {
+    let attributes = unsafe { SecKeyCopyAttributes(key.as_concrete_TypeRef()) };
+    if attributes.is_null() {
+        return Err(error_here!(ErrorType::ExternalError));
+    }
+    Ok(unsafe { CFDictionary::wrap_under_create_rule(attributes) })
 }
 
 fn sec_key_copy_external_representation(key: &SecKey) -> Result<CFData, Error> {
@@ -244,6 +252,9 @@ fn sec_key_copy_external_representation(key: &SecKey) -> Result<CFData, Error> {
     let representation =
         unsafe { SecKeyCopyExternalRepresentation(key.as_concrete_TypeRef(), &mut error) };
     if representation.is_null() {
+        if error.is_null() {
+            return Err(error_here!(ErrorType::ExternalError));
+        }
         let error = unsafe { CFError::wrap_under_create_rule(error) };
         return Err(error_here!(
             ErrorType::ExternalError,
@@ -628,7 +639,7 @@ impl Sign for Key {
 }
 
 fn get_key_attribute<T: TCFType + Clone>(key: &SecKey, attr: CFStringRef) -> Result<T, Error> {
-    let attributes: CFDictionary<CFString, T> = sec_key_copy_attributes(key);
+    let attributes: CFDictionary<CFString, T> = sec_key_copy_attributes(key)?;
     match attributes.find(attr as *const _) {
         Some(value) => Ok((*value).clone()),
         None => Err(error_here!(ErrorType::ExternalError)),
@@ -722,11 +733,18 @@ const TOKEN_SERIAL_NUMBER_BYTES: &[u8; 16] = b"0000000000000000";
 impl ClientCertsBackend for Backend {
     type Key = Key;
 
-    fn find_objects(&mut self) -> Result<(Vec<CryptokiCert>, Vec<Key>), Error> {
+    fn find_objects(
+        &mut self,
+        slot_id: CK_SLOT_ID,
+    ) -> Result<Option<(Vec<CryptokiCert>, Vec<Key>, Vec<CryptokiTrust>)>, Error> {
+        if !crate::should_search_for_objects(slot_id) {
+            return Ok(None);
+        }
+
         match self.last_scan_finished {
             Some(last_scan_finished) => {
                 if Instant::now().duration_since(last_scan_finished) < Duration::new(3, 0) {
-                    return Ok((Vec::new(), Vec::new()));
+                    return Ok(None);
                 }
             }
             None => {}
@@ -738,7 +756,7 @@ impl ClientCertsBackend for Backend {
         });
         let result = futures_executor::block_on(task);
         self.last_scan_finished = Some(Instant::now());
-        result
+        result.map(|objects| Some(objects))
     }
 
     fn get_slot_info(&self) -> CK_SLOT_INFO {
@@ -765,7 +783,9 @@ impl ClientCertsBackend for Backend {
     }
 }
 
-fn find_objects(thread: &nsIEventTarget) -> Result<(Vec<CryptokiCert>, Vec<Key>), Error> {
+fn find_objects(
+    thread: &nsIEventTarget,
+) -> Result<(Vec<CryptokiCert>, Vec<Key>, Vec<CryptokiTrust>), Error> {
     let mut certs = Vec::new();
     let mut keys = Vec::new();
     let identities = unsafe {
@@ -784,7 +804,7 @@ fn find_objects(thread: &nsIEventTarget) -> Result<(Vec<CryptokiCert>, Vec<Key>)
         let mut result = std::ptr::null();
         let status = SecItemCopyMatching(dict.as_CFTypeRef() as CFDictionaryRef, &mut result);
         if status == errSecItemNotFound {
-            return Ok((certs, keys));
+            return Ok((certs, keys, Vec::new()));
         }
         if status != errSecSuccess {
             return Err(error_here!(ErrorType::ExternalError, status.to_string()));
@@ -812,5 +832,5 @@ fn find_objects(thread: &nsIEventTarget) -> Result<(Vec<CryptokiCert>, Vec<Key>)
             }
         }
     }
-    Ok((certs, keys))
+    Ok((certs, keys, Vec::new()))
 }

@@ -1,22 +1,28 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim:set ts=2 sw=2 sts=2 et cindent: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#include "mozilla/dom/ReadableStream.h"
+#include <algorithm>
+#include <cstring>
 
 #include "ReadIntoRequest.h"
+#include "ReadableByteStreamControllerAbstract.h"
+#include "ReadableStreamAbstract.h"
+#include "ReadableStreamBYOBReaderAbstract.h"
+#include "ReadableStreamDefaultControllerAbstract.h"
+#include "ReadableStreamDefaultReaderAbstract.h"
 #include "ReadableStreamPipeTo.h"
 #include "ReadableStreamTee.h"
 #include "StreamUtils.h"
 #include "TeeState.h"
+#include "WritableStreamAbstract.h"
 #include "js/Array.h"
 #include "js/Exception.h"
 #include "js/Iterator.h"
 #include "js/PropertyAndElement.h"
 #include "js/TypeDecls.h"
 #include "js/Value.h"
+#include "js/experimental/TypedData.h"
 #include "mozilla/AlreadyAddRefed.h"
 #include "mozilla/Assertions.h"
 #include "mozilla/Attributes.h"
@@ -29,18 +35,14 @@
 #include "mozilla/dom/QueueWithSizes.h"
 #include "mozilla/dom/QueuingStrategyBinding.h"
 #include "mozilla/dom/ReadRequest.h"
-#include "mozilla/dom/ReadableByteStreamController.h"
-#include "mozilla/dom/ReadableStreamBYOBReader.h"
 #include "mozilla/dom/ReadableStreamBYOBRequest.h"
 #include "mozilla/dom/ReadableStreamBinding.h"
 #include "mozilla/dom/ReadableStreamControllerBase.h"
-#include "mozilla/dom/ReadableStreamDefaultController.h"
-#include "mozilla/dom/ReadableStreamDefaultReader.h"
 #include "mozilla/dom/RootedDictionary.h"
 #include "mozilla/dom/ScriptSettings.h"
+#include "mozilla/dom/TypedArray.h"
 #include "mozilla/dom/UnderlyingSourceBinding.h"
 #include "mozilla/dom/UnderlyingSourceCallbackHelpers.h"
-#include "mozilla/dom/WritableStream.h"
 #include "mozilla/dom/WritableStreamDefaultWriter.h"
 #include "nsCOMPtr.h"
 #include "nsIGlobalObject.h"
@@ -109,6 +111,16 @@ ReadableStream::~ReadableStream() {
 JSObject* ReadableStream::WrapObject(JSContext* aCx,
                                      JS::Handle<JSObject*> aGivenProto) {
   return ReadableStream_Binding::Wrap(aCx, this, aGivenProto);
+}
+
+void ReadableStream::GetStoredError(JSContext* aCx,
+                                    JS::MutableHandle<JS::Value> aStoredError,
+                                    ErrorResult& aRv) const {
+  aStoredError.set(mStoredError);
+  if (!JS_WrapValue(aCx, aStoredError)) {
+    aStoredError.setUndefined();
+    aRv.StealExceptionFromJSContext(aCx);
+  }
 }
 
 ReadableStreamDefaultReader* ReadableStream::GetDefaultReader() {
@@ -277,7 +289,7 @@ class ReadableStreamFromAlgorithms final
 
     // Step 3. Let nextPromise be a promise resolved with nextResult.[[Value]].
     RefPtr<Promise> nextPromise = Promise::CreateInfallible(mGlobal);
-    nextPromise->MaybeResolve(nextResult);
+    nextPromise->MaybeSafeResolve(nextResult);
 
     // Step 4. Return the result of reacting to nextPromise with the following
     // fulfillment steps, given iterResult:
@@ -385,7 +397,7 @@ class ReadableStreamFromAlgorithms final
     // Step 7. Let returnPromise be a promise resolved with
     // returnResult.[[Value]].
     RefPtr<Promise> returnPromise = Promise::CreateInfallible(mGlobal);
-    returnPromise->MaybeResolve(returnResult);
+    returnPromise->MaybeSafeResolve(returnResult);
 
     // Step 8. Return the result of reacting to returnPromise with the following
     // fulfillment steps, given iterResult:
@@ -585,7 +597,12 @@ already_AddRefed<Promise> ReadableStreamCancel(JSContext* aCx,
 
   // Step 3.
   if (aStream->State() == ReadableStream::ReaderState::Errored) {
-    JS::Rooted<JS::Value> storedError(aCx, aStream->StoredError());
+    JS::Rooted<JS::Value> storedError(aCx);
+    aStream->GetStoredError(aCx, &storedError, aRv);
+    if (aRv.Failed()) {
+      return nullptr;
+    }
+
     return Promise::CreateRejected(aStream->GetParentObject(), storedError,
                                    aRv);
   }
@@ -838,7 +855,7 @@ void ReadableStreamFulfillReadRequest(JSContext* aCx, ReadableStream* aStream,
   ReadableStreamDefaultReader* reader = aStream->GetDefaultReader();
 
   // Step 3.
-  MOZ_ASSERT(!reader->ReadRequests().isEmpty());
+  MOZ_RELEASE_ASSERT(!reader->ReadRequests().isEmpty());
 
   // Step 4+5.
   RefPtr<ReadRequest> readRequest = reader->ReadRequests().popFirst();
@@ -891,13 +908,21 @@ ReadableStreamDefaultTeeSourceAlgorithms::CancelCallback(
       return nullptr;
     }
 
-    JS::Rooted<JS::Value> reason1(aCx, mTeeState->Reason1());
+    JS::Rooted<JS::Value> reason1(aCx);
+    mTeeState->GetReason1(aCx, &reason1, aRv);
+    if (aRv.Failed()) {
+      return nullptr;
+    }
     if (!JS_SetElement(aCx, compositeReason, 0, reason1)) {
       aRv.StealExceptionFromJSContext(aCx);
       return nullptr;
     }
 
-    JS::Rooted<JS::Value> reason2(aCx, mTeeState->Reason2());
+    JS::Rooted<JS::Value> reason2(aCx);
+    mTeeState->GetReason2(aCx, &reason2, aRv);
+    if (aRv.Failed()) {
+      return nullptr;
+    }
     if (!JS_SetElement(aCx, compositeReason, 1, reason2)) {
       aRv.StealExceptionFromJSContext(aCx);
       return nullptr;
@@ -914,7 +939,7 @@ ReadableStreamDefaultTeeSourceAlgorithms::CancelCallback(
     }
 
     // Step 3.3
-    mTeeState->CancelPromise()->MaybeResolve(cancelResult);
+    mTeeState->CancelPromise()->MaybeSafeResolve(cancelResult);
   }
 
   // Step 4.
@@ -1091,7 +1116,7 @@ struct IteratorReadRequest : public ReadRequest {
   void ChunkSteps(JSContext* aCx, JS::Handle<JS::Value> aChunk,
                   ErrorResult& aRv) override {
     // Step 1. Resolve promise with chunk.
-    mPromise->MaybeResolve(aChunk);
+    mPromise->MaybeSafeResolve(aChunk);
   }
 
   // close steps
@@ -1383,7 +1408,7 @@ void ReadableStream::ErrorNative(JSContext* aCx, JS::Handle<JS::Value> aError,
   // Step 1: If stream.[[controller]] implements ReadableByteStreamController,
   // then perform ! ReadableByteStreamControllerError(stream.[[controller]], e).
   if (mController->IsByte()) {
-    ReadableByteStreamControllerError(mController->AsByte(), aError, aRv);
+    ReadableByteStreamControllerError(aCx, mController->AsByte(), aError, aRv);
     return;
   }
   // Step 2: Otherwise, perform !
@@ -1515,6 +1540,82 @@ void ReadableStream::GetCurrentBYOBRequestView(
   byobRequest->GetView(aCx, aView);
 }
 
+// https://streams.spec.whatwg.org/#readablestream-pull-from-bytes
+uint64_t ReadableStream::PullFromBytes(JSContext* aCx,
+                                       Span<const uint8_t> aBytes,
+                                       ErrorResult& aRv) {
+  // Step 1: Assert: stream.[[controller]] implements
+  // ReadableByteStreamController.
+  MOZ_ASSERT(mController->IsByte());
+  RefPtr<ReadableByteStreamController> controller = mController->AsByte();
+
+  // Step 2: Let available be bytes's length.
+  uint64_t available = aBytes.Length();
+
+  // Step 3: Let desiredSize be available.
+  uint64_t desiredSize = available;
+
+  // Step 4: If stream's current BYOB request view is non-null, then set
+  // desiredSize to that view's byte length.
+  JS::Rooted<JSObject*> byobViewObj(aCx);
+  GetCurrentBYOBRequestView(aCx, &byobViewObj, aRv);
+  if (aRv.Failed()) {
+    return 0;
+  }
+  if (byobViewObj) {
+    desiredSize = JS_GetArrayBufferViewByteLength(byobViewObj);
+  }
+
+  // Step 5: Let pullSize be the smaller value of available and desiredSize.
+  uint64_t pullSize = std::min(available, desiredSize);
+
+  // Step 6: Let pulled be the first pullSize bytes of bytes.
+  // Step 7: Remove the first pullSize bytes from bytes.
+  //
+  // Implementation note: pulled is a subspan rather than a copy, and the bytes
+  // are not removed here; our caller handles the bytes we don't consume, since
+  // we hand back pullSize.
+  Span<const uint8_t> pulled = aBytes.First(static_cast<size_t>(pullSize));
+
+  // Step 8: If stream's current BYOB request view is non-null, then:
+  if (byobViewObj) {
+    // ReadableByteStreamControllerRespond() throws a TypeError on a
+    // bytesWritten of 0, which would error the stream. Nothing was pulled, so
+    // leave the BYOB request pending for the next caller instead. The spec
+    // does not cover this case.
+    if (pullSize == 0) {
+      return 0;
+    }
+
+    // Step 8.1: Write pulled into stream's current BYOB request view.
+    ArrayBufferView byobView;
+    MOZ_ALWAYS_TRUE(byobView.Init(byobViewObj));
+    byobView.ProcessData(
+        [&](const Span<uint8_t>& aData, JS::AutoCheckCannotGC&&) {
+          MOZ_ASSERT(pulled.Length() <= aData.Length());
+          memcpy(aData.Elements(), pulled.Elements(), pulled.Length());
+        });
+
+    // Step 8.2: Perform ? ReadableByteStreamControllerRespond(
+    // stream.[[controller]], pullSize).
+    ReadableByteStreamControllerRespond(aCx, controller, pullSize, aRv);
+    return pullSize;
+  }
+
+  // Step 9.1: Set view to the result of creating a Uint8Array from pulled in
+  // stream's relevant Realm.
+  JSObject* outView = Uint8Array::Create(aCx, pulled, aRv);
+  if (aRv.Failed()) {
+    return 0;
+  }
+  JS::Rooted<JSObject*> view(aCx, outView);
+
+  // Step 9.2: Perform ? ReadableByteStreamControllerEnqueue(
+  // stream.[[controller]], view).
+  ReadableByteStreamControllerEnqueue(aCx, controller, view, aRv);
+  return pullSize;
+}
+
 // https://streams.spec.whatwg.org/#readablestream-get-a-reader
 // To get a reader for a ReadableStream stream, return ?
 // AcquireReadableStreamDefaultReader(stream). The result will be a
@@ -1522,6 +1623,15 @@ void ReadableStream::GetCurrentBYOBRequestView(
 already_AddRefed<mozilla::dom::ReadableStreamDefaultReader>
 ReadableStream::GetReader(ErrorResult& aRv) {
   return AcquireReadableStreamDefaultReader(this, aRv);
+}
+
+// https://streams.spec.whatwg.org/#readablestream-cancel
+// To cancel a ReadableStream stream with reason, return !
+// ReadableStreamCancel(stream, reason). The return value will be a promise that
+// either fulfills with undefined, or rejects with a failure reason.
+already_AddRefed<Promise> ReadableStream::CancelNative(
+    JSContext* aCx, JS::Handle<JS::Value> aReason, ErrorResult& aRv) {
+  return ReadableStreamCancel(aCx, this, aReason, aRv);
 }
 
 }  // namespace mozilla::dom

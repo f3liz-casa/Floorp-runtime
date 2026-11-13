@@ -29,8 +29,6 @@ import time
 import traceback
 from datetime import datetime
 
-from six import binary_type
-
 # Define our own FATAL_LEVEL
 FATAL_LEVEL = logging.CRITICAL + 10
 logging.addLevelName(FATAL_LEVEL, "FATAL")
@@ -362,11 +360,15 @@ class OutputParser(LogMixin):
             if not line or line.isspace():
                 continue
 
-            if isinstance(line, binary_type):
+            if isinstance(line, bytes):
                 line = line.decode("utf-8", "replace")
 
             line = line.rstrip()
             self.parse_single_line(line)
+
+    def finish(self):
+        """Release per-run resources once the command's output has been
+        evaluated; a no-op unless a subclass holds some."""
 
 
 # BaseLogger {{{1
@@ -626,7 +628,7 @@ class SimpleFileLogger(BaseLogger):
         log_format="%(asctime)s %(levelname)8s - %(message)s",
         logger_name="Simple",
         log_dir="logs",
-        **kwargs
+        **kwargs,
     ):
         """SimpleFileLogger constructor. Calls its superclass constructor,
         creates a new logger instance and log an init message.
@@ -647,7 +649,7 @@ class SimpleFileLogger(BaseLogger):
             logger_name=logger_name,
             log_format=log_format,
             log_dir=log_dir,
-            **kwargs
+            **kwargs,
         )
         self.new_logger()
         self.init_message()
@@ -673,7 +675,7 @@ class MultiFileLogger(BaseLogger):
         log_format="%(asctime)s %(levelname)8s - %(message)s",
         log_dir="logs",
         log_to_raw=True,
-        **kwargs
+        **kwargs,
     ):
         """MultiFileLogger constructor. Calls its superclass constructor,
         creates a new logger instance and log an init message.
@@ -697,7 +699,7 @@ class MultiFileLogger(BaseLogger):
             log_format=log_format,
             log_to_raw=log_to_raw,
             log_dir=log_dir,
-            **kwargs
+            **kwargs,
         )
 
         self.new_logger()
@@ -731,7 +733,7 @@ class ConsoleLogger(BaseLogger):
         log_format="%(levelname)8s - %(message)s",
         log_date_format="%H:%M:%S",
         logger_name="Console",
-        **kwargs
+        **kwargs,
     ):
         """ConsoleLogger constructor. Calls its superclass constructor,
         creates a new logger instance and log an init message.
