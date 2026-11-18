@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -7,11 +5,12 @@
 #include "PreXULSkeletonUI.h"
 
 #include <algorithm>
+#include <cstdlib>
+#include <cstring>
 #include <dwmapi.h>
 #include <math.h>
 #include <limits.h>
 #include <cmath>
-#include <locale>
 #include <string>
 #include <objbase.h>
 #include <shlobj.h>
@@ -20,10 +19,10 @@
 #include "mozilla/Attributes.h"
 #include "mozilla/BaseProfilerMarkers.h"
 #include "mozilla/CacheNtDllThunk.h"
+#include "mozilla/EnumSet.h"
 #include "mozilla/FStream.h"
 #include "mozilla/GetKnownFolderPath.h"
 #include "mozilla/HashFunctions.h"
-#include "mozilla/HelperMacros.h"
 #include "mozilla/glue/Debug.h"
 #include "mozilla/Maybe.h"
 #include "mozilla/mscom/ProcessRuntime.h"
@@ -32,11 +31,28 @@
 #include "mozilla/Try.h"
 #include "mozilla/UniquePtr.h"
 #include "mozilla/UniquePtrExtensions.h"
-#include "mozilla/Unused.h"
 #include "mozilla/WindowsDpiAwareness.h"
 #include "mozilla/WindowsProcessMitigations.h"
 
 namespace mozilla {
+
+static bool ShouldLogSkeleton() {
+  static Maybe<bool> sEnabled;
+  if (sEnabled.isNothing()) {
+    // We can't use proper Gecko logging since we're in mozglue,
+    // but this is close enough.
+    const char* env = getenv("MOZ_LOG");
+    sEnabled = Some(env && strstr(env, "PreXULSkeletonUI"));
+  }
+  return sEnabled.value();
+}
+
+#define SKELETON_LOG(str, ...)                                     \
+  do {                                                             \
+    if (ShouldLogSkeleton()) [[unlikely]] {                        \
+      printf_stderr("PreXULSkeletonUI: " str "\n", ##__VA_ARGS__); \
+    }                                                              \
+  } while (0)
 
 // ColorRect defines an optionally-rounded, optionally-bordered rectangle of a
 // particular color that we will draw.
@@ -54,12 +70,9 @@ struct ColorRect {
 
 // DrawRect is mostly the same as ColorRect, but exists as an implementation
 // detail to simplify drawing borders. We draw borders as a strokeOnly rect
-// underneath an inner rect of a particular color. We also need to keep
-// track of the backgroundColor for rounding rects, in order to correctly
-// anti-alias.
+// underneath an inner rect of a particular color.
 struct DrawRect {
   uint32_t color;
-  uint32_t backgroundColor;
   int x;
   int y;
   int width;
@@ -83,9 +96,9 @@ NormalizedRGB UintToRGB(uint32_t color) {
 }
 
 uint32_t RGBToUint(const NormalizedRGB& rgb) {
-  return (static_cast<uint32_t>(rgb.r * 255.0) << 16) |
-         (static_cast<uint32_t>(rgb.g * 255.0) << 8) |
-         (static_cast<uint32_t>(rgb.b * 255.0) << 0);
+  return (static_cast<uint32_t>(rgb.r * 255.0 + 0.5) << 16) |
+         (static_cast<uint32_t>(rgb.g * 255.0 + 0.5) << 8) |
+         (static_cast<uint32_t>(rgb.b * 255.0 + 0.5) << 0);
 }
 
 double Lerp(double a, double b, double x) { return a + x * (b - a); }
@@ -96,6 +109,56 @@ NormalizedRGB Lerp(const NormalizedRGB& a, const NormalizedRGB& b, double x) {
 
 // Produces a smooth curve in [0,1] based on a linear input in [0,1]
 double SmoothStep3(double x) { return x * x * (3.0 - 2.0 * x); }
+
+uint32_t Composite(uint32_t color, double alpha, uint32_t base) {
+  return RGBToUint(Lerp(UintToRGB(base), UintToRGB(color), alpha));
+}
+
+// The toolbox background, which browser-shared.css paints on the body: the
+// --toolbox-background-gradient from tokens-platform.css over the
+// --toolbox-background-color. Both gradient stops are at 50% opacity.
+class ToolboxBackground {
+ public:
+  ToolboxBackground(const ThemeColors& theme, int x, int y, int width,
+                    int height)
+      : mColor(theme.toolboxColor),
+        mLeading(UintToRGB(theme.toolboxGradientLeadingColor)),
+        mTrailing(UintToRGB(theme.toolboxGradientTrailingColor)),
+        mCenterX(x + width / 2.0),
+        mCenterY(y + height / 2.0),
+        mDirectionX(sin(kAngle)),
+        mDirectionY(-cos(kAngle)),
+        mLength(fabs(width * mDirectionX) + fabs(height * mDirectionY)) {}
+
+  uint32_t ColorAt(int x, int y) const {
+    double position = ((x + 0.5 - mCenterX) * mDirectionX +
+                       (y + 0.5 - mCenterY) * mDirectionY) /
+                          mLength +
+                      0.5;
+    double progress = std::clamp(
+        (position - kLeadingStop) / (kTrailingStop - kLeadingStop), 0.0, 1.0);
+    return Composite(RGBToUint(Lerp(mLeading, mTrailing, progress)), 0.5,
+                     mColor);
+  }
+
+  // How far the gradient's colors move to the right from one row to the next.
+  double ShiftPerRow() const { return mDirectionY / mDirectionX; }
+
+ private:
+  // 96deg, in radians.
+  static constexpr double kAngle = 96.0 * 3.14159265358979323846 / 180.0;
+  static constexpr double kLeadingStop = 0.3984;
+  static constexpr double kTrailingStop = 1.0172;
+
+  uint32_t mColor;
+  NormalizedRGB mLeading;
+  NormalizedRGB mTrailing;
+  double mCenterX;
+  double mCenterY;
+  double mDirectionX;
+  double mDirectionY;
+  double mLength;
+};
 
 struct Margin {
   int top = 0;
@@ -212,7 +275,7 @@ Result<UniquePtr<wchar_t[]>, PreXULSkeletonUIError> GetBinaryPath() {
   DWORD bufLen = MAX_PATH;
   UniquePtr<wchar_t[]> buf;
   while (true) {
-    buf = MakeUnique<wchar_t[]>(bufLen);
+    buf = std::make_unique<wchar_t[]>(bufLen);
     DWORD retLen = ::GetModuleFileNameW(nullptr, buf.get(), bufLen);
     if (!retLen) {
       return Err(PreXULSkeletonUIError::FilesystemFailure);
@@ -273,20 +336,19 @@ static Result<Ok, PreXULSkeletonUIError> GetSkeletonUILock() {
   // get quite the same robustness that `GetInstallHash` might provide, but
   // we already don't have that with how we key our registry values, so it
   // probably makes sense to just match those.
-  UniquePtr<wchar_t[]> binPath;
-  MOZ_TRY_VAR(binPath, GetBinaryPath());
+  UniquePtr<wchar_t[]> binPath = MOZ_TRY(GetBinaryPath());
 
   // Lowercase the binpath to match how we look for remote instances.
   MutateStringToLowercase(binPath.get());
 
   // The number of bytes * 2 characters per byte + 1 for the null terminator
   uint32_t hexHashSize = sizeof(uint32_t) * 2 + 1;
-  UniquePtr<wchar_t[]> installHash = MakeUnique<wchar_t[]>(hexHashSize);
+  auto installHash = std::make_unique<wchar_t[]>(hexHashSize);
   // This isn't perfect - it's a 32-bit hash of the path to our executable. It
   // could reasonably collide, or casing could potentially affect things, but
   // the theory is that that should be uncommon enough and the failure case
   // mild enough that this is fine.
-  uint32_t binPathHash = HashString(binPath.get());
+  uint32_t binPathHash = HashString(binPath.get(), wcslen(binPath.get()));
   swprintf(installHash.get(), hexHashSize, L"%08x", binPathHash);
 
   std::wstring lockFilePath;
@@ -416,17 +478,20 @@ double DistanceAntiAlias(double signedDistance) {
 }
 
 void RasterizeRoundedRectTopAndBottom(const DrawRect& rect) {
-  if (rect.height <= 2 * rect.borderRadius) {
+  if (rect.height < 2 * rect.borderRadius) {
     MOZ_ASSERT(false, "Skeleton UI rect height too small for border radius.");
     return;
   }
-  if (rect.width <= 2 * rect.borderRadius) {
+  if (rect.width < 2 * rect.borderRadius) {
     MOZ_ASSERT(false, "Skeleton UI rect width too small for border radius.");
     return;
   }
 
-  NormalizedRGB rgbBase = UintToRGB(rect.backgroundColor);
-  NormalizedRGB rgbBlend = UintToRGB(rect.color);
+  // Blend the corner pixels with what is already painted below them, which is
+  // the border for the inner part of a bordered rect.
+  auto blend = [&](uint32_t* pixel, double alpha) {
+    *pixel = Composite(rect.color, alpha, *pixel);
+  };
 
   for (int rowIndex = 0; rowIndex < rect.borderRadius; ++rowIndex) {
     int yTop = rect.y + rect.borderRadius - 1 - rowIndex;
@@ -450,13 +515,11 @@ void RasterizeRoundedRectTopAndBottom(const DrawRect& rect) {
       double distance =
           SignedDistanceToCircle(pixelX, pixelY, (double)rect.borderRadius);
       double alpha = DistanceAntiAlias(distance);
-      NormalizedRGB rgb = Lerp(rgbBase, rgbBlend, alpha);
-      uint32_t color = RGBToUint(rgb);
 
-      innermostPixelTopLeft[-columnIndex] = color;
-      innermostPixelTopRight[columnIndex] = color;
-      innermostPixelBottomLeft[-columnIndex] = color;
-      innermostPixelBottomRight[columnIndex] = color;
+      blend(&innermostPixelTopLeft[-columnIndex], alpha);
+      blend(&innermostPixelTopRight[columnIndex], alpha);
+      blend(&innermostPixelBottomLeft[-columnIndex], alpha);
+      blend(&innermostPixelBottomRight[columnIndex], alpha);
     }
 
     std::fill(innermostPixelTopLeft + 1, innermostPixelTopRight, rect.color);
@@ -522,12 +585,10 @@ void RasterizeColorRect(const ColorRect& colorRect) {
   // have a border, we draw a stroke-only rect first, and then draw the smaller
   // inner rect on top of it.
   Vector<DrawRect, 2> drawRects;
-  Unused << drawRects.reserve(2);
+  (void)drawRects.reserve(2);
   if (colorRect.borderWidth == 0) {
     DrawRect rect = {};
     rect.color = colorRect.color;
-    rect.backgroundColor =
-        sPixelBuffer[colorRect.y * sWindowWidth + colorRect.x];
     rect.x = colorRect.x;
     rect.y = colorRect.y;
     rect.width = colorRect.width;
@@ -538,8 +599,6 @@ void RasterizeColorRect(const ColorRect& colorRect) {
   } else {
     DrawRect borderRect = {};
     borderRect.color = colorRect.borderColor;
-    borderRect.backgroundColor =
-        sPixelBuffer[colorRect.y * sWindowWidth + colorRect.x];
     borderRect.x = colorRect.x;
     borderRect.y = colorRect.y;
     borderRect.width = colorRect.width;
@@ -551,7 +610,6 @@ void RasterizeColorRect(const ColorRect& colorRect) {
 
     DrawRect baseRect = {};
     baseRect.color = colorRect.color;
-    baseRect.backgroundColor = borderRect.color;
     baseRect.x = colorRect.x + colorRect.borderWidth;
     baseRect.y = colorRect.y + colorRect.borderWidth;
     baseRect.width = colorRect.width - 2 * colorRect.borderWidth;
@@ -612,6 +670,26 @@ void RasterizeColorRect(const ColorRect& colorRect) {
         std::fill(dataStart, dataEnd, rect.color);
       }
     }
+  }
+}
+
+// Paints full-width rows of the toolbox background, with a translucent color
+// on top of it. Each row of the gradient is the first row shifted by a
+// fraction of a pixel per row, so the rows copy one computed row at the
+// nearest whole-pixel offset.
+void RasterizeToolboxRows(const ToolboxBackground& background, int y,
+                          int height, uint32_t color, double alpha) {
+  const double shiftPerRow = background.ShiftPerRow();
+  const int rowWidth =
+      sWindowWidth + static_cast<int>(lround(height * shiftPerRow));
+  const auto firstRow = std::make_unique<uint32_t[]>(rowWidth);
+  for (int x = 0; x < rowWidth; ++x) {
+    firstRow[x] = Composite(color, alpha, background.ColorAt(x, y));
+  }
+  for (int i = 0; i < height; ++i) {
+    const uint32_t* rowStart = firstRow.get() + lround(i * shiftPerRow);
+    std::copy(rowStart, rowStart + sWindowWidth,
+              &sPixelBuffer[(y + i) * sWindowWidth]);
   }
 }
 
@@ -724,26 +802,26 @@ Result<Ok, PreXULSkeletonUIError> DrawSkeletonUI(
   int horizontalOffset =
       sHorizontalResizeMargin - (sMaximized ? 0 : chromeHorMargin);
 
-  // found in tabs.inc.css, "--tab-min-height" + 2 * "--tab-block-margin"
+  // found in tabs.css, "--tab-min-height" + 2 * "--tab-margin-block"
   int tabBarHeight =
       verticalTabs ? 0 : CSSToDevPixels(44, sCSSToDevPixelScaling);
-  int selectedTabBorderWidth = CSSToDevPixels(2, sCSSToDevPixelScaling);
-  // found in tabs.inc.css, "--tab-block-margin"
-  int titlebarSpacerWidth = horizontalOffset +
-                            CSSToDevPixels(2, sCSSToDevPixelScaling) -
-                            selectedTabBorderWidth;
+  int selectedTabBorderWidth = CSSToDevPixels(1, sCSSToDevPixelScaling);
+  // found in tabs.css, "--tab-margin-overflow-clip"
+  int titlebarSpacerWidth =
+      horizontalOffset + CSSToDevPixels(2, sCSSToDevPixelScaling);
   if (!sMaximized && !menubarShown) {
-    // found in tabs.inc.css, ".titlebar-spacer"
+    // found in browser-shared.css, ".titlebar-spacer"
     titlebarSpacerWidth += CSSToDevPixels(40, sCSSToDevPixelScaling);
   }
-  // found in tabs.inc.css, "--tab-block-margin"
-  int selectedTabMarginTop =
-      CSSToDevPixels(4, sCSSToDevPixelScaling) - selectedTabBorderWidth;
-  int selectedTabMarginBottom =
-      CSSToDevPixels(4, sCSSToDevPixelScaling) - selectedTabBorderWidth;
-  int selectedTabBorderRadius = CSSToDevPixels(4, sCSSToDevPixelScaling);
-  int selectedTabWidth =
-      CSSToDevPixels(221, sCSSToDevPixelScaling) + 2 * selectedTabBorderWidth;
+  // found in tab.tokens.css, "--tab-margin-block"
+  int selectedTabMarginTop = CSSToDevPixels(6, sCSSToDevPixelScaling);
+  // found in tabs.css, "--tab-min-height"
+  int selectedTabHeight = CSSToDevPixels(32, sCSSToDevPixelScaling);
+  // "--tab-border-radius" is more than half the tab height.
+  int selectedTabBorderRadius = selectedTabHeight / 2;
+  // found in tabs.css, "--tab-max-width" minus "--tab-margin-overflow-clip"
+  // on both sides
+  int selectedTabWidth = CSSToDevPixels(221, sCSSToDevPixelScaling);
   int toolbarHeight = CSSToDevPixels(40, sCSSToDevPixelScaling);
   // found in browser.css, "#PersonalToolbar"
   int bookmarkToolbarHeight = CSSToDevPixels(28, sCSSToDevPixelScaling);
@@ -753,12 +831,13 @@ Result<Ok, PreXULSkeletonUIError> DrawSkeletonUI(
   // found in urlbar-searchbar.inc.css, "#urlbar[breakout]"
   int urlbarTopOffset = CSSToDevPixels(4, sCSSToDevPixelScaling);
   int urlbarHeight = CSSToDevPixels(32, sCSSToDevPixelScaling);
-  // found in browser-aero.css, "#navigator-toolbox::after" border-bottom
+  // found in content-area.css, ".browserContainer" border-block-start
   int chromeContentDividerHeight = CSSToDevPixels(1, sCSSToDevPixelScaling);
 
-  int tabPlaceholderBarMarginTop = CSSToDevPixels(14, sCSSToDevPixelScaling);
   int tabPlaceholderBarMarginLeft = CSSToDevPixels(10, sCSSToDevPixelScaling);
   int tabPlaceholderBarHeight = CSSToDevPixels(10, sCSSToDevPixelScaling);
+  int tabPlaceholderBarMarginTop =
+      (selectedTabHeight - tabPlaceholderBarHeight) / 2;
   int tabPlaceholderBarWidth = CSSToDevPixels(120, sCSSToDevPixelScaling);
 
   int toolbarPlaceholderHeight = CSSToDevPixels(10, sCSSToDevPixelScaling);
@@ -773,18 +852,18 @@ Result<Ok, PreXULSkeletonUIError> DrawSkeletonUI(
   int menubarHeightDevPixels =
       menubarShown ? CSSToDevPixels(28, sCSSToDevPixelScaling) : 0;
 
-  // defined in urlbar-searchbar.inc.css as --urlbar-margin-inline: 5px
+  // defined in browser/themes/shared/urlbar as --urlbar-margin-inline: 5px
   int urlbarMargin =
       CSSToDevPixels(5, sCSSToDevPixelScaling) + horizontalOffset;
 
-  int urlbarTextPlaceholderMarginTop =
-      CSSToDevPixels(12, sCSSToDevPixelScaling);
   int urlbarTextPlaceholderMarginLeft =
       CSSToDevPixels(12, sCSSToDevPixelScaling);
   int urlbarTextPlaceHolderWidth = CSSToDevPixels(
       std::clamp(urlbarCSSSpan.end - urlbarCSSSpan.start - 10.0, 0.0, 260.0),
       sCSSToDevPixelScaling);
   int urlbarTextPlaceholderHeight = CSSToDevPixels(10, sCSSToDevPixelScaling);
+  int urlbarTextPlaceholderMarginTop =
+      (urlbarHeight - urlbarTextPlaceholderHeight) / 2;
 
   int searchbarTextPlaceholderWidth = CSSToDevPixels(62, sCSSToDevPixelScaling);
 
@@ -795,42 +874,27 @@ Result<Ok, PreXULSkeletonUIError> DrawSkeletonUI(
 
   Vector<ColorRect> rects;
 
-  ColorRect menubar = {};
-  menubar.color = currentTheme.titlebarColor;
-  menubar.x = 0;
-  menubar.y = verticalOffset;
-  menubar.width = sWindowWidth;
-  menubar.height = menubarHeightDevPixels;
-  menubar.flipIfRTL = false;
-  if (!rects.append(menubar)) {
-    return Err(PreXULSkeletonUIError::OOM);
-  }
+  // The menubar, the tab bar and, with vertical tabs, the main toolbar show
+  // the toolbox background directly.
+  ToolboxBackground toolboxBackground(
+      currentTheme, horizontalOffset, verticalOffset,
+      sWindowWidth - 2 * horizontalOffset, sWindowHeight - verticalOffset);
+  int tabBarY = verticalOffset + menubarHeightDevPixels;
+  int toolbarY = tabBarY + tabBarHeight;
+  double toolbarAlpha = verticalTabs ? 0.0 : currentTheme.toolbarAlpha;
 
-  int placeholderBorderRadius = CSSToDevPixels(4, sCSSToDevPixelScaling);
-  // found in browser.css "--toolbarbutton-border-radius"
-  int urlbarBorderRadius = CSSToDevPixels(4, sCSSToDevPixelScaling);
-
-  // The (traditionally dark blue on Windows) background of the tab bar.
-  ColorRect tabBar = {};
-  tabBar.color = currentTheme.titlebarColor;
-  tabBar.x = 0;
-  tabBar.y = menubar.y + menubar.height;
-  tabBar.width = sWindowWidth;
-  tabBar.height = tabBarHeight;
-  tabBar.flipIfRTL = false;
-  if (!rects.append(tabBar)) {
-    return Err(PreXULSkeletonUIError::OOM);
-  }
+  // The placeholders and the urlbar are fully rounded.
+  int placeholderBorderRadius = toolbarPlaceholderHeight / 2;
+  int urlbarBorderRadius = urlbarHeight / 2;
 
   if (!verticalTabs) {
     // The initial selected tab
     ColorRect selectedTab = {};
     selectedTab.color = currentTheme.tabColor;
     selectedTab.x = titlebarSpacerWidth;
-    selectedTab.y = menubar.y + menubar.height + selectedTabMarginTop;
+    selectedTab.y = tabBarY + selectedTabMarginTop;
     selectedTab.width = selectedTabWidth;
-    selectedTab.height =
-        tabBar.y + tabBar.height - selectedTab.y - selectedTabMarginBottom;
+    selectedTab.height = selectedTabHeight;
     selectedTab.borderColor = currentTheme.tabOutlineColor;
     selectedTab.borderWidth = selectedTabBorderWidth;
     selectedTab.borderRadius = selectedTabBorderRadius;
@@ -858,41 +922,29 @@ Result<Ok, PreXULSkeletonUIError> DrawSkeletonUI(
     }
   }
 
-  // The toolbar background
-  ColorRect toolbar = {};
-  // In the vertical tabs case the main toolbar is in the titlebar:
-  toolbar.color =
-      verticalTabs ? currentTheme.titlebarColor : currentTheme.backgroundColor;
-  toolbar.x = 0;
-  toolbar.y = tabBar.y + tabBarHeight;
-  toolbar.width = sWindowWidth;
-  toolbar.height = toolbarHeight;
-  toolbar.flipIfRTL = false;
-  if (!rects.append(toolbar)) {
-    return Err(PreXULSkeletonUIError::OOM);
-  }
-
   // The single-pixel divider line below the toolbar
-  ColorRect chromeContentDivider = {};
-  chromeContentDivider.color = currentTheme.chromeContentDividerColor;
-  chromeContentDivider.x = 0;
-  chromeContentDivider.y = toolbar.y + toolbar.height;
-  chromeContentDivider.width = sWindowWidth;
-  chromeContentDivider.height = chromeContentDividerHeight;
-  chromeContentDivider.flipIfRTL = false;
-  if (!rects.append(chromeContentDivider)) {
-    return Err(PreXULSkeletonUIError::OOM);
-  }
+  int chromeContentDividerY = toolbarY + toolbarHeight;
+
+  // The urlbar and the searchbar are translucent, but get a solid color: the
+  // one at their center.
+  auto fieldColor = [&](const ColorRect& field) {
+    int x = field.x + field.width / 2;
+    int y = field.y + field.height / 2;
+    uint32_t toolbarColor = Composite(currentTheme.toolbarColor, toolbarAlpha,
+                                      toolboxBackground.ColorAt(x, y));
+    return Composite(currentTheme.urlbarColor, currentTheme.urlbarAlpha,
+                     toolbarColor);
+  };
 
   // The urlbar
   ColorRect urlbar = {};
-  urlbar.color = currentTheme.urlbarColor;
   urlbar.x = CSSToDevPixels(urlbarCSSSpan.start, sCSSToDevPixelScaling) +
              horizontalOffset;
-  urlbar.y = tabBar.y + tabBarHeight + urlbarTopOffset;
+  urlbar.y = toolbarY + urlbarTopOffset;
   urlbar.width = CSSToDevPixels((urlbarCSSSpan.end - urlbarCSSSpan.start),
                                 sCSSToDevPixelScaling);
   urlbar.height = urlbarHeight;
+  urlbar.color = fieldColor(urlbar);
   urlbar.borderColor = currentTheme.urlbarBorderColor;
   urlbar.borderWidth = CSSToDevPixels(1, sCSSToDevPixelScaling);
   urlbar.borderRadius = urlbarBorderRadius;
@@ -925,7 +977,6 @@ Result<Ok, PreXULSkeletonUIError> DrawSkeletonUI(
   bool hasSearchbar = searchbarCSSSpan.start != 0 && searchbarCSSSpan.end != 0;
   ColorRect searchbarRect = {};
   if (hasSearchbar == true) {
-    searchbarRect.color = currentTheme.urlbarColor;
     searchbarRect.x =
         CSSToDevPixels(searchbarCSSSpan.start, sCSSToDevPixelScaling) +
         horizontalOffset;
@@ -933,6 +984,7 @@ Result<Ok, PreXULSkeletonUIError> DrawSkeletonUI(
     searchbarRect.width = CSSToDevPixels(
         searchbarCSSSpan.end - searchbarCSSSpan.start, sCSSToDevPixelScaling);
     searchbarRect.height = urlbarHeight;
+    searchbarRect.color = fieldColor(searchbarRect);
     searchbarRect.borderRadius = urlbarBorderRadius;
     searchbarRect.borderColor = currentTheme.urlbarBorderColor;
     searchbarRect.borderWidth = CSSToDevPixels(1, sCSSToDevPixelScaling);
@@ -956,6 +1008,7 @@ Result<Ok, PreXULSkeletonUIError> DrawSkeletonUI(
         searchbarRect.y + urlbarTextPlaceholderMarginTop;
     searchbarTextPlaceholder.width = searchbarTextPlaceholderWidth;
     searchbarTextPlaceholder.height = urlbarTextPlaceholderHeight;
+    searchbarTextPlaceholder.borderRadius = placeholderBorderRadius;
     searchbarTextPlaceholder.flipIfRTL = false;
     if (!rects.append(searchbarTextPlaceholder) ||
         !sAnimatedRects->append(searchbarTextPlaceholder)) {
@@ -1009,7 +1062,7 @@ Result<Ok, PreXULSkeletonUIError> DrawSkeletonUI(
   }
 
   Vector<DevPixelSpan, 2> spansToAdd;
-  Unused << spansToAdd.reserve(2);
+  (void)spansToAdd.reserve(2);
   spansToAdd.infallibleAppend(urlbarSpan);
   if (hasSearchbar) {
     spansToAdd.infallibleAppend(searchbarSpan);
@@ -1048,7 +1101,7 @@ Result<Ok, PreXULSkeletonUIError> DrawSkeletonUI(
     }
   }
 
-  sTotalChromeHeight = chromeContentDivider.y + chromeContentDivider.height;
+  sTotalChromeHeight = chromeContentDividerY + chromeContentDividerHeight;
   if (sTotalChromeHeight > sWindowHeight) {
     return Err(PreXULSkeletonUIError::BadWindowDimensions);
   }
@@ -1059,6 +1112,14 @@ Result<Ok, PreXULSkeletonUIError> DrawSkeletonUI(
 
   sPixelBuffer =
       (uint32_t*)calloc(sWindowWidth * sTotalChromeHeight, sizeof(uint32_t));
+
+  RasterizeToolboxRows(toolboxBackground, 0, toolbarY, 0, 0.0);
+  RasterizeToolboxRows(toolboxBackground, toolbarY, toolbarHeight,
+                       currentTheme.toolbarColor, toolbarAlpha);
+  RasterizeToolboxRows(toolboxBackground, chromeContentDividerY,
+                       chromeContentDividerHeight,
+                       currentTheme.chromeContentDividerColor,
+                       currentTheme.chromeContentDividerAlpha);
 
   for (auto& rect : *sAnimatedRects) {
     if (rtlEnabled && rect.flipIfRTL) {
@@ -1155,8 +1216,7 @@ DWORD WINAPI AnimateSkeletonUI(void* aUnused) {
   // of the animation provided in the design mockup. We define it in CSS pixels
   // simply because the rest of our UI is based off of CSS scalings.
   int animationWidth = CSSToDevPixels(80, sCSSToDevPixelScaling);
-  UniquePtr<uint32_t[]> animationLookup =
-      MakeUnique<uint32_t[]>(animationWidth);
+  auto animationLookup = std::make_unique<uint32_t[]>(animationWidth);
   uint32_t animationColor = sAnimationColor;
   NormalizedRGB rgbBlend = UintToRGB(animationColor);
 
@@ -1343,34 +1403,53 @@ ThemeColors GetTheme(ThemeMode themeId) {
     case ThemeMode::Dark:
       // Dark theme or default theme when in dark mode
 
-      // controlled by css variable --toolbar-bgcolor
+      // --tabpanel-background-color in content-area.css
       theme.backgroundColor = 0x2b2a33;
-      theme.tabColor = 0x42414d;
+      // --tab-background-color-selected
+      theme.tabColor = 0x171519;
       theme.toolbarForegroundColor = 0x6a6a6d;
-      theme.tabOutlineColor = 0x1c1b22;
-      // controlled by css variable --lwt-accent-color
-      theme.titlebarColor = 0x1c1b22;
-      // controlled by --toolbar-color in browser.css
-      theme.chromeContentDividerColor = 0x0c0c0d;
-      // controlled by css variable --toolbar-field-background-color
-      theme.urlbarColor = 0x42414d;
-      theme.urlbarBorderColor = 0x42414d;
-      theme.animationColor = theme.urlbarColor;
+      // --tab-border-color-accent is a gradient; this is its midpoint.
+      theme.tabOutlineColor = 0xdb98b2;
+      // --toolbox-background-color and --toolbox-background-gradient-*
+      theme.toolboxColor = 0x252428;
+      theme.toolboxGradientLeadingColor = 0x3e315f;
+      theme.toolboxGradientTrailingColor = 0x701c07;
+      // --toolbar-background-color
+      theme.toolbarColor = 0x000000;
+      theme.toolbarAlpha = 0.2;
+      // --chrome-content-separator-color in browser-colors.css
+      theme.chromeContentDividerColor = 0x3f3e42;
+      theme.chromeContentDividerAlpha = 0.5;
+      // --toolbar-field-background-color and --toolbar-field-border-color
+      theme.urlbarColor = 0x000000;
+      theme.urlbarAlpha = 0.2;
+      theme.urlbarBorderColor = 0x3f3e42;
+      theme.animationColor = theme.urlbarBorderColor;
       return theme;
     case ThemeMode::Light:
     case ThemeMode::Default:
     default:
-      // --toolbar-bgcolor in browser.css
+      // --tabpanel-background-color in content-area.css
       theme.backgroundColor = 0xf9f9fb;
-      theme.tabColor = 0xf9f9fb;
+      // --tab-background-color-selected
+      theme.tabColor = 0xffffff;
       theme.toolbarForegroundColor = 0xdddde1;
-      theme.tabOutlineColor = 0xdddde1;
-      theme.titlebarColor = 0xeaeaed;
-      // --chrome-content-separator-color in browser.css
-      theme.chromeContentDividerColor = 0xe1e1e2;
-      // controlled by css variable --toolbar-color
+      // --tab-border-color-accent is a gradient; this is its midpoint.
+      theme.tabOutlineColor = 0xdb98b2;
+      // --toolbox-background-color and --toolbox-background-gradient-*
+      theme.toolboxColor = 0xffffff;
+      theme.toolboxGradientLeadingColor = 0xeaddff;
+      theme.toolboxGradientTrailingColor = 0xffdbc5;
+      // --toolbar-background-color
+      theme.toolbarColor = 0xffffff;
+      theme.toolbarAlpha = 0.4;
+      // --chrome-content-separator-color in browser-colors.css
+      theme.chromeContentDividerColor = 0xc9c0e3;
+      theme.chromeContentDividerAlpha = 0.5;
+      // --toolbar-field-background-color and --toolbar-field-border-color
       theme.urlbarColor = 0xffffff;
-      theme.urlbarBorderColor = 0xdddde1;
+      theme.urlbarAlpha = 0.4;
+      theme.urlbarBorderColor = 0xd6d5da;
       theme.animationColor = theme.backgroundColor;
       return theme;
   }
@@ -1379,19 +1458,23 @@ ThemeColors GetTheme(ThemeMode themeId) {
 Result<HKEY, PreXULSkeletonUIError> OpenPreXULSkeletonUIRegKey() {
   HKEY key;
   DWORD disposition;
+  SKELETON_LOG("Opening reg key");
   LSTATUS result =
       ::RegCreateKeyExW(HKEY_CURRENT_USER, kPreXULSkeletonUIKeyPath, 0, nullptr,
                         0, KEY_ALL_ACCESS, nullptr, &key, &disposition);
 
   if (result != ERROR_SUCCESS) {
+    SKELETON_LOG("Could not open reg key - result %ld", result);
     return Err(PreXULSkeletonUIError::FailedToOpenRegistryKey);
   }
 
   if (disposition == REG_CREATED_NEW_KEY ||
       disposition == REG_OPENED_EXISTING_KEY) {
+    SKELETON_LOG("Opened/created reg key (disposition %lu)", disposition);
     return key;
   }
 
+  SKELETON_LOG("Reg key does not exist (disposition %lu)", disposition);
   ::RegCloseKey(key);
   return Err(PreXULSkeletonUIError::FailedToOpenRegistryKey);
 }
@@ -1424,10 +1507,11 @@ Result<Ok, PreXULSkeletonUIError> LoadGdi32AndUser32Procedures() {
                                    DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE)) {
     // EnableNonClientDpiScaling is first available in Win10 Build 1607, but
     // it's optional - we can handle not having it.
-    Unused << [&]() -> Result<Ok, PreXULSkeletonUIError> {
+    (void)[&]()->Result<Ok, PreXULSkeletonUIError> {
       MOZ_LOAD_OR_FAIL(user32Dll, EnableNonClientDpiScaling);
       return Ok{};
-    }();
+    }
+    ();
   }
 
   MOZ_LOAD_OR_FAIL(user32Dll, GetSystemMetricsForDpi);
@@ -1534,8 +1618,8 @@ static Result<Ok, PreXULSkeletonUIError> ValidateCmdlineArguments(
       "new-tab", "new-window",
 
       // To the extent possible, we want to ensure that existing tests cover the
-      // skeleton UI, so we need to allow marionette and its required arguments
-      "marionette", "remote-allow-system-access",
+      // skeleton UI, so we need to allow marionette
+      "marionette",
 
       // These will cause the content area to appear different, but won't
       // meaningfully affect the chrome
@@ -1715,8 +1799,7 @@ static Result<uint32_t, PreXULSkeletonUIError> ReadRegUint(
 
 static Result<bool, PreXULSkeletonUIError> ReadRegBool(
     HKEY regKey, const std::wstring& valueName) {
-  uint32_t value;
-  MOZ_TRY_VAR(value, ReadRegUint(regKey, valueName));
+  uint32_t value = MOZ_TRY(ReadRegUint(regKey, valueName));
   return !!value;
 }
 
@@ -1725,7 +1808,7 @@ static Result<Ok, PreXULSkeletonUIError> WriteRegCSSPixelSpans(
     int spansLength) {
   // No guarantee on the packing of CSSPixelSpan. We could #pragma it, but it's
   // also trivial to just copy them into a buffer of doubles.
-  auto doubles = MakeUnique<double[]>(spansLength * 2);
+  auto doubles = std::make_unique<double[]>(spansLength * 2);
   for (int i = 0; i < spansLength; ++i) {
     doubles[i * 2] = spans[i].start;
     doubles[i * 2 + 1] = spans[i].end;
@@ -1799,12 +1882,10 @@ static Result<Ok, PreXULSkeletonUIError> CreateAndStorePreXULSkeletonUIImpl(
 
   const TimeStamp skeletonStart = TimeStamp::Now();
 
-  HKEY regKey;
-  MOZ_TRY_VAR(regKey, OpenPreXULSkeletonUIRegKey());
+  HKEY regKey = MOZ_TRY(OpenPreXULSkeletonUIRegKey());
   AutoCloseRegKey closeKey(regKey);
 
-  UniquePtr<wchar_t[]> binPath;
-  MOZ_TRY_VAR(binPath, GetBinaryPath());
+  UniquePtr<wchar_t[]> binPath = MOZ_TRY(GetBinaryPath());
 
   std::wstring regProgressName =
       GetRegValueName(binPath.get(), sProgressSuffix);
@@ -1819,7 +1900,7 @@ static Result<Ok, PreXULSkeletonUIError> CreateAndStorePreXULSkeletonUIImpl(
       WriteRegUint(regKey, regProgressName,
                    static_cast<uint32_t>(PreXULSkeletonUIProgress::Started)));
   auto writeCompletion = MakeScopeExit([&] {
-    Unused << WriteRegUint(
+    (void)WriteRegUint(
         regKey, regProgressName,
         static_cast<uint32_t>(PreXULSkeletonUIProgress::Completed));
   });
@@ -1830,11 +1911,15 @@ static Result<Ok, PreXULSkeletonUIError> CreateAndStorePreXULSkeletonUIImpl(
   MOZ_TRY(ValidateCmdlineArguments(argc, argv, &explicitProfile));
   MOZ_TRY(ValidateEnvVars());
 
+  SKELETON_LOG("Reading enabled reg key");
   auto enabledResult =
       ReadRegBool(regKey, GetRegValueName(binPath.get(), sEnabledRegSuffix));
   if (enabledResult.isErr()) {
+    SKELETON_LOG("Enabled reg key does not exist");
     return Err(PreXULSkeletonUIError::EnabledKeyDoesNotExist);
   }
+  SKELETON_LOG("Enabled reg key exists, value is %d",
+               enabledResult.unwrap() ? 1 : 0);
   if (!enabledResult.unwrap()) {
     return Err(PreXULSkeletonUIError::Disabled);
   }
@@ -1867,48 +1952,32 @@ static Result<Ok, PreXULSkeletonUIError> CreateAndStorePreXULSkeletonUIImpl(
     return Err(PreXULSkeletonUIError::FailedRegisteringWindowClass);
   }
 
-  uint32_t screenX;
-  MOZ_TRY_VAR(screenX, ReadRegUint(regKey, GetRegValueName(binPath.get(),
-                                                           sScreenXRegSuffix)));
-  uint32_t screenY;
-  MOZ_TRY_VAR(screenY, ReadRegUint(regKey, GetRegValueName(binPath.get(),
-                                                           sScreenYRegSuffix)));
-  uint32_t windowWidth;
-  MOZ_TRY_VAR(
-      windowWidth,
+  uint32_t screenX = MOZ_TRY(
+      ReadRegUint(regKey, GetRegValueName(binPath.get(), sScreenXRegSuffix)));
+  uint32_t screenY = MOZ_TRY(
+      ReadRegUint(regKey, GetRegValueName(binPath.get(), sScreenYRegSuffix)));
+  uint32_t windowWidth = MOZ_TRY(
       ReadRegUint(regKey, GetRegValueName(binPath.get(), sWidthRegSuffix)));
-  uint32_t windowHeight;
-  MOZ_TRY_VAR(
-      windowHeight,
+  uint32_t windowHeight = MOZ_TRY(
       ReadRegUint(regKey, GetRegValueName(binPath.get(), sHeightRegSuffix)));
-  MOZ_TRY_VAR(
-      sMaximized,
+  sMaximized = MOZ_TRY(
       ReadRegBool(regKey, GetRegValueName(binPath.get(), sMaximizedRegSuffix)));
-  MOZ_TRY_VAR(
-      sCSSToDevPixelScaling,
-      ReadRegDouble(regKey, GetRegValueName(binPath.get(),
-                                            sCssToDevPixelScalingRegSuffix)));
-  Vector<CSSPixelSpan> urlbar;
-  MOZ_TRY_VAR(urlbar,
-              ReadRegCSSPixelSpans(
-                  regKey, GetRegValueName(binPath.get(), sUrlbarCSSRegSuffix)));
-  Vector<CSSPixelSpan> searchbar;
-  MOZ_TRY_VAR(searchbar,
-              ReadRegCSSPixelSpans(
-                  regKey, GetRegValueName(binPath.get(), sSearchbarRegSuffix)));
-  Vector<CSSPixelSpan> springs;
-  MOZ_TRY_VAR(springs, ReadRegCSSPixelSpans(
-                           regKey, GetRegValueName(binPath.get(),
-                                                   sSpringsCSSRegSuffix)));
+  sCSSToDevPixelScaling = MOZ_TRY(ReadRegDouble(
+      regKey, GetRegValueName(binPath.get(), sCssToDevPixelScalingRegSuffix)));
+  Vector<CSSPixelSpan> urlbar = MOZ_TRY(ReadRegCSSPixelSpans(
+      regKey, GetRegValueName(binPath.get(), sUrlbarCSSRegSuffix)));
+  Vector<CSSPixelSpan> searchbar = MOZ_TRY(ReadRegCSSPixelSpans(
+      regKey, GetRegValueName(binPath.get(), sSearchbarRegSuffix)));
+  Vector<CSSPixelSpan> springs = MOZ_TRY(ReadRegCSSPixelSpans(
+      regKey, GetRegValueName(binPath.get(), sSpringsCSSRegSuffix)));
 
   if (urlbar.empty() || searchbar.empty()) {
     return Err(PreXULSkeletonUIError::CorruptData);
   }
 
   EnumSet<SkeletonUIFlag, uint32_t> flags;
-  uint32_t flagsUint;
-  MOZ_TRY_VAR(flagsUint, ReadRegUint(regKey, GetRegValueName(binPath.get(),
-                                                             sFlagsRegSuffix)));
+  uint32_t flagsUint = MOZ_TRY(
+      ReadRegUint(regKey, GetRegValueName(binPath.get(), sFlagsRegSuffix)));
   flags.deserialize(flagsUint);
 
   if (flags.contains(SkeletonUIFlag::TouchDensity) ||
@@ -1916,9 +1985,8 @@ static Result<Ok, PreXULSkeletonUIError> CreateAndStorePreXULSkeletonUIImpl(
     return Err(PreXULSkeletonUIError::BadUIDensity);
   }
 
-  uint32_t theme;
-  MOZ_TRY_VAR(theme, ReadRegUint(regKey, GetRegValueName(binPath.get(),
-                                                         sThemeRegSuffix)));
+  uint32_t theme = MOZ_TRY(
+      ReadRegUint(regKey, GetRegValueName(binPath.get(), sThemeRegSuffix)));
   ThemeMode themeMode = static_cast<ThemeMode>(theme);
   if (themeMode == ThemeMode::Default) {
     if (IsSystemDarkThemeEnabled()) {
@@ -1944,6 +2012,17 @@ static Result<Ok, PreXULSkeletonUIError> CreateAndStorePreXULSkeletonUIImpl(
                        windowHeight, nullptr, nullptr, hInstance, nullptr);
   if (!sPreXULSkeletonUIWindow) {
     return Err(PreXULSkeletonUIError::CreateWindowFailed);
+  }
+
+  // Set dark mode on the titlebar if dark theme is enabled to avoid
+  // a white flash (bug 2010949)
+  if (themeMode == ThemeMode::Dark) {
+    BOOL dark = TRUE;
+    sDwmSetWindowAttribute(sPreXULSkeletonUIWindow,
+                           DWMWA_USE_IMMERSIVE_DARK_MODE_BEFORE_20H1, &dark,
+                           sizeof(dark));
+    sDwmSetWindowAttribute(sPreXULSkeletonUIWindow,
+                           DWMWA_USE_IMMERSIVE_DARK_MODE, &dark, sizeof(dark));
   }
 
   // DWM displays garbage immediately on Show(), and that garbage is usually
@@ -2095,12 +2174,10 @@ Result<Ok, PreXULSkeletonUIError> PersistPreXULSkeletonUIValues(
     return Err(PreXULSkeletonUIError::Disabled);
   }
 
-  HKEY regKey;
-  MOZ_TRY_VAR(regKey, OpenPreXULSkeletonUIRegKey());
+  HKEY regKey = MOZ_TRY(OpenPreXULSkeletonUIRegKey());
   AutoCloseRegKey closeKey(regKey);
 
-  UniquePtr<wchar_t[]> binPath;
-  MOZ_TRY_VAR(binPath, GetBinaryPath());
+  UniquePtr<wchar_t[]> binPath = MOZ_TRY(GetBinaryPath());
 
   MOZ_TRY(WriteRegUint(regKey,
                        GetRegValueName(binPath.get(), sScreenXRegSuffix),
@@ -2172,24 +2249,27 @@ MFBT_API Result<Ok, PreXULSkeletonUIError> SetPreXULSkeletonUIEnabledIfAllowed(
   // across profiles. However, whatever ill effects we observe should be
   // correct themselves after one session.
   if (PreXULSkeletonUIDisallowed()) {
+    SKELETON_LOG(
+        "Can't set enabled reg key to %d because disallowed with error %d",
+        value ? 1 : 0, static_cast<int>(*sErrorReason));
     return Err(PreXULSkeletonUIError::Disabled);
   }
 
-  HKEY regKey;
-  MOZ_TRY_VAR(regKey, OpenPreXULSkeletonUIRegKey());
+  HKEY regKey = MOZ_TRY(OpenPreXULSkeletonUIRegKey());
   AutoCloseRegKey closeKey(regKey);
 
-  UniquePtr<wchar_t[]> binPath;
-  MOZ_TRY_VAR(binPath, GetBinaryPath());
+  UniquePtr<wchar_t[]> binPath = MOZ_TRY(GetBinaryPath());
+  SKELETON_LOG("Writing enabled reg key to %d", value ? 1 : 0);
   MOZ_TRY(WriteRegBool(
       regKey, GetRegValueName(binPath.get(), sEnabledRegSuffix), value));
+  SKELETON_LOG("Writing enabled reg key to %d succeeded", value ? 1 : 0);
 
   if (!sPreXULSkeletonUIEnabled && value) {
     // We specifically don't care if we fail to get this lock. We just want to
     // do our best effort to lock it so that future instances don't create
     // skeleton UIs while we're still running, since they will immediately exit
     // and tell us to open a new window.
-    Unused << GetSkeletonUILock();
+    (void)GetSkeletonUILock();
   }
 
   sPreXULSkeletonUIEnabled = value;
@@ -2207,12 +2287,10 @@ MFBT_API Result<Ok, PreXULSkeletonUIError> SetPreXULSkeletonUIThemeId(
   // If we fail below, invalidate sTheme
   auto invalidateTheme = MakeScopeExit([] { sTheme = ThemeMode::Invalid; });
 
-  HKEY regKey;
-  MOZ_TRY_VAR(regKey, OpenPreXULSkeletonUIRegKey());
+  HKEY regKey = MOZ_TRY(OpenPreXULSkeletonUIRegKey());
   AutoCloseRegKey closeKey(regKey);
 
-  UniquePtr<wchar_t[]> binPath;
-  MOZ_TRY_VAR(binPath, GetBinaryPath());
+  UniquePtr<wchar_t[]> binPath = MOZ_TRY(GetBinaryPath());
   MOZ_TRY(WriteRegUint(regKey, GetRegValueName(binPath.get(), sThemeRegSuffix),
                        static_cast<uint32_t>(theme)));
 
@@ -2244,4 +2322,5 @@ Result<Ok, PreXULSkeletonUIError> NotePreXULSkeletonUIRestarting() {
   return Ok();
 }
 
+#undef SKELETON_LOG
 }  // namespace mozilla

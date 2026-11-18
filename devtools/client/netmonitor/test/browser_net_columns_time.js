@@ -19,9 +19,9 @@ add_task(async function () {
 
   const visibleColumns = store.getState().ui.columns;
 
-  const wait = waitForNetworkEvents(monitor, 1);
-  await reloadBrowser();
-  await wait;
+  let onNetworkEvents = waitForNetworkEvents(monitor, 1);
+  await reloadSelectedTab();
+  await onNetworkEvents;
 
   // Hide the waterfall column to make sure timing data are fetched
   // by the other timing columns ("endTime", "responseTime", "duration",
@@ -38,8 +38,8 @@ add_task(async function () {
     }
   });
 
-  const onNetworkEvents = waitForNetworkEvents(monitor, 1);
-  await reloadBrowser();
+  onNetworkEvents = waitForNetworkEvents(monitor, 1);
+  await reloadSelectedTab();
   await onNetworkEvents;
 
   // There should be one request in the list.

@@ -3,7 +3,6 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 import { ContentTaskUtils } from "resource://testing-common/ContentTaskUtils.sys.mjs";
-import { Preferences } from "resource://gre/modules/Preferences.sys.mjs";
 import { setTimeout } from "resource://gre/modules/Timer.sys.mjs";
 
 export var NarrateTestUtils = {
@@ -20,7 +19,7 @@ export var NarrateTestUtils = {
   FORWARD: ".narrate-skip-next",
 
   isVisible(element) {
-    let win = element.ownerGlobal;
+    let win = element.documentGlobal;
     let style = win.getComputedStyle(element);
     if (style.display == "none") {
       return false;
@@ -46,8 +45,11 @@ export var NarrateTestUtils = {
     ok($(this.FORWARD).disabled, "forward button is disabled");
     ok(!!$(this.START), "start button is showing");
     ok(!$(this.STOP), "stop button is hidden");
-    // This checks for a localized label. Not the best...
-    ok($(this.START).title == "Start (N)", "Button tooltip is correct");
+    let { id, args } = window.document.l10n.getAttributes($(this.START));
+    ok(
+      id == "narrate-start" && args.shortcut == "N",
+      "Button tooltip is correct"
+    );
   },
 
   isStartedState(window, ok) {
@@ -56,8 +58,11 @@ export var NarrateTestUtils = {
     ok(!$(this.FORWARD).disabled, "forward button is enabled");
     ok(!$(this.START), "start button is hidden");
     ok(!!$(this.STOP), "stop button is showing");
-    // This checks for a localized label. Not the best...
-    ok($(this.STOP).title == "Stop (N)", "Button tooltip is correct");
+    let { id, args } = window.document.l10n.getAttributes($(this.STOP));
+    ok(
+      id == "narrate-stop" && args.shortcut == "N",
+      "Button tooltip is correct"
+    );
   },
 
   selectVoice(window, voiceUri) {
@@ -113,17 +118,6 @@ export var NarrateTestUtils = {
   waitForNarrateToggle(window) {
     let toggle = window.document.querySelector(this.TOGGLE);
     return ContentTaskUtils.waitForCondition(() => !toggle.hidden, "");
-  },
-
-  waitForPrefChange(pref) {
-    return new Promise(resolve => {
-      function observeChange() {
-        Services.prefs.removeObserver(pref, observeChange);
-        resolve(Preferences.get(pref));
-      }
-
-      Services.prefs.addObserver(pref, observeChange);
-    });
   },
 
   sendBoundaryEvent(window, name, charIndex, charLength) {

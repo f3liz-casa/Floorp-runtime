@@ -1,25 +1,22 @@
-/* -*- Mode: c++; c-basic-offset: 2; tab-width: 20; indent-tabs-mode: nil; -*-
- * vim: set sw=2 ts=4 expandtab:
- * This Source Code Form is subject to the terms of the Mozilla Public
+/* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "EventDispatcher.h"
 
 #include "JavaBuiltins.h"
-#include "nsAppShell.h"
-#include "nsJSUtils.h"
 #include "js/Array.h"  // JS::GetArrayLength, JS::IsArrayObject, JS::NewArrayObject
 #include "js/PropertyAndElement.h"  // JS_Enumerate, JS_GetElement, JS_GetProperty, JS_GetPropertyById, JS_SetElement, JS_SetUCProperty
 #include "js/String.h"              // JS::StringHasLatin1Chars
 #include "js/Warnings.h"            // JS::WarnUTF8
-#include "xpcpublic.h"
-
-#include "mozilla/fallible.h"
+#include "jsapi.h"
 #include "mozilla/ScopeExit.h"
 #include "mozilla/dom/ScriptSettings.h"
 #include "mozilla/java/EventCallbackWrappers.h"
 #include "mozilla/jni/GeckoBundleUtils.h"
+#include "nsAppShell.h"
+#include "nsJSUtils.h"
+#include "xpcpublic.h"
 
 namespace mozilla::widget {
 
@@ -251,8 +248,8 @@ nsresult UnboxValue(JSContext* aCx, const jni::Object::LocalRef& aData,
   } else if (aData.IsInstanceOf<jni::DoubleArray>()) {
     return UnboxArrayPrimitive<
         double, jdouble, jdoubleArray, &JNIEnv::GetDoubleArrayElements,
-        &JNIEnv::ReleaseDoubleArrayElements, &JS::DoubleValue>(aCx, aData,
-                                                               aOut);
+        &JNIEnv::ReleaseDoubleArrayElements, &JS::NumberValue<double>>(
+        aCx, aData, aOut);
 
   } else if (aData.IsInstanceOf<StringArray>()) {
     return UnboxArrayObject<&UnboxString>(aCx, aData, aOut);
@@ -292,7 +289,7 @@ nsresult UnboxData(jni::String::Param aEvent, JSContext* aCx,
 }
 
 class JavaCallbackDelegate final : public nsIGeckoViewEventCallback {
-  const java::EventCallback::GlobalRef mCallback;
+  java::EventCallback::GlobalRef mCallback;
 
   virtual ~JavaCallbackDelegate() {}
 
@@ -301,14 +298,21 @@ class JavaCallbackDelegate final : public nsIGeckoViewEventCallback {
                       const) {
     MOZ_ASSERT(NS_IsMainThread());
 
+    if (!mCallback) {
+      MOZ_ASSERT(false, "JavaCallbackDelegate called more than once");
+      return NS_ERROR_UNEXPECTED;
+    }
+
     jni::Object::LocalRef data(jni::GetGeckoThreadEnv());
     nsresult rv = BoxData(u"callback"_ns, aCx, aData, data,
                           /* ObjectOnly */ false);
     NS_ENSURE_SUCCESS(rv, rv);
 
+    java::EventCallback::GlobalRef callback(std::move(mCallback));
+
     dom::AutoNoJSAPI nojsapi;
 
-    (java::EventCallback(*mCallback).*aCall)(data);
+    (java::EventCallback(*callback).*aCall)(data);
     return NS_OK;
   }
 
@@ -440,7 +444,7 @@ nsresult EventDispatcher::DispatchToEmbedder(
   if (aCallback) {
     callback = java::EventDispatcher::NativeCallbackDelegate::New();
     NativeCallbackDelegateSupport::AttachNative(
-        callback, MakeUnique<NativeCallbackDelegateSupport>(aCallback));
+        callback, std::make_unique<NativeCallbackDelegateSupport>(aCallback));
   }
 
   dom::AutoNoJSAPI nojsapi;

@@ -1,4 +1,3 @@
-/* -*- Mode: C++; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -12,13 +11,14 @@
 #include "mozilla/LookAndFeel.h"
 #include "mozilla/StaticAnalysisFunctions.h"
 #include "mozilla/TextEvents.h"
+#include "mozilla/Utf16.h"
 #include "mozilla/dom/DocumentInlines.h"
 #include "mozilla/dom/KeyboardEvent.h"
+#include "mozilla/intl/UnicodeProperties.h"
 #include "nsDebug.h"
 #include "nsMenuPopupFrame.h"
 #include "nsString.h"
 #include "nsStringFwd.h"
-#include "nsUTF8Utils.h"
 #include "nsXULElement.h"
 #include "nsXULPopupManager.h"
 
@@ -30,7 +30,7 @@ NS_IMPL_CYCLE_COLLECTION_INHERITED(XULMenuParentElement, nsXULElement,
                                    mActiveItem)
 
 XULMenuParentElement::XULMenuParentElement(
-    already_AddRefed<mozilla::dom::NodeInfo>&& aNodeInfo)
+    already_AddRefed<mozilla::dom::NodeInfo> aNodeInfo)
     : nsXULElement(std::move(aNodeInfo)) {}
 
 XULMenuParentElement::~XULMenuParentElement() = default;
@@ -45,8 +45,8 @@ class MenuActivateEvent final : public Runnable {
     nsAutoString domEventToFire;
     if (mIsActivate) {
       // Highlight the menu.
-      mMenu->SetAttr(kNameSpaceID_None, nsGkAtoms::menuactive, u"true"_ns,
-                     true);
+      mMenu->SetAttr(kNameSpaceID_None, nsGkAtoms::menuactive, u"true"_ns, true,
+                     IsKnownNewAttr::No);
       // The menuactivated event is used by accessibility to track the user's
       // movements through menus
       domEventToFire.AssignLiteral("DOMMenuItemActive");
@@ -174,7 +174,8 @@ void XULMenuParentElement::SetActiveMenuChild(XULButtonElement* aChild,
 }
 
 static bool IsValidMenuItem(const XULMenuParentElement& aMenuParent,
-                            const nsIContent& aContent) {
+                            const nsIContent& aContent,
+                            const GetMenuItemsOptions& aOptions) {
   const auto* button = XULButtonElement::FromNode(aContent);
   if (!button || !button->IsMenu()) {
     return false;
@@ -183,7 +184,7 @@ static bool IsValidMenuItem(const XULMenuParentElement& aMenuParent,
     // Hidden buttons are not focusable/activatable.
     return false;
   }
-  if (!button->IsDisabled()) {
+  if (!button->IsDisabled() || aOptions.mIncludeDisabled) {
     return true;
   }
   // In the menubar or a menulist disabled items are always skipped.
@@ -198,19 +199,19 @@ enum class StartKind { Parent, Item };
 template <bool aForward>
 static XULButtonElement* DoGetNextMenuItem(
     const XULMenuParentElement& aMenuParent, const nsIContent& aStart,
-    StartKind aStartKind) {
+    StartKind aStartKind, const GetMenuItemsOptions& aOptions = {}) {
   nsIContent* start =
       aStartKind == StartKind::Item
           ? (aForward ? aStart.GetNextSibling() : aStart.GetPreviousSibling())
           : (aForward ? aStart.GetFirstChild() : aStart.GetLastChild());
   for (nsIContent* node = start; node;
        node = aForward ? node->GetNextSibling() : node->GetPreviousSibling()) {
-    if (IsValidMenuItem(aMenuParent, *node)) {
+    if (IsValidMenuItem(aMenuParent, *node, aOptions)) {
       return static_cast<XULButtonElement*>(node);
     }
     if (node->IsXULElement(nsGkAtoms::menugroup)) {
       if (XULButtonElement* child = DoGetNextMenuItem<aForward>(
-              aMenuParent, *node, StartKind::Parent)) {
+              aMenuParent, *node, StartKind::Parent, aOptions)) {
         return child;
       }
     }
@@ -220,13 +221,14 @@ static XULButtonElement* DoGetNextMenuItem(
     // We haven't found anything in aStart's sibling list, but if we're in a
     // group we need to keep looking.
     return DoGetNextMenuItem<aForward>(aMenuParent, *aStart.GetParent(),
-                                       StartKind::Item);
+                                       StartKind::Item, aOptions);
   }
   return nullptr;
 }
 
-XULButtonElement* XULMenuParentElement::GetFirstMenuItem() const {
-  return DoGetNextMenuItem<true>(*this, *this, StartKind::Parent);
+XULButtonElement* XULMenuParentElement::GetFirstMenuItem(
+    const GetMenuItemsOptions& aOptions) const {
+  return DoGetNextMenuItem<true>(*this, *this, StartKind::Parent, aOptions);
 }
 
 XULButtonElement* XULMenuParentElement::GetLastMenuItem() const {
@@ -234,8 +236,10 @@ XULButtonElement* XULMenuParentElement::GetLastMenuItem() const {
 }
 
 XULButtonElement* XULMenuParentElement::GetNextMenuItemFrom(
-    const XULButtonElement& aStartingItem) const {
-  return DoGetNextMenuItem<true>(*this, aStartingItem, StartKind::Item);
+    const XULButtonElement& aStartingItem,
+    const GetMenuItemsOptions& aOptions) const {
+  return DoGetNextMenuItem<true>(*this, aStartingItem, StartKind::Item,
+                                 aOptions);
 }
 
 XULButtonElement* XULMenuParentElement::GetPrevMenuItemFrom(
@@ -302,7 +306,7 @@ XULButtonElement* XULMenuParentElement::FindMenuWithShortcut(
     ToLowerCase(shortcutKey);
     const char16_t* start = shortcutKey.BeginReading();
     const char16_t* end = shortcutKey.EndReading();
-    uint32_t ch = UTF16CharEnumerator::NextChar(&start, end);
+    uint32_t ch = DecodeOneUtf16CodePoint(&start, end);
     size_t index = accessKeys.IndexOf(ch);
     if (index == AccessKeyArray::NoIndex) {
       continue;
@@ -315,6 +319,48 @@ XULButtonElement* XULMenuParentElement::FindMenuWithShortcut(
   return foundMenu;
 }
 
+// Whether a single key press can type aCh. This matches TYPEABLE_CHARACTER in
+// auto-accesskey.mjs.
+static bool IsTypeableCharacter(uint32_t aCh) {
+  if (aCh >= 0xFF00 && aCh <= 0xFFEF) {
+    return false;
+  }
+  switch (intl::UnicodeProperties::CharType(aCh)) {
+    case intl::GeneralCategory::Uppercase_Letter:
+    case intl::GeneralCategory::Lowercase_Letter:
+    case intl::GeneralCategory::Titlecase_Letter:
+    case intl::GeneralCategory::Other_Letter:
+    case intl::GeneralCategory::Decimal_Number:
+      break;
+    default:
+      return false;
+  }
+  switch (intl::UnicodeProperties::GetScriptCode(aCh)) {
+    case intl::Script::HAN:
+    case intl::Script::HIRAGANA:
+    case intl::Script::KATAKANA:
+    case intl::Script::HANGUL:
+    case intl::Script::BOPOMOFO:
+      return false;
+    default:
+      return true;
+  }
+}
+
+static bool FirstTypeableCharacterIs(const nsAString& aLabel,
+                                     const nsAString& aString) {
+  const char16_t* start = aLabel.BeginReading();
+  const char16_t* end = aLabel.EndReading();
+  while (start < end) {
+    const char16_t* charStart = start;
+    if (IsTypeableCharacter(DecodeOneUtf16CodePoint(&start, end))) {
+      return Substring(charStart, start)
+          .Equals(aString, nsCaseInsensitiveStringComparator);
+    }
+  }
+  return false;
+}
+
 XULButtonElement* XULMenuParentElement::FindMenuWithShortcut(
     const nsAString& aString, bool& aDoAction) const {
   aDoAction = false;
@@ -325,6 +371,7 @@ XULButtonElement* XULMenuParentElement::FindMenuWithShortcut(
   XULButtonElement* foundMenuBeforeCurrent = nullptr;
   XULButtonElement* foundMenuAfterCurrent = nullptr;
 
+  const bool isMenuList = IsInMenuList();
   bool foundActive = false;
   for (auto* item = GetFirstMenuItem(); item;
        item = GetNextMenuItemFrom(*item)) {
@@ -342,10 +389,14 @@ XULButtonElement* XULMenuParentElement::FindMenuWithShortcut(
     const bool isActive = item == GetActiveMenuChild();
     foundActive |= isActive;
 
+    // A menu also reaches an item without an accesskey by the first typeable
+    // character of its label, so that "w" selects "🦊 Work".
     if (!StringBeginsWith(
             nsContentUtils::TrimWhitespace<
                 nsContentUtils::IsHTMLWhitespaceOrNBSP>(textKey, false),
-            aString, nsCaseInsensitiveStringComparator)) {
+            aString, nsCaseInsensitiveStringComparator) &&
+        (isAccessKey || isMenuList ||
+         !FirstTypeableCharacterIs(textKey, aString))) {
       continue;
     }
     // There is one match

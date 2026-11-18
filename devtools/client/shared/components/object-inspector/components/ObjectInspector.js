@@ -9,6 +9,7 @@ const {
   createFactory,
   createElement,
 } = require("resource://devtools/client/shared/vendor/react.mjs");
+const PropTypes = require("resource://devtools/client/shared/vendor/react-prop-types.js");
 const {
   connect,
   Provider,
@@ -77,9 +78,38 @@ const {
 // children.
 
 class ObjectInspector extends Component {
+  static propTypes = {
+    roots: PropTypes.array.isRequired,
+    focusedItem: PropTypes.object,
+    activeItem: PropTypes.object,
+    rootsChanged: PropTypes.func,
+    autoReleaseObjectActors: PropTypes.bool,
+    loadedProperties: PropTypes.object.isRequired,
+    evaluations: PropTypes.object.isRequired,
+    expandedPaths: PropTypes.object.isRequired,
+    closeObjectInspector: PropTypes.func,
+    nodeExpand: PropTypes.func,
+    nodeCollapse: PropTypes.func,
+    recordTelemetryEvent: PropTypes.func,
+    setExpanded: PropTypes.func,
+    focusable: PropTypes.bool,
+    onFocus: PropTypes.func,
+    onActivate: PropTypes.func,
+    autoExpandAll: PropTypes.bool,
+    autoExpandDepth: PropTypes.number,
+    disableWrap: PropTypes.bool,
+    displayRootNodeAsHeader: PropTypes.bool,
+    getInitiallyExpanded: PropTypes.func,
+    inline: PropTypes.bool,
+    preventBlur: PropTypes.bool,
+    mode: PropTypes.string,
+    standalone: PropTypes.bool,
+  };
+
   static defaultProps = {
     autoReleaseObjectActors: true
   };
+
   constructor(_props) {
     super();
     this.cachedNodes = new Map();
@@ -103,6 +133,34 @@ class ObjectInspector extends Component {
     this.activeItem = this.props.activeItem;
   }
 
+  shouldComponentUpdate(nextProps) {
+    const { expandedPaths, loadedProperties, evaluations } = this.props;
+
+    // We should update if:
+    // - there are new loaded properties
+    // - OR there are new evaluations
+    // - OR the expanded paths number changed, and all of them have properties
+    //      loaded
+    // - OR the expanded paths number did not changed, but old and new sets
+    //      differ
+    // - OR the focused node changed.
+    // - OR the active node changed.
+    return (
+      loadedProperties !== nextProps.loadedProperties ||
+      loadedProperties.size !== nextProps.loadedProperties.size ||
+      evaluations.size !== nextProps.evaluations.size ||
+      (expandedPaths.size !== nextProps.expandedPaths.size &&
+        nextProps.expandedPaths.values().every(path =>
+          nextProps.loadedProperties.has(path)
+        )) ||
+      (expandedPaths.size === nextProps.expandedPaths.size &&
+        nextProps.expandedPaths.values().some(key => !expandedPaths.has(key))) ||
+      this.focusedItem !== nextProps.focusedItem ||
+      this.activeItem !== nextProps.activeItem ||
+      this.roots !== nextProps.roots
+    );
+  }
+
   // FIXME: https://bugzilla.mozilla.org/show_bug.cgi?id=1774507
   UNSAFE_componentWillUpdate(nextProps) {
     this.removeOutdatedNodesFromCache(nextProps);
@@ -117,6 +175,12 @@ class ObjectInspector extends Component {
       if (this.props.rootsChanged) {
         this.props.rootsChanged(this.roots, oldRoots, this.props.autoReleaseObjectActors);
       }
+    }
+  }
+
+  componentWillUnmount() {
+    if (this.props.autoReleaseObjectActors){
+      this.props.closeObjectInspector(this.props.roots);
     }
   }
 
@@ -141,40 +205,6 @@ class ObjectInspector extends Component {
           this.cachedNodes.delete(key);
         }
       }
-    }
-  }
-
-  shouldComponentUpdate(nextProps) {
-    const { expandedPaths, loadedProperties, evaluations } = this.props;
-
-    // We should update if:
-    // - there are new loaded properties
-    // - OR there are new evaluations
-    // - OR the expanded paths number changed, and all of them have properties
-    //      loaded
-    // - OR the expanded paths number did not changed, but old and new sets
-    //      differ
-    // - OR the focused node changed.
-    // - OR the active node changed.
-    return (
-      loadedProperties !== nextProps.loadedProperties ||
-      loadedProperties.size !== nextProps.loadedProperties.size ||
-      evaluations.size !== nextProps.evaluations.size ||
-      (expandedPaths.size !== nextProps.expandedPaths.size &&
-        [...nextProps.expandedPaths].every(path =>
-          nextProps.loadedProperties.has(path)
-        )) ||
-      (expandedPaths.size === nextProps.expandedPaths.size &&
-        [...nextProps.expandedPaths].some(key => !expandedPaths.has(key))) ||
-      this.focusedItem !== nextProps.focusedItem ||
-      this.activeItem !== nextProps.activeItem ||
-      this.roots !== nextProps.roots
-    );
-  }
-
-  componentWillUnmount() {
-    if (this.props.autoReleaseObjectActors){
-      this.props.closeObjectInspector(this.props.roots);
     }
   }
 
@@ -249,7 +279,7 @@ class ObjectInspector extends Component {
 
     if (expand === true) {
       const actor = getActor(item, roots);
-      nodeExpand(item, actor);
+      nodeExpand(item, actor, this.props);
       if (recordTelemetryEvent) {
         recordTelemetryEvent("object_expanded");
       }
@@ -303,7 +333,7 @@ class ObjectInspector extends Component {
       displayRootNodeAsHeader = false,
       expandedPaths,
       focusable = true,
-      initiallyExpanded,
+      getInitiallyExpanded,
       inline,
       preventBlur,
     } = this.props;
@@ -324,7 +354,7 @@ class ObjectInspector extends Component {
 
       autoExpandAll,
       autoExpandDepth,
-      initiallyExpanded,
+      getInitiallyExpanded,
       isExpanded: item => expandedPaths && expandedPaths.has(item.path),
       isExpandable: this.isNodeExpandable,
       focused: this.focusedItem,
@@ -369,7 +399,7 @@ function mapStateToProps(state, _props) {
 const OI = connect(mapStateToProps, actions)(ObjectInspector);
 
 // eslint-disable-next-line react/display-name
-module.exports = props => {
+const ObjectInspectorWrapper = props => {
   const { roots, standalone = false } = props;
 
   if (!roots.length) {
@@ -389,3 +419,10 @@ module.exports = props => {
   const store = createStore(reducer);
   return createElement(Provider, { store }, oiElement);
 };
+
+ObjectInspectorWrapper.propTypes = {
+  roots: PropTypes.array.isRequired,
+  standalone: PropTypes.bool,
+};
+
+module.exports = ObjectInspectorWrapper;

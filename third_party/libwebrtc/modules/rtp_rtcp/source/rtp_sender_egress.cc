@@ -15,13 +15,12 @@
 #include <cstdint>
 #include <memory>
 #include <optional>
+#include <span>
 #include <utility>
 #include <vector>
 
-#include "api/array_view.h"
 #include "api/call/transport.h"
 #include "api/environment/environment.h"
-#include "api/field_trials_view.h"
 #include "api/rtc_event_log/rtc_event_log.h"
 #include "api/sequence_checker.h"
 #include "api/task_queue/pending_task_safety_flag.h"
@@ -50,6 +49,11 @@ constexpr uint32_t kTimestampTicksPerMs = 90;
 constexpr TimeDelta kBitrateStatisticsWindow = TimeDelta::Seconds(1);
 constexpr size_t kRtpSequenceNumberMapMaxEntries = 1 << 13;
 constexpr TimeDelta kUpdateInterval = kBitrateStatisticsWindow;
+
+bool IsMediaPacket(std::optional<RtpPacketMediaType> packet_type) {
+  return packet_type == RtpPacketMediaType::kVideo ||
+         packet_type == RtpPacketMediaType::kAudio;
+}
 }  // namespace
 
 RtpSenderEgress::NonPacedPacketSender::NonPacedPacketSender(
@@ -94,12 +98,10 @@ void RtpSenderEgress::NonPacedPacketSender::PrepareForSend(
   if (packet->Ssrc() != sender_->FlexFecSsrc()) {
     sequencer_->Sequence(*packet);
   }
-  if (!packet->SetExtension<TransportSequenceNumber>(
-          ++transport_sequence_number_)) {
+  if (packet->allow_sending() && !packet->SetExtension<TransportSequenceNumber>(
+                                     ++transport_sequence_number_)) {
     --transport_sequence_number_;
   }
-  packet->ReserveExtension<TransmissionOffset>();
-  packet->ReserveExtension<AbsoluteSendTime>();
 }
 
 RtpSenderEgress::RtpSenderEgress(const Environment& env,
@@ -128,13 +130,8 @@ RtpSenderEgress::RtpSenderEgress(const Environment& env,
       rtp_sequence_number_map_(need_rtp_packet_infos_
                                    ? std::make_unique<RtpSequenceNumberMap>(
                                          kRtpSequenceNumberMapMaxEntries)
-                                   : nullptr),
-      use_ntp_time_for_absolute_send_time_(!env_.field_trials().IsDisabled(
-          "WebRTC-UseNtpTimeAbsoluteSendTime")) {
+                                   : nullptr) {
   RTC_DCHECK(worker_queue_);
-  RTC_DCHECK(config.transport_feedback_callback == nullptr)
-      << "transport_feedback_callback is no longer used and will soon be "
-         "deleted.";
   if (bitrate_callback_) {
     update_task_ = RepeatingTaskHandle::DelayedStart(worker_queue_,
                                                      kUpdateInterval, [this]() {
@@ -226,38 +223,45 @@ void RtpSenderEgress::SendPacket(std::unique_ptr<RtpPacketToSend> packet,
   // In case of VideoTimingExtension, since it's present not in every packet,
   // data after rtp header may be corrupted if these packets are protected by
   // the FEC.
-  if (packet->HasExtension<TransmissionOffset>() &&
-      packet->capture_time() > Timestamp::Zero()) {
-    TimeDelta diff = now - packet->capture_time();
-    packet->SetExtension<TransmissionOffset>(kTimestampTicksPerMs * diff.ms());
-  }
-  if (packet->HasExtension<AbsoluteSendTime>()) {
-    if (use_ntp_time_for_absolute_send_time_) {
+  if (packet->allow_sending()) {
+    if (packet->HasExtension<TransmissionOffset>() &&
+        packet->capture_time() > Timestamp::Zero()) {
+      TimeDelta diff = now - packet->capture_time();
+      packet->SetExtension<TransmissionOffset>(kTimestampTicksPerMs *
+                                               diff.ms());
+    }
+    if (packet->HasExtension<AbsoluteSendTime>()) {
       packet->SetExtension<AbsoluteSendTime>(AbsoluteSendTime::To24Bits(
           env_.clock().ConvertTimestampToNtpTime(now)));
-    } else {
-      packet->SetExtension<AbsoluteSendTime>(AbsoluteSendTime::To24Bits(now));
     }
-  }
-  if (packet->HasExtension<TransportSequenceNumber>() &&
-      packet->transport_sequence_number()) {
-    packet->SetExtension<TransportSequenceNumber>(
-        *packet->transport_sequence_number() & 0xFFFF);
-  }
-
-  if (packet->HasExtension<VideoTimingExtension>()) {
-    if (populate_network2_timestamp_) {
-      packet->set_network2_time(now);
-    } else {
-      packet->set_pacer_exit_time(now);
+    if (packet->HasExtension<TransportSequenceNumber>() &&
+        packet->transport_sequence_number()) {
+      packet->SetExtension<TransportSequenceNumber>(
+          *packet->transport_sequence_number() & 0xFFFF);
     }
-  }
 
-  auto compound_packet = Packet{std::move(packet), pacing_info, now};
-  if (enable_send_packet_batching_ && !is_audio_) {
-    packets_to_send_.push_back(std::move(compound_packet));
-  } else {
-    CompleteSendPacket(compound_packet, false);
+    if (packet->HasExtension<VideoTimingExtension>()) {
+      if (populate_network2_timestamp_) {
+        packet->set_network2_time(now);
+      } else {
+        packet->set_pacer_exit_time(now);
+      }
+    }
+
+    auto compound_packet = Packet{
+        .rtp_packet = std::move(packet), .info = pacing_info, .now = now};
+    if (enable_send_packet_batching_ && !is_audio_) {
+      packets_to_send_.push_back(std::move(compound_packet));
+    } else {
+      CompleteSendPacket(compound_packet, false);
+    }
+  } else if (IsMediaPacket(packet->packet_type()) &&
+             packet->allow_retransmission()) {
+    // TODO(bugs.webrtc.org/564720400): Either remove or make permanent skipping
+    // network transmission if allow_sending is false.
+    //
+    // Packet should not be sent, just put it in the packet history.
+    packet_history_->PutRtpPacket(std::move(packet), now);
   }
 }
 
@@ -274,11 +278,11 @@ void RtpSenderEgress::CompleteSendPacket(const Packet& compound_packet,
   RTC_DCHECK_RUN_ON(worker_queue_);
   auto& [packet, pacing_info, now] = compound_packet;
   RTC_CHECK(packet);
+  RTC_DCHECK(packet->allow_sending());
 
   PacketOptions options;
   options.included_in_allocation = force_part_of_allocation_;
-  options.is_media = packet->packet_type() == RtpPacketMediaType::kAudio ||
-                     packet->packet_type() == RtpPacketMediaType::kVideo;
+  options.is_media = IsMediaPacket(packet->packet_type());
 
   // Set Packet id from transport sequence number header extension if it is
   // used. The source of the header extension is
@@ -379,7 +383,7 @@ void RtpSenderEgress::SetTimestampOffset(uint32_t timestamp) {
 }
 
 std::vector<RtpSequenceNumberMap::Info> RtpSenderEgress::GetSentRtpPacketInfos(
-    ArrayView<const uint16_t> sequence_numbers) const {
+    std::span<const uint16_t> sequence_numbers) const {
   RTC_DCHECK_RUN_ON(worker_queue_);
   RTC_DCHECK(!sequence_numbers.empty());
   if (!need_rtp_packet_infos_) {
@@ -419,7 +423,7 @@ RtpSenderEgress::FetchFecPackets() {
 }
 
 void RtpSenderEgress::OnAbortedRetransmissions(
-    ArrayView<const uint16_t> sequence_numbers) {
+    std::span<const uint16_t> sequence_numbers) {
   RTC_DCHECK_RUN_ON(worker_queue_);
   // Mark aborted retransmissions as sent, rather than leaving them in
   // a 'pending' state - otherwise they can not be requested again and
@@ -450,7 +454,7 @@ bool RtpSenderEgress::SendPacketToNetwork(const RtpPacketToSend& packet,
                                           const PacketOptions& options,
                                           const PacedPacketInfo& pacing_info) {
   RTC_DCHECK_RUN_ON(worker_queue_);
-  if (transport_ == nullptr || !transport_->SendRtp(packet, options)) {
+  if (transport_ == nullptr || !transport_->SendRtp(packet.buffer(), options)) {
     RTC_LOG(LS_WARNING) << "Transport failed to send packet.";
     return false;
   }

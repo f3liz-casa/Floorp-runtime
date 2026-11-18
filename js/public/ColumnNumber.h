@@ -1,4 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -29,6 +28,7 @@
 
 #include "mozilla/Assertions.h"  // MOZ_ASSERT
 #include "mozilla/Attributes.h"  // MOZ_IMPLICIT
+#include "mozilla/Maybe.h"  // mozilla::Maybe, mozilla::Nothing, mozilla::Some
 
 #include <limits>    // std::numeric_limits
 #include <stdint.h>  // uint32_t
@@ -79,13 +79,7 @@ struct ColumnNumberOffset {
 
   static constexpr ColumnNumberOffset zero() { return ColumnNumberOffset(); }
 
-  bool operator==(const ColumnNumberOffset& rhs) const {
-    return value_ == rhs.value_;
-  }
-
-  bool operator!=(const ColumnNumberOffset& rhs) const {
-    return !(*this == rhs);
-  }
+  bool operator==(const ColumnNumberOffset& rhs) const = default;
 
   int32_t value() const { return value_; }
 };
@@ -117,13 +111,7 @@ struct ColumnNumberUnsignedOffset {
     return *this;
   }
 
-  bool operator==(const ColumnNumberUnsignedOffset& rhs) const {
-    return value_ == rhs.value_;
-  }
-
-  bool operator!=(const ColumnNumberUnsignedOffset& rhs) const {
-    return !(*this == rhs);
-  }
+  bool operator==(const ColumnNumberUnsignedOffset& rhs) const = default;
 
   uint32_t value() const { return value_; }
 
@@ -157,13 +145,8 @@ struct MaybeLimitedColumnNumber {
     MOZ_ASSERT(valid());
   }
 
-  bool operator==(const MaybeLimitedColumnNumber<LimitValue>& rhs) const {
-    return value_ == rhs.value_;
-  }
-
-  bool operator!=(const MaybeLimitedColumnNumber<LimitValue>& rhs) const {
-    return !(*this == rhs);
-  }
+  bool operator==(const MaybeLimitedColumnNumber<LimitValue>& rhs) const =
+      default;
 
   MaybeLimitedColumnNumber<LimitValue> operator+(
       const ColumnNumberOffset& offset) const {
@@ -376,17 +359,25 @@ struct TaggedColumnNumberOneOrigin {
     return TaggedColumnNumberOneOrigin(value);
   }
 
+  static mozilla::Maybe<TaggedColumnNumberOneOrigin> fromRawChecked(
+      uint32_t value) {
+    if (value & WasmFunctionTag) {
+      if ((value & ~WasmFunctionTag) > WasmFunctionIndex::Limit) {
+        return mozilla::Nothing();
+      }
+    } else {
+      if (value == 0 || value > LimitedColumnNumberOneOrigin::Limit) {
+        return mozilla::Nothing();
+      }
+    }
+    return mozilla::Some(TaggedColumnNumberOneOrigin(value));
+  }
+
   static TaggedColumnNumberOneOrigin forDifferentialTesting() {
     return TaggedColumnNumberOneOrigin(LimitedColumnNumberOneOrigin());
   }
 
-  bool operator==(const TaggedColumnNumberOneOrigin& rhs) const {
-    return value_ == rhs.value_;
-  }
-
-  bool operator!=(const TaggedColumnNumberOneOrigin& rhs) const {
-    return !(*this == rhs);
-  }
+  bool operator==(const TaggedColumnNumberOneOrigin& rhs) const = default;
 
   bool isLimitedColumnNumber() const { return !isWasmFunctionIndex(); }
 
@@ -409,8 +400,6 @@ struct TaggedColumnNumberOneOrigin {
   }
 
   uint32_t rawValue() const { return value_; }
-
-  uint32_t* addressOfValueForTranscode() { return &value_; }
 };
 
 }  // namespace JS

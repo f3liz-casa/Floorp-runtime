@@ -3,6 +3,7 @@
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
 import argparse
+import hashlib
 import json
 import os
 import subprocess
@@ -11,6 +12,7 @@ import tempfile
 from collections import defaultdict, deque
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from copy import deepcopy
+from itertools import combinations
 from pathlib import Path
 from shutil import which
 
@@ -30,6 +32,20 @@ generated_header = """
   ### DO NOT edit it by hand.                                       ###
 """
 
+# GN's substitution pattern for the response file path in action args.
+RESPONSE_FILE_NAME_FLAG = "{{response_file_name}}"
+
+
+class FStringLiteral(str):
+    """A value which must be written as an f-string when serialized, so that it
+    can refer to variables available in the mozbuild sandbox, such as TOPSRCDIR.
+    Its contents will become the exact contents of the f-string, meaning any
+    literal braces must already be escaped."""
+
+    def __repr__(self):
+        # Match mb_serialize()'s usage of json.dumps() for strings
+        return "f" + json.dumps(self)
+
 
 class MozbuildWriter:
     def __init__(self, fh):
@@ -37,8 +53,8 @@ class MozbuildWriter:
         self.indent = ""
         self._indent_increment = 4
 
-        # We need to correlate a small amount of state here to figure out
-        # which library template to use ("Library()" or "SharedLibrary()")
+        # We need to correlate a small amount of state here to figure out which
+        # library template to use ("Library()" or "GeckoSharedLibrary()")
         self._library_name = None
         self._shared_library = None
 
@@ -47,18 +63,20 @@ class MozbuildWriter:
             if len(v) <= 1:
                 return repr(v)
             # Pretty print a list
-            raw = json.dumps(v, indent=self._indent_increment)
-            # Add the indent of the current indentation level
-            return raw.replace("\n", "\n" + self.indent)
-        if isinstance(v, bool):
+            item_indent = self.indent + " " * self._indent_increment
+            items = (",\n" + item_indent).join(self.mb_serialize(i) for i in v)
+            return f"[\n{item_indent}{items}\n{self.indent}]"
+        if isinstance(v, (bool, FStringLiteral)):
             return repr(v)
-        return f'"{v}"'
+        return json.dumps(v)
 
     def finalize(self):
         if self._library_name:
             self.write("\n")
             if self._shared_library:
-                self.write_ln(f"SharedLibrary({self.mb_serialize(self._library_name)})")
+                self.write_ln(
+                    f"GeckoSharedLibrary({self.mb_serialize(self._library_name)})"
+                )
             else:
                 self.write_ln(f"Library({self.mb_serialize(self._library_name)})")
 
@@ -82,6 +100,21 @@ class MozbuildWriter:
 
     def write_mozbuild_list(self, key, value):
         if value:
+            if key == "GeneratedFiles":
+                for generated_file in value:
+                    self.write("\n")
+                    self.write_ln("GeneratedFile(")
+                    self.indent += " " * self._indent_increment
+                    for o in generated_file["outputs"]:
+                        self.write_ln(f"{self.mb_serialize(o)},")
+                    for k, v in sorted(generated_file.items()):
+                        if k == "outputs":
+                            continue
+                        self.write_ln(f"{k}={self.mb_serialize(v)},")
+                    self.indent = self.indent[self._indent_increment :]
+                    self.write_ln(")")
+                return
+
             self.write("\n")
             self.write(self.indent + key)
             self.write(" += [\n    " + self.indent)
@@ -114,18 +147,6 @@ class MozbuildWriter:
         )
         if value:
             self.write("\n")
-            if key == "GeneratedFile":
-                self.write_ln("GeneratedFile(")
-                self.indent += " " * self._indent_increment
-                for o in value["outputs"]:
-                    self.write_ln(f"{self.mb_serialize(o)},")
-                for k, v in sorted(value.items()):
-                    if k == "outputs":
-                        continue
-                    self.write_ln(f"{k}={self.mb_serialize(v)},")
-                self.indent = self.indent[self._indent_increment :]
-                self.write_ln(")")
-                return
             for k in sorted(value.keys()):
                 v = value[k]
                 subst_vals = key, self.mb_serialize(k), self.mb_serialize(v)
@@ -159,6 +180,22 @@ class MozbuildWriter:
         self.indent = self.indent[self._indent_increment :]
 
 
+def select_gn_target(gn_target_config, target_os):
+    if isinstance(gn_target_config, str):
+        return gn_target_config
+
+    if target_os in gn_target_config:
+        return gn_target_config[target_os]
+
+    if "*" in gn_target_config:
+        return gn_target_config["*"]
+
+    raise Exception(
+        f'No gn_target configured for target_os="{target_os}". '
+        'Expected a string or a dict containing "*" and target_os overrides.'
+    )
+
+
 def find_deps(all_targets, target):
     all_deps = set()
     queue = deque([target])
@@ -175,7 +212,11 @@ def filter_gn_config(path, gn_result, sandbox_vars, input_vars, gn_target):
     gen_path = path / "gen"
     # Translates the raw output of gn into just what we'll need to generate a
     # mozbuild configuration.
-    gn_out = {"targets": {}, "sandbox_vars": sandbox_vars}
+    gn_out = {
+        "targets": {},
+        "sandbox_vars": sandbox_vars,
+        "gen_input_files": gn_result["build_settings"]["gen_input_files"],
+    }
 
     cpus = {
         "arm64": "aarch64",
@@ -184,17 +225,29 @@ def filter_gn_config(path, gn_result, sandbox_vars, input_vars, gn_target):
         "mips64el": "mips64",
         "loong64": "loongarch64",
     }
-    oses = {
+    os_targets = {
         "android": "Android",
         "linux": "Linux",
         "mac": "Darwin",
+        "ios": "Darwin",
+        "openbsd": "OpenBSD",
+        "win": "WINNT",
+    }
+    # TARGET_OS is used in addition to OS_TARGET so we can distinguish between
+    # macOS and iOS (which both have OS_TARGET == "Darwin").
+    target_oses = {
+        "android": "Android",
+        "linux": "GNU",
+        "mac": "OSX",
+        "ios": "iOS",
         "openbsd": "OpenBSD",
         "win": "WINNT",
     }
 
     mozbuild_args = {
         "MOZ_DEBUG": "1" if input_vars.get("is_debug") else None,
-        "OS_TARGET": oses[input_vars["target_os"]],
+        "OS_TARGET": os_targets[input_vars["target_os"]],
+        "TARGET_OS": target_oses[input_vars["target_os"]],
         "TARGET_CPU": cpus.get(input_vars["target_cpu"], input_vars["target_cpu"]),
     }
     if "ozone_platform_x11" in input_vars:
@@ -213,8 +266,11 @@ def filter_gn_config(path, gn_result, sandbox_vars, input_vars, gn_target):
             for spec_attr in (
                 "type",
                 "args",
+                "inputs",
+                "sources",
                 "script",
                 "outputs",
+                "response_file_contents",
             ):
                 spec[spec_attr] = raw_spec.get(spec_attr, [])
                 if spec_attr == "outputs":
@@ -223,7 +279,22 @@ def filter_gn_config(path, gn_result, sandbox_vars, input_vars, gn_target):
                     spec[spec_attr] = [
                         mozpath.relpath(d, path) for d in spec[spec_attr]
                     ]
+                elif spec_attr in ("inputs", "sources"):
+                    spec[spec_attr] = [
+                        "!//" + mozpath.relpath(d, path)
+                        if mozpath.basedir(d, [str(path)])
+                        else d
+                        for d in spec[spec_attr]
+                    ]
             gn_out["targets"][target_fullname] = spec
+            continue
+
+        if raw_spec["type"] == "group":
+            gn_out["targets"][target_fullname] = {
+                "type": "group",
+                "deps": raw_spec.get("deps", []),
+            }
+            continue
 
         # TODO: 'executable' will need to be handled here at some point as well.
         if raw_spec["type"] not in ("static_library", "shared_library", "source_set"):
@@ -242,6 +313,8 @@ def filter_gn_config(path, gn_result, sandbox_vars, input_vars, gn_target):
             "cflags_objcc",
             "deps",
             "libs",
+            "frameworks",
+            "output_name",
         ):
             spec[spec_attr] = raw_spec.get(spec_attr, [])
             if spec_attr == "defines":
@@ -267,6 +340,7 @@ def filter_gn_config(path, gn_result, sandbox_vars, input_vars, gn_target):
 
 def process_gn_config(
     gn_config,
+    gn_config_dir,
     topsrcdir,
     srcdir,
     non_unified_sources,
@@ -288,11 +362,47 @@ def process_gn_config(
     non_unified_sources = set([mozpath.normpath(s) for s in non_unified_sources])
 
     def target_info(fullname):
-        path, name = target_fullname.split(":")
+        path, name = fullname.split(":")
         # Stripping '//' gives us a path relative to the project root,
         # adding a suffix avoids name collisions with libraries already
         # in the tree (like "webrtc").
         return path.lstrip("//"), name + "_gn"
+
+    def get_lib_name(target_name):
+        if target_name.startswith("lib"):
+            return target_name[3:]
+        return target_name
+
+    # Return list of library dependencies for a target, recursing through any group's dependencies.
+    def find_lib_deps(fullname):
+        libs = []
+        seen_targets = set()
+
+        def visit(dep):
+            if dep in seen_targets:
+                return
+            seen_targets.add(dep)
+
+            dep_spec = targets.get(dep)
+            if not dep_spec:
+                return
+
+            dep_type = dep_spec["type"]
+
+            if dep_type in ("static_library", "shared_library", "source_set"):
+                _, name = target_info(dep)
+                libs.append(get_lib_name(name))
+                return
+
+            if dep_type == "group":
+                for child in dep_spec.get("deps", []):
+                    visit(child)
+
+        spec = targets[fullname]
+        for dep in spec.get("deps", []):
+            visit(dep)
+
+        return libs
 
     def resolve_path(path):
         # GN will have resolved all these paths relative to the root of the
@@ -303,18 +413,64 @@ def process_gn_config(
             path = f"/{project_relsrcdir}/{path}"
         return path
 
+    # If an arg contains a path to a vendored source file, rewrite it as an
+    # f-string referring to TOPSRCDIR. Args that do not contain paths to
+    # vendored source files are returned unchanged. This is required because
+    # actions are executed with a cwd in the objdir, and at vendor time we
+    # cannot know neither the absolute path of the source tree nor its relative
+    # path from the objdir.
+    def maybe_encode_srcdir_path_arg(arg):
+        # The arg may contain a prefix before the srcdir path. We know that any
+        # srcdir path will be a relative path from the tempdir to the source
+        # tree, and must therefore start with "../", so find the first
+        # occurrence of that string in order to find the path section. Args
+        # containing paths followed by a suffix are not currently supported.
+        idx = arg.find("../")
+        if idx == -1:
+            return arg
+        prefix, path = arg[:idx], arg[idx:]
+        path = mozpath.normpath(mozpath.join(str(gn_config_dir), path))
+        if not os.path.exists(path) or not mozpath.basedir(path, [str(topsrcdir)]):
+            return arg
+
+        def escape_braces(s):
+            return s.replace("{", "{{").replace("}", "}}")
+
+        relpath = mozpath.relpath(path, str(topsrcdir))
+        return FStringLiteral(
+            escape_braces(prefix) + "{TOPSRCDIR}/" + escape_braces(relpath)
+        )
+
+    # Encodes a file path used in a response file contents as a mozbuild-style
+    # path, e.g. prefixed with "/" to denote topsrcdir-relative, or "!/" to
+    # denote objdir-relative.
+    def encode_response_file_content_path(path):
+        path = mozpath.normpath(mozpath.join(str(gn_config_dir), path))
+        if mozpath.basedir(path, [str(topsrcdir)]):
+            return "/" + mozpath.relpath(path, str(topsrcdir))
+        if mozpath.basedir(path, [str(gn_config_dir)]):
+            return "!/" + mozpath.join(
+                project_relsrcdir, mozpath.relpath(path, str(gn_config_dir))
+            )
+        raise Exception(
+            f'Path "{path}" is not under topsrcdir "{topsrcdir}" '
+            f'or GN config dir "{gn_config_dir}"'
+        )
+
     # Process all targets from the given gn project and its dependencies.
     for target_fullname, spec in targets.items():
         target_path, target_name = target_info(target_fullname)
+        target_relsrcdir = mozpath.join(project_relsrcdir, target_path, target_name)
         context_attrs = {}
+        extra_files = {}
 
-        # Remove leading 'lib' from the target_name if any, and use as
-        # library name.
-        name = target_name
         if spec["type"] in ("static_library", "shared_library", "source_set", "action"):
-            if name.startswith("lib"):
-                name = name[3:]
-            context_attrs["LIBRARY_NAME"] = str(name)
+            # Remove leading 'lib' from the target_name if any, and use as
+            # library name.
+            context_attrs["LIBRARY_NAME"] = get_lib_name(target_name)
+        elif spec["type"] == "group":
+            # groups are only used to propagate deps, so should be skipped here.
+            continue
         else:
             raise Exception(
                 "The following GN target type is not currently "
@@ -323,42 +479,178 @@ def process_gn_config(
                 "`GnConfigGen` step."
             )
 
+        # GN static_library targets are intended to produce real archives,
+        # whereas mozbuild static libraries are expanded into their object files
+        # by default, which is closer to GN source_set semantics. Using
+        # `NO_EXPAND_LIBS = True` preserves that archive boundary.
+        #
+        # Note that we only set NO_EXPAND_LIBS when FINAL_LIBRARY is not
+        # set. When FINAL_LIBRARY is set, we intentionally do not emit USE_LIBS
+        # for the targets' dependencies. Combined with NO_EXPAND_LIBS, this can
+        # cause mozbuild to attempt to produce real archives for GN targets that
+        # have no object files of their own, resulting in link failures.
+        if spec["type"] == "static_library" and "FINAL_LIBRARY" not in sandbox_vars:
+            context_attrs["NO_EXPAND_LIBS"] = True
+
         if spec["type"] == "shared_library":
             context_attrs["FORCE_SHARED_LIB"] = True
 
+            # Target names are suffixed with "_gn" to avoid collisions, and the
+            # target name by default gets used as the library name. For shared
+            # libraries we should instead use the `output_name` derived from GN
+            # so that consumers can load the expected library names.
+            output_name = spec.get("output_name")
+            if output_name:
+                # `output_name` may already be prefixed with "lib". Mozbuild,
+                # however, will add a "lib" prefix to `SHARED_LIBRARY_NAME` on
+                # non-Windows platforms. Remove the prefix here to avoid a
+                # resulting "liblibX" library name.
+                if gn_config["mozbuild_args"]["OS_TARGET"] != "WINNT":
+                    output_name = get_lib_name(output_name)
+                context_attrs["SHARED_LIBRARY_NAME"] = output_name
+
         if spec["type"] == "action" and "script" in spec:
-            flags = [
-                resolve_path(spec["script"]),
-                resolve_path(""),
-            ] + spec.get("args", [])
-            context_attrs["GeneratedFile"] = {
-                "script": "/python/mozbuild/mozbuild/action/file_generate_wrapper.py",
-                "entry_point": "action",
-                "outputs": [resolve_path(f) for f in spec["outputs"]],
-                "flags": flags,
-            }
+            generated_files = []
+
+            extra_deps = [
+                "!" + resolve_path(path[1:])
+                if path.startswith("!")
+                else resolve_path(path)
+                for attr in ("inputs", "sources")
+                for path in spec.get(attr, [])
+            ]
+
+            if spec.get("response_file_contents"):
+                # GN's response_file_contents field allows passing an unlimited
+                # amount of data to a script via a temporary file, avoiding
+                # maximum command-line length limits.
+                #
+                # In the only case we currently need to support, the response
+                # file contents is a list of files in the source tree, relative
+                # to the action's cwd. At vendor time, we cannot know the
+                # location of the source tree relative to the action's cwd
+                # (located in the objdir), nor the absolute location of the
+                # source tree, so we cannot write them directly into a response
+                # file.
+                #
+                # Instead, we encode the paths as mozbuild-style paths (i.e.
+                # "/"-prefixed denoting topsrcdir-relative, "!/"-prefixed
+                # denoting topobjdir-relative) and write this to a .rsp.in
+                # file alongside the generated moz.build files.
+                #
+                # We then emit a GeneratedFile that will at build time convert
+                # the .rsp.in file into the response file expected by the
+                # script: converting the mozbuild-style paths into concrete
+                # paths now that these are known, and shell-quoting as specified
+                # by GN's response file format.
+                #
+                # Finally, we emit another GeneratedFile to perform the action,
+                # ensuring we substitute the path to the generated response file
+                # in place of the {{response_file_name}} placeholder arg.
+                #
+                # Note that if we ever need to support response file contents
+                # that are not lists of paths then some of this behaviour must
+                # be made optional.
+
+                if RESPONSE_FILE_NAME_FLAG not in spec.get("args", []):
+                    raise Exception(
+                        f"{target_fullname} has response_file_contents without "
+                        f"{RESPONSE_FILE_NAME_FLAG} in args."
+                    )
+
+                input_response_file_contents = "\n".join(
+                    encode_response_file_content_path(d)
+                    for d in spec["response_file_contents"]
+                )
+
+                # Response file contents can vary by build configuration.
+                # A hash of the contents is included in the filename so that
+                # each distinct set of contents gets a unique .rsp.in file,
+                # allowing multiple configurations to coexist in-tree.
+                digest = hashlib.sha256(
+                    input_response_file_contents.encode("utf-8")
+                ).hexdigest()[:16]
+                input_response_file = (
+                    f"{mozpath.basename(spec['outputs'][0])}-{digest}.rsp.in"
+                )
+                extra_files[input_response_file] = input_response_file_contents
+
+                output_response_file = resolve_path(f"{spec['outputs'][0]}.rsp")
+
+                # Generate the response file from the .rsp.in file, resolving
+                # the mozbuild-style paths to absolute paths at build time now
+                # these are known.
+                # Because the .rsp.in filename includes a hash of its contents
+                # and may vary between configurations, this GeneratedFile entry
+                # may differ between configurations. Where entries differ, the
+                # moz.build writer will wrap them in conditional statements,
+                # ensuring each configuration uses the correct .rsp.in file.
+                generated_files.append({
+                    "script": "/python/mozbuild/mozbuild/action/write_path_list.py",
+                    "entry_point": "write_paths",
+                    "outputs": [output_response_file],
+                    "inputs": [input_response_file],
+                })
+
+                args = [
+                    f"{spec['outputs'][0]}.rsp"
+                    if arg == RESPONSE_FILE_NAME_FLAG
+                    else maybe_encode_srcdir_path_arg(arg)
+                    for arg in spec.get("args", [])
+                ]
+                flags = [
+                    resolve_path(spec["script"]),
+                    resolve_path(""),
+                ] + args
+                generated_files.append({
+                    "script": "/python/mozbuild/mozbuild/action/file_generate_wrapper.py",
+                    "entry_point": "action",
+                    "outputs": [resolve_path(f) for f in spec["outputs"]],
+                    "extra_deps": ["!" + output_response_file] + extra_deps,
+                    "flags": flags,
+                })
+
+            else:
+                flags = [
+                    resolve_path(spec["script"]),
+                    resolve_path(""),
+                ] + [maybe_encode_srcdir_path_arg(arg) for arg in spec.get("args", [])]
+                generated_file = {
+                    "script": "/python/mozbuild/mozbuild/action/file_generate_wrapper.py",
+                    "entry_point": "action",
+                    "outputs": [resolve_path(f) for f in spec["outputs"]],
+                    "flags": flags,
+                }
+                if extra_deps:
+                    generated_file["extra_deps"] = extra_deps
+                generated_files.append(generated_file)
+
+            context_attrs["GeneratedFiles"] = generated_files
 
         sources = []
         unified_sources = []
         extensions = set()
         use_defines_in_asflags = False
 
-        for f in [item.lstrip("//") for item in spec.get("sources", [])]:
-            ext = mozpath.splitext(f)[-1]
-            extensions.add(ext)
-            src = f"{project_relsrcdir}/{f}"
-            if ext in {".h", ".inc"}:
-                continue
-            elif ext == ".def":
-                context_attrs["SYMBOLS_FILE"] = src
-            elif ext != ".S" and src not in non_unified_sources:
-                unified_sources.append(f"/{src}")
-            else:
-                sources.append(f"/{src}")
-            # The Mozilla build system doesn't use DEFINES for building
-            # ASFILES.
-            if ext == ".s":
-                use_defines_in_asflags = True
+        if spec["type"] != "action":
+            for f in [item.lstrip("//") for item in spec.get("sources", [])]:
+                ext = mozpath.splitext(f)[-1]
+                extensions.add(ext)
+                src = f"{project_relsrcdir}/{f}"
+                if ext in {".h", ".hpp", ".inc"}:
+                    continue
+                elif ext == ".def":
+                    context_attrs["DEFFILE"] = f"/{src}"
+                elif ext == ".rc":
+                    context_attrs["RCFILE"] = f"/{src}"
+                elif ext != ".S" and src not in non_unified_sources:
+                    unified_sources.append(f"/{src}")
+                else:
+                    sources.append(f"/{src}")
+                # The Mozilla build system doesn't use DEFINES for building
+                # ASFILES.
+                if ext == ".s":
+                    use_defines_in_asflags = True
 
         context_attrs["SOURCES"] = sources
         context_attrs["UNIFIED_SOURCES"] = unified_sources
@@ -415,8 +707,11 @@ def process_gn_config(
                 else:
                     context_attrs.setdefault(var, []).extend(f)
 
+        if "FINAL_LIBRARY" not in sandbox_vars:
+            context_attrs["USE_LIBS"] = find_lib_deps(target_fullname)
+
         context_attrs["OS_LIBS"] = []
-        for lib in spec.get("libs", []):
+        for lib in spec.get("libs", []) + spec.get("frameworks", []):
             lib_name = os.path.splitext(lib)[0]
             if lib.endswith(".framework"):
                 context_attrs["OS_LIBS"] += ["-framework " + lib_name]
@@ -452,8 +747,7 @@ def process_gn_config(
             else:
                 context_attrs[key] = value
 
-        target_relsrcdir = mozpath.join(project_relsrcdir, target_path, target_name)
-        mozbuild_attrs["dirs"][target_relsrcdir] = context_attrs
+        mozbuild_attrs["dirs"][target_relsrcdir] = (context_attrs, extra_files)
 
     return mozbuild_attrs
 
@@ -525,6 +819,32 @@ def find_common_attrs(config_attributes):
     return common_attrs
 
 
+# Order in which keys of mozbuild_args are combined into conditions. This
+# doesn't affect correctness, but keys tried first claim the attributes they
+# have in common, so putting coarse keys before the keys that refine them
+# keeps the generated moz.build files compact. Unlisted keys come last.
+CONDITION_KEY_ORDER = ("MOZ_DEBUG", "OS_TARGET", "TARGET_OS", "MOZ_X11", "TARGET_CPU")
+
+
+def condition_key_combinations(all_args):
+    # Returns every combination of the keys in `all_args`, from least to most
+    # specific: the empty combination, then each single key, then each pair,
+    # and so on, with combinations of the same size ordered by
+    # CONDITION_KEY_ORDER. Trying broader combinations first means narrower
+    # ones only see what the broader ones couldn't express, and ending with
+    # all the keys ensures every configuration can be told apart.
+    keys = sorted(
+        {k for args in all_args for k in args},
+        key=lambda k: (
+            CONDITION_KEY_ORDER.index(k)
+            if k in CONDITION_KEY_ORDER
+            else len(CONDITION_KEY_ORDER),
+            k,
+        ),
+    )
+    return [c for n in range(len(keys) + 1) for c in combinations(keys, n)]
+
+
 def write_mozbuild(topsrcdir, write_mozbuild_variables, relsrcdir, configs):
     target_srcdir = mozpath.join(topsrcdir, relsrcdir)
     mkdir(target_srcdir)
@@ -584,44 +904,46 @@ def write_mozbuild(topsrcdir, write_mozbuild_variables, relsrcdir, configs):
                 mb.write('    CXXFLAGS += CONFIG["MOZ_SYSTEM_LIBAOM_CFLAGS"]\n')
         except KeyError:
             pass
+        try:
+            if relsrcdir in write_mozbuild_variables["INCLUDE_GECKO_ZLIB_HANDLING"]:
+                mb.write('USE_LIBS += [ "zlib" ]\n')
+        except KeyError:
+            pass
 
         all_args = [args for args, _ in configs]
 
         # Start with attributes that will be a part of the mozconfig
-        # for every configuration, then factor by other potentially useful
+        # for every configuration, then factor by increasingly specific
         # combinations.
-        # FIXME: this is a time-bomb. See bug 1775202.
-        for attrs in (
-            (),
-            ("MOZ_DEBUG",),
-            ("OS_TARGET",),
-            ("TARGET_CPU",),
-            ("MOZ_DEBUG", "OS_TARGET"),
-            ("OS_TARGET", "MOZ_X11"),
-            ("OS_TARGET", "TARGET_CPU"),
-            ("OS_TARGET", "TARGET_CPU", "MOZ_X11"),
-            ("OS_TARGET", "TARGET_CPU", "MOZ_DEBUG"),
-            ("OS_TARGET", "TARGET_CPU", "MOZ_DEBUG", "MOZ_X11"),
-        ):
+        for attrs in condition_key_combinations(all_args):
+            # Each pass prunes what it writes from `configs`, so once nothing
+            # is left there is nothing more to write.
+            if not any(any(a.values()) for _, a in configs):
+                break
+
             conditions = set()
             for args in all_args:
                 cond = tuple((k, args.get(k) or "") for k in attrs)
                 conditions.add(cond)
 
             for cond in sorted(conditions):
-                common_attrs = find_common_attrs(
-                    [
-                        attrs
-                        for args, attrs in configs
-                        if all((args.get(k) or "") == v for k, v in cond)
-                    ]
-                )
+                matching = [
+                    attrs
+                    for args, attrs in configs
+                    if all((args.get(k) or "") == v for k, v in cond)
+                ]
+                if not any(any(a.values()) for a in matching):
+                    continue
+                common_attrs = find_common_attrs(matching)
                 if any(common_attrs.values()):
                     if cond:
                         mb.write_condition(dict(cond))
                     mb.write_attrs(common_attrs)
                     if cond:
                         mb.terminate_condition()
+
+        if any(any(a.values()) for _, a in configs):
+            raise Exception(f"Could not express the configurations of {relsrcdir}")
 
         mb.finalize()
     return target_mozbuild
@@ -633,21 +955,38 @@ def write_mozbuild_files(
     all_mozbuild_results,
     write_mozbuild_variables,
 ):
+    print("Writing moz.build files")
+
     # Translate {config -> {dirs -> build info}} into
     #           {dirs -> [(config, build_info)]}
     configs_by_dir = defaultdict(list)
+    extra_files_by_dir = defaultdict(dict)
     for config_attrs in all_mozbuild_results:
         mozbuild_args = config_attrs["mozbuild_args"]
         dirs = config_attrs["dirs"]
-        for d, build_data in dirs.items():
+        for d, (build_data, dir_extra_files) in dirs.items():
             configs_by_dir[d].append((mozbuild_args, build_data))
+            for filename, contents in dir_extra_files.items():
+                existing = extra_files_by_dir[d].get(filename)
+                if existing is not None and existing != contents:
+                    raise Exception(f"Conflicting contents for {d}/{filename}")
+                extra_files_by_dir[d][filename] = contents
 
     mozbuilds = set()
+    extra_files = set()
+
     # threading this section did not produce noticeable speed gains
     for relsrcdir, configs in sorted(configs_by_dir.items()):
         mozbuilds.add(
             write_mozbuild(topsrcdir, write_mozbuild_variables, relsrcdir, configs)
         )
+
+    for relsrcdir, files in sorted(extra_files_by_dir.items()):
+        for filename, contents in sorted(files.items()):
+            path = mozpath.join(topsrcdir, relsrcdir, filename)
+            extra_files.add(path)
+            with open(path, "w") as fh:
+                fh.write(contents)
 
     # write the project moz.build file
     dirs_mozbuild = mozpath.join(srcdir, "moz.build")
@@ -665,12 +1004,12 @@ def write_mozbuild_files(
             for v in all_mozbuild_results
         }
 
-        for attrs in (
-            (),
-            ("OS_TARGET",),
-            ("OS_TARGET", "TARGET_CPU"),
-            ("OS_TARGET", "TARGET_CPU", "MOZ_X11"),
+        for attrs in condition_key_combinations(
+            v["mozbuild_args"] for v in all_mozbuild_results
         ):
+            if not any(dirs_by_config.values()):
+                break
+
             conditions = set()
             for args in dirs_by_config.keys():
                 cond = tuple((k, dict(args).get(k) or "") for k in attrs)
@@ -686,7 +1025,7 @@ def write_mozbuild_files(
                             common_dirs &= dir_set
 
                 for args, dir_set in dirs_by_config.items():
-                    if all(dict(args).get(k) == v for k, v in cond):
+                    if all((dict(args).get(k) or "") == v for k, v in cond):
                         dir_set -= common_dirs
 
                 if common_dirs:
@@ -696,11 +1035,22 @@ def write_mozbuild_files(
                     if cond:
                         mb.terminate_condition()
 
-    # Remove possibly stale moz.builds
+        if any(dirs_by_config.values()):
+            raise Exception(f"Could not express the DIRS of {srcdir}")
+
+    # Remove stale moz.builds and extra files.
     for root, dirs, files in os.walk(srcdir):
-        if "moz.build" in files:
-            file = os.path.join(root, "moz.build")
-            if file not in mozbuilds:
+        if mozpath.normpath(root) == mozpath.normpath(srcdir):
+            # No need to remove anything from the project's root srcdir
+            continue
+        if "moz.build" not in files:
+            # This dir never contained moz.build or extra files, so we don't
+            # want to remove any of the project's actual files.
+            continue
+
+        for filename in files:
+            file = mozpath.join(root, filename)
+            if file not in mozbuilds | extra_files:
                 os.unlink(file)
 
 
@@ -711,7 +1061,7 @@ def generate_gn_config(
     gn_binary,
     input_variables,
     sandbox_variables,
-    gn_target,
+    gn_target_config,
     moz_build_flag,
     non_unified_sources,
     mozilla_flags,
@@ -724,33 +1074,34 @@ def generate_gn_config(
 
     build_root_dir = topsrcdir / build_root_dir
     srcdir = build_root_dir / target_dir
+    gn_target = select_gn_target(gn_target_config, input_variables["target_os"])
 
-    input_variables = input_variables.copy()
-    input_variables.update(
-        {
-            f"{moz_build_flag}": True,
-            "concurrent_links": 1,
-            "action_pool_depth": 1,
-        }
-    )
+    gn_input_variables = input_variables.copy()
+    gn_input_variables.update({
+        f"{moz_build_flag}": True,
+        "concurrent_links": 1,
+        "action_pool_depth": 1,
+    })
 
     if input_variables["target_os"] == "win":
-        input_variables.update(
-            {
-                "visual_studio_path": "/",
-                "visual_studio_version": 2015,
-                "wdk_path": "/",
-                "windows_sdk_version": "n/a",
-            }
-        )
-    if input_variables["target_os"] == "mac":
-        input_variables.update(
-            {
-                "mac_sdk_path": "/",
-            }
-        )
+        gn_input_variables.update({
+            "visual_studio_path": "/",
+            "visual_studio_version": 2015,
+            "wdk_path": "/",
+            "windows_sdk_version": "n/a",
+        })
+    if input_variables["target_os"] in ("ios", "mac"):
+        gn_input_variables.update({
+            "mac_sdk_path": "/",
+        })
 
-    gn_args = f'--args={" ".join([f"{k}={str_for_arg(v)}" for k, v in input_variables.items()])}'
+    # Running `gn gen` for an ios target doesn't succeed, so we use a mac target
+    # instead and hope the result is similar enough that iOS can still build
+    # successfully.
+    if input_variables["target_os"] == "ios":
+        gn_input_variables["target_os"] = "mac"
+
+    gn_args = f"--args={' '.join([f'{k}={str_for_arg(v)}' for k, v in gn_input_variables.items()])}"
     with tempfile.TemporaryDirectory() as tempdir:
         # On Mac, `tempdir` starts with /var which is a symlink to /private/var.
         # We resolve the symlinks in `tempdir` here so later usage with
@@ -772,8 +1123,9 @@ def generate_gn_config(
         gn_config_file = resolved_tempdir / "project.json"
         with open(gn_config_file) as fh:
             raw_json = fh.read()
-            raw_json = raw_json.replace(f"{target_dir}/", "")
-            raw_json = raw_json.replace(f"{target_dir}:", ":")
+            raw_json = raw_json.replace(f"//{target_dir}/", "//")
+            raw_json = raw_json.replace(f"//{target_dir}:", "//:")
+            raw_json = raw_json.replace(f"gen/{target_dir}", "gen")
             gn_config = mozfile_json.loads(raw_json)
             gn_config = filter_gn_config(
                 resolved_tempdir,
@@ -782,8 +1134,9 @@ def generate_gn_config(
                 input_variables,
                 gn_target,
             )
-            gn_config = process_gn_config(
+            mozbuild_result = process_gn_config(
                 gn_config,
+                resolved_tempdir,
                 topsrcdir,
                 srcdir,
                 non_unified_sources,
@@ -791,28 +1144,19 @@ def generate_gn_config(
                 mozilla_flags,
                 mozilla_add_override_dir,
             )
-            return gn_config
+            return gn_config, mozbuild_result
 
 
-def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("config", help="configuration in json format")
-    args = parser.parse_args()
-
+def generate_gn_configs(topsrcdir, config):
     gn_binary = bootstrap_toolchain("gn/gn") or which("gn")
     if not gn_binary:
         raise Exception("The GN program must be present to generate GN configs.")
 
-    with open(args.config) as fh:
-        config = mozfile_json.load(fh)
-
-    topsrcdir = Path(__file__).parent.parent.resolve()
-
     vars_set = []
     for is_debug in (True, False):
-        for target_os in ("android", "linux", "mac", "openbsd", "win"):
+        for target_os in ("android", "ios", "linux", "mac", "openbsd", "win"):
             target_cpus = ["x64"]
-            if target_os in ("android", "linux", "mac", "win", "openbsd"):
+            if target_os in ("android", "ios", "linux", "mac", "win", "openbsd"):
                 target_cpus.append("arm64")
             if target_os in ("android", "linux"):
                 target_cpus.append("arm")
@@ -829,6 +1173,11 @@ def main():
                     "target_cpu": target_cpu,
                     "target_os": target_os,
                 }
+
+                config_args = config.get("gn_args", {})
+                vars.update(config_args.get("*", {}))
+                vars.update(config_args.get(target_os, {}))
+
                 if target_os == "linux":
                     for enable_x11 in (True, False):
                         vars["ozone_platform_x11"] = enable_x11
@@ -861,20 +1210,39 @@ def main():
         }
 
         # Process completed tasks as they finish
+        error_generating_configs = False
         for future in as_completed(futures):
             try:
                 gn_configs.append(future.result())
             except Exception as e:
                 print(f"[Task] Task failed with exception: {e}")
-                sys.exit(1)
+                error_generating_configs = True
+
+        if error_generating_configs:
+            print("\nGenerating configs failed.  See errors above.\n", file=sys.stderr)
+            sys.exit(1)
 
         print("All generation tasks have been processed.")
 
-    print("Writing moz.build files")
+    return gn_configs
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("config", help="configuration in json format")
+    args = parser.parse_args()
+
+    with open(args.config) as fh:
+        config = mozfile_json.load(fh)
+
+    topsrcdir = Path(__file__).parent.parent.resolve()
+
+    _, mozbuild_results = zip(*generate_gn_configs(topsrcdir, config))
+
     write_mozbuild_files(
         topsrcdir,
         topsrcdir / config["build_root_dir"] / config["target_dir"],
-        gn_configs,
+        mozbuild_results,
         config["write_mozbuild_variables"],
     )
 

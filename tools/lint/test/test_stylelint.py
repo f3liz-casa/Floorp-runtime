@@ -20,7 +20,7 @@ def stylelint(lint):
 
 
 def test_lint_with_global_exclude(lint, config, paths):
-    config["exclude"] = ["subdir", "import"]
+    config["global_exclude"] = ["subdir", "import"]
     # This uses lint directly as we need to not ignore the excludes.
     results = lint(paths(), config=config, root=build.topsrcdir)
     assert len(results) == 0
@@ -38,8 +38,8 @@ def test_no_files_to_lint(stylelint, config, paths):
 
 def test_stylelint(stylelint, config, create_temp_file):
     contents = """#foo {
-    font-size: 12px;
-    font-size: 12px;
+    text-transform: uppercase;
+    text-transform: uppercase;
 }
 """
     path = create_temp_file(contents, "bad.css")
@@ -50,8 +50,8 @@ def test_stylelint(stylelint, config, create_temp_file):
 
 def test_stylelint_fix(stylelint, config, create_temp_file):
     contents = """#foo {
-    font-size: 12px;
-    font-size: 12px;
+    text-transform: uppercase;
+    text-transform: uppercase;
 }
 """
     path = create_temp_file(contents, "bad.css")

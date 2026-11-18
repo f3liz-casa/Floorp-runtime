@@ -24,7 +24,7 @@ async function test_hint_asset(testName, asset, variant) {
   let headers = new Headers();
   headers.append("X-Early-Hint-Count-Start", "");
   await fetch(
-    "http://example.com/browser/netwerk/test/browser/early_hint_pixel_count.sjs",
+    "https://example.com/browser/netwerk/test/browser/early_hint_pixel_count.sjs",
     { headers }
   );
 
@@ -91,14 +91,15 @@ async function test_hint_asset(testName, asset, variant) {
   Services.obs.removeObserver(observer, "earlyhints-connectback");
 
   let gotRequestCount = await fetch(
-    "http://example.com/browser/netwerk/test/browser/early_hint_pixel_count.sjs"
+    "https://example.com/browser/netwerk/test/browser/early_hint_pixel_count.sjs"
   ).then(response => response.json());
   if (
     asset === "script" &&
     variant === "cached" &&
     numConnectBackRemaining === 1
   ) {
-    // If the navigation cache is enabled (dom.script_loader.navigation_cache),
+    // If the navigation cache is enabled
+    // (dom.script_loader.experimental.navigation_cache),
     // the script can be cached in the per-process cache storage, and in that
     // case the channel isn't opened, and the "earlyhints-connectback"
     // notification isn't observed.

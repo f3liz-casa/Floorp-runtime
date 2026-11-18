@@ -1,4 +1,3 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*-*/
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -13,6 +12,7 @@
 #include "mozilla/WeakPtr.h"
 #include "nsCycleCollectionParticipant.h"
 #include "nsIPrincipal.h"
+#include "nsTObserverArray.h"
 #include "nsWrapperCache.h"
 
 namespace mozilla {
@@ -235,7 +235,7 @@ class DOMMediaStream : public DOMEventTargetHelper,
   nsTArray<nsCOMPtr<nsISupports>> mConsumersToKeepAlive;
 
   // The track listeners subscribe to changes in this stream's track set.
-  nsTArray<RefPtr<TrackListener>> mTrackListeners;
+  nsTObserverArray<RefPtr<TrackListener>> mTrackListeners;
 
   // True if this stream has live tracks.
   bool mActive = false;

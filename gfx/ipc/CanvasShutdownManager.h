@@ -1,20 +1,21 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
-#ifndef _include_gfx_ipc_CanvasShutdownManager_h__
-#define _include_gfx_ipc_CanvasShutdownManager_h__
+#ifndef _include_gfx_ipc_CanvasShutdownManager_h_
+#define _include_gfx_ipc_CanvasShutdownManager_h_
+
+#include <set>
+#include <vector>
 
 #include "mozilla/RefPtr.h"
 #include "mozilla/StaticMutex.h"
 #include "mozilla/ThreadLocal.h"
 #include "mozilla/layers/LayersTypes.h"
-#include <set>
+
+class nsICanvasRenderingContextInternal;
 
 namespace mozilla {
 namespace dom {
-class CanvasRenderingContext2D;
 class StrongWorkerRef;
 class ThreadSafeWorkerRef;
 }  // namespace dom
@@ -28,8 +29,8 @@ class CanvasShutdownManager final {
   static void Shutdown();
 
   dom::ThreadSafeWorkerRef* GetWorkerRef() const { return mWorkerRef; }
-  void AddShutdownObserver(dom::CanvasRenderingContext2D* aCanvas);
-  void RemoveShutdownObserver(dom::CanvasRenderingContext2D* aCanvas);
+  void AddShutdownObserver(nsICanvasRenderingContextInternal* aCanvas);
+  void RemoveShutdownObserver(nsICanvasRenderingContextInternal* aCanvas);
 
   static void OnCompositorManagerRestored();
 
@@ -44,10 +45,13 @@ class CanvasShutdownManager final {
   ~CanvasShutdownManager();
   void Destroy();
 
+  std::vector<RefPtr<nsICanvasRenderingContextInternal>> RefActiveCanvas()
+      const;
+
   static void MaybeRestoreRemoteCanvas();
 
   RefPtr<dom::ThreadSafeWorkerRef> mWorkerRef;
-  std::set<dom::CanvasRenderingContext2D*> mActiveCanvas;
+  std::set<nsICanvasRenderingContextInternal*> mActiveCanvas;
   static MOZ_THREAD_LOCAL(CanvasShutdownManager*) sLocalManager;
 
   static StaticMutex sManagersMutex;
@@ -57,4 +61,4 @@ class CanvasShutdownManager final {
 }  // namespace gfx
 }  // namespace mozilla
 
-#endif  // _include_gfx_ipc_CanvasShutdownManager_h__
+#endif  // _include_gfx_ipc_CanvasShutdownManager_h_

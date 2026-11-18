@@ -1,23 +1,21 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "mozilla/layers/CompositorManagerParent.h"
-#include "mozilla/gfx/GPUParent.h"
+
+#include "VsyncSource.h"
+#include "gfxPlatform.h"
 #include "mozilla/gfx/CanvasManagerParent.h"
-#include "mozilla/webrender/RenderThread.h"
+#include "mozilla/gfx/GPUParent.h"
 #include "mozilla/ipc/Endpoint.h"
 #include "mozilla/layers/CompositorBridgeParent.h"
-#include "mozilla/layers/ContentCompositorBridgeParent.h"
 #include "mozilla/layers/CompositorThread.h"
+#include "mozilla/layers/ContentCompositorBridgeParent.h"
+#include "mozilla/layers/LayerTreeLog.h"
 #include "mozilla/layers/RemoteTextureMap.h"
 #include "mozilla/layers/SharedSurfacesParent.h"
-#include "mozilla/UniquePtr.h"
-#include "mozilla/Unused.h"
-#include "gfxPlatform.h"
-#include "VsyncSource.h"
+#include "mozilla/webrender/RenderThread.h"
 
 namespace mozilla {
 namespace layers {
@@ -30,8 +28,8 @@ MOZ_RUNINIT CompositorManagerParent::ManagerMap
 /* static */
 already_AddRefed<CompositorManagerParent>
 CompositorManagerParent::CreateSameProcess(uint32_t aNamespace) {
-  MOZ_ASSERT(XRE_IsParentProcess());
-  MOZ_ASSERT(NS_IsMainThread());
+  MOZ_RELEASE_ASSERT(XRE_IsParentProcess());
+  MOZ_RELEASE_ASSERT(NS_IsMainThread());
   StaticMonitorAutoLock lock(sMonitor);
 
   // We are creating a manager for the UI process, inside the combined GPU/UI
@@ -45,8 +43,8 @@ CompositorManagerParent::CreateSameProcess(uint32_t aNamespace) {
   // The child is responsible for setting up the IPC channel in the same
   // process case because if we open from the child perspective, we can do it
   // on the main thread and complete before we return the manager handles.
-  RefPtr<CompositorManagerParent> parent =
-      new CompositorManagerParent(dom::ContentParentId(), aNamespace);
+  RefPtr<CompositorManagerParent> parent = new CompositorManagerParent(
+      dom::ContentParentId(), aNamespace, /* aContentBridgeNamespace */ 0);
   parent->SetOtherEndpointProcInfo(ipc::EndpointProcInfo::Current());
   return parent.forget();
 }
@@ -54,19 +52,20 @@ CompositorManagerParent::CreateSameProcess(uint32_t aNamespace) {
 /* static */
 bool CompositorManagerParent::Create(
     Endpoint<PCompositorManagerParent>&& aEndpoint,
-    dom::ContentParentId aChildId, uint32_t aNamespace, bool aIsRoot) {
-  MOZ_ASSERT(NS_IsMainThread());
+    dom::ContentParentId aChildId, uint32_t aNamespace,
+    uint32_t aContentBridgeNamespace, bool aIsRoot) {
+  MOZ_RELEASE_ASSERT(NS_IsMainThread());
 
   // We are creating a manager for the another process, inside the GPU process
   // (or UI process if it subsumbed the GPU process).
-  MOZ_ASSERT(aEndpoint.OtherPid() != base::GetCurrentProcId());
+  MOZ_RELEASE_ASSERT(aEndpoint.OtherPid() != base::GetCurrentProcId());
 
   if (!CompositorThreadHolder::IsActive()) {
     return false;
   }
 
-  RefPtr<CompositorManagerParent> bridge =
-      new CompositorManagerParent(aChildId, aNamespace);
+  RefPtr<CompositorManagerParent> bridge = new CompositorManagerParent(
+      aChildId, aNamespace, aContentBridgeNamespace);
 
   RefPtr<Runnable> runnable =
       NewRunnableMethod<Endpoint<PCompositorManagerParent>&&, bool>(
@@ -82,8 +81,8 @@ CompositorManagerParent::CreateSameProcessWidgetCompositorBridge(
     CSSToLayoutDeviceScale aScale, const CompositorOptions& aOptions,
     bool aUseExternalSurfaceSize, const gfx::IntSize& aSurfaceSize,
     uint64_t aInnerWindowId) {
-  MOZ_ASSERT(XRE_IsParentProcess());
-  MOZ_ASSERT(NS_IsMainThread());
+  MOZ_RELEASE_ASSERT(XRE_IsParentProcess());
+  MOZ_RELEASE_ASSERT(NS_IsMainThread());
 
   // When we are in a combined UI / GPU process, InProcessCompositorSession
   // requires both the parent and child PCompositorBridge actors for its own
@@ -108,26 +107,28 @@ CompositorManagerParent::CreateSameProcessWidgetCompositorBridge(
   TimeDuration vsyncRate =
       gfxPlatform::GetPlatform()->GetGlobalVsyncDispatcher()->GetVsyncRate();
 
-  RefPtr<CompositorBridgeParent> bridge = new CompositorBridgeParent(
-      sInstance, aScale, vsyncRate, aOptions, aUseExternalSurfaceSize,
-      aSurfaceSize, aInnerWindowId);
+  RefPtr bridge = MakeRefPtr<CompositorBridgeParent>(
+      sInstance, /* aNamespace */ 0, aScale, vsyncRate, aOptions,
+      aUseExternalSurfaceSize, aSurfaceSize, aInnerWindowId);
 
   sInstance->mPendingCompositorBridges.AppendElement(bridge);
   return bridge.forget();
 }
 
 CompositorManagerParent::CompositorManagerParent(
-    dom::ContentParentId aContentId, uint32_t aNamespace)
+    dom::ContentParentId aContentId, uint32_t aNamespace,
+    uint32_t aContentBridgeNamespace)
     : mCompositorThreadHolder(CompositorThreadHolder::GetSingleton()),
       mSharedSurfacesHolder(MakeRefPtr<SharedSurfacesHolder>(aNamespace)),
       mContentId(aContentId),
-      mNamespace(aNamespace) {}
+      mNamespace(aNamespace),
+      mContentBridgeNamespace(aContentBridgeNamespace) {}
 
 CompositorManagerParent::~CompositorManagerParent() = default;
 
 void CompositorManagerParent::Bind(
     Endpoint<PCompositorManagerParent>&& aEndpoint, bool aIsRoot) {
-  MOZ_ASSERT(CompositorThreadHolder::IsInCompositorThread());
+  MOZ_RELEASE_ASSERT(CompositorThreadHolder::IsInCompositorThread());
   if (NS_WARN_IF(!aEndpoint.Bind(this))) {
     return;
   }
@@ -136,12 +137,15 @@ void CompositorManagerParent::Bind(
 }
 
 void CompositorManagerParent::BindComplete(bool aIsRoot) {
-  MOZ_ASSERT(CompositorThreadHolder::IsInCompositorThread() ||
-             NS_IsMainThread());
+  MOZ_RELEASE_ASSERT(CompositorThreadHolder::IsInCompositorThread() ||
+                     NS_IsMainThread());
+
+  LAYERTREE_LOG("Compositor manager bound, namespace {}, content {}, root {}",
+                mNamespace, mContentId, aIsRoot);
 
   StaticMonitorAutoLock lock(sMonitor);
   if (aIsRoot) {
-    MOZ_ASSERT(!sInstance);
+    MOZ_RELEASE_ASSERT(!sInstance);
     sInstance = this;
   }
 
@@ -149,6 +153,8 @@ void CompositorManagerParent::BindComplete(bool aIsRoot) {
 }
 
 void CompositorManagerParent::ActorDestroy(ActorDestroyReason aReason) {
+  LAYERTREE_LOG("Compositor manager namespace {} destroyed, reason {}",
+                mNamespace, fmt::enums::format_as(aReason));
   GetCurrentSerialEventTarget()->Dispatch(
       NewRunnableMethod("layers::CompositorManagerParent::DeferredDestroy",
                         this, &CompositorManagerParent::DeferredDestroy));
@@ -191,7 +197,7 @@ void CompositorManagerParent::ShutdownInternal() {
 
 /* static */
 void CompositorManagerParent::Shutdown() {
-  MOZ_ASSERT(NS_IsMainThread());
+  MOZ_RELEASE_ASSERT(NS_IsMainThread());
 
   CompositorThread()->Dispatch(NS_NewRunnableFunction(
       "layers::CompositorManagerParent::Shutdown",
@@ -227,11 +233,22 @@ void CompositorManagerParent::Shutdown() {
 
 already_AddRefed<PCompositorBridgeParent>
 CompositorManagerParent::AllocPCompositorBridgeParent(
-    const CompositorBridgeOptions& aOpt) {
+    const CompositorBridgeOptions& aOpt, const uint32_t& aNamespace) {
   switch (aOpt.type()) {
     case CompositorBridgeOptions::TContentCompositorOptions: {
-      RefPtr<ContentCompositorBridgeParent> bridge =
-          new ContentCompositorBridgeParent(this);
+      // The namespace is chosen by the child, but it must match the one the
+      // UI process assigned for its compositor bridge. Otherwise a
+      // compromised content process could claim another namespace (e.g. the
+      // LayersId namespace) and pass ownership checks on pipeline ids that
+      // belong to other bridges (CompositorBridgeParentBase::OwnsPipelineId).
+      if (NS_WARN_IF(mContentBridgeNamespace == 0 ||
+                     aNamespace != mContentBridgeNamespace)) {
+        MOZ_ASSERT_UNREACHABLE("Invalid content compositor namespace!");
+        break;
+      }
+
+      RefPtr bridge =
+          MakeRefPtr<ContentCompositorBridgeParent>(this, aNamespace);
       return bridge.forget();
     }
     case CompositorBridgeOptions::TWidgetCompositorOptions: {
@@ -244,8 +261,8 @@ CompositorManagerParent::AllocPCompositorBridgeParent(
       }
 
       const WidgetCompositorOptions& opt = aOpt.get_WidgetCompositorOptions();
-      RefPtr<CompositorBridgeParent> bridge = new CompositorBridgeParent(
-          this, opt.scale(), opt.vsyncRate(), opt.options(),
+      RefPtr bridge = MakeRefPtr<CompositorBridgeParent>(
+          this, aNamespace, opt.scale(), opt.vsyncRate(), opt.options(),
           opt.useExternalSurfaceSize(), opt.surfaceSize(), opt.innerWindowId());
       return bridge.forget();
     }
@@ -266,6 +283,7 @@ CompositorManagerParent::AllocPCompositorBridgeParent(
       }
 
       RefPtr<CompositorBridgeParent> bridge = mPendingCompositorBridges[0];
+      bridge->SetNamespace(aNamespace);
       mPendingCompositorBridges.RemoveElementAt(0);
       return bridge.forget();
     }
@@ -278,7 +296,7 @@ CompositorManagerParent::AllocPCompositorBridgeParent(
 
 /* static */ void CompositorManagerParent::AddSharedSurface(
     const wr::ExternalImageId& aId, gfx::SourceSurfaceSharedData* aSurface) {
-  MOZ_ASSERT(XRE_IsParentProcess());
+  MOZ_RELEASE_ASSERT(XRE_IsParentProcess());
 
   StaticMonitorAutoLock lock(sMonitor);
   if (NS_WARN_IF(!sInstance)) {
@@ -345,7 +363,7 @@ mozilla::ipc::IPCResult CompositorManagerParent::RecvNotifyMemoryPressure() {
 
 mozilla::ipc::IPCResult CompositorManagerParent::RecvReportMemory(
     ReportMemoryResolver&& aResolver) {
-  MOZ_ASSERT(CompositorThreadHolder::IsInCompositorThread());
+  MOZ_RELEASE_ASSERT(CompositorThreadHolder::IsInCompositorThread());
   MemoryReport aggregate;
   PodZero(&aggregate);
 
@@ -384,13 +402,13 @@ mozilla::ipc::IPCResult CompositorManagerParent::RecvInitCanvasManager(
 
 /* static */
 void CompositorManagerParent::NotifyWebRenderError(wr::WebRenderError aError) {
-  MOZ_ASSERT(CompositorThreadHolder::IsInCompositorThread());
+  MOZ_RELEASE_ASSERT(CompositorThreadHolder::IsInCompositorThread());
 
   StaticMonitorAutoLock lock(sMonitor);
   if (NS_WARN_IF(!sInstance)) {
     return;
   }
-  Unused << sInstance->SendNotifyWebRenderError(aError);
+  (void)sInstance->SendNotifyWebRenderError(aError);
 }
 
 }  // namespace layers

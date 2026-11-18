@@ -6,14 +6,14 @@
 
 #![expect(clippy::missing_errors_doc, reason = "Passing up tokio errors.")]
 
-use std::{io, net::SocketAddr};
+use std::{io, iter, net::SocketAddr};
 
-use neqo_common::{qdebug, DatagramBatch};
+use neqo_common::{datagram, qdebug, qwarn};
 use neqo_udp::{DatagramIter, RecvBuf};
 
-/// Ideally this would live in [`neqo-udp`]. [`neqo-udp`] is used in Firefox.
+/// Ideally this would live in [`neqo_udp`]. [`neqo_udp`] is used in Firefox.
 ///
-/// Firefox uses `cargo vet`. [`tokio`] the dependency of [`neqo-udp`] is not
+/// Firefox uses `cargo vet`. [`tokio`] the dependency of [`neqo_udp`] is not
 /// audited as `safe-to-deploy`. `cargo vet` will require `safe-to-deploy` for
 /// [`tokio`] even when behind a feature flag.
 ///
@@ -21,14 +21,25 @@ use neqo_udp::{DatagramIter, RecvBuf};
 pub struct Socket {
     state: quinn_udp::UdpSocketState,
     inner: tokio::net::UdpSocket,
+    /// Cached at bind time to avoid a `getsockname` syscall on every `recv()`.
+    local_addr: SocketAddr,
 }
 
 impl Socket {
     /// Create a new [`Socket`] bound to the provided address, not managed externally.
     pub fn bind<A: std::net::ToSocketAddrs>(addr: A) -> Result<Self, io::Error> {
         const ONE_MB: usize = 1 << 20;
+
         let socket = std::net::UdpSocket::bind(addr)?;
         let state = quinn_udp::UdpSocketState::new((&socket).into())?;
+        #[cfg(apple)]
+        // SAFETY: Quinn-udp resolves `sendmsg_x`/`recvmsg_x` via `dlsym` at
+        // runtime and falls back to standard `sendmsg`/`recvmsg` if unavailable,
+        // so this is safe on all supported Apple OS versions.
+        // neqo-bin always enables the Apple fast datapath as a canary.
+        unsafe {
+            state.set_apple_fast_path();
+        }
 
         // FIXME: We need to experiment if increasing this actually improves performance.
         // Also, on BSD and Apple targets, this seems to increase the `net.inet.udp.maxdgram`
@@ -49,24 +60,36 @@ impl Socket {
         if recv_buf_before < ONE_MB {
             // Same as Firefox.
             // <https://searchfox.org/mozilla-central/rev/fa5b44a4ea5c98b6a15f39638ea4cd04dc271f3d/modules/libpref/init/StaticPrefList.yaml#13474-13477>
-            state.set_recv_buffer_size((&socket).into(), ONE_MB)?;
+            // Halve the request until the OS accepts it, e.g., NetBSD caps it at `kern.sbmax`.
+            for size in iter::successors(Some(ONE_MB), |size| Some(size / 2))
+                .take_while(|&s| s > recv_buf_before)
+            {
+                match state.set_recv_buffer_size((&socket).into(), size) {
+                    Ok(()) => break,
+                    Err(e) => qwarn!("Failed to set socket recv buffer size to {size}: {e}"),
+                }
+            }
             qdebug!(
-                "Increasing socket recv buffer size from {recv_buf_before} to {ONE_MB}, now: {:?}",
+                "Increasing socket recv buffer size from {recv_buf_before}, now: {:?}",
                 state.recv_buffer_size((&socket).into())
             );
         } else {
             qdebug!("Default socket receive buffer size is {recv_buf_before}, not changing");
         }
 
+        let inner = tokio::net::UdpSocket::from_std(socket)?;
+        let local_addr = inner.local_addr()?;
         Ok(Self {
             state,
-            inner: tokio::net::UdpSocket::from_std(socket)?,
+            inner,
+            local_addr,
         })
     }
 
-    /// See [`tokio::net::UdpSocket::local_addr`].
-    pub fn local_addr(&self) -> io::Result<SocketAddr> {
-        self.inner.local_addr()
+    /// The local address this socket was bound to; cannot change after [`Self::bind`].
+    #[must_use]
+    pub const fn local_addr(&self) -> SocketAddr {
+        self.local_addr
     }
 
     /// See [`tokio::net::UdpSocket::writable`].
@@ -79,23 +102,22 @@ impl Socket {
         self.inner.readable().await
     }
 
-    /// Send a [`DatagramBatch`] on the given [`Socket`].
-    pub fn send(&self, d: &DatagramBatch) -> io::Result<()> {
+    /// Send a [`datagram::Batch`] on the given [`Socket`].
+    pub fn send(&self, d: &datagram::Batch) -> io::Result<()> {
         self.inner.try_io(tokio::io::Interest::WRITABLE, || {
             neqo_udp::send_inner(&self.state, (&self.inner).into(), d)
         })
     }
 
     /// Receive a batch of [`neqo_common::Datagram`]s on the given [`Socket`], each set with
-    /// the provided local address.
+    /// this socket's local address.
     pub fn recv<'a>(
         &self,
-        local_address: SocketAddr,
         recv_buf: &'a mut RecvBuf,
     ) -> Result<Option<DatagramIter<'a>>, io::Error> {
         self.inner
             .try_io(tokio::io::Interest::READABLE, || {
-                neqo_udp::recv_inner(local_address, &self.state, &self.inner, recv_buf)
+                neqo_udp::recv_inner(self.local_addr, &self.state, &self.inner, recv_buf)
             })
             .map(Some)
             .or_else(|e| {
@@ -109,5 +131,12 @@ impl Socket {
 
     pub fn max_gso_segments(&self) -> usize {
         self.state.max_gso_segments()
+    }
+
+    /// Whether transmitted datagrams might get fragmented by the IP layer
+    ///
+    /// Returns `false` on targets which employ e.g. the `IPV6_DONTFRAG` socket option.
+    pub fn may_fragment(&self) -> bool {
+        self.state.may_fragment()
     }
 }

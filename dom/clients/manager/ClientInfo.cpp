@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -19,18 +17,18 @@ ClientInfo::ClientInfo(const nsID& aId, const Maybe<nsID>& aAgentClusterId,
                        const mozilla::ipc::PrincipalInfo& aPrincipalInfo,
                        const TimeStamp& aCreationTime, const nsCString& aURL,
                        mozilla::dom::FrameType aFrameType)
-    : mData(MakeUnique<IPCClientInfo>(
+    : mData(std::make_unique<IPCClientInfo>(
           aId, aAgentClusterId, aType, aPrincipalInfo, aCreationTime, aURL,
           aFrameType, mozilla::Nothing(), mozilla::Nothing())) {}
 
 ClientInfo::ClientInfo(const IPCClientInfo& aData)
-    : mData(MakeUnique<IPCClientInfo>(aData)) {}
+    : mData(std::make_unique<IPCClientInfo>(aData)) {}
 
 ClientInfo::ClientInfo(const ClientInfo& aRight) { operator=(aRight); }
 
 ClientInfo& ClientInfo::operator=(const ClientInfo& aRight) {
   mData.reset();
-  mData = MakeUnique<IPCClientInfo>(*aRight.mData);
+  mData = std::make_unique<IPCClientInfo>(*aRight.mData);
   return *this;
 }
 

@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -99,7 +97,7 @@ void StorageActivityService::SendActivity(const nsACString& aOrigin) {
       });
 
   if (NS_IsMainThread()) {
-    Unused << r->Run();
+    (void)r->Run();
   } else {
     NS_DispatchToMainThread(r.forget());
   }
@@ -191,6 +189,11 @@ void StorageActivityService::SendActivityToParent(nsIPrincipal* aPrincipal) {
     return;
   }
 
+  if (!::mozilla::ipc::BackgroundChild::ValidatePrincipal(aPrincipal, {})) {
+    MOZ_ASSERT_UNREACHABLE("ValidatePrincipal failure in SendActivityToParent");
+    return;
+  }
+
   actor->SendStorageActivity(principalInfo);
 }
 
@@ -279,13 +282,20 @@ StorageActivityService::MoveOriginInTime(nsIPrincipal* aPrincipal,
     return rv;
   }
 
-  mActivities.InsertOrUpdate(origin, aWhen / PR_USEC_PER_SEC);
+  mActivities.InsertOrUpdate(origin, aWhen);
   return NS_OK;
 }
 
 NS_IMETHODIMP
 StorageActivityService::TestOnlyReset() {
+  const bool shouldRemoveObserver = mActivities.Count() > 0;
   mActivities.Clear();
+  if (shouldRemoveObserver) {
+    nsCOMPtr<nsIObserverService> obs = mozilla::services::GetObserverService();
+    if (obs) {
+      obs->RemoveObserver(this, OBSERVER_TOPIC_IDLE_DAILY);
+    }
+  }
   return NS_OK;
 }
 

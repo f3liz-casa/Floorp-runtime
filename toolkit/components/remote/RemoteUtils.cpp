@@ -1,12 +1,7 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim:expandtab:shiftwidth=2:tabstop=8:
- */
-/* vim:set ts=8 sw=2 et cindent: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 #include <limits.h>
@@ -64,8 +59,8 @@ mozilla::UniquePtr<char[]> ConstructCommandLine(int32_t argc, const char** argv,
     argvlen += len;
   }
 
-  mozilla::UniquePtr<char[]> buffer = mozilla::MakeUnique<char[]>(
-      argvlen + argc + 1 + sizeof(int32_t) * (argc + 1));
+  auto buffer = std::make_unique<char[]>(argvlen + argc + 1 +
+                                         sizeof(int32_t) * (argc + 1));
 
   int32_t* bufferInt = reinterpret_cast<int32_t*>(buffer.get());
   bufferInt[0] = TO_LITTLE_ENDIAN32(argc);

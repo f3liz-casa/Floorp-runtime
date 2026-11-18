@@ -27,11 +27,13 @@ add_task(async function () {
   await performRequests(monitor, tab, 1);
 
   // Wait for header and properties view to be displayed
-  const wait = waitForDOM(document, "#request-panel .data-header");
-  let waitForContent = waitForDOM(document, "#request-panel .properties-view");
+  let onDomUpdated = Promise.all([
+    waitForDOM(document, "#request-panel .data-header"),
+    waitForDOM(document, "#request-panel .properties-view"),
+  ]);
   store.dispatch(Actions.toggleNetworkDetails());
   clickOnSidebarTab(document, "request");
-  await Promise.all([wait, waitForContent]);
+  await onDomUpdated;
 
   const tabpanel = document.querySelector("#request-panel");
 
@@ -40,7 +42,7 @@ add_task(async function () {
     "The request params doesn't have the indended visibility."
   );
   is(
-    tabpanel.querySelector(".CodeMirror-code") === null,
+    tabpanel.querySelector(".cm-content") === null,
     true,
     "The request post data doesn't have the indended visibility."
   );
@@ -68,12 +70,12 @@ add_task(async function () {
   is(values[0].textContent, "1", "The JSON var value was incorrect.");
 
   // Toggle the raw data display. This should hide the formatted display.
-  waitForContent = waitForDOM(document, "#request-panel .CodeMirror-code");
+  onDomUpdated = waitForDOM(document, "#request-panel .cm-content");
   const rawDataToggle = document.querySelector(
     "#request-panel .raw-data-toggle-input .devtools-checkbox-toggle"
   );
   clickElement(rawDataToggle, monitor);
-  await waitForContent;
+  await onDomUpdated;
 
   is(
     tabpanel.querySelector(".data-label").textContent,
@@ -93,7 +95,7 @@ add_task(async function () {
   );
   // Bug 1514750 - Show JSON request in plain text view also
   ok(
-    tabpanel.querySelector(".CodeMirror-code"),
+    tabpanel.querySelector(".cm-content"),
     "The request post data doesn't have the indended visibility."
   );
   ok(

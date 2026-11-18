@@ -41,8 +41,8 @@
   list-style-image: url(chrome://browser/skin/notification-icons/camera.svg);
 }
 
-.localhost-icon {
-  list-style-image: url(chrome://browser/skin/notification-icons/local-host.svg);
+.loopback-network-icon {
+  list-style-image: url(chrome://global/skin/icons/local-host.svg);
 }
 
 .local-network-icon {
@@ -69,6 +69,10 @@
   list-style-image: url(chrome://browser/skin/notification-icons/midi.svg);
 }
 
+.serial-icon {
+  list-style-image: url(chrome://browser/skin/notification-icons/serial.svg);
+}
+
 /* Content Blocking */
 
 /* Override styling that sets descriptions as grey */
@@ -78,7 +82,7 @@
 }
 
 [data-subcategory="trackingprotection"] {
-  margin-top: 10px;
+  margin-block-start: 10px;
 }
 
 #trackingProtectionShield {
@@ -105,11 +109,11 @@
 #fpiIncompatibilityWarning,
 #rfpIncompatibilityWarning,
 #contentBlockingCategories {
-  margin-top: 16px;
+  margin-block-start: 16px;
 }
 
 .privacy-detailedoption {
-  border-color: var(--in-content-box-border-color);
+  border-color: var(--border-color);
 }
 
 .privacy-detailedoption.disabled {
@@ -125,7 +129,7 @@
 }
 
 .arrowhead {
-  border-radius: 2px;
+  border-radius: var(--border-radius-xsmall);
   min-height: 20px;
   min-width: 20px;
   max-height: 20px;
@@ -147,7 +151,7 @@
   display: none;
 }
 
-.content-blocking-warning.reload-tabs:not([hidden]) {
+.content-blocking-warning.reload-tabs {
   display: flex;
   flex-wrap: wrap;
 }
@@ -192,12 +196,12 @@
 }
 
 .privacy-detailedoption.selected {
-  border-color: var(--color-accent-primary);
+  border-color: var(--border-color-selected);
 }
 
 @media (forced-colors) {
   .privacy-detailedoption.selected {
-    outline: 2px solid var(--color-accent-primary);
+    outline: 2px solid var(--border-color-selected);
   }
 }
 
@@ -213,7 +217,7 @@
 
 .content-blocking-warning-title,
 .privacy-detailedoption .radio-label-box {
-  font-weight: bold;
+  font-weight: var(--font-weight-bold);
 }
 
 .privacy-detailedoption:not(.expanded, .selected) .privacy-extra-information {
@@ -221,7 +225,7 @@
 }
 
 .extra-information-label {
-  margin-top: 18px;
+  margin-block-start: 18px;
 }
 
 /* Apply display: block to the containers of all the category information, as
@@ -239,7 +243,7 @@
 }
 
 .privacy-extra-information > .indent {
-  margin-bottom: 18px;
+  margin-block-end: 18px;
 }
 
 .privacy-extra-information > .custom-option {
@@ -253,13 +257,13 @@
 }
 
 .content-blocking-warning:not([hidden]) + .content-blocking-warning {
-  margin-top: 0;
+  margin-block-start: 0;
 }
 
 .content-blocking-extra-blocking-desc {
   margin-inline-start: 0.5em;
   position: relative;
-  top: 0.65em;
+  inset-block-start: 0.65em;
 }
 
 .content-blocking-label,
@@ -277,6 +281,11 @@
   margin-inline-end: 6px;
 }
 
+.content-blocking-exceptions {
+  border-block-start: 1px solid var(--border-color);
+  padding-block-start: 18px;
+}
+
 #blockCookiesMenu {
   width: 450px;
 }
@@ -285,11 +294,6 @@
 #trackingProtectionMenu,
 #fingerprintingProtectionMenu {
   margin: 0;
-}
-
-#telemetry-container {
-  margin-block: 4px;
-  width: 100%;
 }
 
 .privacy-detailedoption-description {
@@ -316,35 +320,25 @@
 }
 
 #deleteOnCloseNote {
-  margin-top: 8px;
+  margin-block-start: 8px;
   margin-inline-end: 32px;
-}
-
-#submitHealthReportBox {
-  display: inline-flex;
-}
-
-/* Address bar */
-
-#firefoxSuggestDataCollectionPrivacyToggle {
-  /* With this value we're trying to keep the apparent vertical space between
-     option boxes the same as the apparent vertical space between the labels of
-     the checkboxes above this toggle. */
-  margin-block-start: 18px;
-}
-
-#openSearchEnginePreferences {
-  margin-block-start: 0.5em;
-}
-
-#firefoxSuggestDataCollectionSearchToggle,
-#dismissedSuggestions,
-#openSearchEnginePreferences.extraMargin {
-  margin-block-start: 2em;
 }
 
 /* Logins and Passwords */
 
 #openWindowsPasskeySettings {
   margin-block-start: 2em;
+}
+
+#statusPrimaryPassword .primary-pw-status {
+  display: flex;
+  align-items: center;
+  gap: var(--space-small);
+}
+
+#statusPrimaryPassword .primary-pw-status-icon {
+  width: var(--size-item-small);
+  height: var(--size-item-small);
+  -moz-context-properties: fill;
+  fill: var(--icon-color-success);
 }

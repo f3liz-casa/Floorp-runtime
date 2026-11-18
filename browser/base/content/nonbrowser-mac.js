@@ -1,9 +1,6 @@
-/* -*- indent-tabs-mode: nil; js-indent-level: 2 -*-
- * This Source Code Form is subject to the terms of the Mozilla Public
+/* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
-
-/* eslint-env mozilla/browser-window */
 
 var NonBrowserWindow = {
   delayedStartupTimeoutId: null,
@@ -104,13 +101,25 @@ var NonBrowserWindow = {
         document.getElementById("macDockMenuNewWindow").hidden = true;
       }
       if (!PrivateBrowsingUtils.enabled) {
+        // Disable shortcuts and options that require private browsing to be enabled.
         document.getElementById("macDockMenuNewPrivateWindow").hidden = true;
+        // This mirrors browser-init.js, as the hidden window shares the main menubar.
+        document.getElementById("Tools:PrivateBrowsing").hidden = true;
+        document.getElementById("menu_newPrivateWindow").hidden = true;
+        document.getElementById("key_privatebrowsing").remove();
       }
       if (BrowserUIUtils.quitShortcutDisabled) {
         document.getElementById("key_quitApplication").remove();
         document.getElementById("menu_FileQuitItem").removeAttribute("key");
       }
     }
+
+    // These windows include their own copy of the browser window's menu bar
+    // and key elements, and their native menu bar takes its shortcuts from
+    // these key elements.
+    ChromeUtils.importESModule(
+      "moz-src:///browser/components/customkeys/CustomKeys.sys.mjs"
+    ).CustomKeys.initWindow(window);
 
     this.delayedStartupTimeoutId = setTimeout(() => this.delayedStartup(), 0);
   },
@@ -121,8 +130,10 @@ var NonBrowserWindow = {
     // initialise the offline listener
     BrowserOffline.init();
 
-    // initialize the private browsing UI
-    gPrivateBrowsingUI.init();
+    // Initialize the private browsing UI only if window is private
+    if (PrivateBrowsingUtils.isWindowPrivate(window)) {
+      PrivateBrowsingUI.init(window);
+    }
   },
 
   shutdown() {
@@ -131,6 +142,10 @@ var NonBrowserWindow = {
     if (window.location.href == this.MAC_HIDDEN_WINDOW) {
       this.dockSupport.dockMenu = null;
     }
+
+    ChromeUtils.importESModule(
+      "moz-src:///browser/components/customkeys/CustomKeys.sys.mjs"
+    ).CustomKeys.uninitWindow(window);
 
     // If nonBrowserWindowDelayedStartup hasn't run yet, we have no work to do -
     // just cancel the pending timeout and return;

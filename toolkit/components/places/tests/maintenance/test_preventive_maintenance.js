@@ -1,5 +1,3 @@
-/* -*- indent-tabs-mode: nil; js-indent-level: 2 -*- */
-/* vim:set ts=2 sw=2 sts=2 et: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -458,6 +456,7 @@ tests.push({
   async setup() {
     // Add a place to ensure place_id = 1 is valid
     this._placeId = await addPlace();
+    await addBookmark(this._placeId, PlacesUtils.bookmarks.TYPE_BOOKMARK);
     // Create a tag
     this._tagId = await addBookmark(
       null,
@@ -510,6 +509,112 @@ tests.push({
 // ------------------------------------------------------------------------------
 
 tests.push({
+  name: "D.1.1",
+  desc: "Remove tag entries for urls that are not bookmarked",
+
+  _bookmarkedUrl: "http://bookmarked.mozilla.org/",
+  _unbookmarkedUrl: "http://unbookmarked.mozilla.org/",
+
+  async setup() {
+    let bookmarkedPlaceId = await addPlace(this._bookmarkedUrl);
+    let unbookmarkedPlaceId = await addPlace(this._unbookmarkedUrl);
+    let orphanPlaceId = await addPlace();
+    await addBookmark(bookmarkedPlaceId, PlacesUtils.bookmarks.TYPE_BOOKMARK);
+    // A bookmark with an invalid parent is still a bookmark.
+    await addBookmark(orphanPlaceId, PlacesUtils.bookmarks.TYPE_BOOKMARK, 8888);
+
+    this._sharedTagId = await addBookmark(
+      null,
+      PlacesUtils.bookmarks.TYPE_FOLDER,
+      PlacesUtils.bookmarks.tagsGuid,
+      null,
+      "shared"
+    );
+    let sharedTagGuid = await PlacesTestUtils.promiseItemGuid(
+      this._sharedTagId
+    );
+    this._bookmarkedEntryId = await addBookmark(
+      bookmarkedPlaceId,
+      PlacesUtils.bookmarks.TYPE_BOOKMARK,
+      sharedTagGuid
+    );
+    this._unbookmarkedEntryId = await addBookmark(
+      unbookmarkedPlaceId,
+      PlacesUtils.bookmarks.TYPE_BOOKMARK,
+      sharedTagGuid
+    );
+
+    this._unbookmarkedTagId = await addBookmark(
+      null,
+      PlacesUtils.bookmarks.TYPE_FOLDER,
+      PlacesUtils.bookmarks.tagsGuid,
+      null,
+      "unbookmarked"
+    );
+    this._otherUnbookmarkedEntryId = await addBookmark(
+      unbookmarkedPlaceId,
+      PlacesUtils.bookmarks.TYPE_BOOKMARK,
+      await PlacesTestUtils.promiseItemGuid(this._unbookmarkedTagId)
+    );
+
+    this._orphanTagId = await addBookmark(
+      null,
+      PlacesUtils.bookmarks.TYPE_FOLDER,
+      PlacesUtils.bookmarks.tagsGuid,
+      null,
+      "orphan"
+    );
+    this._orphanEntryId = await addBookmark(
+      orphanPlaceId,
+      PlacesUtils.bookmarks.TYPE_BOOKMARK,
+      await PlacesTestUtils.promiseItemGuid(this._orphanTagId)
+    );
+
+    // Ensure the tagging service caches the tag folders created above.
+    PlacesObservers.notifyListeners([new PlacesPurgeCaches()]);
+    Assert.deepEqual(
+      PlacesUtils.tagging.getTagsForURI(uri(this._unbookmarkedUrl)),
+      ["shared", "unbookmarked"]
+    );
+  },
+
+  async check() {
+    for (let id of [
+      this._sharedTagId,
+      this._bookmarkedEntryId,
+      this._orphanTagId,
+      this._orphanEntryId,
+    ]) {
+      Assert.notStrictEqual(
+        await PlacesTestUtils.getDatabaseValue("moz_bookmarks", "id", { id }),
+        undefined,
+        `Item ${id} should still exist`
+      );
+    }
+    for (let id of [
+      this._unbookmarkedEntryId,
+      this._otherUnbookmarkedEntryId,
+      this._unbookmarkedTagId,
+    ]) {
+      Assert.strictEqual(
+        await PlacesTestUtils.getDatabaseValue("moz_bookmarks", "id", { id }),
+        undefined,
+        `Item ${id} should have been removed`
+      );
+    }
+
+    info("Check the tagging service is not using the removed tag folder");
+    PlacesUtils.tagging.tagURI(uri(this._bookmarkedUrl), ["unbookmarked"]);
+    Assert.deepEqual(
+      PlacesUtils.tagging.getTagsForURI(uri(this._bookmarkedUrl)),
+      ["shared", "unbookmarked"]
+    );
+  },
+});
+
+// ------------------------------------------------------------------------------
+
+tests.push({
   name: "D.2",
   desc: "Remove empty tags",
 
@@ -521,6 +626,7 @@ tests.push({
   async setup() {
     // Add a place to ensure place_id = 1 is valid
     this._placeId = await addPlace();
+    await addBookmark(this._placeId, PlacesUtils.bookmarks.TYPE_BOOKMARK);
     // Create a tag
     this._tagId = await addBookmark(
       null,
@@ -2019,22 +2125,22 @@ tests.push({
   async setup() {
     await PlacesTestUtils.addVisits([
       {
-        uri: NetUtil.newURI("http://l3.moz.org/"),
+        uri: Services.io.newURI("http://l3.moz.org/"),
         transition: TRANSITION_TYPED,
       },
       {
-        uri: NetUtil.newURI("http://l3.moz.org/redirecting/"),
+        uri: Services.io.newURI("http://l3.moz.org/redirecting/"),
         transition: TRANSITION_TYPED,
       },
       {
-        uri: NetUtil.newURI("http://l3.moz.org/redirecting2/"),
+        uri: Services.io.newURI("http://l3.moz.org/redirecting2/"),
         transition: TRANSITION_REDIRECT_TEMPORARY,
-        referrer: NetUtil.newURI("http://l3.moz.org/redirecting/"),
+        referrer: Services.io.newURI("http://l3.moz.org/redirecting/"),
       },
       {
-        uri: NetUtil.newURI("http://l3.moz.org/target/"),
+        uri: Services.io.newURI("http://l3.moz.org/target/"),
         transition: TRANSITION_REDIRECT_PERMANENT,
-        referrer: NetUtil.newURI("http://l3.moz.org/redirecting2/"),
+        referrer: Services.io.newURI("http://l3.moz.org/redirecting2/"),
       },
     ]);
   },

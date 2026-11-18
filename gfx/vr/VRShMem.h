@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -14,9 +12,10 @@
 // process should be reading or writing to the same members, except for the
 // versioning members used for synchronization.
 
-#include "moz_external_vr.h"
-#include "base/process.h"  // for base::ProcessHandle
 #include <functional>
+
+#include "base/process.h"  // for base::ProcessHandle
+#include "moz_external_vr.h"
 
 namespace mozilla {
 namespace gfx {
@@ -43,15 +42,8 @@ class VRShMem final {
                        bool& aEnumerationCompleted,
                        const std::function<bool()>& aWaitCondition = nullptr);
 
-  void PushWindowState(VRWindowState& aState);
-  void PullWindowState(VRWindowState& aState);
-
   void PushTelemetryState(VRTelemetryState& aState);
   void PullTelemetryState(VRTelemetryState& aState);
-
-  void SendIMEState(uint64_t aWindowID, mozilla::gfx::VRFxEventState aImeState);
-  void SendFullscreenState(uint64_t aWindowID, bool aFullscreen);
-  void SendShutdowmState(uint64_t aWindowID);
 
   bool HasExternalShmem() const { return mExternalShmem != nullptr; }
   bool IsSharedExternalShmem() const { return mIsSharedExternalShmem; }
@@ -60,9 +52,6 @@ class VRShMem final {
 
  private:
   bool IsCreatedOnSharedMemory() const;
-  void SendEvent(uint64_t aWindowID, mozilla::gfx::VRFxEventType aEventType,
-                 mozilla::gfx::VRFxEventState aEventState);
-
   // mExternalShmem can have one of three sources:
   // - Allocated outside of this class on the heap and passed in via
   //   constructor, or acquired via GeckoVRManager (for GeckoView scenario).

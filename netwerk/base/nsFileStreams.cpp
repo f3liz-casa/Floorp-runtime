@@ -1,33 +1,39 @@
-/* -*- Mode: C++; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
+#include <algorithm>
+#include <memory>
+
 #include "ipc/IPCMessageUtils.h"
+
+#ifdef XP_LINUX
+#  include <linux/magic.h>
+#  include <sys/vfs.h>
+#endif
 
 #if defined(XP_UNIX)
 #  include <unistd.h>
 #elif defined(XP_WIN)
 #  include <windows.h>
+
 #  include "nsILocalFileWin.h"
 #else
 // XXX add necessary include file for ftruncate (or equivalent)
 #endif
 
-#include "private/pprio.h"
-
-#include "nsFileStreams.h"
-#include "nsIFile.h"
-#include "nsReadLine.h"
-#include "nsIClassInfoImpl.h"
+#include "mozilla/FileUtils.h"
+#include "mozilla/StaticPrefs_dom.h"
 #include "mozilla/ipc/InputStreamUtils.h"
 #include "mozilla/ipc/RandomAccessStreamParams.h"
-#include "mozilla/Unused.h"
-#include "mozilla/FileUtils.h"
-#include "mozilla/UniquePtr.h"
+#include "nsFileStreams.h"
+#include "nsIClassInfoImpl.h"
+#include "nsIFile.h"
 #include "nsNetCID.h"
 #include "nsNetUtil.h"
+#include "nsReadLine.h"
 #include "nsXULAppAPI.h"
+#include "private/pprio.h"
 
 using FileHandleType = mozilla::ipc::FileDescriptor::PlatformHandleType;
 
@@ -198,7 +204,8 @@ nsresult nsFileStreamBase::Read(char* aBuf, uint32_t aCount,
     return rv;
   }
 
-  int32_t bytesRead = PR_Read(mFD, aBuf, aCount);
+  MOZ_ASSERT(aCount <= INT32_MAX);
+  int32_t bytesRead = PR_Read(mFD, aBuf, std::min<uint32_t>(aCount, INT32_MAX));
   if (bytesRead == -1) {
     return NS_ErrorAccordingToNSPR();
   }
@@ -267,7 +274,8 @@ nsresult nsFileStreamBase::Write(const char* buf, uint32_t count,
   nsresult rv = DoPendingOpen();
   NS_ENSURE_SUCCESS(rv, rv);
 
-  int32_t cnt = PR_Write(mFD, buf, count);
+  MOZ_ASSERT(count <= INT32_MAX);
+  int32_t cnt = PR_Write(mFD, buf, std::min<uint32_t>(count, INT32_MAX));
   if (cnt == -1) {
     return NS_ErrorAccordingToNSPR();
   }
@@ -337,7 +345,7 @@ nsresult nsFileStreamBase::DoOpen() {
     // Result doesn't need to be checked. If the file's parent path does not
     // exist, make it. If it does exist, do nothing.
     if (parent) {
-      mozilla::Unused << parent->Create(nsIFile::DIRECTORY_TYPE, 0755);
+      (void)parent->Create(nsIFile::DIRECTORY_TYPE, 0755);
     }
   }
 
@@ -356,6 +364,22 @@ nsresult nsFileStreamBase::DoOpen() {
   }
 
   CleanUpOpen();
+
+#ifdef XP_LINUX
+  if (NS_SUCCEEDED(rv) &&
+      (mBehaviorFlags & nsIFileInputStream::NO_MAGIC_FILES)) {
+    struct statfs fs;
+    if (fstatfs(PR_FileDesc2NativeHandle(fd), &fs) != 0) {
+      rv = NS_BASE_STREAM_OSERROR;
+    } else if (fs.f_type == PROC_SUPER_MAGIC &&
+               !mozilla::StaticPrefs::dom_file_allowMagicFiles()) {
+      rv = NS_ERROR_FILE_ACCESS_DENIED;
+    }
+    if (NS_FAILED(rv)) {
+      PR_Close(fd);
+    }
+  }
+#endif
 
   if (NS_FAILED(rv)) {
     mState = eError;
@@ -502,7 +526,7 @@ nsFileInputStream::Read(char* aBuf, uint32_t aCount, uint32_t* _retval) {
 NS_IMETHODIMP
 nsFileInputStream::ReadLine(nsACString& aLine, bool* aResult) {
   if (!mLineBuffer) {
-    mLineBuffer = mozilla::MakeUnique<nsLineBuffer<char>>();
+    mLineBuffer = std::make_unique<nsLineBuffer<char>>();
   }
   return NS_ReadLine(this, mLineBuffer.get(), aLine, aResult);
 }
@@ -803,8 +827,8 @@ nsresult nsAtomicFileOutputStream::DoOpen() {
     // nsFileOutputStream::DoOpen will work on the temporary file, so we
     // prepare it and place it in mOpenParams.localFile.
     mOpenParams.localFile = tempResult;
-    mTempFile = tempResult;
-    mTargetFile = file;
+    mTempFile = std::move(tempResult);
+    mTargetFile = std::move(file);
     rv = nsFileOutputStream::DoOpen();
   }
   return rv;

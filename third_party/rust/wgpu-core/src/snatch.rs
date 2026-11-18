@@ -13,20 +13,22 @@ pub struct ExclusiveSnatchGuard<'a>(#[expect(dead_code)] RwLockWriteGuard<'a, ()
 /// In order to safely access the underlying data, the device's global snatchable
 /// lock must be taken. To guarantee it, methods take a read or write guard of that
 /// special lock.
-pub struct Snatchable<T> {
-    value: UnsafeCell<Option<T>>,
+pub struct SnatchableInner<T> {
+    value: UnsafeCell<T>,
 }
+
+pub type Snatchable<T> = SnatchableInner<Option<T>>;
 
 impl<T> Snatchable<T> {
     pub fn new(val: T) -> Self {
-        Snatchable {
+        SnatchableInner {
             value: UnsafeCell::new(Some(val)),
         }
     }
 
     #[allow(dead_code)]
     pub fn empty() -> Self {
-        Snatchable {
+        SnatchableInner {
             value: UnsafeCell::new(None),
         }
     }
@@ -52,13 +54,13 @@ impl<T> Snatchable<T> {
 
 // Can't safely print the contents of a snatchable object without holding
 // the lock.
-impl<T> fmt::Debug for Snatchable<T> {
+impl<T> fmt::Debug for SnatchableInner<T> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "<snatchable>")
     }
 }
 
-unsafe impl<T> Sync for Snatchable<T> {}
+unsafe impl<T> Sync for SnatchableInner<T> {}
 
 use trace::LockTrace;
 #[cfg(all(debug_assertions, feature = "std"))]
@@ -91,21 +93,25 @@ mod trace {
                 backtrace: Backtrace::capture(),
             };
 
-            if let Some(prev) = SNATCH_LOCK_TRACE.take() {
-                let current = thread::current();
-                let name = current.name().unwrap_or("<unnamed>");
-                panic!(
-                    "thread '{name}' attempted to acquire a snatch lock recursively.\n\
+            // try_with() because lock may be unavailable due to TLS destruction
+            // call order
+            let _ = SNATCH_LOCK_TRACE.try_with(|trace| {
+                if let Some(prev) = trace.take() {
+                    let current = thread::current();
+                    let name = current.name().unwrap_or("<unnamed>");
+                    panic!(
+                        "thread '{name}' attempted to acquire a snatch lock recursively.\n\
                  - Currently trying to acquire {new}\n\
                  - Previously acquired {prev}",
-                );
-            } else {
-                SNATCH_LOCK_TRACE.set(Some(new));
-            }
+                    );
+                } else {
+                    trace.set(Some(new));
+                }
+            });
         }
 
         pub(super) fn exit() {
-            SNATCH_LOCK_TRACE.take();
+            let _ = SNATCH_LOCK_TRACE.try_with(|trace| trace.take());
         }
     }
 
@@ -196,5 +202,42 @@ impl Drop for SnatchGuard<'_> {
 impl Drop for ExclusiveSnatchGuard<'_> {
     fn drop(&mut self) {
         LockTrace::exit();
+    }
+}
+
+#[cfg(all(test, feature = "std"))]
+mod tests {
+    use super::SnatchLock;
+    use crate::lock::rank;
+    use core::cell::Cell;
+
+    /// A thing that reads a snatchlock during drop, to test destruction call order problems
+    struct LockOnDrop(SnatchLock);
+    impl Drop for LockOnDrop {
+        fn drop(&mut self) {
+            drop(self.0.read());
+        }
+    }
+
+    std::thread_local! {
+        static HOLDER: Cell<Option<LockOnDrop>> = const { Cell::new(None) };
+    }
+
+    #[test]
+    fn read_during_tls_destruction() {
+        std::thread::spawn(|| {
+            // our thread local is touched first, so its destructor will be called last
+            HOLDER.set(Some(LockOnDrop(unsafe {
+                SnatchLock::new(rank::DEVICE_SNATCHABLE_LOCK)
+            })));
+
+            // take the lock which causes SNATCH_LOCK_TRACE to be created. it
+            // will be destroyed first
+            let lock = unsafe { SnatchLock::new(rank::DEVICE_SNATCHABLE_LOCK) };
+            drop(lock.read());
+        })
+        .join()
+        .unwrap();
+        // just testing that the thread exited successfully
     }
 }

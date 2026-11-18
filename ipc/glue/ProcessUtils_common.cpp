@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -8,10 +6,8 @@
 
 #include "mozilla/Preferences.h"
 #include "mozilla/GeckoArgs.h"
-#include "mozilla/RefPtr.h"
 #include "mozilla/dom/RemoteType.h"
 #include "mozilla/ipc/GeckoChildProcessHost.h"
-#include "mozilla/UniquePtrExtensions.h"
 #include "nsPrintfCString.h"
 
 #include "XPCSelfHostedShmem.h"
@@ -36,13 +32,12 @@ SharedPreferenceSerializer::SharedPreferenceSerializer(
 
 bool SharedPreferenceSerializer::SerializeToSharedMemory(
     const GeckoProcessType aDestinationProcessType,
-    const nsACString& aDestinationRemoteType) {
+    const mozilla::dom::RemoteType& aDestinationRemoteType) {
   mPrefMapHandle = Preferences::EnsureSnapshot();
 
   bool destIsWebContent =
       aDestinationProcessType == GeckoProcessType_Content &&
-      (StringBeginsWith(aDestinationRemoteType, WEB_REMOTE_TYPE) ||
-       StringBeginsWith(aDestinationRemoteType, PREALLOC_REMOTE_TYPE));
+      (aDestinationRemoteType.IsWeb() || aDestinationRemoteType.IsPrealloc());
 
   // Serialize the early prefs.
   nsAutoCStringN<1024> prefs;
@@ -69,7 +64,7 @@ bool SharedPreferenceSerializer::SerializeToSharedMemory(
 }
 
 void SharedPreferenceSerializer::AddSharedPrefCmdLineArgs(
-    mozilla::ipc::GeckoChildProcessHost& procHost,
+    mozilla::ipc::GeckoChildProcessHost& /*procHost*/,
     geckoargs::ChildProcessArgs& aExtraOpts) const {
   auto prefsHandle = GetPrefsHandle().Clone();
   MOZ_RELEASE_ASSERT(prefsHandle, "failed to clone prefs handle");
@@ -113,7 +108,7 @@ bool SharedPreferenceDeserializer::DeserializeFromSharedMemory(
   return true;
 }
 
-void ExportSharedJSInit(mozilla::ipc::GeckoChildProcessHost& procHost,
+void ExportSharedJSInit(mozilla::ipc::GeckoChildProcessHost& /*procHost*/,
                         geckoargs::ChildProcessArgs& aExtraOpts) {
   auto& shmem = xpc::SelfHostedShmem::GetSingleton();
   auto handle = shmem.Handle().Clone();

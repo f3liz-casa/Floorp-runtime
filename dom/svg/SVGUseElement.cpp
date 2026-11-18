@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -7,7 +5,6 @@
 #include "mozilla/dom/SVGUseElement.h"
 
 #include "SVGGeometryProperty.h"
-#include "mozilla/ArrayUtils.h"
 #include "mozilla/ErrorResult.h"
 #include "mozilla/SVGObserverUtils.h"
 #include "mozilla/SVGUseFrame.h"
@@ -15,10 +12,10 @@
 #include "mozilla/StaticPrefs_svg.h"
 #include "mozilla/URLExtraData.h"
 #include "mozilla/dom/Document.h"
+#include "mozilla/dom/ElementBinding.h"
 #include "mozilla/dom/ReferrerInfo.h"
 #include "mozilla/dom/SVGGraphicsElement.h"
 #include "mozilla/dom/SVGLengthBinding.h"
-#include "mozilla/dom/SVGSVGElement.h"
 #include "mozilla/dom/SVGSwitchElement.h"
 #include "mozilla/dom/SVGSymbolElement.h"
 #include "mozilla/dom/SVGUseElementBinding.h"
@@ -42,13 +39,13 @@ JSObject* SVGUseElement::WrapNode(JSContext* aCx,
 
 SVGElement::LengthInfo SVGUseElement::sLengthInfo[4] = {
     {nsGkAtoms::x, 0, SVGLength_Binding::SVG_LENGTHTYPE_NUMBER,
-     SVGContentUtils::X},
+     SVGLength::Axis::X},
     {nsGkAtoms::y, 0, SVGLength_Binding::SVG_LENGTHTYPE_NUMBER,
-     SVGContentUtils::Y},
+     SVGLength::Axis::Y},
     {nsGkAtoms::width, 0, SVGLength_Binding::SVG_LENGTHTYPE_NUMBER,
-     SVGContentUtils::X},
+     SVGLength::Axis::X},
     {nsGkAtoms::height, 0, SVGLength_Binding::SVG_LENGTHTYPE_NUMBER,
-     SVGContentUtils::Y},
+     SVGLength::Axis::Y},
 };
 
 SVGElement::StringInfo SVGUseElement::sStringInfo[2] = {
@@ -77,8 +74,7 @@ NS_IMPL_ISUPPORTS_CYCLE_COLLECTION_INHERITED(SVGUseElement, SVGUseElementBase,
 //----------------------------------------------------------------------
 // Implementation
 
-SVGUseElement::SVGUseElement(
-    already_AddRefed<mozilla::dom::NodeInfo>&& aNodeInfo)
+SVGUseElement::SVGUseElement(already_AddRefed<mozilla::dom::NodeInfo> aNodeInfo)
     : SVGUseElementBase(std::move(aNodeInfo)), mReferencedElementTracker(this) {
   SetEnabledCallbacks(kCharacterDataChanged | kAttributeChanged |
                       kContentAppended | kContentInserted |
@@ -178,7 +174,8 @@ void SVGUseElement::UnbindFromTree(UnbindContext& aContext) {
 }
 
 already_AddRefed<DOMSVGAnimatedString> SVGUseElement::Href() {
-  return mStringAttributes[HREF].IsExplicitlySet()
+  return mStringAttributes[HREF].IsExplicitlySet() ||
+                 !mStringAttributes[XLINK_HREF].IsExplicitlySet()
              ? mStringAttributes[HREF].ToDOMAnimatedString(this)
              : mStringAttributes[XLINK_HREF].ToDOMAnimatedString(this);
 }
@@ -213,7 +210,7 @@ void SVGUseElement::CharacterDataChanged(nsIContent* aContent,
 }
 
 void SVGUseElement::AttributeChanged(Element* aElement, int32_t aNamespaceID,
-                                     nsAtom* aAttribute, int32_t aModType,
+                                     nsAtom* aAttribute, AttrModType,
                                      const nsAttrValue* aOldValue) {
   if (nsContentUtils::IsInSameAnonymousTree(mReferencedElementTracker.get(),
                                             aElement)) {
@@ -344,26 +341,49 @@ auto SVGUseElement::ScanAncestorsInternal(const Element& aTarget,
 
 //----------------------------------------------------------------------
 
-static bool IsForbiddenUseNode(const nsINode& aNode) {
+enum class ForbiddenUseNodeMode {
+  Strict,
+  ForeignObjectOnly,
+};
+
+enum class RootRemoved : bool { No, Yes };
+
+static bool IsForbiddenUseNode(const nsINode& aNode,
+                               ForbiddenUseNodeMode aMode) {
   if (!aNode.IsElement()) {
     return false;
   }
   const auto* svg = SVGElement::FromNode(aNode);
-  return !svg || !svg->IsSVGGraphicsElement();
+  if (!svg) {
+    return true;
+  }
+  if (svg->IsAnyOfSVGElements(nsGkAtoms::foreignObject)) {
+    return true;
+  }
+  if (aMode == ForbiddenUseNodeMode::ForeignObjectOnly) {
+    return false;
+  }
+  return !svg->IsSVGGraphicsElement();
 }
 
-static void CollectForbiddenNodes(Element& aRoot,
-                                  nsTArray<RefPtr<nsINode>>& aNodes) {
+[[nodiscard]]
+static RootRemoved CollectForbiddenNodes(Element& aRoot,
+                                         ForbiddenUseNodeMode aMode,
+                                         nsTArray<RefPtr<nsINode>>& aNodes) {
   auto iter = dom::ShadowIncludingTreeIterator(aRoot);
   while (iter) {
     nsINode* node = *iter;
-    if (IsForbiddenUseNode(*node)) {
+    if (IsForbiddenUseNode(*node, aMode)) {
+      if (node == &aRoot) {
+        return RootRemoved::Yes;
+      }
       aNodes.AppendElement(node);
       iter.SkipChildren();
       continue;
     }
     ++iter;
   }
+  return RootRemoved::No;
 }
 
 // SVG1 restricted <use> trees to SVGGraphicsElements.
@@ -387,25 +407,31 @@ static void CollectForbiddenNodes(Element& aRoot,
 // elements, because <script> is inert, but <iframe> is not, see:
 // https://github.com/w3c/svgwg/issues/876
 //
-// So, fairly confusing, all-in-all.
-static void RemoveForbiddenNodes(Element& aRoot, bool aIsCrossDocument) {
+// So, fairly confusing, all-in-all. So for now by default we allow
+// everything-but-foreign-content same document, and are more restrictive
+// cross-document.
+[[nodiscard]]
+static RootRemoved RemoveForbiddenNodes(Element& aRoot, bool aIsCrossDocument) {
+  ForbiddenUseNodeMode mode = ForbiddenUseNodeMode::Strict;
   switch (StaticPrefs::svg_use_element_graphics_element_restrictions()) {
     case 0:
-      return;
+      return RootRemoved::No;
     case 1:
-      if (!aIsCrossDocument) {
-        return;
-      }
+      mode = aIsCrossDocument ? ForbiddenUseNodeMode::Strict
+                              : ForbiddenUseNodeMode::ForeignObjectOnly;
       break;
     default:
       break;
   }
 
   AutoTArray<RefPtr<nsINode>, 10> unsafeNodes;
-  CollectForbiddenNodes(aRoot, unsafeNodes);
+  if (CollectForbiddenNodes(aRoot, mode, unsafeNodes) == RootRemoved::Yes) {
+    return RootRemoved::Yes;
+  }
   for (auto& unsafeNode : unsafeNodes) {
     unsafeNode->Remove();
   }
+  return RootRemoved::No;
 }
 
 void SVGUseElement::UpdateShadowTree() {
@@ -419,7 +445,9 @@ void SVGUseElement::UpdateShadowTree() {
 
   RefPtr<ShadowRoot> shadow = GetShadowRoot();
   if (!shadow) {
-    shadow = AttachShadowWithoutNameChecks(ShadowRootMode::Closed);
+    ShadowRootInit init;
+    init.mMode = ShadowRootMode::Closed;
+    shadow = AttachShadowWithoutNameChecks(init, Nothing());
   }
   MOZ_ASSERT(shadow);
 
@@ -428,11 +456,7 @@ void SVGUseElement::UpdateShadowTree() {
   RefPtr<Element> newElement;
 
   auto UpdateShadowTree = mozilla::MakeScopeExit([&]() {
-    if (nsIContent* firstChild = shadow->GetFirstChild()) {
-      MOZ_ASSERT(!firstChild->GetNextSibling());
-      shadow->RemoveChildNode(firstChild, /* aNotify = */ true);
-    }
-
+    shadow->RemoveAllChildren(/* aNotify = */ true);
     if (newElement) {
       shadow->AppendChildTo(newElement, /* aNotify = */ true, IgnoreErrors());
     }
@@ -456,7 +480,7 @@ void SVGUseElement::UpdateShadowTree() {
     const bool isCrossDocument = targetElement->OwnerDoc() != OwnerDoc();
 
     nsNodeInfoManager* nodeInfoManager =
-        isCrossDocument ? OwnerDoc()->NodeInfoManager() : nullptr;
+        isCrossDocument ? NodeInfoManager() : nullptr;
 
     nsCOMPtr<nsINode> newNode =
         targetElement->Clone(true, nodeInfoManager, IgnoreErrors());
@@ -466,7 +490,11 @@ void SVGUseElement::UpdateShadowTree() {
 
     MOZ_ASSERT(newNode->IsElement());
     newElement = newNode.forget().downcast<Element>();
-    RemoveForbiddenNodes(*newElement, isCrossDocument);
+    if (RemoveForbiddenNodes(*newElement, isCrossDocument) ==
+        RootRemoved::Yes) {
+      newElement = nullptr;
+      return;
+    }
   }
 
   if (newElement->IsAnyOfSVGElements(nsGkAtoms::svg, nsGkAtoms::symbol)) {
@@ -547,7 +575,7 @@ void SVGUseElement::SyncWidthOrHeight(nsAtom* aName) {
   // Our width/height attribute is now no longer explicitly set, so we
   // need to set the value to 100%
   SVGAnimatedLength length;
-  length.Init(SVGContentUtils::XY, 0xff, 100,
+  length.Init(SVGLength::Axis::XY, 0xff, 100,
               SVGLength_Binding::SVG_LENGTHTYPE_PERCENTAGE);
   target->SetLength(aName, length);
 }
@@ -564,7 +592,7 @@ void SVGUseElement::LookupHref() {
     return;
   }
 
-  Element* treeToWatch = mOriginal ? mOriginal.get() : this;
+  const RefPtr<Element> treeToWatch = mOriginal ? mOriginal.get() : this;
   if (nsContentUtils::IsLocalRefURL(href)) {
     mReferencedElementTracker.ResetToLocalFragmentID(*treeToWatch, href);
     return;
@@ -584,7 +612,7 @@ void SVGUseElement::LookupHref() {
     return;
   }
 
-  nsIReferrerInfo* referrer =
+  const nsCOMPtr<nsIReferrerInfo> referrer =
       OwnerDoc()->ReferrerInfoForInternalCSSAndSVGResources();
   mReferencedElementTracker.ResetToURIWithFragmentID(*treeToWatch, targetURI,
                                                      referrer);
@@ -651,13 +679,13 @@ SVGUseFrame* SVGUseElement::GetFrame() const {
 //----------------------------------------------------------------------
 // nsIContent methods
 
-NS_IMETHODIMP_(bool)
-SVGUseElement::IsAttributeMapped(const nsAtom* name) const {
+bool SVGUseElement::IsNoNamespaceAttrMapped(const nsAtom* name) const {
   return name == nsGkAtoms::x || name == nsGkAtoms::y ||
-         SVGUseElementBase::IsAttributeMapped(name);
+         SVGUseElementBase::IsNoNamespaceAttrMapped(name);
 }
 
-nsCSSPropertyID SVGUseElement::GetCSSPropertyIdForAttrEnum(uint8_t aAttrEnum) {
+NonCustomCSSPropertyId SVGUseElement::GetCSSPropertyIdForAttrEnum(
+    uint8_t aAttrEnum) {
   switch (aAttrEnum) {
     case ATTR_X:
       return eCSSProperty_x;

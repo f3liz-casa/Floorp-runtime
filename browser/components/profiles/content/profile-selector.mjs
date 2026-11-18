@@ -5,9 +5,9 @@
 import { MozLitElement } from "chrome://global/content/lit-utils.mjs";
 import { html } from "chrome://global/content/vendor/lit.all.mjs";
 
-// eslint-disable-next-line import/no-unassigned-import
+// eslint-disable-next-line import-x/no-unassigned-import
 import "chrome://browser/content/profiles/profile-card.mjs";
-// eslint-disable-next-line import/no-unassigned-import
+// eslint-disable-next-line import-x/no-unassigned-import
 import "chrome://global/content/elements/moz-checkbox.mjs";
 
 const { SelectableProfileService } = ChromeUtils.importESModule(
@@ -126,7 +126,7 @@ export class ProfileSelector extends MozLitElement {
       await this.setLaunchArguments(profile, url ? ["-url", url] : []);
       await this.selectableProfileService.uninit();
     } else {
-      this.selectableProfileService.launchInstance(profile, url);
+      this.selectableProfileService.launchInstance(profile, url ? [url] : []);
     }
 
     window.close();
@@ -141,8 +141,11 @@ export class ProfileSelector extends MozLitElement {
         break;
       }
       case "CreateProfile": {
-        let profile =
-          await this.selectableProfileService.createNewProfile(false);
+        let profile = await this.selectableProfileService.createNewProfile(
+          false,
+          null,
+          this.isStartupUI ? "selector-startup" : "selector-runtime"
+        );
         await this.launchProfile(profile, "about:newprofile");
         break;
       }

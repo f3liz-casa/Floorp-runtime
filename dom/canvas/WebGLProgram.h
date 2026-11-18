@@ -1,4 +1,3 @@
-/* -*- Mode: C++; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -9,7 +8,6 @@
 #include <bitset>
 #include <map>
 #include <memory>
-#include <set>
 #include <vector>
 
 #include "CacheInvalidator.h"
@@ -87,6 +85,12 @@ struct LocationInfo final {
   const ActiveUniformValidationInfo info;
   const uint32_t indexIntoUniform;
   SamplerUniformInfo* const samplerInfo;
+
+  bool HasSampleUniformInformation() const { return samplerInfo != nullptr; }
+
+  SamplerUniformInfo* GetSamplerUnformInformation() const {
+    return samplerInfo;
+  }
 
   auto PrettyName() const {
     auto ret = info.info.name;

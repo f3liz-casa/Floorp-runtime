@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -12,8 +10,8 @@
 
 nsIFrame* NS_NewMiddleCroppingLabelFrame(mozilla::PresShell* aPresShell,
                                          mozilla::ComputedStyle* aStyle) {
-  return new (aPresShell)
-      mozilla::MiddleCroppingLabelFrame(aStyle, aPresShell->GetPresContext());
+  return new mozilla::MiddleCroppingLabelFrame(aStyle,
+                                               aPresShell->GetPresContext());
 }
 
 namespace mozilla {
@@ -24,7 +22,7 @@ void MiddleCroppingLabelFrame::GetUncroppedValue(nsAString& aValue) {
 
 nsresult MiddleCroppingLabelFrame::AttributeChanged(int32_t aNameSpaceID,
                                                     nsAtom* aAttribute,
-                                                    int32_t aModType) {
+                                                    AttrModType) {
   if (aNameSpaceID == kNameSpaceID_None && aAttribute == nsGkAtoms::value) {
     UpdateDisplayedValueToUncroppedValue(true);
   }

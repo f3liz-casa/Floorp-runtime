@@ -20,11 +20,12 @@ const skipLocalStorageTests = Services.prefs.getBoolPref(
 
 /**
  * Create an origin with partitionKey.
- * @param {String} host - Host portion of origin to create.
- * @param {String} [topLevelBaseDomain] - Optional first party base domain to use for partitionKey.
- * @param {Object} [originAttributes] - Optional object of origin attributes to
+ *
+ * @param {string} host - Host portion of origin to create.
+ * @param {string} [topLevelBaseDomain] - Optional first party base domain to use for partitionKey.
+ * @param {object} [originAttributes] - Optional object of origin attributes to
  * set. If topLevelBaseDomain is passed, the partitionKey will be overwritten.
- * @returns {String} Origin with suffix.
+ * @returns {string} Origin with suffix.
  */
 function getOrigin(host, topLevelBaseDomain, originAttributes = {}) {
   return getPrincipal(host, topLevelBaseDomain, originAttributes).origin;
@@ -124,6 +125,7 @@ async function setTestEntries(storageType) {
 
 /**
  * Run the base domain test with either localStorage or indexedDB.
+ *
  * @param {('localStorage'|'indexedDB')} storageType
  */
 async function runTestBaseDomain(storageType) {
@@ -191,6 +193,7 @@ async function runTestBaseDomain(storageType) {
 
 /**
  * Run the host test with either localStorage or indexedDB.
+ *
  * @param {('localStorage'|'indexedDB')} storageType
  */
 async function runTestHost(storageType) {
@@ -259,6 +262,7 @@ async function runTestHost(storageType) {
 
 /**
  * Run the principal test with either localStorage or indexedDB.
+ *
  * @param {('localStorage'|'indexedDB')} storageType
  */
 async function runTestPrincipal(storageType) {
@@ -423,6 +427,11 @@ async function runTestPrincipal(storageType) {
 add_task(function setup() {
   // Allow setting local storage in xpcshell tests.
   Services.prefs.setBoolPref("dom.storage.client_validation", false);
+
+  const { ensureNSSInitialized } = ChromeUtils.importESModule(
+    "resource://testing-common/dom/quota/test/modules/Utils.sys.mjs"
+  );
+  ensureNSSInitialized();
 });
 
 /**
@@ -463,6 +472,101 @@ add_task(async function test_principal_localStorage() {
     return;
   }
   await runTestPrincipal("localStorage");
+});
+
+/**
+ * Run the site and OriginAttributesPattern test with either localStorage or
+ * indexedDB.
+ *
+ * @param {('localStorage'|'indexedDB')} storageType
+ * @param {number} flags - nsIClearDataService flags to clear with.
+ * @param {boolean} withDefaultContext - Whether to also store data for the
+ * default context, which is expected to be cleared.
+ */
+async function runTestSiteOAPattern(storageType, flags, withDefaultContext) {
+  await new Promise(aResolve => {
+    Services.clearData.deleteData(
+      Ci.nsIClearDataService.CLEAR_DOM_QUOTA,
+      aResolve
+    );
+  });
+
+  const containerOA = { userContextId: 8 };
+  if (withDefaultContext) {
+    setTestEntry({ storageType, host: "a.example.net" });
+  }
+  setTestEntry({
+    storageType,
+    host: "a.example.net",
+    originAttributes: containerOA,
+  });
+  setTestEntry({
+    storageType,
+    host: "b.example.net",
+    originAttributes: containerOA,
+  });
+
+  await new Promise(aResolve => {
+    Services.clearData.deleteDataFromSiteAndOriginAttributesPatternString(
+      "example.net",
+      JSON.stringify({
+        userContextId: 0,
+        privateBrowsingId: 0,
+        geckoViewSessionContextId: "",
+      }),
+      false,
+      flags,
+      aResolve
+    );
+  });
+
+  if (withDefaultContext) {
+    await testEntryExists({
+      storageType,
+      host: "a.example.net",
+      expected: false,
+    });
+  }
+  await testEntryExists({
+    storageType,
+    host: "a.example.net",
+    originAttributes: containerOA,
+  });
+  await testEntryExists({
+    storageType,
+    host: "b.example.net",
+    originAttributes: containerOA,
+  });
+}
+
+/**
+ * Tests that deleting by site with a userContextId pattern does not clear
+ * storage of other containers, including when combined with the permission
+ * cleaners as for bounce tracker purging. The permission cleaners ignore
+ * userContextId if permissions are not isolated by it, so test both.
+ */
+add_task(async function test_site_oa_pattern() {
+  const PREF_ISOLATE_UC = "permissions.isolateBy.userContext";
+  const isolateUC = Services.prefs.getBoolPref(PREF_ISOLATE_UC);
+
+  for (let isolatePermissionsByUC of [false, true]) {
+    Services.prefs.setBoolPref(PREF_ISOLATE_UC, isolatePermissionsByUC);
+    for (let storageType of ["localStorage", "indexedDB"]) {
+      for (let flags of [
+        Ci.nsIClearDataService.CLEAR_DOM_QUOTA,
+        Ci.nsIClearDataService.CLEAR_STATE_FOR_TRACKER_PURGING,
+      ]) {
+        for (let withDefaultContext of [false, true]) {
+          info(
+            `isolateBy.userContext=${isolatePermissionsByUC} ${storageType} flags=${flags} default=${withDefaultContext}`
+          );
+          await runTestSiteOAPattern(storageType, flags, withDefaultContext);
+        }
+      }
+    }
+  }
+
+  Services.prefs.setBoolPref(PREF_ISOLATE_UC, isolateUC);
 });
 
 function getRelativeFile(...components) {

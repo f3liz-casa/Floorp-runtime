@@ -1,4 +1,3 @@
-/* -*- mode: js; indent-tabs-mode: nil; js-indent-level: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -21,7 +20,10 @@ export var BrowserTelemetryUtils = {
       tabs = aWindows;
     } else {
       for (const win of aWindows) {
-        tabs = tabs.concat(win.gBrowser.tabs);
+        // Windows that are still opening don't have a gBrowser yet.
+        if (win.gBrowser) {
+          tabs = tabs.concat(win.gBrowser.tabs);
+        }
       }
     }
 

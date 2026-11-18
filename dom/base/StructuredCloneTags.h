@@ -1,11 +1,9 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef StructuredCloneTags_h__
-#define StructuredCloneTags_h__
+#ifndef StructuredCloneTags_h_
+#define StructuredCloneTags_h_
 
 #include "js/StructuredClone.h"
 
@@ -99,7 +97,7 @@ enum StructuredCloneTags : uint32_t {
 
   // IMPORTANT: Don't change the order of these enum values. You could break
   // IDB.
-  EMPTY_SLOT_9,
+  SCTAG_DOM_QUOTAEXCEEDEDERROR,
 
   // IMPORTANT: Don't change the order of these enum values. You could break
   // IDB.
@@ -161,10 +159,18 @@ enum StructuredCloneTags : uint32_t {
 
   SCTAG_DOM_ENCODEDAUDIOCHUNK,
 
+  SCTAG_DOM_RTCDATACHANNEL,
+
+  SCTAG_DOM_RTCENCODEDVIDEOFRAME,
+
+  SCTAG_DOM_RTCENCODEDAUDIOFRAME,
+
+  SCTAG_DOM_WEBTRANSPORTERROR,
+
   // IMPORTANT: If you plan to add an new IDB tag, it _must_ be add before the
   // "less stable" tags!
 };
 
 }  // namespace mozilla::dom
 
-#endif  // StructuredCloneTags_h__
+#endif  // StructuredCloneTags_h_

@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -72,7 +70,8 @@ nsresult TransportLayerLoopback::QueuePacket(MediaPacket& packet) {
     MOZ_MTLOG(ML_DEBUG, LAYER_INFO << " Enqueuing combined packets of length "
                                    << prevPacket->len() << " and "
                                    << packet.len());
-    auto combined = MakeUnique<uint8_t[]>(prevPacket->len() + packet.len());
+    auto combined =
+        std::make_unique<uint8_t[]>(prevPacket->len() + packet.len());
     memcpy(combined.get(), prevPacket->data(), prevPacket->len());
     memcpy(combined.get() + prevPacket->len(), packet.data(), packet.len());
     prevPacket->Take(std::move(combined), prevPacket->len() + packet.len());

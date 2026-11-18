@@ -14,7 +14,7 @@ namespace mozilla::intl {
 
 /*static*/ Result<UniquePtr<NumberFormat>, ICUError> NumberFormat::TryCreate(
     std::string_view aLocale, const NumberFormatOptions& aOptions) {
-  UniquePtr<NumberFormat> nf = MakeUnique<NumberFormat>();
+  auto nf = std::make_unique<NumberFormat>();
   Result<Ok, ICUError> result = nf->initialize(aLocale, aOptions);
   if (result.isOk()) {
     return nf;
@@ -91,6 +91,24 @@ Result<std::u16string_view, ICUError> NumberFormat::formatToParts(
 
 Result<int32_t, ICUError> NumberFormat::selectFormatted(
     double number, char16_t* keyword, int32_t keywordSize,
+    UPluralRules* pluralRules) const {
+  MOZ_ASSERT(keyword && pluralRules);
+  UErrorCode status = U_ZERO_ERROR;
+
+  MOZ_TRY(format(number));
+
+  int32_t utf16KeywordLength = uplrules_selectFormatted(
+      pluralRules, mFormattedNumber, keyword, keywordSize, &status);
+
+  if (U_FAILURE(status)) {
+    return Err(ToICUError(status));
+  }
+
+  return utf16KeywordLength;
+}
+
+Result<int32_t, ICUError> NumberFormat::selectFormatted(
+    std::string_view number, char16_t* keyword, int32_t keywordSize,
     UPluralRules* pluralRules) const {
   MOZ_ASSERT(keyword && pluralRules);
   UErrorCode status = U_ZERO_ERROR;

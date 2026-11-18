@@ -4,6 +4,9 @@
 
 "use strict";
 
+// This symbol is available when running from workers
+/* globals setImmediate */
+
 const { Actor } = require("resource://devtools/shared/protocol.js");
 const {
   TYPES: { DOCUMENT_EVENT, NETWORK_EVENT_STACKTRACE, CONSOLE_MESSAGE },
@@ -14,8 +17,90 @@ const {
   ObjectActorPool,
 } = require("resource://devtools/server/actors/object/ObjectActorPool.js");
 
-const { throttle } = require("resource://devtools/shared/throttle.js");
+const RESOURCES_BOUNCING_DELAY = 10;
 const RESOURCES_THROTTLING_DELAY = 100;
+
+/**
+ * A mix between "bounce" and "throttle".
+ * tl;dr: short bounce with a longer throttle limit.
+ *
+ * The function call will be delayed until we no longer get two calls
+ * within the "bounce" duration. But in case this delay gets
+ * over the "throttle" duration, the original function will be called.
+ *
+ * Bounce is meant to be a small timeout, mostly ensuring we aggregate
+ * most of the early resources.
+ * Throttle is meant to be a larger timeout to ensure we don't delay
+ * the notification of resources for an unreasonable time.
+ *
+ * The downside of regular "throttle" is that it always calls
+ * the function right away after a calm period. So in our case
+ * we'd always notify the client about a single resources, even
+ * if we'd have to notify of other resources shortly after.
+ *
+ * The downside of regular "bounce" is that we may delay execution
+ * for an unreasonable duration if we keep bouncing.
+ */
+function bounceWithLimit(fun, bounceDelay, throttleDelay) {
+  let firstCallTime = null;
+  let calledDuringBounceDelay = false;
+  let timeoutId = null;
+  function call() {
+    firstCallTime = null;
+    calledDuringBounceDelay = false;
+    if (timeoutId) {
+      clearTimeout(timeoutId);
+      timeoutId = null;
+    }
+
+    fun();
+  }
+
+  function checkOnBounceTimer() {
+    // If we got no additional call during any of the "bounce" delay,
+    // call/flush right away.
+    if (!calledDuringBounceDelay) {
+      call();
+      return;
+    }
+
+    // For any of the subsequent "bounce" timeout's,
+    // call/flush if we went over the "throttle" duration.
+    const timeSinceFirstCall = ChromeUtils.dateNow() - firstCallTime;
+    if (timeSinceFirstCall >= throttleDelay) {
+      call();
+      return;
+    }
+
+    // Otherwise pile up a new "bounce" timeout, while resetting
+    // the boolean which told us we were called during the last bounce.
+    calledDuringBounceDelay = false;
+    if (isWorker) {
+      setImmediate(checkOnBounceTimer);
+    } else {
+      timeoutId = setTimeout(checkOnBounceTimer, bounceDelay);
+    }
+  }
+
+  return function bounced() {
+    if (!firstCallTime) {
+      firstCallTime = ChromeUtils.dateNow();
+      calledDuringBounceDelay = false;
+      if (isWorker) {
+        setImmediate(checkOnBounceTimer);
+      } else {
+        timeoutId = setTimeout(checkOnBounceTimer, bounceDelay);
+      }
+    } else {
+      const timeSinceFirstCall = ChromeUtils.dateNow() - firstCallTime;
+      if (timeSinceFirstCall >= throttleDelay) {
+        call();
+        return;
+      }
+      calledDuringBounceDelay = true;
+    }
+  };
+}
 
 loader.lazyRequireGetter(
   this,
@@ -30,6 +115,7 @@ class BaseTargetActor extends Actor {
 
     /**
      * Type of target, a string of Targets.TYPES.
+     *
      * @return {string}
      */
     this.targetType = targetType;
@@ -42,8 +128,9 @@ class BaseTargetActor extends Actor {
       destroyed: [],
     };
 
-    this.#throttledEmitResources = throttle(
+    this.#throttledEmitResources = bounceWithLimit(
       this.emitResources.bind(this),
+      RESOURCES_BOUNCING_DELAY,
       RESOURCES_THROTTLING_DELAY
     );
   }
@@ -188,7 +275,7 @@ class BaseTargetActor extends Actor {
    * They are lazily instantiated and so will only be available
    * if the client called at least one of their method.
    *
-   * @param {String} prefix
+   * @param {string} prefix
    *        Prefix for the actor we would like to retrieve.
    *        Defined in devtools/server/actors/utils/actor-registry.js
    */
@@ -205,7 +292,7 @@ class BaseTargetActor extends Actor {
    * Returns true, if the related target scoped actor has already been queried
    * and instantiated via `getTargetScopedActor` method.
    *
-   * @param {String} prefix
+   * @param {string} prefix
    *        See getTargetScopedActor definition
    * @return Boolean
    *         True, if the actor has already been instantiated.
@@ -231,7 +318,7 @@ class BaseTargetActor extends Actor {
    * @param {JSON} options
    *        Configuration object provided by the client.
    *        See target-configuration actor.
-   * @param {Boolean} calledFromDocumentCreate
+   * @param {boolean} calledFromDocumentCreation
    *        True, when this is called with initial configuration when the related target
    *        actor is instantiated.
    */
@@ -239,13 +326,31 @@ class BaseTargetActor extends Actor {
     if (typeof options.isTracerFeatureEnabled === "boolean") {
       this.isTracerFeatureEnabled = options.isTracerFeatureEnabled;
     }
+
+    this.#updateTracerOptions(
+      options.tracerOptions,
+      calledFromDocumentCreation
+    );
+
+    if (options.enabledHighlighters) {
+      this.#updateHighlighters(options.enabledHighlighters);
+    }
+  }
+
+  /**
+   * Process Target Configuration's tracerOptions setting
+   *
+   * @param {object} tracerOptions
+   * @param {boolean} calledFromDocumentCreation
+   */
+  #updateTracerOptions(tracerOptions, calledFromDocumentCreation) {
     // If there is some tracer options, we should start tracing, otherwise we should stop (if we were)
-    if (options.tracerOptions) {
+    if (tracerOptions) {
       // Ignore the SessionData update if the user requested to start the tracer on next page load and:
       //   - we apply it to an already loaded WindowGlobal,
       //   - the target isn't the top level one.
       if (
-        options.tracerOptions.traceOnNextLoad &&
+        tracerOptions.traceOnNextLoad &&
         (!calledFromDocumentCreation || !this.isTopLevelTarget)
       ) {
         if (this.isTopLevelTarget) {
@@ -295,11 +400,48 @@ class BaseTargetActor extends Actor {
         return;
       }
       const tracerActor = this.getTargetScopedActor("tracer");
-      tracerActor.startTracing(options.tracerOptions);
+      tracerActor.startTracing(tracerOptions);
     } else if (this.hasTargetScopedActor("tracer")) {
       const tracerActor = this.getTargetScopedActor("tracer");
       tracerActor.stopTracing();
     }
+  }
+
+  // List of active global highlighters enabled via Target Configuration's `enabledHighlighters`
+  // Map whose keys are the highlighter types, and the values the highlighter actor instances
+  #enabledHighlighters = new Map();
+
+  /**
+   * Process Target Configuration's enabledHighlighters setting
+   *
+   * @param {Array<string>} enabledHighlighters
+   *                        List of enabled highlighter types
+   *                        coming from /devtools/shared/highlighters.mjs
+   */
+  async #updateHighlighters(enabledHighlighters) {
+    const inspectorActor = this.getTargetScopedActor("inspector");
+
+    // First enable new highlighters
+    const promises = [];
+    for (const type of enabledHighlighters) {
+      if (this.#enabledHighlighters.has(type)) {
+        continue;
+      }
+      const highlighter = await inspectorActor.getHighlighterByType(type);
+      promises.push(highlighter.show());
+      this.#enabledHighlighters.set(type, highlighter);
+    }
+
+    // Then disable the ones no longer mentioned in the new list
+    for (const [type, highlighter] of this.#enabledHighlighters) {
+      if (enabledHighlighters.includes(type)) {
+        continue;
+      }
+      highlighter.hide();
+      this.#enabledHighlighters.delete(type);
+    }
+
+    await Promise.all(promises);
   }
 }
 exports.BaseTargetActor = BaseTargetActor;

@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim:set ts=2 sw=2 sts=2 et cindent: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -26,10 +24,12 @@ NS_INTERFACE_MAP_BEGIN_CYCLE_COLLECTION(ImageTrack)
 NS_INTERFACE_MAP_END
 
 ImageTrack::ImageTrack(ImageTrackList* aTrackList, int32_t aIndex,
-                       bool aSelected, bool aAnimated, uint32_t aFrameCount,
+                       nsTArray<ImageSize>&& aNativeSizes, bool aSelected,
+                       bool aAnimated, uint32_t aFrameCount,
                        bool aFrameCountComplete, float aRepetitionCount)
     : mParent(aTrackList->GetParentObject()),
       mTrackList(aTrackList),
+      mNativeSizes(std::move(aNativeSizes)),
       mFramesTimestamp(image::FrameTimeout::Zero()),
       mIndex(aIndex),
       mRepetitionCount(aRepetitionCount),
@@ -49,9 +49,13 @@ JSObject* ImageTrack::WrapObject(JSContext* aCx,
 }
 
 void ImageTrack::SetSelected(bool aSelected) {
-  if (mTrackList) {
-    mTrackList->SetSelectedIndex(mIndex, aSelected);
+  if (const RefPtr<ImageTrackList> trackList = mTrackList) {
+    trackList->SetSelectedIndex(mIndex, aSelected);
   }
+}
+
+void ImageTrack::GetSizes(nsTArray<ImageSize>& aSizes) {
+  aSizes = mNativeSizes.Clone();
 }
 
 void ImageTrack::OnFrameCountSuccess(
@@ -66,11 +70,11 @@ void ImageTrack::OnFrameCountSuccess(
 
 void ImageTrack::OnDecodeFramesSuccess(
     const image::DecodeFramesResult& aResult) {
-  MOZ_LOG(gWebCodecsLog, LogLevel::Debug,
-          ("ImageTrack %p OnDecodeFramesSuccess -- decoded %zu frames "
-           "(finished %d), already had %zu frames (finished %d)",
-           this, aResult.mFrames.Length(), aResult.mFinished,
-           mDecodedFrames.Length(), mDecodedFramesComplete));
+  MOZ_LOG_FMT(gWebCodecsLog, LogLevel::Debug,
+              "ImageTrack {} OnDecodeFramesSuccess -- decoded {} frames "
+              "(finished {}), already had {} frames (finished {})",
+              fmt::ptr(this), aResult.mFrames.Length(), aResult.mFinished,
+              mDecodedFrames.Length(), mDecodedFramesComplete);
 
   mDecodedFramesComplete = aResult.mFinished;
   mDecodedFrames.SetCapacity(mDecodedFrames.Length() +
@@ -81,8 +85,8 @@ void ImageTrack::OnDecodeFramesSuccess(
     gfx::IntSize size = f.mSurface->GetSize();
     gfx::IntRect rect(gfx::IntPoint(0, 0), size);
 
-    Maybe<VideoPixelFormat> format =
-        SurfaceFormatToVideoPixelFormat(f.mSurface->GetFormat());
+    auto image = MakeRefPtr<layers::SourceSurfaceImage>(size, f.mSurface);
+    Maybe<VideoPixelFormat> format = GuessVideoPixelFormat(image);
     MOZ_ASSERT(format, "Unexpected format for image!");
 
     Maybe<uint64_t> duration;
@@ -99,10 +103,15 @@ void ImageTrack::OnDecodeFramesSuccess(
 
     mFramesTimestamp += f.mTimeout;
 
-    auto image = MakeRefPtr<layers::SourceSurfaceImage>(size, f.mSurface);
-    auto frame = MakeRefPtr<VideoFrame>(mParent, image, format, size, rect,
-                                        size, duration, timestamp, colorSpace);
-    mDecodedFrames.AppendElement(std::move(frame));
+    auto frame = VideoFrame::CreateFromImage(mParent, image, format, rect, size,
+                                             duration, timestamp, colorSpace);
+    if (frame.isErr()) {
+      MOZ_LOG_FMT(gWebCodecsLog, LogLevel::Error,
+                  "ImageTrack {} rejected a decoded frame: {}", fmt::ptr(this),
+                  frame.inspectErr().Description());
+      continue;
+    }
+    mDecodedFrames.AppendElement(frame.unwrap());
   }
 }
 

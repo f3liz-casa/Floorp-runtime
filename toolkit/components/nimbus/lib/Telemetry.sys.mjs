@@ -2,9 +2,10 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-const lazy = {};
+import { XPCOMUtils } from "resource://gre/modules/XPCOMUtils.sys.mjs";
 
-ChromeUtils.defineESModuleGetters(lazy, {
+const lazy = XPCOMUtils.declareLazy({
+  FirstStartup: "resource://gre/modules/FirstStartup.sys.mjs",
   TelemetryEnvironment: "resource://gre/modules/TelemetryEnvironment.sys.mjs",
 });
 
@@ -32,6 +33,7 @@ const EnrollmentStatusReason = Object.freeze({
   PREF_FLIPS_CONFLICT: "PrefFlipsConflict",
   ERROR: "Error",
   UNENROLLED_IN_ANOTHER_PROFILE: "UnenrolledInAnotherProfile",
+  MIGRATION: "Migration",
 });
 
 const EnrollmentFailureReason = Object.freeze({
@@ -43,6 +45,25 @@ const EnrollmentSource = Object.freeze({
   RS_LOADER: "rs-loader",
   FORCE_ENROLLMENT: "force-enrollment",
 });
+
+const RemoteSettingsSyncErrorReason = Object.freeze({
+  BACKWARDS_SYNC: "backwards-sync",
+  EMPTY: "empty",
+  GET_EXCEPTION: "get-exception",
+  INVALID_DATA: "invalid-data",
+  INVALID_LAST_MODIFIED: "invalid-last-modified",
+  LAST_MODIFIED_EXCEPTION: "last-modified-exception",
+  NOT_YET_SYNCED: "not-yet-synced",
+  NULL_LAST_MODIFIED: "null-last-modified",
+  MISSING_SIGNATURE: "missing-signature",
+});
+
+/**
+ * @typedef {T[keyof T]} EnumValuesOf
+ * @template {type} T
+ */
+
+/** @typedef {EnumValuesOf<typeof RemoteSettingsSyncErrorReason>} RemoteSettingsSyncErrorReason */
 
 const UnenrollmentFailureReason = Object.freeze({
   ALREADY_UNENROLLED: "already-unenrolled",
@@ -64,13 +85,16 @@ const UnenrollReason = Object.freeze({
   CHANGED_PREF: "changed-pref",
   FORCE_ENROLLMENT: "force-enrollment",
   INDIVIDUAL_OPT_OUT: "individual-opt-out",
+  LABS_DIABLED: "labs-disabled",
   LABS_OPT_OUT: "labs-opt-out",
+  MIGRATION: "migration",
   PREF_FLIPS_CONFLICT: "prefFlips-conflict",
   PREF_FLIPS_FAILED: "prefFlips-failed",
   PREF_VARIABLE_CHANGED: "pref-variable-changed",
   PREF_VARIABLE_MISSING: "pref-variable-missing",
   PREF_VARIABLE_NO_LONGER: "pref-variable-no-longer",
   RECIPE_NOT_SEEN: "recipe-not-seen",
+  ROLLOUTS_OPT_OUT: "rollouts-opt-out",
   STUDIES_OPT_OUT: "studies-opt-out",
   TARGETING_MISMATCH: "targeting-mismatch",
   UNENROLLED_IN_ANOTHER_PROFILE: "unenrolled-in-another-profile",
@@ -83,15 +107,52 @@ const UnenrollReason = Object.freeze({
 const EXPERIMENT_TYPE_ROLLOUT = "rollout";
 const EXPERIMENT_TYPE_NIMBUS = "nimbus";
 
+/**
+ * @typedef {object} EnrollmentStatus
+ * An enrollment status event without the slug.
+ *
+ * @property {keyof typeof EnrollmentStatus} status
+ * The kind of enrollment status event.
+ *
+ * @property {keyof typeof EnrollmentStatusReason | undefined} reason
+ * The reason this enrollment status occurred, if applicable.
+ *
+ * @property {string | undefined} branch
+ * The branch that was enrolled, if applicable.
+ *
+ * @property {string | undefined} error
+ * What error triggered this enrollment status, if applicable.
+ *
+ * This corresponds to the `error_string` field on the enrollment status metric.
+ *
+ * @property {string[] | undefined} conflictSlugs
+ *
+ * This corresponds to the `conflict_slug` field on the enrollment status
+ * metric.
+ *
+ * @property {string | undefined} migration
+ * A migration that caused the enrollment status event to occur.
+ */
+
 export const NimbusTelemetry = {
   EnrollmentFailureReason,
   EnrollmentSource,
   EnrollmentStatus,
   EnrollmentStatusReason,
+  RemoteSettingsSyncErrorReason,
   UnenrollReason,
   UnenrollmentFailureReason,
   ValidationFailureReason,
 
+  /**
+   * Record an enrollment event.
+   *
+   * @property {object} enrollment
+   * The enrollment that enrolled.
+   *
+   * @returns {EnrollmentStatus}
+   * An enrollment status event to also be submitted.
+   */
   recordEnrollment(enrollment) {
     this.setExperimentActive(enrollment);
 
@@ -110,8 +171,7 @@ export const NimbusTelemetry = {
       experiment_type: experimentType,
     });
 
-    this.recordEnrollmentStatus({
-      slug: enrollment.slug,
+    return {
       branch: enrollment.branch.slug,
       status: EnrollmentStatus.ENROLLED,
       reason:
@@ -119,7 +179,7 @@ export const NimbusTelemetry = {
         enrollment.source === EnrollmentSource.FORCE_ENROLLMENT
           ? EnrollmentStatusReason.OPT_IN
           : EnrollmentStatusReason.QUALIFIED,
-    });
+    };
   },
 
   recordEnrollmentFailure(slug, reason) {
@@ -130,24 +190,6 @@ export const NimbusTelemetry = {
     Glean.nimbusEvents.enrollFailed.record({
       experiment: slug,
       reason,
-    });
-  },
-
-  recordEnrollmentStatus({
-    slug,
-    status,
-    reason,
-    branch,
-    error_string,
-    conflict_slug,
-  }) {
-    Glean.nimbusEvents.enrollmentStatus.record({
-      slug,
-      status,
-      reason,
-      branch,
-      error_string,
-      conflict_slug,
     });
   },
 
@@ -164,45 +206,67 @@ export const NimbusTelemetry = {
     });
   },
 
-  recordMigration(migration, error) {
+  /**
+   * Record the result of a migration.
+   *
+   * @param {string} migration The name of the migration.
+   * @param {number} duration The duration of the migration.
+   * @param {string | undefined} The reason the migration failed, if any.
+   */
+  recordMigration(migration, duration, errorReason) {
     Glean.nimbusEvents.migration.record(
       Object.assign(
         {
           migration_id: migration,
-          success: typeof error === "undefined",
+          success: typeof errorReason === "undefined",
+          duration,
+          is_first_startup:
+            lazy.FirstStartup.state === lazy.FirstStartup.IN_PROGRESS,
         },
-        typeof error !== "undefined" ? { error_reason: error } : {}
+        typeof errorReason !== "undefined" ? { error_reason: errorReason } : {}
       )
     );
   },
 
-  recordRemoteSettingsSync(forceSync, experiments, secureExperiments, trigger) {
-    // Do not record when all collections succeed and experiments isn't empty.
-    if (
-      secureExperiments !== null &&
-      experiments !== null &&
-      experiments.length !== 0
-    ) {
-      return;
-    }
-
+  /**
+   * Record an error that occurred during
+   *
+   * @param {string} collection The name of the collection.
+   * @param {RemoteSettingsSyncErrorReason} reason The reason why the sync failed.
+   * @param {object} options
+   * @param {boolean} options.forceSync Whether or not the sync was forced.
+   * @param {string | undefined} options.trigger What event triggered the sync.
+   */
+  recordRemoteSettingsSyncError(
+    collection,
+    reason,
+    { forceSync = false, trigger } = {}
+  ) {
     const event = {
       force_sync: forceSync,
-      experiments_success: experiments !== null,
-      secure_experiments_success: secureExperiments !== null,
+      collection,
+      reason,
     };
-    if (experiments !== null) {
-      event.experiments_empty = experiments.length === 0;
-    }
-    if (secureExperiments !== null) {
-      event.secure_experiments_empty = secureExperiments.length === 0;
-    }
-    if (trigger != null) {
+
+    if (typeof trigger === "string") {
       event.trigger = trigger;
     }
-    Glean.nimbusEvents.remoteSettingsSync.record(event);
+
+    Glean.nimbusEvents.remoteSettingsSyncError.record(event);
   },
 
+  /**
+   * Record an unenrollment event.
+   *
+   * @property {object} enrollment
+   * The enrollment that unenrolled.
+   *
+   * @property {object} cause
+   * The cause for unenrollment.
+   *
+   * @returns {EnrollmentStatus}
+   * An enrollment status event to also be submitted.
+   */
   recordUnenrollment(enrollment, cause) {
     lazy.TelemetryEnvironment.setExperimentInactive(enrollment.slug);
     Services.fog.setExperimentInactive(enrollment.slug);
@@ -222,6 +286,10 @@ export const NimbusTelemetry = {
       case UnenrollReason.CHANGED_PREF:
         legacyEvent.changedPref = cause.changedPref.name;
         gleanEvent.changed_pref = cause.changedPref.name;
+
+        // We've hit the limit of extra keys that can go on the legacy
+        // unenrollment event, so this key does not get mirrored.
+        gleanEvent.about_config_change = cause.isAboutConfigChange;
         break;
 
       case UnenrollReason.PREF_FLIPS_CONFLICT:
@@ -241,13 +309,17 @@ export const NimbusTelemetry = {
       case UnenrollReason.L10N_MISSING_LOCALE:
         gleanEvent.locale = cause.locale;
         break;
+
+      case UnenrollReason.MIGRATION:
+        gleanEvent.migration = cause.migration;
+        break;
     }
 
     Glean.normandy.unenrollNimbusExperiment.record(legacyEvent);
     Glean.nimbusEvents.unenrollment.record(gleanEvent);
 
+    /** @type {EnrollmentStatus} */
     const enrollmentStatus = {
-      slug: enrollment.slug,
       branch: enrollment.branch.slug,
     };
 
@@ -268,6 +340,7 @@ export const NimbusTelemetry = {
 
       case UnenrollReason.INDIVIDUAL_OPT_OUT:
       case UnenrollReason.LABS_OPT_OUT:
+      case UnenrollReason.ROLLOUTS_OPT_OUT:
       case UnenrollReason.STUDIES_OPT_OUT:
         enrollmentStatus.status = EnrollmentStatus.DISQUALIFIED;
         enrollmentStatus.reason = EnrollmentStatusReason.OPT_OUT;
@@ -286,7 +359,7 @@ export const NimbusTelemetry = {
       case UnenrollReason.PREF_FLIPS_CONFLICT:
         enrollmentStatus.status = EnrollmentStatus.DISQUALIFIED;
         enrollmentStatus.reason = EnrollmentStatusReason.PREF_FLIPS_CONFLICT;
-        enrollmentStatus.conflict_slug = cause.conflictingSlug;
+        enrollmentStatus.conflictSlugs = [cause.conflictingSlug];
         break;
 
       case UnenrollReason.UNENROLLED_IN_ANOTHER_PROFILE:
@@ -295,13 +368,19 @@ export const NimbusTelemetry = {
           EnrollmentStatusReason.UNENROLLED_IN_ANOTHER_PROFILE;
         break;
 
+      case UnenrollReason.MIGRATION:
+        enrollmentStatus.status = EnrollmentStatus.WAS_ENROLLED;
+        enrollmentStatus.reason = EnrollmentStatusReason.MIGRATION;
+        enrollmentStatus.migration = cause.migration;
+        break;
+
       default:
         enrollmentStatus.status = EnrollmentStatus.DISQUALIFIED;
         enrollmentStatus.reason = EnrollmentStatusReason.ERROR;
-        enrollmentStatus.error_string = cause.reason;
+        enrollmentStatus.error = cause.reason;
     }
 
-    this.recordEnrollmentStatus(enrollmentStatus);
+    return enrollmentStatus;
   },
 
   recordUnenrollmentFailure(slug, reason) {

@@ -8,11 +8,17 @@ declare global {
       ? U
       : T[P] extends keyof Modules
         ? Exports<T[P], P>
-        : T[P] extends { pref: string; default?: infer U }
-          ? Widen<U>
-          : T[P] extends { service: string; iid?: infer U }
-            ? nsQIResult<U>
-            : never;
+        : T[P] extends {
+              pref: string;
+              default?: any;
+              transform: (arg: any) => infer U;
+            }
+          ? U
+          : T[P] extends { pref: string; default?: infer U }
+            ? Widen<U>
+            : T[P] extends { service: string; iid?: infer U }
+              ? nsQIResult<U>
+              : never;
   };
 
   type LazyDefinition = Record<
@@ -22,6 +28,8 @@ declare global {
     | { service: string; iid: nsIID }
     | { pref: string; default?; onUpdate?; transform? }
   >;
+
+  type Values<T> = T[keyof T];
 }
 
 type Exports<M, P> = M extends keyof Modules ? IfKey<Modules[M], P> : never;

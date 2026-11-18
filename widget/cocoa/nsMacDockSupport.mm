@@ -1,4 +1,3 @@
-/* -*- Mode: c++; tab-width: 2; indent-tabs-mode: nil; -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -7,20 +6,48 @@
 #include <CoreFoundation/CoreFoundation.h>
 #include <signal.h>
 
-#include "nsCocoaUtils.h"
-#include "nsComponentManagerUtils.h"
-#include "nsMacDockSupport.h"
-#include "nsObjCExceptions.h"
-#include "nsNativeThemeColors.h"
-#include "nsString.h"
-#include "imgLoader.h"
 #include "MOZIconHelper.h"
+#include "imgLoader.h"
 #include "mozilla/MacStringHelpers.h"
 #include "mozilla/SVGImageContext.h"
-#include "nsISVGPaintContext.h"
+#include "nsCocoaUtils.h"
+#include "nsComponentManagerUtils.h"
 #include "nsIFile.h"
+#include "nsISVGPaintContext.h"
+#include "nsMacDockSupport.h"
+#include "nsNativeThemeColors.h"
+#include "nsObjCExceptions.h"
+#include "nsString.h"
 
 NS_IMPL_ISUPPORTS(nsMacDockSupport, nsIMacDockSupport, nsITaskbarProgress)
+
+@interface MOZDockTileView : NSImageView
+@end
+
+@implementation MOZDockTileView
+
+- (instancetype)initWithFrame:(NSRect)aFrame {
+  self = [super initWithFrame:aFrame];
+  if (self) {
+    self.imageScaling = NSImageScaleAxesIndependently;
+    self.image = [NSWorkspace.sharedWorkspace
+        iconForFile:NSBundle.mainBundle.bundlePath];
+  }
+  return self;
+}
+
+- (void)setNeedsDisplay:(BOOL)aNeedsDisplay {
+  [super setNeedsDisplay:aNeedsDisplay];
+  if (aNeedsDisplay && NSApp.dockTile.contentView == self) {
+    dispatch_async(dispatch_get_main_queue(), ^{
+      if (NSApp.dockTile.contentView == self) {
+        [NSApp.dockTile display];
+      }
+    });
+  }
+}
+
+@end
 
 // This view is used in the dock tile when we're downloading a file.
 // It draws a progress bar that looks similar to the native progress bar on
@@ -216,23 +243,15 @@ nsMacDockSupport::SetProgressState(nsTaskbarProgressState aState,
 void nsMacDockSupport::BuildDockTile() {
   if (!mDockTileWrapperView) {
     // Create the following NSView hierarchy:
-    // * mDockTileWrapperView (NSView)
-    //    * imageView (NSImageView) <- has the application icon
+    // * mDockTileWrapperView (MOZDockTileView) <- has the application icon
     //    * mDockBadgeView (NSImageView) <- has the dock badge
     //    * mProgressDockOverlayView (MOZProgressDockOverlayView) <- draws the
     //    progress bar
 
     mDockTileWrapperView =
-        [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 32, 32)];
+        [[MOZDockTileView alloc] initWithFrame:NSMakeRect(0, 0, 32, 32)];
     mDockTileWrapperView.autoresizingMask =
         NSViewWidthSizable | NSViewHeightSizable;
-
-    NSImageView* imageView =
-        [[NSImageView alloc] initWithFrame:[mDockTileWrapperView bounds]];
-    imageView.image = [NSImage imageNamed:@"NSApplicationIcon"];
-    imageView.imageScaling = NSImageScaleAxesIndependently;
-    imageView.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
-    [mDockTileWrapperView addSubview:imageView];
 
     mDockBadgeView =
         [[NSImageView alloc] initWithFrame:NSMakeRect(19.5, 19.5, 12, 12)];
@@ -334,7 +353,7 @@ NSString* GetPathForApp(NSDictionary* aPersistantApp) {
     return nil;
   }
   NSURL* url = CFBridgingRelease(
-      _CFURLCreateFromPropertyListRepresentation(NULL, fileData));
+      _CFURLCreateFromPropertyListRepresentation(nullptr, fileData));
   if (!url) {
     return nil;
   }

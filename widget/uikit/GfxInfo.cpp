@@ -1,9 +1,9 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "GfxInfo.h"
+
 #include "nsServiceManagerUtils.h"
 
 namespace mozilla {
@@ -18,16 +18,7 @@ GfxInfo::GfxInfo() {}
 GfxInfo::~GfxInfo() {}
 
 NS_IMETHODIMP
-GfxInfo::GetD2DEnabled(bool* aEnabled) { return NS_ERROR_FAILURE; }
-
-NS_IMETHODIMP
 GfxInfo::GetDWriteEnabled(bool* aEnabled) { return NS_ERROR_FAILURE; }
-
-NS_IMETHODIMP
-GfxInfo::GetEmbeddedInFirefoxReality(bool* aEmbeddedInFirefoxReality) {
-  *aEmbeddedInFirefoxReality = false;
-  return NS_OK;
-}
 
 NS_IMETHODIMP
 GfxInfo::GetHasBattery(bool* aHasBattery) { return NS_ERROR_NOT_IMPLEMENTED; }

@@ -53,7 +53,6 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #define NR_STUN_MAX_MESSAGE_SIZE                   2048
 
 #define NR_STUN_MAGIC_COOKIE            0x2112A442
-#define NR_STUN_MAGIC_COOKIE2           0xc5cb4e1d  /* used recognize old stun messages */
 
 typedef struct { UCHAR octet[12]; }  UINT12;
 
@@ -115,22 +114,14 @@ typedef struct nr_stun_message_attribute_ {
         char                            username[NR_STUN_MAX_USERNAME_BYTES+1];  /* +1 for \0 */
         nr_stun_attr_xor_mapped_address xor_mapped_address;
 
-#ifdef USE_ICE
         UINT4                           priority;
         UINT8                           ice_controlled;
         UINT8                           ice_controlling;
-#endif /* USE_ICE */
 
-#ifdef USE_TURN
         UINT4                           lifetime_secs;
         nr_transport_addr               remote_address;
         UCHAR                           requested_transport;
         nr_stun_attr_data               data;
-#endif /* USE_TURN */
-
-#ifdef USE_STUND_0_96
-        UINT4                           change_request;
-#endif /* USE_STUND_0_96 */
 
         /* make sure there's enough room here to place any possible
          * attribute */
@@ -138,8 +129,8 @@ typedef struct nr_stun_message_attribute_ {
     } u;
     nr_stun_encoded_attribute          *encoding;
     size_t                              encoding_length;
-    char                               *name;
-    char                               *type_name;
+    const char                         *name;
+    const char                         *type_name;
     int                                 invalid;
     TAILQ_ENTRY(nr_stun_message_attribute_)  entry;
 } nr_stun_message_attribute;
@@ -154,7 +145,7 @@ typedef struct nr_stun_message_header_ {
 } nr_stun_message_header;
 
 typedef struct nr_stun_message_ {
-    char                               *name;
+    const char                         *name;
     UCHAR                               buffer[NR_STUN_MAX_MESSAGE_SIZE];
     size_t                              length;
     nr_stun_message_header              header;
@@ -175,34 +166,26 @@ int nr_stun_message_has_attribute(nr_stun_message *msg, UINT2 type, nr_stun_mess
 int nr_stun_message_get_attribute(nr_stun_message *msg, UINT2 type, UINT2 index, nr_stun_message_attribute **attribute);
 
 int nr_stun_message_add_alternate_server_attribute(nr_stun_message *msg, nr_transport_addr *alternate_server);
-int nr_stun_message_add_error_code_attribute(nr_stun_message *msg, UINT2 number, char *reason);
+int nr_stun_message_add_error_code_attribute(nr_stun_message *msg, UINT2 number, const char *reason);
 int nr_stun_message_add_fingerprint_attribute(nr_stun_message *msg);
 int nr_stun_message_add_message_integrity_attribute(nr_stun_message *msg, Data *password);
-int nr_stun_message_add_nonce_attribute(nr_stun_message *msg, char *nonce);
+int nr_stun_message_add_nonce_attribute(nr_stun_message *msg, const char *nonce);
 int nr_stun_message_add_realm_attribute(nr_stun_message *msg, char *realm);
 int nr_stun_message_add_server_attribute(nr_stun_message *msg, char *server_name);
 int nr_stun_message_add_unknown_attributes_attribute(nr_stun_message *msg, nr_stun_attr_unknown_attributes *unknown_attributes);
 int nr_stun_message_add_username_attribute(nr_stun_message *msg, char *username);
 int nr_stun_message_add_xor_mapped_address_attribute(nr_stun_message *msg, nr_transport_addr *mapped_address);
 
-#ifdef USE_ICE
 int nr_stun_message_add_ice_controlled_attribute(nr_stun_message *msg, UINT8 ice_controlled);
 int nr_stun_message_add_ice_controlling_attribute(nr_stun_message *msg, UINT8 ice_controlling);
 int nr_stun_message_add_priority_attribute(nr_stun_message *msg, UINT4 priority);
 int nr_stun_message_add_use_candidate_attribute(nr_stun_message *msg);
-#endif /* USE_ICE */
 
-#ifdef USE_TURN
 int nr_stun_message_add_data_attribute(nr_stun_message *msg, UCHAR *data, int length);
 int nr_stun_message_add_lifetime_attribute(nr_stun_message *msg, UINT4 lifetime_secs);
 int nr_stun_message_add_requested_transport_attribute(nr_stun_message *msg, UCHAR transport);
 int
 nr_stun_message_add_xor_peer_address_attribute(nr_stun_message *msg, nr_transport_addr *peer_address);
-#endif /* USE_TURN */
-
-#ifdef USE_STUND_0_96
-int nr_stun_message_add_change_request_attribute(nr_stun_message *msg, UINT4 change_request);
-#endif /* USE_STUND_0_96 */
 
 #endif
 

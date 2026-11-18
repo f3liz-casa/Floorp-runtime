@@ -1,11 +1,9 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef nsImageRenderer_h__
-#define nsImageRenderer_h__
+#ifndef nsImageRenderer_h_
+#define nsImageRenderer_h_
 
 #include "Units.h"
 #include "mozilla/AspectRatio.h"
@@ -111,10 +109,20 @@ class nsImageRenderer {
   ~nsImageRenderer() = default;
   /**
    * Populates member variables to get ready for rendering.
+   * @param aPositionParams If provided, positioning information for the image
+   * that is used to determine if the image ends up not visible due to its
+   * positioning in the background.
    * @return true iff the image is ready, and there is at least a pixel to
    * draw.
    */
-  bool PrepareImage();
+  struct PositionParams {
+    // Style of the layer this image is used in
+    const nsStyleImageLayers::Layer& mLayer;
+    const nsRect& mBorderArea;
+    const nsRect& mBackgroundClipRect;
+  };
+  bool PrepareImage(
+      const mozilla::Maybe<PositionParams>& aPositionParams = Nothing{});
 
   /**
    * The three Compute*Size functions correspond to the sizing algorthms and
@@ -230,7 +238,7 @@ class nsImageRenderer {
       const mozilla::CSSIntRect& aSrc,
       mozilla::StyleBorderImageRepeatKeyword aHFill,
       mozilla::StyleBorderImageRepeatKeyword aVFill, const nsSize& aUnitSize,
-      uint8_t aIndex, const mozilla::Maybe<nsSize>& aSVGViewportSize,
+      uint8_t aIndex, const mozilla::Maybe<CSSSize>& aSVGViewportSize,
       const bool aHasIntrinsicRatio);
 
   /**
@@ -294,6 +302,9 @@ class nsImageRenderer {
   already_AddRefed<gfxDrawable> DrawableForElement(const nsRect& aImageRect,
                                                    gfxContext& aContext);
 
+  bool ImageIsDefinitelyNotVisible(const PositionParams& aPositionParams,
+                                   imgRequestProxy& aRequest);
+
   nsIFrame* mForFrame;
   const mozilla::StyleImage* mImage;
   ImageResolution mImageResolution;
@@ -311,4 +322,4 @@ class nsImageRenderer {
 
 }  // namespace mozilla
 
-#endif /* nsImageRenderer_h__ */
+#endif /* nsImageRenderer_h_ */

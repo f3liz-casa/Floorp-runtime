@@ -1,16 +1,11 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "APZCTreeManagerTester.h"
 #include "APZTestCommon.h"
-
 #include "InputUtils.h"
 #include "gtest/gtest.h"
-
-#include <cmath>
 
 class APZCAxisLockCompatTester : public APZCTreeManagerTester,
                                  public testing::WithParamInterface<int> {
@@ -69,15 +64,24 @@ class APZCAxisLockTester : public APZCTreeManagerTester {
         LayerIntRect(0, 0, 100, 100),
     };
     CreateScrollData(treeShape, layerVisibleRect);
-    SetScrollableFrameMetrics(root, ScrollableLayerGuid::START_SCROLL_ID,
-                              CSSRect(0, 0, 500, 500));
+    SetScrollableFrameMetrics(root, START_SCROLL_ID, CSSRect(0, 0, 500, 500));
 
-    registration = MakeUnique<ScopedLayerTreeRegistration>(LayersId{0}, mcc);
+    registration =
+        std::make_unique<ScopedLayerTreeRegistration>(LayersId{0}, mcc);
 
     UpdateHitTestingTree();
   }
 
+  // Advance time far enough that earlier pan gesture events no longer
+  // contribute to axis lock breakout calculations.
+  void ExpirePanGestureEventBuffer() {
+    mcc->AdvanceByMillis(
+        StaticPrefs::apz_pan_gesture_buffer_max_age_AtStartup() + 1);
+  }
+
   void BreakStickyAxisLockTestGesture(const ScrollDirections& aDirections) {
+    ExpirePanGestureEventBuffer();
+
     float panX = 0;
     float panY = 0;
 
@@ -89,13 +93,13 @@ class APZCAxisLockTester : public APZCTreeManagerTester {
     }
 
     // Kick off the gesture that may lock onto an axis
-    QueueMockHitResult(ScrollableLayerGuid::START_SCROLL_ID);
+    QueueMockHitResult(START_SCROLL_ID);
     PanGesture(PanGestureInput::PANGESTURE_PAN, apzc, ScreenIntPoint(50, 50),
                ScreenPoint(panX, panY), mcc->Time());
     mcc->AdvanceByMillis(5);
     apzc->AdvanceAnimations(mcc->GetSampleTime());
 
-    QueueMockHitResult(ScrollableLayerGuid::START_SCROLL_ID);
+    QueueMockHitResult(START_SCROLL_ID);
     PanGesture(PanGestureInput::PANGESTURE_PAN, apzc, ScreenIntPoint(50, 50),
                ScreenPoint(panX, panY), mcc->Time());
   }
@@ -136,19 +140,19 @@ TEST_F(APZCAxisLockTester, BasicDominantAxisUse) {
   apzc = ApzcOf(root);
 
   // Kick off the initial gesture that triggers the momentum scroll.
-  QueueMockHitResult(ScrollableLayerGuid::START_SCROLL_ID);
+  QueueMockHitResult(START_SCROLL_ID);
   PanGesture(PanGestureInput::PANGESTURE_START, manager, ScreenIntPoint(50, 50),
              ScreenIntPoint(1, 2), mcc->Time());
   mcc->AdvanceByMillis(5);
   apzc->AdvanceAnimations(mcc->GetSampleTime());
 
-  QueueMockHitResult(ScrollableLayerGuid::START_SCROLL_ID);
+  QueueMockHitResult(START_SCROLL_ID);
   PanGesture(PanGestureInput::PANGESTURE_PAN, apzc, ScreenIntPoint(50, 50),
              ScreenPoint(15, 30), mcc->Time());
   mcc->AdvanceByMillis(5);
   apzc->AdvanceAnimations(mcc->GetSampleTime());
 
-  QueueMockHitResult(ScrollableLayerGuid::START_SCROLL_ID);
+  QueueMockHitResult(START_SCROLL_ID);
   PanGesture(PanGestureInput::PANGESTURE_PAN, apzc, ScreenIntPoint(50, 50),
              ScreenPoint(15, 30), mcc->Time());
 
@@ -161,7 +165,7 @@ TEST_F(APZCAxisLockTester, BasicDominantAxisUse) {
   mcc->AdvanceByMillis(5);
   apzc->AdvanceAnimations(mcc->GetSampleTime());
 
-  QueueMockHitResult(ScrollableLayerGuid::START_SCROLL_ID);
+  QueueMockHitResult(START_SCROLL_ID);
   PanGesture(PanGestureInput::PANGESTURE_END, manager, ScreenIntPoint(50, 50),
              ScreenPoint(0, 0), mcc->Time());
   mcc->AdvanceByMillis(5);
@@ -176,19 +180,19 @@ TEST_F(APZCAxisLockTester, BasicDominantAxisUse) {
   apzc->AssertAxisLocked(ScrollDirection::eVertical);
 
   // Start the momentum scroll.
-  QueueMockHitResult(ScrollableLayerGuid::START_SCROLL_ID);
+  QueueMockHitResult(START_SCROLL_ID);
   PanGesture(PanGestureInput::PANGESTURE_MOMENTUMSTART, manager,
              ScreenIntPoint(50, 50), ScreenPoint(30, 90), mcc->Time());
   mcc->AdvanceByMillis(10);
   apzc->AdvanceAnimations(mcc->GetSampleTime());
 
-  QueueMockHitResult(ScrollableLayerGuid::START_SCROLL_ID);
+  QueueMockHitResult(START_SCROLL_ID);
   PanGesture(PanGestureInput::PANGESTURE_MOMENTUMPAN, manager,
              ScreenIntPoint(50, 50), ScreenPoint(10, 30), mcc->Time());
   mcc->AdvanceByMillis(10);
   apzc->AdvanceAnimations(mcc->GetSampleTime());
 
-  QueueMockHitResult(ScrollableLayerGuid::START_SCROLL_ID);
+  QueueMockHitResult(START_SCROLL_ID);
   PanGesture(PanGestureInput::PANGESTURE_MOMENTUMPAN, manager,
              ScreenIntPoint(50, 50), ScreenPoint(10, 30), mcc->Time());
   mcc->AdvanceByMillis(10);
@@ -200,7 +204,7 @@ TEST_F(APZCAxisLockTester, BasicDominantAxisUse) {
   EXPECT_GT(apzc->GetVelocityVector().y, 0);
   EXPECT_EQ(apzc->GetVelocityVector().x, 0);
 
-  QueueMockHitResult(ScrollableLayerGuid::START_SCROLL_ID);
+  QueueMockHitResult(START_SCROLL_ID);
   PanGesture(PanGestureInput::PANGESTURE_MOMENTUMEND, manager,
              ScreenIntPoint(50, 50), ScreenPoint(0, 0), mcc->Time());
 
@@ -227,19 +231,19 @@ TEST_F(APZCAxisLockTester, NewGestureBreaksMomentumAxisLock) {
   apzc = ApzcOf(root);
 
   // Kick off the initial gesture that triggers the momentum scroll.
-  QueueMockHitResult(ScrollableLayerGuid::START_SCROLL_ID);
+  QueueMockHitResult(START_SCROLL_ID);
   PanGesture(PanGestureInput::PANGESTURE_START, manager, ScreenIntPoint(50, 50),
              ScreenIntPoint(2, 1), mcc->Time());
   mcc->AdvanceByMillis(5);
   apzc->AdvanceAnimations(mcc->GetSampleTime());
 
-  QueueMockHitResult(ScrollableLayerGuid::START_SCROLL_ID);
+  QueueMockHitResult(START_SCROLL_ID);
   PanGesture(PanGestureInput::PANGESTURE_PAN, apzc, ScreenIntPoint(50, 50),
              ScreenPoint(30, 15), mcc->Time());
   mcc->AdvanceByMillis(5);
   apzc->AdvanceAnimations(mcc->GetSampleTime());
 
-  QueueMockHitResult(ScrollableLayerGuid::START_SCROLL_ID);
+  QueueMockHitResult(START_SCROLL_ID);
   PanGesture(PanGestureInput::PANGESTURE_PAN, apzc, ScreenIntPoint(50, 50),
              ScreenPoint(30, 15), mcc->Time());
 
@@ -252,7 +256,7 @@ TEST_F(APZCAxisLockTester, NewGestureBreaksMomentumAxisLock) {
   mcc->AdvanceByMillis(5);
   apzc->AdvanceAnimations(mcc->GetSampleTime());
 
-  QueueMockHitResult(ScrollableLayerGuid::START_SCROLL_ID);
+  QueueMockHitResult(START_SCROLL_ID);
   PanGesture(PanGestureInput::PANGESTURE_END, manager, ScreenIntPoint(50, 50),
              ScreenPoint(0, 0), mcc->Time());
   mcc->AdvanceByMillis(5);
@@ -267,19 +271,19 @@ TEST_F(APZCAxisLockTester, NewGestureBreaksMomentumAxisLock) {
   apzc->AssertAxisLocked(ScrollDirection::eHorizontal);
 
   // Start the momentum scroll.
-  QueueMockHitResult(ScrollableLayerGuid::START_SCROLL_ID);
+  QueueMockHitResult(START_SCROLL_ID);
   PanGesture(PanGestureInput::PANGESTURE_MOMENTUMSTART, manager,
              ScreenIntPoint(50, 50), ScreenPoint(80, 40), mcc->Time());
   mcc->AdvanceByMillis(10);
   apzc->AdvanceAnimations(mcc->GetSampleTime());
 
-  QueueMockHitResult(ScrollableLayerGuid::START_SCROLL_ID);
+  QueueMockHitResult(START_SCROLL_ID);
   PanGesture(PanGestureInput::PANGESTURE_MOMENTUMPAN, manager,
              ScreenIntPoint(50, 50), ScreenPoint(20, 10), mcc->Time());
   mcc->AdvanceByMillis(10);
   apzc->AdvanceAnimations(mcc->GetSampleTime());
 
-  QueueMockHitResult(ScrollableLayerGuid::START_SCROLL_ID);
+  QueueMockHitResult(START_SCROLL_ID);
   PanGesture(PanGestureInput::PANGESTURE_MOMENTUMPAN, manager,
              ScreenIntPoint(50, 50), ScreenPoint(20, 10), mcc->Time());
   mcc->AdvanceByMillis(10);
@@ -298,7 +302,7 @@ TEST_F(APZCAxisLockTester, NewGestureBreaksMomentumAxisLock) {
   EXPECT_GT(beforeBreakOffset.x, panEndOffset.x);
 
   // Kick off the gesture that breaks the lock onto the X axis.
-  QueueMockHitResult(ScrollableLayerGuid::START_SCROLL_ID);
+  QueueMockHitResult(START_SCROLL_ID);
   PanGesture(PanGestureInput::PANGESTURE_START, manager, ScreenIntPoint(50, 50),
              ScreenIntPoint(1, 2), mcc->Time());
   mcc->AdvanceByMillis(5);
@@ -307,13 +311,13 @@ TEST_F(APZCAxisLockTester, NewGestureBreaksMomentumAxisLock) {
   ParentLayerPoint afterBreakOffset = apzc->GetCurrentAsyncScrollOffset(
       AsyncTransformConsumer::eForEventHandling);
 
-  QueueMockHitResult(ScrollableLayerGuid::START_SCROLL_ID);
+  QueueMockHitResult(START_SCROLL_ID);
   PanGesture(PanGestureInput::PANGESTURE_PAN, apzc, ScreenIntPoint(50, 50),
              ScreenPoint(15, 30), mcc->Time());
   mcc->AdvanceByMillis(5);
   apzc->AdvanceAnimations(mcc->GetSampleTime());
 
-  QueueMockHitResult(ScrollableLayerGuid::START_SCROLL_ID);
+  QueueMockHitResult(START_SCROLL_ID);
   PanGesture(PanGestureInput::PANGESTURE_PAN, apzc, ScreenIntPoint(50, 50),
              ScreenPoint(15, 30), mcc->Time());
 
@@ -327,7 +331,7 @@ TEST_F(APZCAxisLockTester, NewGestureBreaksMomentumAxisLock) {
   mcc->AdvanceByMillis(5);
   apzc->AdvanceAnimations(mcc->GetSampleTime());
 
-  QueueMockHitResult(ScrollableLayerGuid::START_SCROLL_ID);
+  QueueMockHitResult(START_SCROLL_ID);
   PanGesture(PanGestureInput::PANGESTURE_END, manager, ScreenIntPoint(50, 50),
              ScreenPoint(0, 0), mcc->Time());
   mcc->AdvanceByMillis(5);
@@ -358,7 +362,7 @@ TEST_F(APZCAxisLockTester, BreakStickyAxisLock) {
   apzc = ApzcOf(root);
 
   // Start a gesture to get us locked onto the Y axis.
-  QueueMockHitResult(ScrollableLayerGuid::START_SCROLL_ID);
+  QueueMockHitResult(START_SCROLL_ID);
   PanGesture(PanGestureInput::PANGESTURE_START, manager, ScreenIntPoint(50, 50),
              ScreenIntPoint(0, 2), mcc->Time());
   mcc->AdvanceByMillis(5);
@@ -385,14 +389,14 @@ TEST_F(APZCAxisLockTester, BreakStickyAxisLock) {
   BreakStickyAxisLockTestGesture(ScrollDirection::eHorizontal);
 
   // End the gesture.
-  QueueMockHitResult(ScrollableLayerGuid::START_SCROLL_ID);
+  QueueMockHitResult(START_SCROLL_ID);
   PanGesture(PanGestureInput::PANGESTURE_END, manager, ScreenIntPoint(50, 50),
              ScreenPoint(0, 0), mcc->Time());
   mcc->AdvanceByMillis(5);
   apzc->AdvanceAnimations(mcc->GetSampleTime());
 
   // Start a gesture to get us locked onto the X axis.
-  QueueMockHitResult(ScrollableLayerGuid::START_SCROLL_ID);
+  QueueMockHitResult(START_SCROLL_ID);
   PanGesture(PanGestureInput::PANGESTURE_START, manager, ScreenIntPoint(50, 50),
              ScreenIntPoint(2, 0), mcc->Time());
   mcc->AdvanceByMillis(5);
@@ -423,7 +427,7 @@ TEST_F(APZCAxisLockTester, BreakAxisLockByLockAngle) {
   apzc = ApzcOf(root);
 
   // Start a gesture to get us locked onto the Y axis.
-  QueueMockHitResult(ScrollableLayerGuid::START_SCROLL_ID);
+  QueueMockHitResult(START_SCROLL_ID);
   PanGesture(PanGestureInput::PANGESTURE_START, manager, ScreenIntPoint(50, 50),
              ScreenIntPoint(1, 10), mcc->Time());
   mcc->AdvanceByMillis(5);
@@ -434,7 +438,8 @@ TEST_F(APZCAxisLockTester, BreakAxisLockByLockAngle) {
 
   // Stay within 45 degrees from the X axis, and more than 22.5 degrees from
   // the Y axis. This should break the Y lock and lock us to the X axis.
-  QueueMockHitResult(ScrollableLayerGuid::START_SCROLL_ID);
+  ExpirePanGestureEventBuffer();
+  QueueMockHitResult(START_SCROLL_ID);
   PanGesture(PanGestureInput::PANGESTURE_PAN, manager, ScreenIntPoint(50, 50),
              ScreenIntPoint(12, 10), mcc->Time());
   apzc->AdvanceAnimations(mcc->GetSampleTime());
@@ -443,10 +448,57 @@ TEST_F(APZCAxisLockTester, BreakAxisLockByLockAngle) {
   apzc->AssertStateIsPanningLockedX();
 
   // End the gesture.
-  QueueMockHitResult(ScrollableLayerGuid::START_SCROLL_ID);
+  QueueMockHitResult(START_SCROLL_ID);
   PanGesture(PanGestureInput::PANGESTURE_END, manager, ScreenIntPoint(50, 50),
              ScreenPoint(0, 0), mcc->Time());
   apzc->AdvanceAnimations(mcc->GetSampleTime());
+}
+
+TEST_F(APZCAxisLockTester, BreakStickyAxisLockWithSmallPanDeltas) {
+  SCOPED_GFX_PREF_INT("apz.axis_lock.mode", 2);
+  SCOPED_GFX_PREF_FLOAT("apz.axis_lock.lock_angle", M_PI / 6.0f);
+  SCOPED_GFX_PREF_FLOAT("apz.axis_lock.breakout_angle", M_PI / 8.0f);
+  // With the default DPI of 160, this is a threshold of 5 screen pixels.
+  SCOPED_GFX_PREF_FLOAT("apz.axis_lock.breakout_threshold", 1.0f / 32.0f);
+
+  SetupBasicTest();
+
+  apzc = ApzcOf(root);
+
+  // Start a mostly horizontal gesture to get us locked onto the X axis.
+  QueueMockHitResult(START_SCROLL_ID);
+  PanGesture(PanGestureInput::PANGESTURE_START, manager, ScreenIntPoint(50, 50),
+             ScreenPoint(10, 1), mcc->Time());
+  mcc->AdvanceByMillis(5);
+  apzc->AdvanceAnimations(mcc->GetSampleTime());
+
+  apzc->AssertStateIsPanningLockedX();
+  ParentLayerPoint lockedOffset = apzc->GetCurrentAsyncScrollOffset(
+      AsyncTransformConsumer::eForEventHandling);
+  EXPECT_GT(lockedOffset.x, 0);
+  EXPECT_EQ(lockedOffset.y, 0);
+
+  // Change direction to be close to vertical, using a series of pan events
+  // whose individual deltas are below the breakout threshold, as can happen
+  // with slow trackpad movements. In aggregate, this movement should break
+  // the X axis lock.
+  for (int i = 0; i < 10; ++i) {
+    QueueMockHitResult(START_SCROLL_ID);
+    PanGesture(PanGestureInput::PANGESTURE_PAN, manager, ScreenIntPoint(50, 50),
+               ScreenPoint(1, 4), mcc->Time());
+    mcc->AdvanceByMillis(5);
+    apzc->AdvanceAnimations(mcc->GetSampleTime());
+  }
+
+  // The X axis lock should be broken and we should have scrolled vertically.
+  ParentLayerPoint currentOffset = apzc->GetCurrentAsyncScrollOffset(
+      AsyncTransformConsumer::eForEventHandling);
+  EXPECT_GT(currentOffset.y, lockedOffset.y);
+
+  QueueMockHitResult(START_SCROLL_ID);
+  PanGesture(PanGestureInput::PANGESTURE_END, manager, ScreenIntPoint(50, 50),
+             ScreenPoint(0, 0), mcc->Time());
+  apzc->AdvanceAnimationsUntilEnd();
 }
 
 TEST_F(APZCAxisLockTester, TestCanBreakBreakableAxisLock) {
@@ -459,7 +511,7 @@ TEST_F(APZCAxisLockTester, TestCanBreakBreakableAxisLock) {
   apzc = ApzcOf(root);
 
   // Start a gesture to get us locked onto the Y axis.
-  QueueMockHitResult(ScrollableLayerGuid::START_SCROLL_ID);
+  QueueMockHitResult(START_SCROLL_ID);
   PanGesture(PanGestureInput::PANGESTURE_START, manager, ScreenIntPoint(50, 50),
              ScreenIntPoint(0, 10), mcc->Time());
   mcc->AdvanceByMillis(5);
@@ -470,7 +522,7 @@ TEST_F(APZCAxisLockTester, TestCanBreakBreakableAxisLock) {
 
   // Break the Y axis in a way that would lock onto the X axis if the
   // AxisLockMode is STICKY, but should freely pan if it is BREAKABLE.
-  QueueMockHitResult(ScrollableLayerGuid::START_SCROLL_ID);
+  QueueMockHitResult(START_SCROLL_ID);
   PanGesture(PanGestureInput::PANGESTURE_PAN, manager, ScreenIntPoint(50, 50),
              ScreenIntPoint(10, 0), mcc->Time());
   apzc->AdvanceAnimations(mcc->GetSampleTime());
@@ -480,7 +532,7 @@ TEST_F(APZCAxisLockTester, TestCanBreakBreakableAxisLock) {
 
   // Do a gesture that would re-lock on the Y axis if we were STICKY.
   // Should not re-lock.
-  QueueMockHitResult(ScrollableLayerGuid::START_SCROLL_ID);
+  QueueMockHitResult(START_SCROLL_ID);
   PanGesture(PanGestureInput::PANGESTURE_PAN, manager, ScreenIntPoint(50, 50),
              ScreenIntPoint(0, -10), mcc->Time());
   apzc->AdvanceAnimations(mcc->GetSampleTime());
@@ -489,7 +541,7 @@ TEST_F(APZCAxisLockTester, TestCanBreakBreakableAxisLock) {
   apzc->AssertStateIsPanning();
 
   // End the gesture.
-  QueueMockHitResult(ScrollableLayerGuid::START_SCROLL_ID);
+  QueueMockHitResult(START_SCROLL_ID);
   PanGesture(PanGestureInput::PANGESTURE_END, manager, ScreenIntPoint(50, 50),
              ScreenPoint(0, 0), mcc->Time());
   apzc->AdvanceAnimations(mcc->GetSampleTime());
@@ -512,20 +564,20 @@ TEST_F(APZCAxisLockTester, TestDominantAxisScrolling) {
   // angles and ensure that we only pan on one axis.
   for (panX = 0, panY = 50; panY >= 0; panY -= 10, panX += 5) {
     // Gesture that should be locked onto one axis
-    QueueMockHitResult(ScrollableLayerGuid::START_SCROLL_ID);
+    QueueMockHitResult(START_SCROLL_ID);
     PanGesture(PanGestureInput::PANGESTURE_START, manager,
                ScreenIntPoint(50, 50), ScreenIntPoint(panX, panY), mcc->Time());
     mcc->AdvanceByMillis(5);
     apzc->AdvanceAnimations(mcc->GetSampleTime());
 
-    QueueMockHitResult(ScrollableLayerGuid::START_SCROLL_ID);
+    QueueMockHitResult(START_SCROLL_ID);
     PanGesture(PanGestureInput::PANGESTURE_PAN, apzc, ScreenIntPoint(50, 50),
                ScreenPoint(static_cast<float>(panX), static_cast<float>(panY)),
                mcc->Time());
     mcc->AdvanceByMillis(5);
     apzc->AdvanceAnimations(mcc->GetSampleTime());
 
-    QueueMockHitResult(ScrollableLayerGuid::START_SCROLL_ID);
+    QueueMockHitResult(START_SCROLL_ID);
     PanGesture(PanGestureInput::PANGESTURE_END, manager, ScreenIntPoint(50, 50),
                ScreenPoint(0, 0), mcc->Time());
     apzc->AdvanceAnimationsUntilEnd();
@@ -575,13 +627,13 @@ TEST_F(APZCAxisLockTester, TestScrollHandoffAxisLockConflict) {
       LayerIntRect(0, 0, 100, 100),
   };
   CreateScrollData(treeShape, layerVisibleRect);
-  SetScrollableFrameMetrics(root, ScrollableLayerGuid::START_SCROLL_ID,
-                            CSSRect(0, 0, 500, 500));
-  SetScrollableFrameMetrics(layers[1], ScrollableLayerGuid::START_SCROLL_ID + 1,
+  SetScrollableFrameMetrics(root, START_SCROLL_ID, CSSRect(0, 0, 500, 500));
+  SetScrollableFrameMetrics(layers[1], START_SCROLL_ID + 1,
                             CSSRect(0, 0, 500, 500));
   SetScrollHandoff(layers[1], root);
 
-  registration = MakeUnique<ScopedLayerTreeRegistration>(LayersId{0}, mcc);
+  registration =
+      std::make_unique<ScopedLayerTreeRegistration>(LayersId{0}, mcc);
 
   UpdateHitTestingTree();
 
@@ -589,19 +641,19 @@ TEST_F(APZCAxisLockTester, TestScrollHandoffAxisLockConflict) {
   apzc = ApzcOf(layers[1]);
 
   // Create a gesture on the y-axis that should lock the x axis.
-  QueueMockHitResult(ScrollableLayerGuid::START_SCROLL_ID + 1);
+  QueueMockHitResult(START_SCROLL_ID + 1);
   PanGesture(PanGestureInput::PANGESTURE_START, manager, ScreenIntPoint(50, 50),
              ScreenIntPoint(0, 2), mcc->Time());
   mcc->AdvanceByMillis(5);
   apzc->AdvanceAnimations(mcc->GetSampleTime());
 
-  QueueMockHitResult(ScrollableLayerGuid::START_SCROLL_ID + 1);
+  QueueMockHitResult(START_SCROLL_ID + 1);
   PanGesture(PanGestureInput::PANGESTURE_PAN, apzc, ScreenIntPoint(50, 50),
              ScreenPoint(0, 15), mcc->Time());
   mcc->AdvanceByMillis(5);
   apzc->AdvanceAnimations(mcc->GetSampleTime());
 
-  QueueMockHitResult(ScrollableLayerGuid::START_SCROLL_ID + 1);
+  QueueMockHitResult(START_SCROLL_ID + 1);
   PanGesture(PanGestureInput::PANGESTURE_END, manager, ScreenIntPoint(50, 50),
              ScreenPoint(0, 0), mcc->Time());
   mcc->AdvanceByMillis(5);
@@ -624,19 +676,19 @@ TEST_F(APZCAxisLockTester, TestScrollHandoffAxisLockConflict) {
 
   // Create a gesture on the x-axis, that should be directed
   // at the child, even if the x-axis is locked.
-  QueueMockHitResult(ScrollableLayerGuid::START_SCROLL_ID + 1);
+  QueueMockHitResult(START_SCROLL_ID + 1);
   PanGesture(PanGestureInput::PANGESTURE_START, manager, ScreenIntPoint(50, 50),
              ScreenIntPoint(2, 0), mcc->Time());
   mcc->AdvanceByMillis(5);
   apzc->AdvanceAnimations(mcc->GetSampleTime());
 
-  QueueMockHitResult(ScrollableLayerGuid::START_SCROLL_ID + 1);
+  QueueMockHitResult(START_SCROLL_ID + 1);
   PanGesture(PanGestureInput::PANGESTURE_PAN, apzc, ScreenIntPoint(50, 50),
              ScreenPoint(15, 0), mcc->Time());
   mcc->AdvanceByMillis(5);
   apzc->AdvanceAnimations(mcc->GetSampleTime());
 
-  QueueMockHitResult(ScrollableLayerGuid::START_SCROLL_ID + 1);
+  QueueMockHitResult(START_SCROLL_ID + 1);
   PanGesture(PanGestureInput::PANGESTURE_END, manager, ScreenIntPoint(50, 50),
              ScreenPoint(0, 0), mcc->Time());
   mcc->AdvanceByMillis(5);
@@ -665,16 +717,16 @@ TEST_P(APZCAxisLockCompatTester, TestPanGestureStart) {
       LayerIntRect(0, 0, 100, 100),
   };
   CreateScrollData(treeShape, layerVisibleRect);
-  SetScrollableFrameMetrics(root, ScrollableLayerGuid::START_SCROLL_ID,
-                            CSSRect(0, 0, 500, 500));
+  SetScrollableFrameMetrics(root, START_SCROLL_ID, CSSRect(0, 0, 500, 500));
 
-  registration = MakeUnique<ScopedLayerTreeRegistration>(LayersId{0}, mcc);
+  registration =
+      std::make_unique<ScopedLayerTreeRegistration>(LayersId{0}, mcc);
 
   UpdateHitTestingTree();
 
   apzc = ApzcOf(root);
 
-  QueueMockHitResult(ScrollableLayerGuid::START_SCROLL_ID);
+  QueueMockHitResult(START_SCROLL_ID);
   PanGesture(PanGestureInput::PANGESTURE_START, manager, ScreenIntPoint(50, 50),
              ScreenIntPoint(0, 10), mcc->Time());
   mcc->AdvanceByMillis(5);
@@ -684,6 +736,51 @@ TEST_P(APZCAxisLockCompatTester, TestPanGestureStart) {
 
   EXPECT_EQ(currentOffset.x, 0);
   EXPECT_EQ(currentOffset.y, 10);
+}
+
+TEST_P(APZCAxisLockCompatTester, LockUnscrollableAxis) {
+  const char* treeShape = "x";
+  LayerIntRect layerVisibleRect[] = {
+      LayerIntRect(0, 0, 100, 100),
+  };
+  CreateScrollData(treeShape, layerVisibleRect);
+  SetScrollableFrameMetrics(root, START_SCROLL_ID, CSSRect(0, 0, 100, 500));
+
+  registration =
+      std::make_unique<ScopedLayerTreeRegistration>(LayersId{0}, mcc);
+
+  UpdateHitTestingTree();
+
+  apzc = ApzcOf(root);
+
+  // Swipe left and verify that scrolling locks on the X axis even though the
+  // scroll container is not scrollable on the X axis.
+  QueueMockHitResult(START_SCROLL_ID);
+  (void)TouchDown(apzc, ScreenIntPoint(50, 50), mcc->Time());
+  mcc->AdvanceByMillis(50);
+
+  (void)TouchMove(apzc, ScreenIntPoint(60, 50), mcc->Time());
+  mcc->AdvanceByMillis(400);
+
+  (void)TouchMove(apzc, ScreenIntPoint(70, 50), mcc->Time());
+  mcc->AdvanceByMillis(400);
+
+  apzc->AssertStateIsPanningLockedX();
+
+  ParentLayerPoint lastOffset = apzc->GetCurrentAsyncScrollOffset(
+      AsyncTransformConsumer::eForEventHandling);
+
+  // Keep swiping left but with a small downward delta.
+  (void)TouchMove(apzc, ScreenIntPoint(80, 60), mcc->Time());
+  mcc->AdvanceByMillis(200);
+
+  ParentLayerPoint currentOffset = apzc->GetCurrentAsyncScrollOffset(
+      AsyncTransformConsumer::eForEventHandling);
+  // The scroll position should be unchanged.
+  EXPECT_EQ(currentOffset.y, lastOffset.y);
+  EXPECT_EQ(currentOffset.x, lastOffset.x);
+
+  (void)TouchUp(apzc, ScreenIntPoint(50, 70), mcc->Time());
 }
 
 #ifdef MOZ_WIDGET_ANDROID
@@ -705,14 +802,14 @@ TEST_F(APZCAxisLockTester, TouchScrollWithStickyAxisLocking) {
 
   // Trigger a touch scroll that will cause us to lock onto the
   // y-axis.
-  QueueMockHitResult(ScrollableLayerGuid::START_SCROLL_ID);
-  Unused << TouchDown(apzc, ScreenIntPoint(50, 50), mcc->Time());
+  QueueMockHitResult(START_SCROLL_ID);
+  (void)TouchDown(apzc, ScreenIntPoint(50, 50), mcc->Time());
   mcc->AdvanceByMillis(50);
 
-  Unused << TouchMove(apzc, ScreenIntPoint(50, 60), mcc->Time());
+  (void)TouchMove(apzc, ScreenIntPoint(50, 60), mcc->Time());
   mcc->AdvanceByMillis(400);
 
-  Unused << TouchMove(apzc, ScreenIntPoint(50, 70), mcc->Time());
+  (void)TouchMove(apzc, ScreenIntPoint(50, 70), mcc->Time());
   mcc->AdvanceByMillis(400);
 
   apzc->AssertStateIsPanningLockedY();
@@ -723,7 +820,7 @@ TEST_F(APZCAxisLockTester, TouchScrollWithStickyAxisLocking) {
 
   // A touch scroll in the reverse direction with slight movement
   // on the x-axis should not cause us to break the y-axis lock.
-  Unused << TouchMove(apzc, ScreenIntPoint(55, 60), mcc->Time());
+  (void)TouchMove(apzc, ScreenIntPoint(55, 60), mcc->Time());
   mcc->AdvanceByMillis(200);
 
   // We should have scrolled only on the y-axis.
@@ -734,7 +831,7 @@ TEST_F(APZCAxisLockTester, TouchScrollWithStickyAxisLocking) {
   lastOffset = currentOffset;
   apzc->AssertStateIsPanningLockedY();
 
-  Unused << TouchMove(apzc, ScreenIntPoint(60, 50), mcc->Time());
+  (void)TouchMove(apzc, ScreenIntPoint(60, 50), mcc->Time());
   mcc->AdvanceByMillis(200);
 
   // We should continue to scroll only on the y-axis.
@@ -745,7 +842,7 @@ TEST_F(APZCAxisLockTester, TouchScrollWithStickyAxisLocking) {
   apzc->AssertStateIsPanningLockedY();
   lastOffset = currentOffset;
 
-  Unused << TouchMove(apzc, ScreenIntPoint(60, 40), mcc->Time());
+  (void)TouchMove(apzc, ScreenIntPoint(60, 40), mcc->Time());
   mcc->AdvanceByMillis(200);
 
   currentOffset = apzc->GetCurrentAsyncScrollOffset(
@@ -755,7 +852,7 @@ TEST_F(APZCAxisLockTester, TouchScrollWithStickyAxisLocking) {
   apzc->AssertStateIsPanningLockedY();
   lastOffset = currentOffset;
 
-  Unused << TouchUp(apzc, ScreenIntPoint(65, 40), mcc->Time());
+  (void)TouchUp(apzc, ScreenIntPoint(65, 40), mcc->Time());
 }
 #endif
 
@@ -777,14 +874,14 @@ TEST_F(APZCAxisLockTester, TouchScrollWithStickyAxisLockingBug1915260) {
 
   // Trigger a touch scroll that will cause us to lock onto the
   // y-axis.
-  QueueMockHitResult(ScrollableLayerGuid::START_SCROLL_ID);
-  Unused << TouchDown(apzc, ScreenIntPoint(50, 50), mcc->Time());
+  QueueMockHitResult(START_SCROLL_ID);
+  (void)TouchDown(apzc, ScreenIntPoint(50, 50), mcc->Time());
   mcc->AdvanceByMillis(10);
 
-  Unused << TouchMove(apzc, ScreenIntPoint(50, 60), mcc->Time());
+  (void)TouchMove(apzc, ScreenIntPoint(50, 60), mcc->Time());
   mcc->AdvanceByMillis(200);
 
-  Unused << TouchMove(apzc, ScreenIntPoint(50, 70), mcc->Time());
+  (void)TouchMove(apzc, ScreenIntPoint(50, 70), mcc->Time());
   mcc->AdvanceByMillis(200);
 
   // We should be locked on the y-axis at this point.
@@ -795,13 +892,13 @@ TEST_F(APZCAxisLockTester, TouchScrollWithStickyAxisLockingBug1915260) {
   // touch-move event will exceed the breakout threshold and will
   // be considered to be a horizontal scroll, thus breaking the
   // lock onto the y-axis.
-  Unused << TouchMove(apzc, ScreenIntPoint(60, 60), mcc->Time());
+  (void)TouchMove(apzc, ScreenIntPoint(60, 60), mcc->Time());
   mcc->AdvanceByMillis(100);
   // TODO(bug 1915260): We should still be be locked on the y-axis at this
   // point.
   // apzc->AssertStateIsPanningLockedY();
 
-  Unused << TouchUp(apzc, ScreenIntPoint(65, 45), mcc->Time());
+  (void)TouchUp(apzc, ScreenIntPoint(65, 45), mcc->Time());
 }
 #endif
 

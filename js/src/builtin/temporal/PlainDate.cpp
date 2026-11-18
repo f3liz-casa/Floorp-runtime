@@ -1,6 +1,4 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- * vim: set ts=8 sts=2 et sw=2 tw=80:
- * This Source Code Form is subject to the terms of the Mozilla Public
+/* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
@@ -8,20 +6,18 @@
 
 #include "mozilla/Assertions.h"
 #include "mozilla/CheckedInt.h"
-#include "mozilla/EnumSet.h"
 
 #include <cmath>
 #include <cstdlib>
 #include <stdint.h>
-#include <utility>
 
-#include "jsdate.h"
-#include "jsnum.h"
 #include "jspubtd.h"
 #include "jstypes.h"
 #include "NamespaceImports.h"
 
+#include "builtin/Date.h"
 #include "builtin/intl/DateTimeFormat.h"
+#include "builtin/Number.h"
 #include "builtin/temporal/Calendar.h"
 #include "builtin/temporal/CalendarFields.h"
 #include "builtin/temporal/Duration.h"
@@ -215,11 +211,12 @@ static PlainDateObject* CreateTemporalDate(JSContext* cx, const CallArgs& args,
 
   // Step 4.
   auto packedDate = PackedDate::pack(isoDate);
-  object->setFixedSlot(PlainDateObject::PACKED_DATE_SLOT,
-                       PrivateUint32Value(packedDate.value));
+  object->initFixedSlotTyped(PlainDateObject::PACKED_DATE_SLOT,
+                             PrivateUint32Value(packedDate.value));
 
   // Step 5.
-  object->setFixedSlot(PlainDateObject::CALENDAR_SLOT, calendar.toSlotValue());
+  object->initFixedSlotTyped(PlainDateObject::CALENDAR_SLOT,
+                             calendar.toSlotValue());
 
   // Step 6.
   return object;
@@ -247,11 +244,12 @@ PlainDateObject* js::temporal::CreateTemporalDate(
 
   // Step 4.
   auto packedDate = PackedDate::pack(isoDate);
-  object->setFixedSlot(PlainDateObject::PACKED_DATE_SLOT,
-                       PrivateUint32Value(packedDate.value));
+  object->initFixedSlotTyped(PlainDateObject::PACKED_DATE_SLOT,
+                             PrivateUint32Value(packedDate.value));
 
   // Step 5.
-  object->setFixedSlot(PlainDateObject::CALENDAR_SLOT, calendar.toSlotValue());
+  object->initFixedSlotTyped(PlainDateObject::CALENDAR_SLOT,
+                             calendar.toSlotValue());
 
   // Step 6.
   return object;
@@ -345,21 +343,16 @@ static bool ToTemporalDate(JSContext* cx, Handle<JSObject*> item,
   }
 
   // Step 2.b.
-  if (auto* zonedDateTime = item->maybeUnwrapIf<ZonedDateTimeObject>()) {
-    auto epochNs = zonedDateTime->epochNanoseconds();
-    Rooted<TimeZoneValue> timeZone(cx, zonedDateTime->timeZone());
-    Rooted<CalendarValue> calendar(cx, zonedDateTime->calendar());
+  if (auto* zdtObj = item->maybeUnwrapIf<ZonedDateTimeObject>()) {
+    Rooted<ZonedDateTime> zonedDateTime(cx, ZonedDateTime{zdtObj});
 
-    if (!timeZone.wrap(cx)) {
-      return false;
-    }
-    if (!calendar.wrap(cx)) {
+    if (!zonedDateTime.wrap(cx)) {
       return false;
     }
 
-    // Steps 2.b.ii.
+    // Step 2.b.i.
     ISODateTime isoDateTime;
-    if (!GetISODateTimeFor(cx, timeZone, epochNs, &isoDateTime)) {
+    if (!GetISODateTimeFor(cx, zonedDateTime, &isoDateTime)) {
       return false;
     }
 
@@ -370,7 +363,7 @@ static bool ToTemporalDate(JSContext* cx, Handle<JSObject*> item,
     }
 
     // Step 2.b.iv.
-    result.set(PlainDate{isoDateTime.date, calendar});
+    result.set(PlainDate{isoDateTime.date, zonedDateTime.calendar()});
     return true;
   }
 
@@ -645,16 +638,19 @@ static bool DifferenceTemporalPlainDate(JSContext* cx,
     auto isoDateTime = ISODateTime{temporalDate.date(), {}};
 
     // Step 8.b.
-    auto isoDateTimeOther = ISODateTime{other.date(), {}};
+    auto originEpochNs = GetUTCEpochNanoseconds(isoDateTime);
 
     // Step 8.c.
-    auto destEpochNs = GetUTCEpochNanoseconds(isoDateTimeOther);
+    auto isoDateTimeOther = ISODateTime{other.date(), {}};
 
     // Step 8.d.
+    auto destEpochNs = GetUTCEpochNanoseconds(isoDateTimeOther);
+
+    // Step 8.e.
     Rooted<TimeZoneValue> timeZone(cx, TimeZoneValue{});
-    if (!RoundRelativeDuration(cx, duration, destEpochNs, isoDateTime, timeZone,
-                               temporalDate.calendar(), settings.largestUnit,
-                               settings.roundingIncrement,
+    if (!RoundRelativeDuration(cx, duration, originEpochNs, destEpochNs,
+                               isoDateTime, timeZone, temporalDate.calendar(),
+                               settings.largestUnit, settings.roundingIncrement,
                                settings.smallestUnit, settings.roundingMode,
                                &duration)) {
       return false;

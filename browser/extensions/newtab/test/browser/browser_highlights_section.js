@@ -1,13 +1,46 @@
 "use strict";
 
+const { PREFS_CONFIG } = ChromeUtils.importESModule(
+  "resource://newtab/lib/ActivityStream.sys.mjs"
+);
+
 add_setup(async function () {
+  let sandbox = sinon.createSandbox();
+
+  sandbox
+    .stub(DiscoveryStreamFeed.prototype, "generateFeedUrl")
+    .returns(
+      "https://example.com/browser/browser/extensions/newtab/test/browser/topstories.json"
+    );
+
   await SpecialPowers.pushPrefEnv({
-    set: [["test.wait300msAfterTabSwitch", true]],
+    set: [
+      [
+        "browser.newtabpage.activity-stream.discoverystream.config",
+        PREFS_CONFIG.get("discoverystream.config").getValue({
+          geo: "US",
+          locale: "en-US",
+        }),
+      ],
+      [
+        "browser.newtabpage.activity-stream.discoverystream.endpoints",
+        "https://example.com",
+      ],
+    ],
+  });
+
+  registerCleanupFunction(async () => {
+    // This seems silly, since the mochitest harness will pop the pref off
+    // automatically, but this seems to help avoid a "waiting for vsync to be
+    // disabled" issue.
+    await SpecialPowers.popPrefEnv();
+    sandbox.restore();
   });
 });
 
 /**
  * Helper for setup and cleanup of Highlights section tests.
+ *
  * @param bookmarkCount Number of bookmark higlights to add
  * @param test The test case
  */
@@ -45,11 +78,6 @@ test_highlights(
     is(found, 2, "there should be 2 highlights cards");
 
     found = content.document.querySelectorAll(
-      "[data-section-id='highlights'] .section-list .placeholder"
-    ).length;
-    is(found, 2, "there should be 1 row * 4 - 2 = 2 highlights placeholder");
-
-    found = content.document.querySelectorAll(
       "[data-section-id='highlights'] .card-context-icon.icon-bookmark-added"
     ).length;
     is(found, 2, "there should be 2 bookmark icons");
@@ -58,45 +86,49 @@ test_highlights(
 
 test_highlights(
   1, // Number of highlights cards
-  function check_highlights_context_menu() {
-    const menuButton = content.document.querySelector(
-      "[data-section-id='highlights'] .card-outer .context-menu-button"
+  async function check_highlights_context_menu() {
+    const card = content.document.querySelector(
+      "[data-section-id='highlights'] .card-outer"
     );
-    // Open the menu.
-    menuButton.click();
-    const found = content.document.querySelector(
-      "[data-section-id='highlights'] .card-outer .context-menu"
+    card.querySelector("moz-button").click();
+    await ContentTaskUtils.waitForCondition(
+      () => card.querySelector("panel-list")?.hasAttribute("open"),
+      "Should open the context menu"
     );
-    ok(found && !found.hidden, "Should find a visible context menu");
+    await ContentTaskUtils.waitForCondition(
+      () => card.classList.contains("active"),
+      "Card is active while menu is open"
+    );
   }
 );
 
 test_highlights(
   1, // Number of highlights cards
   async function check_highlights_context_menu() {
-    const menuButton = content.document.querySelector(
-      "[data-section-id='highlights'] .card-outer .context-menu-button"
-    );
-    // Open the menu.
-    menuButton.click();
-    const contextMenu = content.document.querySelector(
-      "[data-section-id='highlights'] .card-outer .context-menu"
-    );
-    ok(
-      contextMenu && !contextMenu.hidden,
-      "Should find a visible context menu"
+    // Removing the bookmark leaves the highlight on the page as a history
+    // item, so what goes away is the bookmark icon rather than the card.
+    const bookmarkIconSelector =
+      "[data-section-id='highlights'] .card-outer .card-context-icon.icon-bookmark-added";
+    await ContentTaskUtils.waitForCondition(
+      () => content.document.querySelector(bookmarkIconSelector),
+      "The highlight is a bookmark card to begin with"
     );
 
-    const removeBookmarkBtn = contextMenu.querySelector(
-      "[data-section-id='highlights'] button"
+    const card = content.document.querySelector(
+      "[data-section-id='highlights'] .card-outer"
     );
-    removeBookmarkBtn.click();
+    card.querySelector("moz-button").click();
+    const panelList = card.querySelector("panel-list");
+    await ContentTaskUtils.waitForCondition(
+      () => panelList.hasAttribute("open"),
+      "Should open the context menu"
+    );
+
+    // The first item of a bookmark highlight's menu removes the bookmark.
+    panelList.querySelector("panel-item").click();
 
     await ContentTaskUtils.waitForCondition(
-      () =>
-        content.document.querySelectorAll(
-          "[data-section-id='highlights'] .card-outer:not(.placeholder)"
-        ),
+      () => !content.document.querySelector(bookmarkIconSelector),
       "no more bookmark cards should be visible"
     );
   }

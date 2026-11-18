@@ -14,6 +14,7 @@ use serde_json::Value;
 
 use glean::net::{CapablePingUploadRequest, UploadResult};
 use glean::private::*;
+use glean::AttributionMetrics;
 use glean::{
     traits, ClientInfoMetrics, CommonMetricData, ConfigurationBuilder, HistogramType, MemoryUnit,
     TimeUnit,
@@ -83,6 +84,7 @@ fn validate_against_schema() {
         app_display_version: env!("CARGO_PKG_VERSION").to_string(),
         channel: Some("testing".to_string()),
         locale: Some("xx-XX".to_string()),
+        os_version: None,
     };
 
     glean::initialize(cfg, client_info);
@@ -172,6 +174,29 @@ fn validate_against_schema() {
 
     let text_metric = TextMetric::new(common("text"));
     text_metric.set("loooooong text".repeat(100));
+
+    // string JUST outside the limits, forcing this to record an error.
+    let term = "a".repeat(255) + "b";
+    glean::update_attribution(AttributionMetrics {
+        source: Some("rlb-tests".into()),
+        medium: Some("cargo-test".into()),
+        campaign: Some("testing".into()),
+        term: Some(term),
+        content: None,
+    });
+
+    // Populate every field so `ping_info.server_knobs_config` is validated too.
+    // Field coverage is checked in `glean-core/tests/metrics_sync.rs`.
+    glean::glean_apply_server_knobs_config(
+        serde_json::json!({
+            "metrics_enabled": { "test.counter": true },
+            "pings_enabled": { PING_NAME: true },
+            "event_threshold": 500,
+            "session_sample_rate": 1.0,
+            "events_ping_acceleration_factor": 5,
+        })
+        .to_string(),
+    );
 
     // Define a new ping and submit it.
     let custom_ping = PingBuilder::new(PING_NAME).with_send_if_empty(true).build();

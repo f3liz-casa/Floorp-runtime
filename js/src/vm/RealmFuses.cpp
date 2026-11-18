@@ -1,6 +1,4 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- * vim: set ts=8 sts=2 et sw=2 tw=80:
- * This Source Code Form is subject to the terms of the Mozilla Public
+/* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 #include "vm/RealmFuses.h"
@@ -12,6 +10,7 @@
 #include "builtin/RegExp.h"
 #include "builtin/WeakMapObject.h"
 #include "builtin/WeakSetObject.h"
+#include "debugger/DebugScript.h"
 #include "js/experimental/TypedData.h"
 #include "vm/GlobalObject.h"
 #include "vm/NativeObject.h"
@@ -20,10 +19,16 @@
 #include "vm/SelfHosting.h"
 
 #include "vm/JSObject-inl.h"
+#include "vm/NativeObject-inl.h"
 
 using namespace js;
 
 void js::InvalidatingRealmFuse::popFuse(JSContext* cx, RealmFuses& realmFuses) {
+  // Return early if the fuse is already popped.
+  if (!intact()) {
+    return;
+  }
+
   InvalidatingFuse::popFuse(cx);
 
   for (auto& fd : realmFuses.fuseDependencies) {
@@ -108,10 +113,29 @@ bool js::OptimizeGetIteratorFuse::checkInvariant(JSContext* cx) {
 
 void js::OptimizeGetIteratorFuse::popFuse(JSContext* cx,
                                           RealmFuses& realmFuses) {
-  InvalidatingRealmFuse::popFuse(cx, realmFuses);
+  RealmFuse::popFuse(cx, realmFuses);
+  realmFuses.optimizeGetIteratorBytecodeFuse.popFuse(cx, realmFuses);
   MOZ_ASSERT(cx->global());
   cx->runtime()->setUseCounter(cx->global(),
                                JSUseCounter::OPTIMIZE_GET_ITERATOR_FUSE);
+}
+
+bool js::OptimizeGetIteratorBytecodeFuse::checkInvariant(JSContext* cx) {
+  auto& realmFuses = cx->realm()->realmFuses;
+  if (!realmFuses.optimizeGetIteratorFuse.intact()) {
+    return false;
+  }
+  // If there's a DebugScript for a script in this realm, this fuse should have
+  // been popped.
+  if (DebugScriptMap* map = cx->zone()->debugScriptMap) {
+    for (auto iter = map->iter(); !iter.done(); iter.next()) {
+      JSScript* script = iter.get().key();
+      if (script->realm() == cx->realm()) {
+        return false;
+      }
+    }
+  }
+  return true;
 }
 
 bool js::OptimizeArrayIteratorPrototypeFuse::checkInvariant(JSContext* cx) {
@@ -391,7 +415,7 @@ bool js::OptimizeTypedArraySpeciesFuse::checkInvariant(JSContext* cx) {
 #undef PROTO_KEY
   };
 
-  auto* typedArrayproto =
+  auto* typedArrayProto =
       cx->global()->maybeGetPrototype<NativeObject>(JSProto_TypedArray);
 
   // Check all concrete TypedArray prototypes.
@@ -402,12 +426,12 @@ bool js::OptimizeTypedArraySpeciesFuse::checkInvariant(JSContext* cx) {
       // No proto, invariant still holds
       continue;
     }
-    MOZ_ASSERT(typedArrayproto,
+    MOZ_ASSERT(typedArrayProto,
                "%TypedArray%.prototype must be initialized when TypedArray "
                "subclass is initialized");
 
     // Ensure the prototype's prototype is %TypedArray%.prototype.
-    if (proto->staticPrototype() != typedArrayproto) {
+    if (proto->staticPrototype() != typedArrayProto) {
       return false;
     }
 
@@ -417,6 +441,34 @@ bool js::OptimizeTypedArraySpeciesFuse::checkInvariant(JSContext* cx) {
     // Ensure the prototype's `constructor` slot is the original constructor.
     if (!ObjectHasDataPropertyValue(proto, NameToId(cx->names().constructor),
                                     ObjectValue(*ctor))) {
+      return false;
+    }
+  }
+
+  auto* typedArrayCtor =
+      cx->global()->maybeGetConstructor<NativeObject>(JSProto_TypedArray);
+
+  // Check all concrete TypedArray constructors.
+  for (auto protoKey : typedArrayProtoKeys) {
+    // Constructor must be initialized.
+    NativeObject* ctor =
+        cx->global()->maybeGetConstructor<NativeObject>(protoKey);
+    if (!ctor) {
+      // No ctor, invariant still holds
+      continue;
+    }
+    MOZ_ASSERT(typedArrayCtor,
+               "%TypedArray% must be initialized when TypedArray subclass is "
+               "initialized");
+
+    // Ensure the constructor's prototype is %TypedArray%.
+    if (ctor->staticPrototype() != typedArrayCtor) {
+      return false;
+    }
+
+    // Ensure the constructor has no own @@species property.
+    auto speciesKey = PropertyKey::Symbol(cx->wellKnownSymbols().species);
+    if (ctor->lookupPure(speciesKey).isSome()) {
       return false;
     }
   }
@@ -549,35 +601,6 @@ bool js::OptimizeRegExpPrototypeFuse::checkInvariant(JSContext* cx) {
   return true;
 }
 
-bool js::OptimizeStringPrototypeSymbolsFuse::checkInvariant(JSContext* cx) {
-  auto* stringProto =
-      cx->global()->maybeGetPrototype<NativeObject>(JSProto_String);
-  if (!stringProto) {
-    // No proto, invariant still holds.
-    return true;
-  }
-
-  // String.prototype must have Object.prototype as proto.
-  auto* objectProto = &cx->global()->getObjectPrototype().as<NativeObject>();
-  if (stringProto->staticPrototype() != objectProto) {
-    return false;
-  }
-
-  // The objects must not have a @@match, @@replace, @@search, @@split property.
-  auto hasSymbolProp = [&](JS::Symbol* symbol) {
-    PropertyKey key = PropertyKey::Symbol(symbol);
-    return stringProto->containsPure(key) || objectProto->containsPure(key);
-  };
-  if (hasSymbolProp(cx->wellKnownSymbols().match) ||
-      hasSymbolProp(cx->wellKnownSymbols().replace) ||
-      hasSymbolProp(cx->wellKnownSymbols().search) ||
-      hasSymbolProp(cx->wellKnownSymbols().split)) {
-    return false;
-  }
-
-  return true;
-}
-
 bool js::OptimizeMapObjectIteratorFuse::checkInvariant(JSContext* cx) {
   // Ensure Map.prototype's @@iterator slot is unchanged.
   auto* proto = cx->global()->maybeGetPrototype<NativeObject>(JSProto_Map);
@@ -666,4 +689,76 @@ bool js::OptimizeWeakSetPrototypeAddFuse::checkInvariant(JSContext* cx) {
   }
   return ObjectHasDataPropertyFunction(proto, NameToId(cx->names().add),
                                        WeakSetObject::add);
+}
+
+static bool ProtoHasNoIndexedProps(NativeObject* proto) {
+  return proto->getDenseInitializedLength() == 0 &&
+         proto->getDenseCapacity() == 0 && !proto->isIndexed();
+}
+
+bool js::ObjectProtoHasNoIndexedPropsFuse::checkInvariant(JSContext* cx) {
+  auto* objectProto = &cx->global()->getObjectPrototype().as<NativeObject>();
+  MOZ_ASSERT(objectProto->staticPrototype() == nullptr,
+             "Object.prototype has an immutable null [[Prototype]]");
+  return ProtoHasNoIndexedProps(objectProto);
+}
+
+void js::ObjectProtoHasNoIndexedPropsFuse::popFuse(JSContext* cx,
+                                                   RealmFuses& realmFuses) {
+  InvalidatingRealmFuse::popFuse(cx, realmFuses);
+  realmFuses.arrayProtoHasNoIndexedPropsFuse.popFuse(cx, realmFuses);
+  realmFuses.stringProtoHasNoIndexedPropsFuse.popFuse(cx, realmFuses);
+}
+
+bool js::ArrayProtoHasNoIndexedPropsFuse::checkInvariant(JSContext* cx) {
+  NativeObject* arrayProto = cx->global()->maybeGetArrayPrototype();
+  if (!arrayProto) {
+    return true;
+  }
+  auto* objectProto = &cx->global()->getObjectPrototype().as<NativeObject>();
+  return ProtoHasNoIndexedProps(arrayProto) &&
+         arrayProto->staticPrototype() == objectProto &&
+         cx->realm()->realmFuses.objectProtoHasNoIndexedPropsFuse.intact();
+}
+
+bool js::StringProtoHasNoIndexedPropsFuse::checkInvariant(JSContext* cx) {
+  auto* stringProto =
+      cx->global()->maybeGetPrototype<NativeObject>(JSProto_String);
+  if (!stringProto) {
+    return true;
+  }
+  auto* objectProto = &cx->global()->getObjectPrototype().as<NativeObject>();
+  return ProtoHasNoIndexedProps(stringProto) &&
+         stringProto->staticPrototype() == objectProto &&
+         cx->realm()->realmFuses.objectProtoHasNoIndexedPropsFuse.intact();
+}
+
+mozilla::Maybe<RealmFuses::FuseIndex> js::MaybeGetHasNoIndexedPropsFuseIndex(
+    GlobalObject* global, JSObject* proto) {
+  if (!proto) {
+    return mozilla::Nothing();
+  }
+  if (proto == global->maybeGetPrototype(JSProto_Object)) {
+    return mozilla::Some(
+        RealmFuses::FuseIndex::ObjectProtoHasNoIndexedPropsFuse);
+  }
+  if (proto == global->maybeGetArrayPrototype()) {
+    return mozilla::Some(
+        RealmFuses::FuseIndex::ArrayProtoHasNoIndexedPropsFuse);
+  }
+  if (proto == global->maybeGetPrototype(JSProto_String)) {
+    return mozilla::Some(
+        RealmFuses::FuseIndex::StringProtoHasNoIndexedPropsFuse);
+  }
+  return mozilla::Nothing();
+}
+
+InvalidatingRealmFuse* js::MaybeGetHasNoIndexedPropsFuse(NativeObject* proto) {
+  auto index = MaybeGetHasNoIndexedPropsFuseIndex(&proto->global(), proto);
+  if (index.isNothing()) {
+    return nullptr;
+  }
+  MOZ_ASSERT(RealmFuses::isInvalidatingFuse(*index));
+  GuardFuse* fuse = proto->realm()->realmFuses.getFuseByIndex(*index);
+  return static_cast<InvalidatingRealmFuse*>(fuse);
 }

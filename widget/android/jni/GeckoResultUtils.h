@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -36,7 +34,8 @@ class GeckoResultCallback final
           ArgType converted = Java2Native<ArgType>(aParam);
           inner(std::move(converted));
         };
-    auto native = MakeUnique<GeckoResultCallback>(std::move(outerCallback));
+    auto native =
+        std::make_unique<GeckoResultCallback>(std::move(outerCallback));
     Base::AttachNative(java, std::move(native));
     return java;
   }
@@ -44,7 +43,7 @@ class GeckoResultCallback final
   static java::GeckoResult::GeckoCallback::LocalRef CreateAndAttach(
       OuterCallback&& aCallback) {
     auto java = java::GeckoResult::GeckoCallback::New();
-    auto native = MakeUnique<GeckoResultCallback>(std::move(aCallback));
+    auto native = std::make_unique<GeckoResultCallback>(std::move(aCallback));
     Base::AttachNative(java, std::move(native));
     return java;
   }

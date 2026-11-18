@@ -1,19 +1,17 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim:set ts=4 sw=2 sts=2 et cin: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "DNSUtils.h"
 
+#include "TRRLoadInfo.h"
+#include "TRRServiceChannel.h"
+#include "mozilla/SyncRunnable.h"
 #include "nsContentUtils.h"
 #include "nsHttpHandler.h"
 #include "nsIHttpChannel.h"
 #include "nsIHttpChannelInternal.h"
 #include "nsIIOService.h"
-#include "mozilla/SyncRunnable.h"
-#include "TRRServiceChannel.h"
-#include "TRRLoadInfo.h"
 
 namespace mozilla {
 namespace net {
@@ -36,7 +34,7 @@ static void InitHttpHandler() {
 nsresult DNSUtils::CreateChannelHelper(nsIURI* aUri, nsIChannel** aResult) {
   *aResult = nullptr;
 
-  if (NS_IsMainThread() && !XRE_IsSocketProcess()) {
+  if (NS_IsMainThread()) {
     nsresult rv;
     nsCOMPtr<nsIIOService> ios(do_GetIOService(&rv));
     NS_ENSURE_SUCCESS(rv, rv);

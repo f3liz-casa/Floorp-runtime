@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -16,7 +14,6 @@
 #include "mozilla/StaticPrefs_layout.h"
 #include "nsCSSFrameConstructor.h"
 #include "nsFrameManager.h"
-#include "nsGkAtoms.h"
 #include "nsIContent.h"
 #include "nsLayoutUtils.h"
 #include "nsLineLayout.h"
@@ -30,14 +27,12 @@ using namespace mozilla::layout;
 
 nsFirstLetterFrame* NS_NewFirstLetterFrame(PresShell* aPresShell,
                                            ComputedStyle* aStyle) {
-  return new (aPresShell)
-      nsFirstLetterFrame(aStyle, aPresShell->GetPresContext());
+  return new nsFirstLetterFrame(aStyle, aPresShell->GetPresContext());
 }
 
 nsFirstLetterFrame* NS_NewFloatingFirstLetterFrame(PresShell* aPresShell,
                                                    ComputedStyle* aStyle) {
-  return new (aPresShell)
-      nsFloatingFirstLetterFrame(aStyle, aPresShell->GetPresContext());
+  return new nsFloatingFirstLetterFrame(aStyle, aPresShell->GetPresContext());
 }
 
 NS_IMPL_FRAMEARENA_HELPERS(nsFirstLetterFrame)
@@ -70,7 +65,7 @@ void nsFirstLetterFrame::Init(nsIContent* aContent, nsContainerFrame* aParent,
     // that represents everything *except* the first letter, so just create
     // a ComputedStyle that inherits from our style parent, with no extra rules.
     nsIFrame* styleParent =
-        CorrectStyleParentFrame(aParent, PseudoStyleType::firstLetter);
+        CorrectStyleParentFrame(aParent, PseudoStyleType::FirstLetter);
     ComputedStyle* parentComputedStyle = styleParent->Style();
     newSC = PresContext()->StyleSet()->ResolveStyleForFirstLetterContinuation(
         parentComputedStyle);
@@ -131,17 +126,17 @@ nscoord nsFirstLetterFrame::IntrinsicISize(const IntrinsicSizeInput& aInput,
 
 /* virtual */
 nsIFrame::SizeComputationResult nsFirstLetterFrame::ComputeSize(
-    gfxContext* aRenderingContext, WritingMode aWM, const LogicalSize& aCBSize,
-    nscoord aAvailableISize, const LogicalSize& aMargin,
-    const LogicalSize& aBorderPadding, const StyleSizeOverrides& aSizeOverrides,
-    ComputeSizeFlags aFlags) {
+    const SizeComputationInput& aSizingInput, WritingMode aWM,
+    const LogicalSize& aCBSize, nscoord aAvailableISize,
+    const LogicalSize& aMargin, const LogicalSize& aBorderPadding,
+    const StyleSizeOverrides& aSizeOverrides, ComputeSizeFlags aFlags) {
   if (GetPrevInFlow()) {
     // We're wrapping the text *after* the first letter, so behave like an
     // inline frame.
     return {LogicalSize(aWM, NS_UNCONSTRAINEDSIZE, NS_UNCONSTRAINEDSIZE),
             AspectRatioUsage::None};
   }
-  return nsContainerFrame::ComputeSize(aRenderingContext, aWM, aCBSize,
+  return nsContainerFrame::ComputeSize(aSizingInput, aWM, aCBSize,
                                        aAvailableISize, aMargin, aBorderPadding,
                                        aSizeOverrides, aFlags);
 }
@@ -163,26 +158,36 @@ bool nsFirstLetterFrame::UseTightBounds() const {
   // webkit/blink-style behavior:
   // If line-height is less than font-size, or there is a negative block-start
   // or -end margin, use webkit/blink behavior.
+  // Currently, we only check for margins with negative *length* values;
+  // negative percentages seem unlikely to be used/useful in this context.
+  const auto wm = GetWritingMode();
+  const auto* styleMargin = StyleMargin();
+  const auto anchorResolutionParams = AnchorPosResolutionParams::From(this);
+  const auto bStart =
+      styleMargin->GetMargin(LogicalSide::BStart, wm, anchorResolutionParams);
+  const auto bEnd =
+      styleMargin->GetMargin(LogicalSide::BEnd, wm, anchorResolutionParams);
+  const bool negativeBStart =
+      bStart->ConvertsToLength() && bStart->ToLength() < 0;
+  const bool negativeBEnd = bEnd->ConvertsToLength() && bEnd->ToLength() < 0;
+  // Some pages special-case Gecko by compensating a negative block-end margin
+  // with an equivalent block-start margin, so keep the legacy behavior there.
+  if (negativeBEnd && bStart->ConvertsToLength() &&
+      bStart->ToLength() == -bEnd->ToLength()) {
+    return true;
+  }
+
+  if (negativeBStart || negativeBEnd) {
+    return false;
+  }
+
   if (nsTextFrame* textFrame = do_QueryFrame(mFrames.FirstChild())) {
     RefPtr<nsFontMetrics> fm = textFrame->InflatedFontMetrics();
     if (textFrame->ComputeLineHeight() < fm->EmHeight()) {
       return false;
     }
   }
-
-  const auto wm = GetWritingMode();
-  const auto* styleMargin = StyleMargin();
-  const auto anchorResolutionParams = AnchorPosResolutionParams::From(this);
-  const auto bStart =
-      styleMargin->GetMargin(LogicalSide::BStart, wm, anchorResolutionParams);
-  // Currently, we only check for margins with negative *length* values;
-  // negative percentages seem unlikely to be used/useful in this context.
-  if (bStart->ConvertsToLength() && bStart->ToLength() < 0) {
-    return false;
-  }
-  const auto bEnd =
-      styleMargin->GetMargin(LogicalSide::BEnd, wm, anchorResolutionParams);
-  return !(bEnd->ConvertsToLength() && bEnd->ToLength() < 0);
+  return true;
 }
 
 void nsFirstLetterFrame::Reflow(nsPresContext* aPresContext,
@@ -281,7 +286,7 @@ void nsFirstLetterFrame::Reflow(nsPresContext* aPresContext,
     bool pushedFrame;
 
     ll->SetInFirstLetter(Style()->GetPseudoType() ==
-                         PseudoStyleType::firstLetter);
+                         PseudoStyleType::FirstLetter);
     ll->BeginSpan(this, &aReflowInput, bp.IStart(wm), availSize.ISize(wm),
                   &mBaseline);
     ll->ReflowFrame(kid, aReflowStatus, &kidMetrics, pushedFrame);
@@ -433,21 +438,15 @@ void nsFirstLetterFrame::DrainOverflowFrames(nsPresContext* aPresContext) {
   // Check for an overflow list with our prev-in-flow
   nsFirstLetterFrame* prevInFlow = (nsFirstLetterFrame*)GetPrevInFlow();
   if (prevInFlow) {
-    AutoFrameListPtr overflowFrames(aPresContext,
-                                    prevInFlow->StealOverflowFrames());
+    AutoFrameListPtr overflowFrames(prevInFlow->StealOverflowFrames());
     if (overflowFrames) {
       NS_ASSERTION(mFrames.IsEmpty(), "bad overflow list");
-
-      // When pushing and pulling frames we need to check for whether any
-      // views need to be reparented.
-      nsContainerFrame::ReparentFrameViewList(*overflowFrames, prevInFlow,
-                                              this);
       mFrames.InsertFrames(this, nullptr, std::move(*overflowFrames));
     }
   }
 
   // It's also possible that we have an overflow list for ourselves
-  AutoFrameListPtr overflowFrames(aPresContext, StealOverflowFrames());
+  AutoFrameListPtr overflowFrames(StealOverflowFrames());
   if (overflowFrames) {
     NS_ASSERTION(mFrames.NotEmpty(), "overflow list w/o frames");
     mFrames.AppendFrames(nullptr, std::move(*overflowFrames));
@@ -465,7 +464,7 @@ void nsFirstLetterFrame::DrainOverflowFrames(nsPresContext* aPresContext) {
       if (prevInFlow) {
         // This is for the rest of the content not in the first-letter.
         nsIFrame* styleParent =
-            CorrectStyleParentFrame(GetParent(), PseudoStyleType::firstLetter);
+            CorrectStyleParentFrame(GetParent(), PseudoStyleType::FirstLetter);
         parentSC = styleParent->Style();
       } else {
         // And this for the first-letter style.

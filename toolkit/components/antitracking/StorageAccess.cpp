@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -24,7 +22,6 @@
 #include "nsIHttpChannel.h"
 #include "nsIPermission.h"
 #include "nsIWebProgressListener.h"
-#include "nsIClassifiedChannel.h"
 #include "nsNetUtil.h"
 #include "nsScriptSecurityManager.h"
 #include "nsSandboxFlags.h"
@@ -191,11 +188,7 @@ static StorageAccess InternalStorageAllowedCheck(
     // If the channel is a third-party tracker, we should set the rejected
     // reason to partitioned tracker.
     uint32_t rejectedReason = aRejectedReason;
-    nsCOMPtr<nsIClassifiedChannel> classifiedChannel =
-        do_QueryInterface(aChannel);
-
-    if (classifiedChannel &&
-        classifiedChannel->IsThirdPartyTrackingResource() &&
+    if (AntiTrackingUtils::IsThirdPartyTrackingChannel(aChannel) &&
         aRejectedReason ==
             static_cast<uint32_t>(
                 nsIWebProgressListener::STATE_COOKIES_PARTITIONED_FOREIGN)) {
@@ -316,11 +309,7 @@ StorageAccess StorageAllowedForWindow(nsPIDOMWindowInner* aWindow,
 
 StorageAccess StorageAllowedForDocument(const Document* aDoc) {
   StorageAccess cookieAllowed = CookieAllowedForDocument(aDoc);
-  // If this isn't a top-level window, check if we should apply the policy to
-  // always partition non-cookie storage.
   if (!aDoc->IsTopLevelContentDocument() &&
-      StaticPrefs::
-          privacy_partition_always_partition_third_party_non_cookie_storage() &&
       cookieAllowed > StorageAccess::eDeny) {
     return StorageAccess::ePartitionForeignOrDeny;
   }
@@ -368,7 +357,7 @@ StorageAccess StorageAllowedForChannel(nsIChannel* aChannel) {
   MOZ_DIAGNOSTIC_ASSERT(aChannel);
 
   nsCOMPtr<nsIPrincipal> principal;
-  Unused << nsContentUtils::GetSecurityManager()->GetChannelResultPrincipal(
+  (void)nsContentUtils::GetSecurityManager()->GetChannelResultPrincipal(
       aChannel, getter_AddRefs(principal));
   NS_ENSURE_TRUE(principal, StorageAccess::eDeny);
 
@@ -413,7 +402,7 @@ bool StoragePartitioningEnabled(StorageAccess aAccess,
                                 nsICookieJarSettings* aCookieJarSettings) {
   return aAccess == StorageAccess::ePartitionForeignOrDeny &&
          aCookieJarSettings->GetCookieBehavior() ==
-             nsICookieService::BEHAVIOR_REJECT_TRACKER_AND_PARTITION_FOREIGN;
+             nsICookieService::BEHAVIOR_PARTITION_FOREIGN;
 }
 
 bool StoragePartitioningEnabled(uint32_t aRejectedReason,
@@ -422,7 +411,7 @@ bool StoragePartitioningEnabled(uint32_t aRejectedReason,
              static_cast<uint32_t>(
                  nsIWebProgressListener::STATE_COOKIES_PARTITIONED_FOREIGN) &&
          aCookieJarSettings->GetCookieBehavior() ==
-             nsICookieService::BEHAVIOR_REJECT_TRACKER_AND_PARTITION_FOREIGN;
+             nsICookieService::BEHAVIOR_PARTITION_FOREIGN;
 }
 
 int32_t CookiesBehavior(Document* a3rdPartyDocument) {
@@ -541,11 +530,10 @@ bool ShouldAllowAccessFor(nsPIDOMWindowInner* aWindow, nsIURI* aURI,
   // As a performance optimization, we only perform this check for
   // BEHAVIOR_REJECT_FOREIGN and BEHAVIOR_LIMIT_FOREIGN.  For
   // BEHAVIOR_REJECT_TRACKER and
-  // BEHAVIOR_REJECT_TRACKER_AND_PARTITION_FOREIGN, third-partiness is
+  // BEHAVIOR_PARTITION_FOREIGN, third-partiness is
   // implicily checked later below.
   if (behavior != nsICookieService::BEHAVIOR_REJECT_TRACKER &&
-      behavior !=
-          nsICookieService::BEHAVIOR_REJECT_TRACKER_AND_PARTITION_FOREIGN) {
+      behavior != nsICookieService::BEHAVIOR_PARTITION_FOREIGN) {
     // Let's check if this is a 3rd party context.
     if (!AntiTrackingUtils::IsThirdPartyWindow(aWindow, aURI)) {
       LOG(("Our window isn't a third-party window"));
@@ -569,10 +557,8 @@ bool ShouldAllowAccessFor(nsPIDOMWindowInner* aWindow, nsIURI* aURI,
     return true;
   }
 
-  MOZ_ASSERT(
-      behavior == nsICookieService::BEHAVIOR_REJECT_TRACKER ||
-      behavior ==
-          nsICookieService::BEHAVIOR_REJECT_TRACKER_AND_PARTITION_FOREIGN);
+  MOZ_ASSERT(behavior == nsICookieService::BEHAVIOR_REJECT_TRACKER ||
+             behavior == nsICookieService::BEHAVIOR_PARTITION_FOREIGN);
 
   uint32_t blockedReason =
       nsIWebProgressListener::STATE_COOKIES_BLOCKED_TRACKER;
@@ -583,27 +569,14 @@ bool ShouldAllowAccessFor(nsPIDOMWindowInner* aWindow, nsIURI* aURI,
       return true;
     }
 
-    nsCOMPtr<nsIClassifiedChannel> classifiedChannel =
-        do_QueryInterface(document->GetChannel());
-    if (classifiedChannel) {
-      uint32_t classificationFlags =
-          classifiedChannel->GetThirdPartyClassificationFlags();
-      if (classificationFlags & nsIClassifiedChannel::ClassificationFlags::
-                                    CLASSIFIED_SOCIALTRACKING) {
-        blockedReason =
-            nsIWebProgressListener::STATE_COOKIES_BLOCKED_SOCIALTRACKER;
-      }
+    if (AntiTrackingUtils::IsThirdPartySocialTrackingChannel(
+            document->GetChannel())) {
+      blockedReason =
+          nsIWebProgressListener::STATE_COOKIES_BLOCKED_SOCIALTRACKER;
     }
-  } else if (behavior ==
-             nsICookieService::BEHAVIOR_REJECT_TRACKER_AND_PARTITION_FOREIGN) {
-    if (nsContentUtils::IsThirdPartyTrackingResourceWindow(aWindow)) {
-      // fall through, but remember that we're partitioned for trackers if
-      // it's instructed by the pref.
-      if (!StaticPrefs::network_cookie_cookieBehavior_trackerCookieBlocking()) {
-        blockedReason =
-            nsIWebProgressListener::STATE_COOKIES_PARTITIONED_FOREIGN;
-      }
-    } else if (AntiTrackingUtils::IsThirdPartyWindow(aWindow, aURI)) {
+  } else if (behavior == nsICookieService::BEHAVIOR_PARTITION_FOREIGN) {
+    if (nsContentUtils::IsThirdPartyTrackingResourceWindow(aWindow) ||
+        AntiTrackingUtils::IsThirdPartyWindow(aWindow, aURI)) {
       LOG(("We're in the third-party context, storage should be partitioned"));
       // fall through, but remember that we're partitioning.
       blockedReason = nsIWebProgressListener::STATE_COOKIES_PARTITIONED_FOREIGN;
@@ -763,43 +736,25 @@ bool ShouldAllowAccessFor(nsIChannel* aChannel, nsIURI* aURI,
     return true;
   }
 
-  MOZ_ASSERT(
-      behavior == nsICookieService::BEHAVIOR_REJECT_TRACKER ||
-      behavior ==
-          nsICookieService::BEHAVIOR_REJECT_TRACKER_AND_PARTITION_FOREIGN);
+  MOZ_ASSERT(behavior == nsICookieService::BEHAVIOR_REJECT_TRACKER ||
+             behavior == nsICookieService::BEHAVIOR_PARTITION_FOREIGN);
 
   uint32_t blockedReason =
       nsIWebProgressListener::STATE_COOKIES_BLOCKED_TRACKER;
 
-  // Not a tracker.
-  nsCOMPtr<nsIClassifiedChannel> classifiedChannel =
-      do_QueryInterface(aChannel);
   if (behavior == nsICookieService::BEHAVIOR_REJECT_TRACKER) {
-    if (classifiedChannel) {
-      if (!classifiedChannel->IsThirdPartyTrackingResource()) {
-        LOG(("Our channel isn't a third-party tracking channel"));
-        return true;
-      }
-
-      uint32_t classificationFlags =
-          classifiedChannel->GetThirdPartyClassificationFlags();
-      if (classificationFlags & nsIClassifiedChannel::ClassificationFlags::
-                                    CLASSIFIED_SOCIALTRACKING) {
-        blockedReason =
-            nsIWebProgressListener::STATE_COOKIES_BLOCKED_SOCIALTRACKER;
-      }
+    if (!AntiTrackingUtils::IsThirdPartyTrackingChannel(aChannel)) {
+      LOG(("Our channel isn't a third-party tracking channel"));
+      return true;
     }
-  } else if (behavior ==
-             nsICookieService::BEHAVIOR_REJECT_TRACKER_AND_PARTITION_FOREIGN) {
-    if (classifiedChannel &&
-        classifiedChannel->IsThirdPartyTrackingResource()) {
-      // fall through, but remember that we're partitioned for trackers if
-      // it's instructed by the pref.
-      if (!StaticPrefs::network_cookie_cookieBehavior_trackerCookieBlocking()) {
-        blockedReason =
-            nsIWebProgressListener::STATE_COOKIES_PARTITIONED_FOREIGN;
-      }
-    } else if (AntiTrackingUtils::IsThirdPartyChannel(aChannel)) {
+
+    if (AntiTrackingUtils::IsThirdPartySocialTrackingChannel(aChannel)) {
+      blockedReason =
+          nsIWebProgressListener::STATE_COOKIES_BLOCKED_SOCIALTRACKER;
+    }
+  } else if (behavior == nsICookieService::BEHAVIOR_PARTITION_FOREIGN) {
+    if (AntiTrackingUtils::IsThirdPartyTrackingChannel(aChannel) ||
+        AntiTrackingUtils::IsThirdPartyChannel(aChannel)) {
       LOG(("We're in the third-party context, storage should be partitioned"));
       // fall through but remember that we're partitioning.
       blockedReason = nsIWebProgressListener::STATE_COOKIES_PARTITIONED_FOREIGN;
@@ -825,7 +780,7 @@ bool ShouldAllowAccessFor(nsIChannel* aChannel, nsIURI* aURI,
   // get the target browsing context from the worker associated browsing
   // context instead.
   if (!targetBC) {
-    rv = loadInfo->GetWorkerAssociatedBrowsingContext(getter_AddRefs(targetBC));
+    rv = loadInfo->GetAssociatedBrowsingContext(getter_AddRefs(targetBC));
   }
 
   // We could have no target BC for the channel if it's for loading the script
@@ -860,8 +815,10 @@ bool ShouldAllowAccessFor(nsIChannel* aChannel, nsIURI* aURI,
     }
   }
 
-  bool allowed =
-      loadInfo->GetStoragePermission() != nsILoadInfo::NoStoragePermission;
+  nsILoadInfo::StoragePermissionState storageAccess =
+      loadInfo->GetStoragePermission();
+  bool allowed = storageAccess == nsILoadInfo::HasStoragePermission ||
+                 storageAccess == nsILoadInfo::StoragePermissionAllowListed;
   if (!allowed) {
     *aRejectedReason = blockedReason;
   }

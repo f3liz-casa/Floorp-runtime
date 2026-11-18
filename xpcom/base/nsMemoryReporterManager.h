@@ -1,18 +1,16 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef nsMemoryReporterManager_h__
-#define nsMemoryReporterManager_h__
+#ifndef nsMemoryReporterManager_h_
+#define nsMemoryReporterManager_h_
 
 #include "mozilla/Mutex.h"
-#include "nsTHashMap.h"
 #include "nsHashKeys.h"
 #include "nsIMemoryReporter.h"
 #include "nsISupports.h"
 #include "nsServiceManagerUtils.h"
+#include "nsTHashMap.h"
 
 #ifdef XP_WIN
 #  include <windows.h>
@@ -231,9 +229,6 @@ class nsMemoryReporterManager final : public nsIMemoryReporterManager,
                         nsISupports* aHandleReportData, bool aAnonymize);
 
   static void TimeoutCallback(nsITimer* aTimer, void* aData);
-  // Note: this timeout needs to be long enough to allow for the
-  // possibility of DMD reports and/or running on a low-end phone.
-  static const uint32_t kTimeoutLengthMS = 180000;
 
   mozilla::Mutex mMutex;
   bool mIsRegistrationBlocked MOZ_GUARDED_BY(mMutex);
@@ -317,9 +312,6 @@ class nsMemoryReporterManager final : public nsIMemoryReporterManager,
   // This is reinitialized each time a call to GetReports is initiated.
   PendingReportersState* mPendingReportersState;  // MainThread only
 
-  // Used in GetHeapAllocatedAsync() to run jemalloc_stats async.
-  nsCOMPtr<nsIEventTarget> mThreadPool MOZ_GUARDED_BY(mMutex);
-
   PendingProcessesState* GetStateForGeneration(uint32_t aGeneration);
   [[nodiscard]] static bool StartChildReport(
       mozilla::MemoryReportingProcess* aChild,
@@ -329,4 +321,4 @@ class nsMemoryReporterManager final : public nsIMemoryReporterManager,
 #define NS_MEMORY_REPORTER_MANAGER_CID \
   {0xfb97e4f5, 0x32dd, 0x497a, {0xba, 0xa2, 0x7d, 0x1e, 0x55, 0x7, 0x99, 0x10}}
 
-#endif  // nsMemoryReporterManager_h__
+#endif  // nsMemoryReporterManager_h_

@@ -1,5 +1,3 @@
-# -*- Mode: python; indent-tabs-mode: nil; tab-width: 40 -*-
-# vim: set filetype=python:
 # This Source Code Form is subject to the terms of the Mozilla Public
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
@@ -58,9 +56,9 @@ BROWSER_PROCESS_ONLY = "BROWSER_PROCESS_ONLY"
 SUBSTITUTE_LSP_PASSTHROUGH = "SUBSTITUTE_LSP_PASSTHROUGH"
 REDIRECT_TO_NOOP_ENTRYPOINT = "REDIRECT_TO_NOOP_ENTRYPOINT"
 UTILITY_PROCESSES_ONLY = "UTILITY_PROCESSES_ONLY"
-SOCKET_PROCESSES_ONLY = "SOCKET_PROCESSES_ONLY"
 GPU_PROCESSES_ONLY = "GPU_PROCESSES_ONLY"
 GMPLUGIN_PROCESSES_ONLY = "GMPLUGIN_PROCESSES_ONLY"
+RDD_PROCESSES_ONLY = "RDD_PROCESSES_ONLY"
 
 
 def FILTER_ALLOW_ALL(entry):
@@ -97,7 +95,7 @@ ALL_DEFINITION_LISTS = (
     "GMPLUGIN_PROCESSES",
     "GPU_PROCESSES",
     "UTILITY_PROCESSES",
-    "SOCKET_PROCESSES",
+    "RDD_PROCESSES",
 )
 
 
@@ -366,7 +364,7 @@ GENERATED_BLOCKLIST_FILES = [
             "GMPLUGIN_PROCESSES": {GMPLUGIN_PROCESSES_ONLY},
             "GPU_PROCESSES": {GPU_PROCESSES_ONLY},
             "UTILITY_PROCESSES": {UTILITY_PROCESSES_ONLY},
-            "SOCKET_PROCESSES": {SOCKET_PROCESSES_ONLY},
+            "RDD_PROCESSES": {RDD_PROCESSES_ONLY},
         },
     ),
     BlocklistDescriptor(
@@ -378,7 +376,7 @@ GENERATED_BLOCKLIST_FILES = [
             "GMPLUGIN_PROCESSES": {GMPLUGIN_PROCESSES_ONLY},
             "GPU_PROCESSES": {GPU_PROCESSES_ONLY},
             "UTILITY_PROCESSES": {UTILITY_PROCESSES_ONLY},
-            "SOCKET_PROCESSES": {SOCKET_PROCESSES_ONLY},
+            "RDD_PROCESSES": {RDD_PROCESSES_ONLY},
         },
     ),
     # Roughed-in for the moment; we'll enable this in bug 1238735
@@ -443,7 +441,7 @@ class Version:
         for component in arg:
             if not isinstance(component, int) or component < 0 or component > 0xFFFF:
                 raise ValueError(
-                    "Each version component must be a 16-bit " "unsigned integer"
+                    "Each version component must be a 16-bit unsigned integer"
                 )
 
     def build_long(self, args):
@@ -584,7 +582,7 @@ class A11yBlocklistEntry(DllBlocklistEntry):
     def __init__(self, name, ver, flags=(), **kwargs):
         """These arguments are identical to DllBlocklistEntry.__init__"""
 
-        super(A11yBlocklistEntry, self).__init__(name, ver, flags, **kwargs)
+        super().__init__(name, ver, flags, **kwargs)
 
 
 class RedirectToNoOpEntryPoint(DllBlocklistEntry):
@@ -598,10 +596,10 @@ class RedirectToNoOpEntryPoint(DllBlocklistEntry):
     def __init__(self, name, ver, flags=(), **kwargs):
         """These arguments are identical to DllBlocklistEntry.__init__"""
 
-        super(RedirectToNoOpEntryPoint, self).__init__(name, ver, flags, **kwargs)
+        super().__init__(name, ver, flags, **kwargs)
 
     def get_flags_list(self):
-        flags = super(RedirectToNoOpEntryPoint, self).get_flags_list()
+        flags = super().get_flags_list()
         # RedirectToNoOpEntryPoint items always include the following flag
         flags.add(REDIRECT_TO_NOOP_ENTRYPOINT)
         return flags
@@ -637,7 +635,7 @@ class LspBlocklistEntry(DllBlocklistEntry):
         generated around the entry during output.
         """
 
-        super(LspBlocklistEntry, self).__init__(name, ver, flags, **kwargs)
+        super().__init__(name, ver, flags, **kwargs)
         if not guids:
             raise ValueError("Missing GUID(s)!")
 
@@ -657,7 +655,7 @@ class LspBlocklistEntry(DllBlocklistEntry):
         LspBlocklistEntry.Guids.setdefault(guid, []).append(name)
 
     def get_flags_list(self):
-        flags = super(LspBlocklistEntry, self).get_flags_list()
+        flags = super().get_flags_list()
         # LSP entries always include the following flag
         flags.add(SUBSTITUTE_LSP_PASSTHROUGH)
         return flags
@@ -689,18 +687,16 @@ class LspBlocklistEntry(DllBlocklistEntry):
 
     def write(self, output, mode):
         if mode != LSP_MODE_GUID:
-            super(LspBlocklistEntry, self).write(output, mode)
+            super().write(output, mode)
             return
 
         # We dump the entire contents of Guids on the first call, and then
         # clear it. Remaining invocations of this method are no-ops.
         if LspBlocklistEntry.Guids:
-            result = ",\n".join(
-                [
-                    self.as_c_struct(guid, names)
-                    for guid, names in LspBlocklistEntry.Guids.items()
-                ]
-            )
+            result = ",\n".join([
+                self.as_c_struct(guid, names)
+                for guid, names in LspBlocklistEntry.Guids.items()
+            ])
             print(result, file=output)
             LspBlocklistEntry.Guids.clear()
 

@@ -1,40 +1,40 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#include "base/basictypes.h"
-
 #include "gfxAndroidPlatform.h"
-#include "mozilla/gfx/2D.h"
-#include "mozilla/gfx/gfxVars.h"
-#include "mozilla/CountingAllocatorBase.h"
-#include "mozilla/intl/LocaleService.h"
-#include "mozilla/intl/OSPreferences.h"
-#include "mozilla/java/GeckoAppShellWrappers.h"
-#include "mozilla/jni/Utils.h"
-#include "mozilla/layers/AndroidHardwareBuffer.h"
-#include "mozilla/Preferences.h"
-#include "mozilla/StaticPrefs_gfx.h"
-#include "mozilla/StaticPrefs_webgl.h"
-#include "mozilla/widget/AndroidVsync.h"
 
 #include "AndroidBuild.h"
 #include "AndroidSystemFontIterator.h"
 #include "GeckoProfiler.h"
+#include "VsyncSource.h"
+#include "base/basictypes.h"
+#include "cairo.h"
+#include "ft2build.h"
 #include "gfx2DGlue.h"
 #include "gfxFT2FontList.h"
 #include "gfxImageSurface.h"
 #include "gfxTextRun.h"
-#include "nsXULAppAPI.h"
+#include "mozilla/CountingAllocatorBase.h"
+#include "mozilla/EnumeratedArray.h"
+#include "mozilla/Preferences.h"
+#include "mozilla/StaticPrefs_gfx.h"
+#include "mozilla/StaticPrefs_webgl.h"
+#include "mozilla/Tokenizer.h"
+#include "mozilla/Utf16.h"
+#include "mozilla/gfx/2D.h"
+#include "mozilla/gfx/gfxVars.h"
+#include "mozilla/intl/LocaleService.h"
+#include "mozilla/intl/OSPreferences.h"
+#include "mozilla/java/GeckoAppShellWrappers.h"
+#include "mozilla/java/HardwareCodecCapabilityUtilsWrappers.h"
+#include "mozilla/jni/Utils.h"
+#include "mozilla/layers/AndroidHardwareBuffer.h"
+#include "mozilla/widget/AndroidVsync.h"
 #include "nsIScreen.h"
 #include "nsServiceManagerUtils.h"
 #include "nsUnicodeProperties.h"
-#include "cairo.h"
-#include "VsyncSource.h"
-
-#include "ft2build.h"
+#include "nsXULAppAPI.h"
 #include FT_FREETYPE_H
 #include FT_MODULE_H
 
@@ -77,7 +77,7 @@ NS_IMPL_ISUPPORTS(FreetypeReporter, nsIMemoryReporter)
 static FT_MemoryRec_ sFreetypeMemoryRecord;
 
 PRThread* gfxAndroidPlatform::sFontAPIInitializeThread = nullptr;
-MOZ_CONSTINIT nsCString gfxAndroidPlatform::sManufacturer;
+constinit nsCString gfxAndroidPlatform::sManufacturer;
 
 // static
 bool gfxAndroidPlatform::IsFontAPIDisabled(bool aDontCheckPref) {
@@ -86,15 +86,17 @@ bool gfxAndroidPlatform::IsFontAPIDisabled(bool aDontCheckPref) {
     return false;
   }
 
-  // OPPO, realme and OnePlus device seem to crash when using font match API
-  // (Bug 1787551).
+  // Some manufacturer devices seem to crash when using font match API
+  // (Bug 1787551 / Bug 1990734).
 
   if (sManufacturer.IsEmpty()) {
     sManufacturer = java::sdk::Build::MANUFACTURER()->ToCString();
   }
   return (sManufacturer.EqualsLiteral("OPPO") ||
           sManufacturer.EqualsLiteral("realme") ||
-          sManufacturer.EqualsLiteral("OnePlus"));
+          sManufacturer.EqualsLiteral("OnePlus") ||
+          sManufacturer.EqualsLiteral("HONOR") ||
+          sManufacturer.EqualsLiteral("HUAWEI"));
 }
 
 // static
@@ -135,6 +137,109 @@ void gfxAndroidPlatform::WaitForInitializeFontAPI() {
   }
 }
 
+static void AppendMimeType(nsCString& aList, const nsACString& aMimeType) {
+  if (!aList.IsEmpty()) {
+    aList.Append(',');
+  }
+  aList.Append(aMimeType);
+}
+
+using HwDecodeMaxSizes = EnumeratedArray<media::MediaCodec, gfx::IntSize,
+                                         size_t(media::MediaCodec::SENTINEL)>;
+
+// Codecs that map to a media::MediaCodec are returned in aSupported, and in
+// aSupported10Bit if they can also decode a 10-bit profile. The largest width
+// and height supported by any hardware decoder for each codec are returned in
+// aHwMaxSizes. Decoder MIME types which do not map are returned as comma
+// separated lists instead.
+static void QueryMediaCodecsSupported(
+    media::MediaCodecsSupported& aSupported,
+    media::MediaCodecsSupported& aSupported10Bit, HwDecodeMaxSizes& aHwMaxSizes,
+    nsCString& aUnmappedSwDecode, nsCString& aUnmappedHwDecode) {
+  jni::ObjectArray::LocalRef supportedTypes =
+      java::HardwareCodecCapabilityUtils::GetSupportedMimeTypesWithAccelInfo();
+  for (size_t i = 0; i < supportedTypes->Length(); i++) {
+    const nsCString s =
+        jni::String::LocalRef(supportedTypes->GetElement(i))->ToCString();
+    const int32_t sep = s.FindChar(' ');
+    if (sep <= 0 || static_cast<uint32_t>(sep) + 1 >= s.Length()) {
+      continue;
+    }
+
+    const auto caps = Substring(s, 0, sep);
+    const auto mimeType = Substring(s, sep + 1);
+    const media::MediaCodec codec =
+        media::MCSInfo::GetMediaCodecFromMimeType(mimeType);
+    if (codec == media::MediaCodec::SENTINEL) {
+      if (caps == "SW"_ns) {
+        AppendMimeType(aUnmappedSwDecode, mimeType);
+      } else if (caps == "HW"_ns) {
+        AppendMimeType(aUnmappedHwDecode, mimeType);
+      }
+      continue;
+    }
+
+    if (caps == "SW"_ns) {
+      aSupported += media::MCSInfo::GetMediaCodecsSupportEnum(
+          codec, media::DecodeSupport::SoftwareDecode);
+    } else if (caps == "HW"_ns) {
+      aSupported += media::MCSInfo::GetMediaCodecsSupportEnum(
+          codec, media::DecodeSupport::HardwareDecode);
+    } else if (caps == "SWE"_ns) {
+      aSupported += media::MCSInfo::GetMediaCodecsSupportEnum(
+          codec, media::EncodeSupport::SoftwareEncode);
+    } else if (caps == "HWE"_ns) {
+      aSupported += media::MCSInfo::GetMediaCodecsSupportEnum(
+          codec, media::EncodeSupport::HardwareEncode);
+    } else if (caps == "SW10B"_ns) {
+      aSupported10Bit += media::MCSInfo::GetMediaCodecsSupportEnum(
+          codec, media::DecodeSupport::SoftwareDecode);
+    } else if (caps == "HW10B"_ns) {
+      aSupported10Bit += media::MCSInfo::GetMediaCodecsSupportEnum(
+          codec, media::DecodeSupport::HardwareDecode);
+    } else if (StringBeginsWith(caps, "HWMAX"_ns)) {
+      Tokenizer t(Substring(caps, 5));
+      int32_t width, height;
+      if (t.ReadInteger(&width) && t.CheckChar(',') && t.ReadInteger(&height) &&
+          t.CheckEOF() && width > 0 && height > 0) {
+        gfx::IntSize& maxSize = aHwMaxSizes[codec];
+        maxSize.width = std::max(maxSize.width, width);
+        maxSize.height = std::max(maxSize.height, height);
+      }
+    }
+  }
+}
+
+void gfxAndroidPlatform::InitPlatformHardwareVideoConfig() {
+  media::MediaCodecsSupported supported;
+  media::MediaCodecsSupported supported10Bit;
+  HwDecodeMaxSizes hwMaxSizes;
+  nsCString unmappedSwDecode;
+  nsCString unmappedHwDecode;
+  QueryMediaCodecsSupported(supported, supported10Bit, hwMaxSizes,
+                            unmappedSwDecode, unmappedHwDecode);
+  gfxVars::SetPlatformMediaCodecsSupported(supported);
+  gfxVars::SetPlatformMediaCodecs10BitSupported(supported10Bit);
+  gfxVars::SetPlatformH264HwDecodeMaxSize(hwMaxSizes[media::MediaCodec::H264]);
+  gfxVars::SetPlatformHEVCHwDecodeMaxSize(hwMaxSizes[media::MediaCodec::HEVC]);
+  gfxVars::SetPlatformVP8HwDecodeMaxSize(hwMaxSizes[media::MediaCodec::VP8]);
+  gfxVars::SetPlatformVP9HwDecodeMaxSize(hwMaxSizes[media::MediaCodec::VP9]);
+  gfxVars::SetPlatformAV1HwDecodeMaxSize(hwMaxSizes[media::MediaCodec::AV1]);
+  gfxVars::SetPlatformUnmappedSwDecodeMimeTypes(unmappedSwDecode);
+  gfxVars::SetPlatformUnmappedHwDecodeMimeTypes(unmappedHwDecode);
+}
+
+// static
+bool gfxAndroidPlatform::IsHwCodecSupported(media::MediaCodec aCodec,
+                                            bool aEncoder) {
+  if (aEncoder) {
+    return media::MCSInfo::SupportsHardwareEncode(
+        gfxVars::PlatformMediaCodecsSupported(), aCodec);
+  }
+  return media::MCSInfo::SupportsHardwareDecode(
+      gfxVars::PlatformMediaCodecsSupported(), aCodec);
+}
+
 gfxAndroidPlatform::gfxAndroidPlatform() {
   // A custom allocator.  It counts allocations, enabling memory reporting.
   sFreetypeMemoryRecord.user = nullptr;
@@ -149,7 +254,7 @@ gfxAndroidPlatform::gfxAndroidPlatform() {
 
   Factory::SetFTLibrary(gPlatformFTLibrary);
 
-  RegisterStrongMemoryReporter(new FreetypeReporter());
+  RegisterStrongMemoryReporter(MakeAndAddRef<FreetypeReporter>());
 
   // Bug 1886573: At this point, we don't yet have primary screen depth.
   // This setting of screen depth to 0 is preserving existing behavior,
@@ -157,17 +262,12 @@ gfxAndroidPlatform::gfxAndroidPlatform() {
   int32_t screenDepth = 0;
   mOffscreenFormat = screenDepth == 16 ? SurfaceFormat::R5G6B5_UINT16
                                        : SurfaceFormat::X8R8G8B8_UINT32;
-
-  if (StaticPrefs::gfx_android_rgb16_force_AtStartup()) {
-    mOffscreenFormat = SurfaceFormat::R5G6B5_UINT16;
-  }
 }
 
 gfxAndroidPlatform::~gfxAndroidPlatform() {
   FT_Done_Library(gPlatformFTLibrary);
   gPlatformFTLibrary = nullptr;
   layers::AndroidHardwareBufferManager::Shutdown();
-  layers::AndroidHardwareBufferApi::Shutdown();
 }
 
 void gfxAndroidPlatform::InitAcceleration() { gfxPlatform::InitAcceleration(); }
@@ -222,7 +322,7 @@ void gfxAndroidPlatform::GetCommonFallbackFonts(
     aFontList.AppendElement(kNotoColorEmoji);
   }
 
-  if (IS_IN_BMP(aCh)) {
+  if (mozilla::IsInBMP(aCh)) {
     // try language-specific "Droid Sans *" and "Noto Sans *" fonts for
     // certain blocks, as most devices probably have these
     uint8_t block = (aCh >> 8) & 0xff;
@@ -351,13 +451,6 @@ bool gfxAndroidPlatform::RequiresLinearZoom() {
 
   MOZ_ASSERT_UNREACHABLE("oops, what platform is this?");
   return gfxPlatform::RequiresLinearZoom();
-}
-
-bool gfxAndroidPlatform::CheckVariationFontSupport() {
-  // Don't attempt to use variations on Android API versions up to Marshmallow,
-  // because the system freetype version is too old and the parent process may
-  // access it during printing (bug 1845174).
-  return jni::GetAPIVersion() > 23;
 }
 
 class AndroidVsyncSource final : public VsyncSource,

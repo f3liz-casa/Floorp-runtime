@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -106,13 +104,15 @@ class FileSystemDatabaseManagerVersion001 : public FileSystemDatabaseManager {
   nsresult MergeFileId(const EntryId& aEntryId, const FileId& aFileId,
                        bool aAbort) override;
 
+  nsresult RemoveFileIdsWithoutMainFile() override;
+
   void Close() override;
 
   nsresult BeginUsageTracking(const FileId& aFileId) override;
 
   nsresult EndUsageTracking(const FileId& aFileId) override;
 
-  virtual ~FileSystemDatabaseManagerVersion001() = default;
+  virtual ~FileSystemDatabaseManagerVersion001();
 
  protected:
   virtual Result<bool, QMResult> DoesFileIdExist(const FileId& aFileId) const;

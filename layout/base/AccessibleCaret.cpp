@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -211,7 +209,7 @@ void AccessibleCaret::CreateCaretElement() const {
 
   Element& host = CaretElement();
   host.SetAttr(kNameSpaceID_None, nsGkAtoms::_class,
-               u"moz-accessiblecaret none"_ns, kNotify);
+               u"moz-accessiblecaret none"_ns, kNotify, IsKnownNewAttr::No);
 
   ShadowRoot* root = mCaretElementHolder->Root();
   Document* doc = host.OwnerDoc();
@@ -219,7 +217,8 @@ void AccessibleCaret::CreateCaretElement() const {
 
   auto CreateAndAppendChildElement = [&](const nsLiteralString& aElementId) {
     RefPtr<Element> child = doc->CreateHTMLElement(nsGkAtoms::div);
-    child->SetAttr(kNameSpaceID_None, nsGkAtoms::id, aElementId, kNotify);
+    child->SetAttr(kNameSpaceID_None, nsGkAtoms::id, aElementId, kNotify,
+                   IsKnownNewAttr::Yes);
     mCaretElementHolder->Root()->AppendChildTo(child, kNotify, IgnoreErrors());
   };
 
@@ -318,7 +317,8 @@ void AccessibleCaret::SetCaretElementStyle(const nsRect& aRect,
       StaticPrefs::layout_accessiblecaret_transition_duration());
   styleStr.AppendLiteral("ms");
 
-  CaretElement().SetAttr(kNameSpaceID_None, nsGkAtoms::style, styleStr, true);
+  CaretElement().SetAttr(kNameSpaceID_None, nsGkAtoms::style, styleStr, true,
+                         IsKnownNewAttr::No);
   AC_LOG("%s: %s", __FUNCTION__, NS_ConvertUTF16toUTF8(styleStr).get());
 
   // Set style string for children.
@@ -333,7 +333,7 @@ void AccessibleCaret::SetTextOverlayElementStyle(const nsRect& aRect,
   styleStr.AppendFloat(nsPresContext::AppUnitsToFloatCSSPixels(aRect.height));
   styleStr.AppendLiteral("px;");
   TextOverlayElement()->SetAttr(kNameSpaceID_None, nsGkAtoms::style, styleStr,
-                                true);
+                                true, IsKnownNewAttr::No);
   AC_LOG("%s: %s", __FUNCTION__, NS_ConvertUTF16toUTF8(styleStr).get());
 }
 
@@ -345,7 +345,7 @@ void AccessibleCaret::SetCaretImageElementStyle(const nsRect& aRect,
                        aZoomLevel);
   styleStr.AppendLiteral("px;");
   CaretImageElement()->SetAttr(kNameSpaceID_None, nsGkAtoms::style, styleStr,
-                               true);
+                               true, IsKnownNewAttr::No);
   AC_LOG("%s: %s", __FUNCTION__, NS_ConvertUTF16toUTF8(styleStr).get());
 }
 

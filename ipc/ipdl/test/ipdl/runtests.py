@@ -1,3 +1,4 @@
+import glob
 import os
 import unittest
 
@@ -16,38 +17,52 @@ class IPDLTestCase(unittest.TestCase):
         self.checkPassed()
 
     def mkCustomMsg(self, msg):
-        return """
-### Command: %s
-### %s
+        return f"""
+### Command: {" ".join(self.compile.argv)}
+### {msg}
 ### stderr:
-%s""" % (
-            " ".join(self.compile.argv),
-            msg,
-            self.compile.stderr,
-        )
+{self.compile.stderr}"""
 
     def mkFailMsg(self):
-        return """
-### Command: %s
+        return f"""
+### Command: {" ".join(self.compile.argv)}
 ### stderr:
-%s""" % (
-            " ".join(self.compile.argv),
-            self.compile.stderr,
-        )
+{self.compile.stderr}"""
 
     def shortDescription(self):
-        return '%s test of "%s"' % (self.__class__.__name__, self.filename)
+        return f'{self.__class__.__name__} test of "{self.filename}"'
 
 
 class OkTestCase(IPDLTestCase):
     """An invocation of the IPDL compiler on a valid specification.
-    The IPDL compiler should not produce errors or exceptions."""
+    The IPDL compiler should not produce errors or exceptions.
+    Lines of the form "//expect: <generated file>: <text>" require <text>
+    to appear in that generated file."""
 
     def __init__(self, ipdlargv, filename):
         IPDLTestCase.__init__(self, ipdlargv, filename)
 
+        self.expectedOutput = []
+        with open(filename) as f:
+            for l in f:
+                if l.startswith("//expect:"):
+                    outfile, text = l[len("//expect:") :].split(":", 1)
+                    self.expectedOutput.append((outfile.strip(), text.strip()))
+
     def checkPassed(self):
         self.assertTrue(self.compile.ok(), self.mkFailMsg())
+
+        for outfile, text in self.expectedOutput:
+            self.assertIn(
+                outfile,
+                self.compile.outputs,
+                self.mkCustomMsg('Did not generate "' + outfile + '"'),
+            )
+            self.assertIn(
+                text,
+                self.compile.outputs[outfile],
+                self.mkCustomMsg('Did not see "' + text + '" in "' + outfile + '"'),
+            )
 
 
 class ErrorTestCase(IPDLTestCase):
@@ -101,14 +116,16 @@ if __name__ == "__main__":
             # The extra subdirectory is used for non-failing files we want
             # to include from failing files.
             errorIncludes = ["-I", os.path.join(errordir, "extra"), "-I", errordir]
-            errorsuite.addTest(ErrorTestCase(ipdlargv + errorIncludes, arg))
+            for test in glob.glob(arg):
+                errorsuite.addTest(ErrorTestCase(ipdlargv + errorIncludes, test))
         elif oktests:
-            if "ERRORTESTS" == arg:
+            if "--error-tests" == arg:
                 errortests = True
                 continue
-            oksuite.addTest(OkTestCase(ipdlargv + ["-I", okdir], arg))
+            for test in glob.glob(arg):
+                oksuite.addTest(OkTestCase(ipdlargv + ["-I", okdir], test))
         else:
-            if "OKTESTS" == arg:
+            if "--ok-tests" == arg:
                 oktests = True
                 continue
             ipdlargv.append(arg)

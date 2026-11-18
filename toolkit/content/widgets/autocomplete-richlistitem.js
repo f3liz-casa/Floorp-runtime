@@ -513,7 +513,9 @@
     [Ci.nsIDOMXULSelectControlItemElement]
   );
 
-  class MozAutocompleteRichlistitemInsecureWarning extends MozElements.MozAutocompleteRichlistitem {
+  class MozAutocompleteRichlistitemInsecureWarning
+    extends MozElements.MozAutocompleteRichlistitem
+  {
     constructor() {
       super();
 
@@ -579,27 +581,14 @@
       </hbox>
     `;
     }
-
-    get _learnMoreString() {
-      if (!this.__learnMoreString) {
-        this.__learnMoreString = Services.strings
-          .createBundle("chrome://passwordmgr/locale/passwordmgr.properties")
-          .GetStringFromName("insecureFieldWarningLearnMore");
-      }
-      return this.__learnMoreString;
-    }
-
-    /**
-     * Override _getSearchTokens to have the Learn More text emphasized
-     */
-    _getSearchTokens() {
-      return [this._learnMoreString.toLowerCase()];
-    }
   }
 
-  class MozAutocompleteRichlistitemLoginsFooter extends MozElements.MozAutocompleteRichlistitem {}
+  class MozAutocompleteRichlistitemLoginsFooter
+    extends MozElements.MozAutocompleteRichlistitem {}
 
-  class MozAutocompleteImportableLearnMoreRichlistitem extends MozElements.MozAutocompleteRichlistitem {
+  class MozAutocompleteImportableLearnMoreRichlistitem
+    extends MozElements.MozAutocompleteRichlistitem
+  {
     constructor() {
       super();
       MozXULElement.insertFTLIfNeeded("toolkit/main-window/autocomplete.ftl");
@@ -725,53 +714,6 @@
     }
   }
 
-  // A row that conveys status information assigned from the status field
-  // within the comment associated with the selected item in the list.
-  class MozAutocompleteStatusRichlistitem extends MozAutocompleteTwoLineRichlistitem {
-    static get markup() {
-      return `<div class="ac-status" xmlns="http://www.w3.org/1999/xhtml"></div>`;
-    }
-
-    connectedCallback() {
-      super.connectedCallback();
-      this.parentNode.addEventListener("select", this);
-      this.eventListenerParentNode = this.parentNode;
-    }
-
-    disconnectedCallback() {
-      this.eventListenerParentNode?.removeEventListener("select", this);
-      this.eventListenerParentNode = null;
-    }
-
-    handleEvent(event) {
-      if (event.type == "select") {
-        let selectedItem = event.target.selectedItem;
-        if (selectedItem) {
-          this.#setStatus(selectedItem);
-        }
-      }
-    }
-
-    #setStatus(item) {
-      // For normal rows, use that row's comment, otherwise use the status's
-      // comment which serves as the default label.
-      let target =
-        !item || item instanceof MozAutocompleteActionRichlistitem
-          ? this
-          : item;
-
-      let comment = JSON.parse(target.getAttribute("ac-comment"));
-
-      let statusBox = this.querySelector(".ac-status");
-      statusBox.textContent = comment?.status || "";
-    }
-
-    _adjustAcItem() {
-      this.#setStatus(this);
-      this.setAttribute("disabled", "true");
-    }
-  }
-
   class MozAutocompleteAutoFillRichlistitem extends MozAutocompleteTwoLineRichlistitem {
     constructor() {
       super();
@@ -798,15 +740,11 @@
     }
 
     set selected(val) {
-      if (val) {
-        this.setAttribute("selected", "true");
-      } else {
-        this.removeAttribute("selected");
-      }
+      this.toggleAttribute("selected", val);
 
       setTimeout(() => {
         const { AutoCompleteParent } = ChromeUtils.importESModule(
-          "resource://gre/actors/AutoCompleteParent.sys.mjs"
+          "moz-src:///toolkit/actors/AutoCompleteParent.sys.mjs"
         );
         const actor = AutoCompleteParent.getCurrentActor();
         actor?.previewAutoCompleteEntry();
@@ -814,7 +752,7 @@
     }
 
     get selected() {
-      return this.getAttribute("selected") == "true";
+      return this.hasAttribute("selected");
     }
   }
 
@@ -960,14 +898,6 @@
   customElements.define(
     "autocomplete-action-richlistitem",
     MozAutocompleteActionRichlistitem,
-    {
-      extends: "richlistitem",
-    }
-  );
-
-  customElements.define(
-    "autocomplete-status-richlistitem",
-    MozAutocompleteStatusRichlistitem,
     {
       extends: "richlistitem",
     }

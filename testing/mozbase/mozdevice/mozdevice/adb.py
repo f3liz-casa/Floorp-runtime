@@ -22,6 +22,11 @@ from . import version_codes
 
 _TEST_ROOT = None
 
+# Caches the user's response to the clear-app-data confirmation prompt so they
+# are asked at most once per process. None until the user has been prompted,
+# then True (confirmed) or False (declined).
+_CLEAR_APP_DATA_CONFIRMED = None
+
 
 class ADBProcess:
     """ADBProcess encapsulates the data related to executing the adb process."""
@@ -558,8 +563,16 @@ class ADBHost(ADBCommand):
 
         ::
 
-            [{'device_serial': 'b313b945', 'state': 'device', 'product': 'd2vzw',
-              'usb': '1-7', 'device': 'd2vzw', 'model': 'SCH_I535' }]
+            [
+                {
+                    "device_serial": "b313b945",
+                    "state": "device",
+                    "product": "d2vzw",
+                    "usb": "1-7",
+                    "device": "d2vzw",
+                    "model": "SCH_I535",
+                }
+            ]
         """
         # b313b945               device usb:1-7 product:d2vzw model:SCH_I535 device:d2vzw
         # from Android system/core/adb/transport.c statename()
@@ -583,7 +596,7 @@ class ADBHost(ADBCommand):
                         )
                     except ValueError:
                         self._logger.warning(
-                            "devices: Unable to parse " "remainder for device %s" % line
+                            "devices: Unable to parse remainder for device %s" % line
                         )
                 devices.append(device)
         for device in devices:
@@ -639,9 +652,9 @@ def ADBDeviceFactory(
         # already created an ADBDevice which means we must only have
         # one device connected and we can re-use the existing ADBDevice.
         devices = list(ADBDEVICES.keys())
-        assert (
-            len(devices) == 1
-        ), "Only one device may be connected if the device serial number is not specified."
+        assert len(devices) == 1, (
+            "Only one device may be connected if the device serial number is not specified."
+        )
         adbdevice = ADBDEVICES[devices[0]]
     elif (
         device is not None
@@ -750,67 +763,65 @@ class ADBDevice(ADBCommand):
     # BUILTINS is used to determine which commands can not be executed
     # via su or run-as. This set of possible builtin commands was
     # obtained from `man builtin` on Linux.
-    BUILTINS = set(
-        [
-            "alias",
-            "bg",
-            "bind",
-            "break",
-            "builtin",
-            "caller",
-            "cd",
-            "command",
-            "compgen",
-            "complete",
-            "compopt",
-            "continue",
-            "declare",
-            "dirs",
-            "disown",
-            "echo",
-            "enable",
-            "eval",
-            "exec",
-            "exit",
-            "export",
-            "false",
-            "fc",
-            "fg",
-            "getopts",
-            "hash",
-            "help",
-            "history",
-            "jobs",
-            "kill",
-            "let",
-            "local",
-            "logout",
-            "mapfile",
-            "popd",
-            "printf",
-            "pushd",
-            "pwd",
-            "read",
-            "readonly",
-            "return",
-            "set",
-            "shift",
-            "shopt",
-            "source",
-            "suspend",
-            "test",
-            "times",
-            "trap",
-            "true",
-            "type",
-            "typeset",
-            "ulimit",
-            "umask",
-            "unalias",
-            "unset",
-            "wait",
-        ]
-    )
+    BUILTINS = set([
+        "alias",
+        "bg",
+        "bind",
+        "break",
+        "builtin",
+        "caller",
+        "cd",
+        "command",
+        "compgen",
+        "complete",
+        "compopt",
+        "continue",
+        "declare",
+        "dirs",
+        "disown",
+        "echo",
+        "enable",
+        "eval",
+        "exec",
+        "exit",
+        "export",
+        "false",
+        "fc",
+        "fg",
+        "getopts",
+        "hash",
+        "help",
+        "history",
+        "jobs",
+        "kill",
+        "let",
+        "local",
+        "logout",
+        "mapfile",
+        "popd",
+        "printf",
+        "pushd",
+        "pwd",
+        "read",
+        "readonly",
+        "return",
+        "set",
+        "shift",
+        "shopt",
+        "source",
+        "suspend",
+        "test",
+        "times",
+        "trap",
+        "true",
+        "type",
+        "typeset",
+        "ulimit",
+        "umask",
+        "unalias",
+        "unset",
+        "wait",
+    ])
 
     def __init__(
         self,
@@ -1125,6 +1136,8 @@ class ADBDevice(ADBCommand):
         self.run_as_package = run_as_package
 
         self._logger.debug("ADBDevice: %s" % self.__dict__)
+        self.shell("settings put system accelerometer_rotation 0")
+        self.shell("settings put system user_rotation 0")
 
     @property
     def is_rooted(self):
@@ -1329,7 +1342,7 @@ class ADBDevice(ADBCommand):
             char = file_obj.read(1).decode()
             if not char:
                 break
-            if char != "\r" and char != "\n":
+            if char not in {"\r", "\n"}:
                 line = char + line
             elif line:
                 # we have collected everything up to the beginning of the line
@@ -1529,6 +1542,43 @@ class ADBDevice(ADBCommand):
         return self._run_as_package is not None and path.startswith(self.package_dir)
 
     @property
+    def _host_gcov_prefix(self):
+        return os.getenv("GCOV_PREFIX")
+
+    @property
+    def _target_gcov_prefix_strip(self):
+        return os.getenv("GCOV_PREFIX_STRIP")
+
+    @property
+    def _host_jscov_prefix(self):
+        return os.getenv("JS_CODE_COVERAGE_OUTPUT_DIR")
+
+    @property
+    def _target_gcov_prefix(self):
+        if self._host_gcov_prefix is None or self._test_root is None:
+            return None
+        return posixpath.join(self._test_root, os.path.basename(self._host_gcov_prefix))
+
+    @property
+    def _target_jscov_prefix(self):
+        if self._host_jscov_prefix is None or self._test_root is None:
+            return None
+        return posixpath.join(
+            self._test_root, os.path.basename(self._host_jscov_prefix)
+        )
+
+    @property
+    def target_ccov_env(self):
+        env = {}
+        if self._target_gcov_prefix is not None:
+            env["GCOV_PREFIX"] = self._target_gcov_prefix
+        if self._target_gcov_prefix_strip is not None:
+            env["GCOV_PREFIX_STRIP"] = self._target_gcov_prefix_strip
+        if self._target_jscov_prefix is not None:
+            env["JS_CODE_COVERAGE_OUTPUT_DIR"] = self._target_jscov_prefix
+        return env
+
+    @property
     def test_root(self):
         """
         The test_root property returns the directory on the device where
@@ -1598,13 +1648,11 @@ class ADBDevice(ADBCommand):
             if not self.is_rooted:
                 # Note that /sdcard may be accessible while
                 # /mnt/sdcard is not.
-                paths.extend(
-                    [
-                        "/sdcard/test_root",
-                        "/storage/sdcard/test_root",
-                        "/mnt/sdcard/test_root",
-                    ]
-                )
+                paths.extend([
+                    "/sdcard/test_root",
+                    "/storage/sdcard/test_root",
+                    "/mnt/sdcard/test_root",
+                ])
 
         return self._try_test_root_candidates(paths)
 
@@ -2030,6 +2078,10 @@ class ADBDevice(ADBCommand):
             cmd = f"run-as {self._run_as_package} {cmd}"
         else:
             pass
+
+        if env is None:
+            env = {}
+        env.update(self.target_ccov_env)
 
         # prepend cwd and env to command if necessary
         if cwd:
@@ -3383,9 +3435,9 @@ class ADBDevice(ADBCommand):
                 if "No such process" not in str(e):
                     raise
             pid_set = set(pid_list)
-            current_pid_set = set(
-                [str(proc[0]) for proc in self.get_process_list(timeout=timeout)]
-            )
+            current_pid_set = set([
+                str(proc[0]) for proc in self.get_process_list(timeout=timeout)
+            ])
             pid_list = list(pid_set.intersection(current_pid_set))
             if not pid_list:
                 break
@@ -3681,9 +3733,9 @@ class ADBDevice(ADBCommand):
             if uptime:
                 m = re.match(r"up time: ((\d+) days, )*(\d{2}):(\d{2}):(\d{2})", uptime)
                 if m:
-                    uptime = "%d days %d hours %d minutes %d seconds" % tuple(
-                        [int(g or 0) for g in m.groups()[1:]]
-                    )
+                    uptime = "%d days %d hours %d minutes %d seconds" % tuple([
+                        int(g or 0) for g in m.groups()[1:]
+                    ])
                 info["uptime"] = uptime
         return info
 
@@ -4217,9 +4269,7 @@ class ADBDevice(ADBCommand):
         # starting a new instance may not be what we want depending on what
         # we want to do
         if fail_if_running and self.process_exist(app_name, timeout=timeout):
-            raise ADBError(
-                "Only one instance of an application may be running " "at once"
-            )
+            raise ADBError("Only one instance of an application may be running at once")
 
         if grant_runtime_permissions:
             self.grant_runtime_permissions(app_name)
@@ -4227,12 +4277,10 @@ class ADBDevice(ADBCommand):
         acmd = ["am"] + ["startservice" if is_service else "start"]
         if wait:
             acmd.extend(["-W"])
-        acmd.extend(
-            [
-                "-n",
-                f"{app_name}/{activity_name}",
-            ]
-        )
+        acmd.extend([
+            "-n",
+            f"{app_name}/{activity_name}",
+        ])
         if intent:
             acmd.extend(["-a", intent])
 
@@ -4296,6 +4344,10 @@ class ADBDevice(ADBCommand):
                  :exc:`ADBError`
         """
         extras = {}
+
+        if moz_env is None:
+            moz_env = {}
+        moz_env.update(self.target_ccov_env)
 
         if moz_env:
             # moz_env is expected to be a dictionary of environment variables:
@@ -4361,6 +4413,10 @@ class ADBDevice(ADBCommand):
                  :exc:`ADBError`
         """
         extras = {}
+
+        if moz_env is None:
+            moz_env = {}
+        moz_env.update(self.target_ccov_env)
 
         if moz_env:
             # moz_env is expected to be a dictionary of environment variables:
@@ -4429,6 +4485,10 @@ class ADBDevice(ADBCommand):
         """
         extras = {}
 
+        if moz_env is None:
+            moz_env = {}
+        moz_env.update(self.target_ccov_env)
+
         if moz_env:
             # moz_env is expected to be a dictionary of environment variables:
             # geckoview_example itself will set them when launched
@@ -4494,6 +4554,45 @@ class ADBDevice(ADBCommand):
                 # (this is not 100% guaranteed to work since it is inherently
                 # racey, but it's the best we can do)
                 time.sleep(1)
+
+    def confirm_clear_app_data(self, app_name):
+        """Confirm with the user that the app's data may be cleared.
+
+        On non-rooted devices the app's data (i.e. profile) must be wiped with
+        `pm clear` since the shell can't remove app-owned files. This prompts
+        the user to confirm that destruction once and caches the response in a
+        module-level global so subsequent callers in the same process reuse it
+        instead of prompting again. The prompt is skipped (returning True) when
+        the device is rooted or when running in CI (MOZ_AUTOMATION is set). The
+        MOZ_ADB_PM_CLEAR_CHECK environment variable, when defined, overrides the
+        prompt: "1" allows clearing the app data and "0" forbids it.
+
+        :param str app_name: The name of the app whose data will be cleared.
+        :return: True if clearing the app data is confirmed, False otherwise.
+        """
+        global _CLEAR_APP_DATA_CONFIRMED  # noqa
+
+        if self.is_rooted or "MOZ_AUTOMATION" in os.environ:
+            return True
+
+        env_check = os.environ.get("MOZ_ADB_PM_CLEAR_CHECK")
+        if env_check is not None:
+            return env_check.strip() == "1"
+
+        if _CLEAR_APP_DATA_CONFIRMED is not None:
+            return _CLEAR_APP_DATA_CONFIRMED
+
+        self._logger.info(
+            f"WARNING: Device is not rooted, and the app data (i.e. profile) for "
+            f"{app_name} will be cleared."
+        )
+        self._logger.info(
+            "Confirm that you understand the full app data for the app will be "
+            "removed. The entire profile of the app will be deleted (Yes/No): "
+        )
+        answer = input().strip().lower()
+        _CLEAR_APP_DATA_CONFIRMED = answer in ("yes", "y")
+        return _CLEAR_APP_DATA_CONFIRMED
 
     def uninstall_app(self, app_name, reboot=False, timeout=None):
         """Uninstalls an app on the device.

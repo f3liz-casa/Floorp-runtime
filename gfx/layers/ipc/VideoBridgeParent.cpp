@@ -1,17 +1,25 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "VideoBridgeParent.h"
+
 #include "CompositorThread.h"
+#include "gfxConfig.h"
+#include "gfxPlatform.h"
 #include "mozilla/DataMutex.h"
+#include "mozilla/gfx/gfxVars.h"
 #include "mozilla/ipc/Endpoint.h"
+#include "mozilla/layers/CompositorBridgeParent.h"
 #include "mozilla/layers/PTextureParent.h"
+#include "mozilla/layers/SyncObject.h"
 #include "mozilla/layers/TextureHost.h"
 #include "mozilla/layers/VideoBridgeUtils.h"
 #include "mozilla/webrender/RenderThread.h"
+
+#ifdef XP_WIN
+#  include "mozilla/gfx/DeviceManagerDx.h"
+#endif
 
 namespace mozilla::layers {
 
@@ -21,17 +29,16 @@ using namespace mozilla::gfx;
 using VideoBridgeTable = EnumeratedArray<VideoBridgeSource, VideoBridgeParent*,
                                          size_t(VideoBridgeSource::_Count)>;
 
-NS_IMPL_NONLOGGING_ADDREF_INHERITED(VideoBridgeParent, HostIPCAllocator)
-NS_IMPL_NONLOGGING_RELEASE_INHERITED(VideoBridgeParent, HostIPCAllocator)
-
 MOZ_RUNINIT static StaticDataMutex<VideoBridgeTable> sVideoBridgeFromProcess(
     "VideoBridges");
 static Atomic<bool> sVideoBridgeParentShutDown(false);
 
-VideoBridgeParent::VideoBridgeParent(VideoBridgeSource aSource)
+VideoBridgeParent::VideoBridgeParent()
     : mMonitor("VideoBridgeParent::mMonitor"),
       mCompositorThreadHolder(CompositorThreadHolder::GetSingleton()),
-      mClosed(false) {
+      mClosed(false) {}
+
+void VideoBridgeParent::RegisterSingleton(VideoBridgeSource aSource) {
   auto videoBridgeFromProcess = sVideoBridgeFromProcess.Lock();
   switch (aSource) {
     case VideoBridgeSource::RddProcess:
@@ -44,7 +51,7 @@ VideoBridgeParent::VideoBridgeParent(VideoBridgeSource aSource)
   }
 }
 
-VideoBridgeParent::~VideoBridgeParent() {
+void VideoBridgeParent::UnregisterSingleton() {
   auto videoBridgeFromProcess = sVideoBridgeFromProcess.Lock();
   for (auto& bridgeParent : *videoBridgeFromProcess) {
     if (bridgeParent == this) {
@@ -53,15 +60,23 @@ VideoBridgeParent::~VideoBridgeParent() {
   }
 }
 
+VideoBridgeParent::~VideoBridgeParent() { UnregisterSingleton(); }
+
 /* static */
 void VideoBridgeParent::Open(Endpoint<PVideoBridgeParent>&& aEndpoint,
                              VideoBridgeSource aSource) {
-  RefPtr<VideoBridgeParent> parent = new VideoBridgeParent(aSource);
+  RefPtr<VideoBridgeParent> parent = new VideoBridgeParent();
+  // Other threads can take a reference from the singleton table at any time,
+  // so the bridge must only be published while we hold a strong reference.
+  parent->RegisterSingleton(aSource);
 
-  CompositorThread()->Dispatch(
-      NewRunnableMethod<Endpoint<PVideoBridgeParent>&&>(
-          "gfx::layers::VideoBridgeParent::Bind", parent,
-          &VideoBridgeParent::Bind, std::move(aEndpoint)));
+  nsIThread* thread = CompositorThread();
+  if (!thread || NS_FAILED(thread->Dispatch(
+                     NewRunnableMethod<Endpoint<PVideoBridgeParent>&&>(
+                         "gfx::layers::VideoBridgeParent::Bind", parent,
+                         &VideoBridgeParent::Bind, std::move(aEndpoint))))) {
+    parent->UnregisterSingleton();
+  }
 }
 
 void VideoBridgeParent::Bind(Endpoint<PVideoBridgeParent>&& aEndpoint) {
@@ -74,13 +89,12 @@ void VideoBridgeParent::Bind(Endpoint<PVideoBridgeParent>&& aEndpoint) {
 /* static */
 RefPtr<VideoBridgeParent> VideoBridgeParent::GetSingleton(
     const Maybe<VideoBridgeSource>& aSource) {
-  MOZ_ASSERT(aSource.isSome());
+  MOZ_RELEASE_ASSERT(aSource.isSome());
   auto videoBridgeFromProcess = sVideoBridgeFromProcess.Lock();
   switch (aSource.value()) {
     case VideoBridgeSource::RddProcess:
     case VideoBridgeSource::GpuProcess:
     case VideoBridgeSource::MFMediaEngineCDMProcess:
-      MOZ_ASSERT((*videoBridgeFromProcess)[aSource.value()]);
       return RefPtr{(*videoBridgeFromProcess)[aSource.value()]};
     default:
       MOZ_CRASH("Unhandled case");
@@ -91,24 +105,26 @@ already_AddRefed<TextureHost> VideoBridgeParent::LookupTextureAsync(
     const dom::ContentParentId& aContentId, uint64_t aSerial) {
   MonitorAutoLock lock(mMonitor);
 
-  // We raced shutting down the actor.
+  // We raced shutting down the actor. This can happen when another thread is
+  // keeping the VideoBridgeParent object alive, by waiting for a texture lookup
+  // to complete. While the lookup should fail quickly, it may not release the
+  // actor in time to have removed it from the singleton array.
   if (NS_WARN_IF(!mCompositorThreadHolder)) {
-    MOZ_ASSERT_UNREACHABLE("Called on destroyed VideoBridgeParent actor!");
     return nullptr;
   }
 
-  MOZ_ASSERT(mCompositorThreadHolder->IsInThread());
+  MOZ_RELEASE_ASSERT(mCompositorThreadHolder->IsInThread());
 
-  auto* actor = mTextureMap[aSerial];
-  if (NS_WARN_IF(!actor)) {
+  const auto i = mTextureMap.find(aSerial);
+  if (NS_WARN_IF(i == mTextureMap.end())) {
     return nullptr;
   }
 
-  if (NS_WARN_IF(aContentId != TextureHost::GetTextureContentId(actor))) {
+  if (NS_WARN_IF(aContentId != i->second.mContentId)) {
     return nullptr;
   }
 
-  return do_AddRef(TextureHost::AsTextureHost(actor));
+  return do_AddRef(i->second.mTextureHost);
 }
 
 already_AddRefed<TextureHost> VideoBridgeParent::LookupTexture(
@@ -120,12 +136,12 @@ already_AddRefed<TextureHost> VideoBridgeParent::LookupTexture(
     return nullptr;
   }
 
-  auto* actor = mTextureMap[aSerial];
-  if (actor) {
-    if (NS_WARN_IF(aContentId != TextureHost::GetTextureContentId(actor))) {
+  auto i = mTextureMap.find(aSerial);
+  if (i != mTextureMap.end()) {
+    if (NS_WARN_IF(aContentId != i->second.mContentId)) {
       return nullptr;
     }
-    return do_AddRef(TextureHost::AsTextureHost(actor));
+    return do_AddRef(i->second.mTextureHost);
   }
 
   // We cannot block on the Compositor thread because that is the thread we get
@@ -166,16 +182,16 @@ already_AddRefed<TextureHost> VideoBridgeParent::LookupTexture(
     lock.Wait();
   }
 
-  actor = mTextureMap[aSerial];
-  if (!actor) {
+  i = mTextureMap.find(aSerial);
+  if (NS_WARN_IF(i == mTextureMap.end())) {
     return nullptr;
   }
 
-  if (NS_WARN_IF(aContentId != TextureHost::GetTextureContentId(actor))) {
+  if (NS_WARN_IF(aContentId != i->second.mContentId)) {
     return nullptr;
   }
 
-  return do_AddRef(TextureHost::AsTextureHost(actor));
+  return do_AddRef(i->second.mTextureHost);
 }
 
 void VideoBridgeParent::ActorDestroy(ActorDestroyReason aWhy) {
@@ -192,6 +208,8 @@ void VideoBridgeParent::ActorDestroy(ActorDestroyReason aWhy) {
     mClosed = true;
     mCompositorThreadHolder = nullptr;
   }
+
+  UnregisterSingleton();
 }
 
 /* static */
@@ -225,7 +243,7 @@ void VideoBridgeParent::ShutdownInternal() {
 
 /* static */
 void VideoBridgeParent::UnregisterExternalImages() {
-  MOZ_ASSERT(sVideoBridgeParentShutDown);
+  MOZ_RELEASE_ASSERT(sVideoBridgeParentShutDown);
 
   auto videoBridgeFromProcess = sVideoBridgeFromProcess.Lock();
   for (auto& bridgeParent : *videoBridgeFromProcess) {
@@ -246,11 +264,11 @@ void VideoBridgeParent::DoUnregisterExternalImages() {
   }
 }
 
-PTextureParent* VideoBridgeParent::AllocPTextureParent(
+already_AddRefed<PTextureParent> VideoBridgeParent::AllocPTextureParent(
     const SurfaceDescriptor& aSharedData, ReadLockDescriptor& aReadLock,
     const LayersBackend& aLayersBackend, const TextureFlags& aFlags,
     const dom::ContentParentId& aContentId, const uint64_t& aSerial) {
-  PTextureParent* parent = TextureHost::CreateIPDLActor(
+  RefPtr<PTextureParent> parent = TextureHost::CreateIPDLActor(
       this, aSharedData, std::move(aReadLock), aLayersBackend, aFlags,
       aContentId, aSerial, Nothing());
 
@@ -258,20 +276,115 @@ PTextureParent* VideoBridgeParent::AllocPTextureParent(
     return nullptr;
   }
 
+  if (aFlags & TextureFlags::REMOTE_TEXTURE) {
+    MOZ_ASSERT_UNREACHABLE("Unexpected to be called!");
+    return nullptr;
+  }
+
   MonitorAutoLock lock(mMonitor);
-  mTextureMap[aSerial] = parent;
-  return parent;
+  mTextureMap.insert(
+      {aSerial, {TextureHost::AsTextureHost(parent), aContentId}});
+  return parent.forget();
 }
 
-bool VideoBridgeParent::DeallocPTextureParent(PTextureParent* actor) {
-  MonitorAutoLock lock(mMonitor);
-  mTextureMap.erase(TextureHost::GetTextureSerial(actor));
-  return TextureHost::DestroyIPDLActor(actor);
+// Describes the compositors of this process, independently of any widget.
+// This mirrors the choices made by wr::RenderCompositor::Create for a widget
+// that allows native compositing.
+static TextureFactoryIdentifier GetProcessTextureFactoryIdentifier() {
+  const bool software = gfxVars::UseSoftwareWebRender();
+  WebRenderCompositor compositorType = WebRenderCompositor::DRAW;
+  bool useANGLE = false;
+  bool useDComp = false;
+  bool useLayerCompositor = false;
+  bool useCompositorWnd = false;
+  bool supportsD3D11NV12 = false;
+  SyncHandle syncHandle = {};
+
+  if (software) {
+    if (gfxPlatform::IsHeadless()) {
+      compositorType = WebRenderCompositor::SOFTWARE;
+    } else {
+#if defined(XP_WIN)
+      // SWGL can only draw D3D11 textures when compositing with D3D11. This
+      // mirrors RenderCompositorD3D11SWGL::Create, which clears
+      // AllowSoftwareWebRenderD3D11 if it fails.
+      compositorType = gfxVars::AllowSoftwareWebRenderD3D11() &&
+                               gfxConfig::IsEnabled(Feature::D3D11_COMPOSITING)
+                           ? WebRenderCompositor::D3D11
+                           : WebRenderCompositor::SOFTWARE;
+#elif defined(XP_DARWIN)
+      compositorType = WebRenderCompositor::DRAW;
+#else
+#  if defined(MOZ_WAYLAND)
+      if (gfxVars::UseWebRenderCompositor()) {
+        compositorType = WebRenderCompositor::DRAW;
+      } else
+#  endif
+          if (gfxVars::AllowSoftwareWebRenderOGL()) {
+        compositorType = WebRenderCompositor::OPENGL;
+      } else {
+        compositorType = WebRenderCompositor::SOFTWARE;
+      }
+#endif
+    }
+  } else {
+#ifdef XP_WIN
+    useANGLE = gfxVars::UseWebRenderANGLE();
+    if (useANGLE) {
+      useDComp = gfxVars::UseWebRenderDCompWin();
+      useLayerCompositor = useDComp && gfxVars::UseWebRenderCompositor();
+      if (useDComp) {
+        compositorType = WebRenderCompositor::DIRECT_COMPOSITION;
+      }
+    }
+#endif
+  }
+
+#ifdef XP_WIN
+  useCompositorWnd = XRE_IsGPUProcess() && !gfxPlatform::IsHeadless();
+  if (DeviceManagerDx* dm = DeviceManagerDx::Get()) {
+    supportsD3D11NV12 = dm->CanUseNV12();
+    if (useANGLE || compositorType == WebRenderCompositor::D3D11) {
+      // Both ANGLE and D3D11 SWGL share the sync object of the compositor
+      // device.
+      RefPtr<ID3D11Device> device;
+      RefPtr<SyncObjectHost> syncObject;
+      dm->GetCompositorDeviceAndSyncObject(&device, &syncObject);
+      if (syncObject) {
+        syncHandle = syncObject->GetSyncHandle();
+      }
+    }
+  }
+#endif
+
+  return TextureFactoryIdentifier(
+      software ? WebRenderBackend::SOFTWARE : WebRenderBackend::HARDWARE,
+      compositorType, XRE_GetProcessType(), /* aMaxTextureSize */ 4096,
+      useANGLE, useDComp, useLayerCompositor, useCompositorWnd, false, false,
+      false, supportsD3D11NV12, syncHandle);
+}
+
+mozilla::ipc::IPCResult VideoBridgeParent::RecvGetTextureFactoryIdentifier(
+    GetTextureFactoryIdentifierResolver&& aResolver) {
+  aResolver(GetProcessTextureFactoryIdentifier());
+  return IPC_OK();
+}
+
+void VideoBridgeParent::RemoveTexture(uint64_t aSerial) {
+  RefPtr<TextureHost> textureHost;
+  {
+    MonitorAutoLock lock(mMonitor);
+    auto i = mTextureMap.find(aSerial);
+    if (i != mTextureMap.end()) {
+      textureHost = std::move(i->second.mTextureHost);
+      mTextureMap.erase(i);
+    }
+  }
 }
 
 void VideoBridgeParent::SendAsyncMessage(
-    const nsTArray<AsyncParentMessageData>& aMessage) {
-  MOZ_ASSERT(false, "AsyncMessages not supported");
+    Span<const AsyncParentMessageData> aMessage) {
+  MOZ_ASSERT_UNREACHABLE("AsyncMessages not supported");
 }
 
 bool VideoBridgeParent::AllocShmem(size_t aSize, ipc::Shmem* aShmem) {

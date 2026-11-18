@@ -1,5 +1,3 @@
-/* -*- Mode: indent-tabs-mode: nil; js-indent-level: 2 -*- */
-/* vim: set sts=2 sw=2 et tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -23,7 +21,7 @@ XPCOMUtils.defineLazyServiceGetter(
   this,
   "promptService",
   "@mozilla.org/prompter;1",
-  "nsIPromptService"
+  Ci.nsIPromptService
 );
 
 var { ExtensionError } = ExtensionUtils;
@@ -42,7 +40,7 @@ const installType = addon => {
     return "sideload";
   } else if (addon.isSystem) {
     return "other";
-  } else if (addon.isInstalledByEnterprisePolicy) {
+  } else if (Services.policies?.isAddonRequiredByPolicy(addon.id)) {
     return "admin";
   }
   return "normal";
@@ -234,7 +232,7 @@ this.management = class extends ExtensionAPIPersistent {
         async install({ url, hash }) {
           let listener = {
             onDownloadEnded(install) {
-              if (install.addon.appDisabled || install.addon.type !== "theme") {
+              if (install.addon.appDisabled) {
                 install.cancel();
                 return false;
               }
@@ -249,6 +247,7 @@ this.management = class extends ExtensionAPIPersistent {
             hash,
             telemetryInfo,
             triggeringPrincipal: extension.principal,
+            type: "theme",
           });
           install.addListener(listener);
           try {
@@ -311,7 +310,7 @@ this.management = class extends ExtensionAPIPersistent {
 
           if (
             addon.type !== "theme" &&
-            !extension.isInstalledByEnterprisePolicy
+            !Services.policies?.isAddonRequiredByPolicy(extension.id)
           ) {
             throw new ExtensionError(
               "setEnabled can only be used for themes or by addons installed by enterprise policy"
@@ -319,6 +318,15 @@ this.management = class extends ExtensionAPIPersistent {
           }
           if (!checkAllowedAddon(addon)) {
             throw new ExtensionError("setEnabled not allowed for this addon");
+          }
+          if (
+            !enabled &&
+            Services.policies &&
+            !Services.policies.isAllowed(`disable-extension:${id}`)
+          ) {
+            throw new ExtensionError(
+              `Cannot disable add-on ${id}: disallowed by enterprise policy`
+            );
           }
           if (enabled) {
             await addon.enable();

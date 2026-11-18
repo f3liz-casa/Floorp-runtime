@@ -1,14 +1,11 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef mozilla_ipc_backgroundparent_h__
-#define mozilla_ipc_backgroundparent_h__
+#ifndef mozilla_ipc_backgroundparent_h_
+#define mozilla_ipc_backgroundparent_h_
 
 #include "base/process.h"
-#include "mozilla/Attributes.h"
 #include "mozilla/dom/ContentParent.h"
 #include "nsStringFwd.h"
 #include "nsTArrayForwardDeclare.h"
@@ -21,13 +18,6 @@ template <class>
 struct already_AddRefed;
 
 namespace mozilla {
-
-namespace net {
-
-class SocketProcessBridgeParent;
-class SocketProcessParent;
-
-}  // namespace net
 
 namespace dom {
 
@@ -50,12 +40,11 @@ class Endpoint;
 class BackgroundParent final {
   friend class mozilla::ipc::BackgroundStarterParent;
   friend class mozilla::dom::ContentParent;
-  friend class mozilla::net::SocketProcessBridgeParent;
-  friend class mozilla::net::SocketProcessParent;
 
   using ProcessId = base::ProcessId;
   using BlobImpl = mozilla::dom::BlobImpl;
   using ContentParent = mozilla::dom::ContentParent;
+  using LoadedOriginSet = mozilla::dom::LoadedOriginSet;
   using ThreadsafeContentParentHandle =
       mozilla::dom::ThreadsafeContentParentHandle;
 
@@ -81,7 +70,26 @@ class BackgroundParent final {
   static ThreadsafeContentParentHandle* GetContentParentHandle(
       PBackgroundParent* aBackgroundActor);
 
+  // Return the loaded-origin state associated with a content process actor, or
+  // null for an in-process actor.
+  //
+  // This function may only be called on the background thread.
+  static LoadedOriginSet* GetLoadedOrigins(PBackgroundParent* aBackgroundActor);
+
   static uint64_t GetChildID(PBackgroundParent* aBackgroundActor);
+
+  static mozilla::dom::RemoteType GetRemoteType(
+      PBackgroundParent* aBackgroundActor);
+
+  // Whenever receiving a Principal we need to validate that Principal case
+  // by case. The options can customize the behaviour of the checks.
+  // See ContentParent::ValidatePrincipal for an analog.
+  static bool ValidatePrincipal(
+      PBackgroundParent* aBackgroundActor, nsIPrincipal* aPrincipal,
+      const EnumSet<dom::ValidatePrincipalOptions>& aOptions = {});
+  static bool ValidatePrincipalInfo(
+      PBackgroundParent* aBackgroundActor, const PrincipalInfo& aPrincipalInfo,
+      const EnumSet<dom::ValidatePrincipalOptions>& aOptions = {});
 
   static void KillHardAsync(PBackgroundParent* aBackgroundActor,
                             const nsACString& aReason);
@@ -90,10 +98,6 @@ class BackgroundParent final {
   // Only called by ContentParent for cross-process actors.
   static bool AllocStarter(ContentParent* aContent,
                            Endpoint<PBackgroundStarterParent>&& aEndpoint);
-
-  // Called by SocketProcessBridgeParent and SocketProcessParent for
-  // cross-process actors.
-  static bool AllocStarter(Endpoint<PBackgroundStarterParent>&& aEndpoint);
 };
 
 // Implemented in BackgroundImpl.cpp.
@@ -115,4 +119,4 @@ inline void AssertIsInMainProcess() { MOZ_ASSERT(XRE_IsParentProcess()); }
 }  // namespace ipc
 }  // namespace mozilla
 
-#endif  // mozilla_ipc_backgroundparent_h__
+#endif  // mozilla_ipc_backgroundparent_h_

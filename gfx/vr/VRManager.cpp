@@ -1,47 +1,46 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "VRManager.h"
 
+#include <cstring>
+#include <memory>
+
 #include "GeckoProfiler.h"
 #include "VRManagerParent.h"
 #include "VRShMem.h"
 #include "VRThread.h"
 #include "gfxVR.h"
+#include "ipc/VRLayerParent.h"
 #include "mozilla/ClearOnShutdown.h"
-#include "mozilla/dom/VRDisplay.h"
-#include "mozilla/dom/GamepadEventTypes.h"
-#include "mozilla/layers/TextureHost.h"
-#include "mozilla/layers/CompositorThread.h"
 #include "mozilla/Preferences.h"
 #include "mozilla/Services.h"
 #include "mozilla/StaticPrefs_dom.h"
-#include "mozilla/Unused.h"
+#include "mozilla/dom/GamepadEventTypes.h"
+#include "mozilla/dom/VRDisplay.h"
+#include "mozilla/layers/CompositorThread.h"
+#include "mozilla/layers/TextureHost.h"
 #include "nsIObserverService.h"
-
-#include "gfxVR.h"
-#include <cstring>
-
-#include "ipc/VRLayerParent.h"
 #if !defined(MOZ_WIDGET_ANDROID)
 #  include "VRServiceHost.h"
 #endif
 
 #ifdef XP_WIN
+#  include <d3d11.h>
+
 #  include "CompositorD3D11.h"
 #  include "TextureD3D11.h"
-#  include <d3d11.h>
 #  include "gfxWindowsPlatform.h"
 #  include "mozilla/gfx/DeviceManagerDx.h"
 #elif defined(XP_MACOSX)
-#  include "mozilla/gfx/MacIOSurface.h"
 #  include <errno.h>
+
+#  include "mozilla/gfx/MacIOSurface.h"
 #elif defined(MOZ_WIDGET_ANDROID)
-#  include <string.h>
 #  include <pthread.h>
+#  include <string.h>
+
 #  include "GeckoVRManager.h"
 #  include "mozilla/java/GeckoSurfaceTextureWrappers.h"
 #  include "mozilla/layers/CompositorThread.h"
@@ -86,15 +85,15 @@ static bool ValidVRManagerProcess() {
 
 /* static */
 VRManager* VRManager::Get() {
-  MOZ_ASSERT(sVRManagerSingleton != nullptr);
-  MOZ_ASSERT(ValidVRManagerProcess());
+  MOZ_RELEASE_ASSERT(sVRManagerSingleton != nullptr);
+  MOZ_RELEASE_ASSERT(ValidVRManagerProcess());
 
   return sVRManagerSingleton;
 }
 
 /* static */
 VRManager* VRManager::MaybeGet() {
-  MOZ_ASSERT(ValidVRManagerProcess());
+  MOZ_RELEASE_ASSERT(ValidVRManagerProcess());
 
   return sVRManagerSingleton;
 }
@@ -106,7 +105,7 @@ uint32_t VRManager::AllocateDisplayID() { return ++sDisplayBase; }
 
 /*static*/
 void VRManager::ManagerInit() {
-  MOZ_ASSERT(NS_IsMainThread());
+  MOZ_RELEASE_ASSERT(NS_IsMainThread());
 
   if (!ValidVRManagerProcess()) {
     return;
@@ -148,15 +147,15 @@ VRManager::VRManager()
       mLastUpdateDisplayInfo{},
       mBrowserState{},
       mLastSensorState{} {
-  MOZ_ASSERT(sVRManagerSingleton == nullptr);
-  MOZ_ASSERT(NS_IsMainThread());
-  MOZ_ASSERT(ValidVRManagerProcess());
+  MOZ_RELEASE_ASSERT(sVRManagerSingleton == nullptr);
+  MOZ_RELEASE_ASSERT(NS_IsMainThread());
+  MOZ_RELEASE_ASSERT(ValidVRManagerProcess());
 
 #if !defined(MOZ_WIDGET_ANDROID)
   // XRE_IsGPUProcess() is helping us to check some platforms like
   // Win 7 try which are not using GPU process but VR process is enabled.
-  mVRProcessEnabled =
-      StaticPrefs::dom_vr_process_enabled_AtStartup() && XRE_IsGPUProcess();
+  mVRProcessEnabled = StaticPrefs::dom_vr_process_enabled_AtStartup() &&
+                      StaticPrefs::dom_vr_enabled() && XRE_IsGPUProcess();
   VRServiceHost::Init(mVRProcessEnabled);
   mServiceHost = VRServiceHost::Get();
   // We must shutdown before VRServiceHost, which is cleared
@@ -217,8 +216,8 @@ void VRManager::CloseShmem() {
 }
 
 VRManager::~VRManager() {
-  MOZ_ASSERT(NS_IsMainThread());
-  MOZ_ASSERT(mState == VRManagerState::Disabled);
+  MOZ_RELEASE_ASSERT(NS_IsMainThread());
+  MOZ_RELEASE_ASSERT(mState == VRManagerState::Disabled);
 
   nsCOMPtr<nsIObserverService> service = services::GetObserverService();
   if (service) {
@@ -320,7 +319,7 @@ void VRManager::StartTasks() {
     mTaskTimer->InitWithNamedFuncCallback(
         TaskTimerCallback, this, mTaskInterval,
         nsITimer::TYPE_REPEATING_PRECISE_CAN_SKIP,
-        "VRManager::TaskTimerCallback");
+        "VRManager::TaskTimerCallback"_ns);
   }
 }
 
@@ -493,7 +492,7 @@ void VRManager::CheckForPuppetCompletion() {
   // Notify content process about completion of puppet test resets
   if (mState != VRManagerState::Active) {
     for (const auto& key : mManagerParentsWaitingForPuppetReset) {
-      Unused << key->SendNotifyPuppetResetComplete();
+      (void)key->SendNotifyPuppetResetComplete();
     }
     mManagerParentsWaitingForPuppetReset.Clear();
   }
@@ -506,8 +505,8 @@ void VRManager::CheckForPuppetCompletion() {
 void VRManager::NotifyPuppetComplete() {
   // Notify content process about completion of puppet test scripts
   if (mManagerParentRunningPuppet) {
-    Unused << mManagerParentRunningPuppet
-                  ->SendNotifyPuppetCommandBufferCompleted(true);
+    (void)mManagerParentRunningPuppet->SendNotifyPuppetCommandBufferCompleted(
+        true);
     mManagerParentRunningPuppet = nullptr;
   }
 }
@@ -518,7 +517,7 @@ void VRManager::StartFrame() {
   if (mState != VRManagerState::Active) {
     return;
   }
-  AUTO_PROFILER_TRACING_MARKER("VR", "GetSensorState", OTHER);
+  AUTO_PROFILER_MARKER("GetSensorState", OTHER);
 
   /**
    * Do not start more VR frames until the last submitted frame is already
@@ -612,7 +611,7 @@ void VRManager::ProcessManagerState() {
 }
 
 void VRManager::ProcessManagerState_Disabled() {
-  MOZ_ASSERT(mState == VRManagerState::Disabled);
+  MOZ_RELEASE_ASSERT(mState == VRManagerState::Disabled);
 
   if (!StaticPrefs::dom_vr_enabled() && !StaticPrefs::dom_vr_webxr_enabled()) {
     return;
@@ -626,7 +625,7 @@ void VRManager::ProcessManagerState_Disabled() {
 }
 
 void VRManager::ProcessManagerState_Stopping() {
-  MOZ_ASSERT(mState == VRManagerState::Stopping);
+  MOZ_RELEASE_ASSERT(mState == VRManagerState::Stopping);
   PullState();
   /**
    * In the case of Desktop, the VRService shuts itself down.
@@ -643,7 +642,7 @@ void VRManager::ProcessManagerState_Stopping() {
 }
 
 void VRManager::ProcessManagerState_Idle_StartEnumeration() {
-  MOZ_ASSERT(mState == VRManagerState::Idle);
+  MOZ_RELEASE_ASSERT(mState == VRManagerState::Idle);
 
   if (!mEarliestRestartTime.IsNull() &&
       mEarliestRestartTime > TimeStamp::Now()) {
@@ -711,7 +710,7 @@ void VRManager::ProcessManagerState_Idle_StartEnumeration() {
 }
 
 void VRManager::ProcessManagerState_Idle_StartRuntimeDetection() {
-  MOZ_ASSERT(mState == VRManagerState::Idle);
+  MOZ_RELEASE_ASSERT(mState == VRManagerState::Idle);
 
   OpenShmem();
   mBrowserState.detectRuntimesOnly = true;
@@ -754,7 +753,7 @@ void VRManager::ProcessManagerState_Idle_StartRuntimeDetection() {
 }
 
 void VRManager::ProcessManagerState_Idle() {
-  MOZ_ASSERT(mState == VRManagerState::Idle);
+  MOZ_RELEASE_ASSERT(mState == VRManagerState::Idle);
 
   if (!mRuntimeDetectionCompleted) {
     // Check if we should start detecting runtimes
@@ -775,8 +774,8 @@ void VRManager::ProcessManagerState_Idle() {
 }
 
 void VRManager::ProcessManagerState_DetectRuntimes() {
-  MOZ_ASSERT(mState == VRManagerState::RuntimeDetection);
-  MOZ_ASSERT(mShmem != nullptr);
+  MOZ_RELEASE_ASSERT(mState == VRManagerState::RuntimeDetection);
+  MOZ_RELEASE_ASSERT(mShmem != nullptr);
 
   PullState();
   if (mEnumerationCompleted) {
@@ -809,8 +808,8 @@ void VRManager::ProcessManagerState_DetectRuntimes() {
 }
 
 void VRManager::ProcessManagerState_Enumeration() {
-  MOZ_ASSERT(mState == VRManagerState::Enumeration);
-  MOZ_ASSERT(mShmem != nullptr);
+  MOZ_RELEASE_ASSERT(mState == VRManagerState::Enumeration);
+  MOZ_RELEASE_ASSERT(mShmem != nullptr);
 
   PullState();
   if (mEnumerationCompleted) {
@@ -826,7 +825,7 @@ void VRManager::ProcessManagerState_Enumeration() {
 }
 
 void VRManager::ProcessManagerState_Active() {
-  MOZ_ASSERT(mState == VRManagerState::Active);
+  MOZ_RELEASE_ASSERT(mState == VRManagerState::Active);
 
   if (mDisplayInfo != mLastUpdateDisplayInfo) {
     // While the display is active, send continuous updates
@@ -836,7 +835,7 @@ void VRManager::ProcessManagerState_Active() {
 
 void VRManager::DispatchVRDisplayInfoUpdate() {
   for (VRManagerParent* vmp : mVRManagerParents) {
-    Unused << vmp->SendUpdateDisplayInfo(mDisplayInfo);
+    (void)vmp->SendUpdateDisplayInfo(mDisplayInfo);
   }
   mLastUpdateDisplayInfo = mDisplayInfo;
 }
@@ -852,7 +851,7 @@ void VRManager::DispatchRuntimeCapabilitiesUpdate() {
   }
 
   for (VRManagerParent* vmp : mVRManagerParents) {
-    Unused << vmp->SendUpdateRuntimeCapabilities(flags);
+    (void)vmp->SendUpdateRuntimeCapabilities(flags);
   }
 }
 
@@ -926,13 +925,12 @@ void VRManager::VibrateHaptic(GamepadHandle aGamepadHandle,
   bestSlot.pulseIntensity = (float)aIntensity;
 
   mHapticPulseRemaining[bestSlotIndex] = aDuration;
-  MOZ_ASSERT(bestSlotIndex <= mHapticPromises.Length());
+  MOZ_RELEASE_ASSERT(bestSlotIndex <= mHapticPromises.Length());
   if (bestSlotIndex == mHapticPromises.Length()) {
-    mHapticPromises.AppendElement(
-        UniquePtr<VRManagerPromise>(new VRManagerPromise(aPromise)));
+    mHapticPromises.AppendElement(std::make_unique<VRManagerPromise>(aPromise));
   } else {
     mHapticPromises[bestSlotIndex] =
-        UniquePtr<VRManagerPromise>(new VRManagerPromise(aPromise));
+        std::make_unique<VRManagerPromise>(aPromise);
   }
   PushState();
 }
@@ -1023,8 +1021,8 @@ void VRManager::ResetPuppet(VRManagerParent* aManagerParent) {
 
   mManagerParentsWaitingForPuppetReset.Insert(aManagerParent);
   if (mManagerParentRunningPuppet != nullptr) {
-    Unused << mManagerParentRunningPuppet
-                  ->SendNotifyPuppetCommandBufferCompleted(false);
+    (void)mManagerParentRunningPuppet->SendNotifyPuppetCommandBufferCompleted(
+        false);
     mManagerParentRunningPuppet = nullptr;
   }
   mServiceHost->PuppetReset();
@@ -1216,7 +1214,7 @@ void VRManager::UpdateHaptics(double aDeltaTime) {
 }
 
 void VRManager::ClearHapticSlot(size_t aSlot) {
-  MOZ_ASSERT(aSlot < std::size(mBrowserState.hapticState));
+  MOZ_RELEASE_ASSERT(aSlot < std::size(mBrowserState.hapticState));
   memset(&mBrowserState.hapticState[aSlot], 0, sizeof(VRHapticState));
   mHapticPulseRemaining[aSlot] = 0.0f;
   if (aSlot < mHapticPromises.Length() && mHapticPromises[aSlot]) {
@@ -1341,8 +1339,8 @@ bool VRManager::SubmitFrame(const layers::SurfaceDescriptor& aTexture,
     return false;
   }
 #if defined(XP_WIN) || defined(XP_MACOSX) || defined(MOZ_WIDGET_ANDROID)
-  MOZ_ASSERT(mBrowserState.layerState[0].type ==
-             VRLayerType::LayerType_Stereo_Immersive);
+  MOZ_RELEASE_ASSERT(mBrowserState.layerState[0].type ==
+                     VRLayerType::LayerType_Stereo_Immersive);
   VRLayer_Stereo_Immersive& layer =
       mBrowserState.layerState[0].layer_stereo_immersive;
 
@@ -1366,8 +1364,12 @@ bool VRManager::SubmitFrame(const layers::SurfaceDescriptor& aTexture,
       const auto& desc = aTexture.get_SurfaceDescriptorMacIOSurface();
       layer.textureType = VRLayerTextureType::LayerTextureType_MacIOSurface;
       layer.textureHandle = desc.surfaceId();
-      RefPtr<MacIOSurface> surf = MacIOSurface::LookupSurface(
-          desc.surfaceId(), !desc.isOpaque(), desc.yUVColorSpace());
+      MacIOSurface::AllowAlpha allowAlpha = desc.isOpaque()
+                                                ? MacIOSurface::AllowAlpha::No
+                                                : MacIOSurface::AllowAlpha::Yes;
+      RefPtr<MacIOSurface> surf =
+          MacIOSurface::LookupSurface(desc.surfaceId(), desc.yUVColorSpace(),
+                                      gfx::TransferFunction::SRGB, allowAlpha);
       if (surf) {
         layer.textureSize.width = surf->GetDevicePixelWidth();
         layer.textureSize.height = surf->GetDevicePixelHeight();
@@ -1391,7 +1393,7 @@ bool VRManager::SubmitFrame(const layers::SurfaceDescriptor& aTexture,
     } break;
 #  endif
     default: {
-      MOZ_ASSERT(false);
+      MOZ_RELEASE_ASSERT(false);
       return false;
     }
   }
@@ -1420,7 +1422,7 @@ bool VRManager::SubmitFrame(const layers::SurfaceDescriptor& aTexture,
 
   if (mDisplayInfo.mDisplayState.suppressFrames ||
       !mDisplayInfo.mDisplayState.isConnected) {
-    // External implementation wants to supress frames, service has shut
+    // External implementation wants to suppress frames, service has shut
     // down or hardware has been disconnected.
     return false;
   }
@@ -1437,9 +1439,9 @@ void VRManager::SubmitFrameInternal(const layers::SurfaceDescriptor& aTexture,
                                     const gfx::Rect& aLeftEyeRect,
                                     const gfx::Rect& aRightEyeRect) {
 #if !defined(MOZ_WIDGET_ANDROID)
-  MOZ_ASSERT(mSubmitThread->GetThread() == NS_GetCurrentThread());
+  MOZ_RELEASE_ASSERT(mSubmitThread->GetThread() == NS_GetCurrentThread());
 #endif  // !defined(MOZ_WIDGET_ANDROID)
-  AUTO_PROFILER_TRACING_MARKER("VR", "SubmitFrameAtVRDisplayExternal", OTHER);
+  AUTO_PROFILER_MARKER("SubmitFrameAtVRDisplayExternal", OTHER);
 
   {  // scope lock
     MonitorAutoLock lock(mCurrentSubmitTaskMonitor);

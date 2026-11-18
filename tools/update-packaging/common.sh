@@ -95,7 +95,8 @@ check_for_add_if_not_update() {
   if [[ "$(basename "$add_if_not_file_chk")" = "channel-prefs.js" || \
         "$add_if_not_file_chk" =~ (^|/)ChannelPrefs\.framework/ || \
         "$(basename "$add_if_not_file_chk")" = "update-settings.ini" || \
-        "$add_if_not_file_chk" =~ (^|/)UpdateSettings\.framework/ ]]; then
+        "$add_if_not_file_chk" =~ (^|/)UpdateSettings\.framework/ || \
+        "$(basename "$add_if_not_file_chk")" = "distribution.ini" ]]; then
     ## "true"
     return 0;
   fi
@@ -166,6 +167,29 @@ append_remove_instructions() {
       fi
     done
   fi
+}
+
+# https://bugzilla.mozilla.org/show_bug.cgi?id=2058197
+# https://bugzilla.mozilla.org/show_bug.cgi?id=2058594
+# Order MAR instructions in a way that minimizes the chance of hitting
+# start-up crashes.
+reorder_instructions() {
+  filev3="$1"
+  appname="$2"
+
+  notice ""
+  notice "Reordering MAR instructions to a safer order"
+  {
+    grep -E '^type '                 "$filev3"
+    grep -E '"dependentlibs\.list"$' "$filev3"
+    grep -vE "^type |\"(dependentlibs\.list|browser/omni\.ja|omni\.ja|xul\.dll|mozglue\.dll|${appname}\.exe)\"$" "$filev3"
+    grep -E '"xul\.dll"$'            "$filev3"
+    grep -E '"browser/omni\.ja"$'    "$filev3"
+    grep -E '"omni\.ja"$'            "$filev3"
+    grep -E '"mozglue\.dll"$'        "$filev3"
+    grep -E "\"${appname}\.exe\"$"   "$filev3"
+  } > "$filev3.reordered"
+  mv -f "$filev3.reordered" "$filev3"
 }
 
 # List all files in the current directory, stripping leading "./"

@@ -1,5 +1,4 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- *
+/*
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -42,15 +41,15 @@ mailing address.
 
 #include <stddef.h>
 
-#include "imgFrame.h"
-#include "mozilla/EndianUtils.h"
+#include <algorithm>
+
 #include "RasterImage.h"
 #include "SurfacePipeFactory.h"
-
 #include "gfxColor.h"
 #include "gfxPlatform.h"
+#include "imgFrame.h"
+#include "mozilla/EndianUtils.h"
 #include "qcms.h"
-#include <algorithm>
 
 using namespace mozilla::gfx;
 
@@ -207,8 +206,11 @@ bool nsGIFDecoder2::CheckForTransparency(const OrientedIntRect& aFrameRect) {
 
 //******************************************************************************
 nsresult nsGIFDecoder2::BeginImageFrame(const OrientedIntRect& aFrameRect,
-                                        uint16_t aDepth, bool aIsInterlaced) {
+                                        uint16_t /*aDepth*/,
+                                        bool aIsInterlaced) {
   MOZ_ASSERT(HasSize());
+
+  bool hasTransparency = CheckForTransparency(aFrameRect);
 
   // If we are just counting frames for a metadata decode, there is no actual
   // decoding done. We are just iterating over the blocks to find when a frame
@@ -217,8 +219,6 @@ nsresult nsGIFDecoder2::BeginImageFrame(const OrientedIntRect& aFrameRect,
     mCurrentFrameIndex = mGIFStruct.images_decoded;
     return NS_OK;
   }
-
-  bool hasTransparency = CheckForTransparency(aFrameRect);
 
   // Make sure there's no animation if we're downscaling.
   MOZ_ASSERT_IF(Size() != OutputSize(), !GetImageMetadata().HasAnimation());
@@ -311,7 +311,7 @@ void nsGIFDecoder2::EndImageFrame() {
   // Reset graphic control extension parameters that we shouldn't reuse
   // between frames.
   mGIFStruct.delay_time = 0;
-  mGIFStruct.is_transparent = 0;
+  mGIFStruct.is_transparent = false;
   mGIFStruct.tpixel = 0;
   mGIFStruct.disposal_method = 0;
 
@@ -496,7 +496,7 @@ LexerResult nsGIFDecoder2::DoDecode(SourceBufferIterator& aIterator,
 
   return mLexer.Lex(
       aIterator, aOnResume,
-      [=](State aState, const char* aData, size_t aLength) {
+      [this](State aState, const char* aData, size_t aLength) {
         switch (aState) {
           case State::GIF_HEADER:
             return ReadGIFHeader(aData);

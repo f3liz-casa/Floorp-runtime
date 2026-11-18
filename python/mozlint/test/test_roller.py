@@ -15,7 +15,7 @@ import pytest
 
 from mozlint.errors import LintersNotConfigured, NoValidLinter
 from mozlint.result import Issue, ResultSummary
-from mozlint.roller import LintRoller
+from mozlint.roller import LintRoller, _group_jobs
 
 here = os.path.abspath(os.path.dirname(__file__))
 
@@ -42,6 +42,14 @@ def test_roll_successful(lint, linters, files):
     container = errors[0]
     assert isinstance(container, Issue)
     assert container.rule == "no-foobar"
+
+
+def test_generate_jobs_root_spelling(lint, filedir):
+    lint.root = filedir + "/"
+    lint.linters = [{"name": "root", "type": "external", "include": [filedir]}]
+    jobs = lint._generate_jobs({filedir}, set(), num_procs=1)
+    paths = sorted(p for _, ps in jobs for p in ps)
+    assert paths == sorted(os.path.join(filedir, p) for p in os.listdir(filedir))
 
 
 def test_roll_from_subdir(lint, linters):
@@ -89,6 +97,21 @@ def test_roll_catch_exception(lint, linters, files, capfd):
     lint.roll(files)  # assert not raises
     out, err = capfd.readouterr()
     assert "LintException" in err
+
+
+def test_roll_payload_shadowed_on_sys_path(lint, linters, files, tmp_path, monkeypatch):
+    shadow = tmp_path / "external.py"
+    shadow.write_text(
+        "def external(*args, **kwargs):\n"
+        "    raise AssertionError('shadow module was imported')\n",
+        encoding="utf-8",
+    )
+    monkeypatch.syspath_prepend(str(tmp_path))
+    lint.read(linters("external"))
+
+    result = lint.roll(files)
+    assert result.failed == set()
+    assert len(result.issues) == 1
 
 
 def test_roll_with_global_excluded_path(lint, linters, files):
@@ -189,6 +212,16 @@ def test_roll_code_review_warnings_soft(linters, files):
     assert result.returncode == 0
 
 
+def _linter_filtered_files(files, linters):
+    extensions = set()
+    extensions.update(*[linter.get("extensions", []) for linter in linters])
+    return [
+        f
+        for f in files
+        if os.path.isdir(f) or any(f.endswith(ext) for ext in extensions)
+    ]
+
+
 def fake_run_worker(config, paths, **lintargs):
     result = ResultSummary(lintargs["root"])
     result.issues["count"].append(1)
@@ -207,17 +240,18 @@ def test_number_of_jobs(monkeypatch, lint, linters, files, num_procs):
     lint.read(linters)
     num_jobs = len(lint.roll(files, num_procs=num_procs).issues["count"])
 
-    if len(files) >= num_procs:
+    filtered_files = _linter_filtered_files(files, lint.linters)
+    if len(filtered_files) >= num_procs:
         assert num_jobs == num_procs * len(linters)
     else:
-        assert num_jobs == len(files) * len(linters)
+        assert num_jobs == len(filtered_files) * len(linters)
 
 
 @pytest.mark.skipif(
     platform.system() == "Windows",
     reason="monkeypatch issues with multiprocessing on Windows",
 )
-@pytest.mark.parametrize("max_paths,expected_jobs", [(1, 12), (4, 6), (16, 6)])
+@pytest.mark.parametrize("max_paths,expected_jobs", [(1, 9), (4, 6), (16, 6)])
 def test_max_paths_per_job(monkeypatch, lint, linters, files, max_paths, expected_jobs):
     monkeypatch.setattr(sys.modules[lint.__module__], "_run_worker", fake_run_worker)
 
@@ -298,6 +332,22 @@ def test_keyboard_interrupt():
     assert "Traceback" not in out
 
 
+@pytest.mark.parametrize(
+    "pattern,expected",
+    [
+        ("foobar.py", True),
+        ("files/foobar.py", False),
+        ("**/foobar.py", True),
+        ("*.js", False),
+    ],
+)
+def test_support_files_relative(lint, filedir, pattern, expected):
+    lint.root = filedir
+    linter = {"support-files": [pattern]}
+    vcs_paths = {os.path.join(filedir, "foobar.py")}
+    assert lint.should_lint_entire_tree(vcs_paths, linter) == expected
+
+
 def test_support_files(lint, linters, filedir, monkeypatch, files):
     jobs = []
 
@@ -325,7 +375,7 @@ def test_support_files(lint, linters, filedir, monkeypatch, files):
     actual_files = sorted(chain(*jobs))
     assert actual_files == [path]
 
-    expected_files = sorted(files)
+    expected_files = sorted(_linter_filtered_files(files, lint.linters))
 
     jobs = []
     lint.roll(path, workdir=True)
@@ -356,7 +406,7 @@ def test_support_files(lint, linters, filedir, monkeypatch, files):
     jobs = []
     lint.roll(path, outgoing=True)
     actual_files = sorted(chain(*jobs))
-    assert actual_files == sorted([path, vcs_path]), (
+    assert actual_files == [path], (
         "`--fix` with `--outgoing` on a `support-files` change should "
         "avoid linting the entire root."
     )
@@ -364,7 +414,7 @@ def test_support_files(lint, linters, filedir, monkeypatch, files):
     jobs = []
     lint.roll(path, workdir=True)
     actual_files = sorted(chain(*jobs))
-    assert actual_files == sorted([path, vcs_path]), (
+    assert actual_files == [path], (
         "`--fix` with `--workdir` on a `support-files` change should "
         "avoid linting the entire root."
     )
@@ -372,10 +422,31 @@ def test_support_files(lint, linters, filedir, monkeypatch, files):
     jobs = []
     lint.roll(path, rev='draft() and keyword("dummy revset expression")')
     actual_files = sorted(chain(*jobs))
-    assert actual_files == sorted([path, vcs_path]), (
+    assert actual_files == [path], (
         "`--fix` with `--rev` on a `support-files` change should "
         "avoid linting the entire root."
     )
+
+
+def test_group_jobs(filedir):
+    a = {"name": "a"}
+    b = {"name": "b"}
+    foobar = os.path.join(filedir, "foobar.js")
+    no_foobar = os.path.join(filedir, "no_foobar.js")
+    irrelevant = os.path.join(filedir, "irrelevant")
+    jobs = [
+        (a, [foobar]),
+        (a, [no_foobar]),
+        (b, [filedir]),
+        (b, [foobar]),
+        (b, [irrelevant]),
+        (a, [f"{filedir}_other"]),
+    ]
+    assert _group_jobs(jobs) == [
+        [jobs[0], jobs[1], jobs[4], jobs[5]],
+        [jobs[2]],
+        [jobs[3]],
+    ]
 
 
 def test_setup(lint, linters, filedir, capfd):
@@ -400,6 +471,24 @@ def test_setup_all_skipped(lint, linters, filedir, capfd):
     out, err = capfd.readouterr()
     assert "ERROR: all linters were skipped due to setup, nothing to do!" in err
     assert lint.result.failed_setup == set()
+
+
+def test_setup_roll(lint, linters, filedir, capfd):
+    lint.read(linters("setup"))
+    lint.roll(os.path.join(filedir, "foobar.py"))
+    out, err = capfd.readouterr()
+    assert "setup passed" not in out
+
+    lint.roll(os.path.join(filedir, "foobar.js"))
+    out, err = capfd.readouterr()
+    assert "setup passed" in out
+
+
+def test_setup_roll_failed(lint, linters, filedir):
+    lint.read(linters("setupfailed"))
+    result = lint.roll(os.path.join(filedir, "foobar.js"))
+    assert result.failed_setup == set(["SetupFailedLinter"])
+    assert result.returncode == 1
 
 
 if __name__ == "__main__":

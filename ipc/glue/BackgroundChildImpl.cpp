@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -21,7 +19,6 @@
 #include "mozilla/dom/PBackgroundSDBConnectionChild.h"
 #include "mozilla/dom/CookieStoreChild.h"
 #include "mozilla/dom/PFileSystemRequestChild.h"
-#include "mozilla/dom/EndpointForReportChild.h"
 #include "mozilla/dom/PVsync.h"
 #include "mozilla/dom/TemporaryIPCBlobChild.h"
 #include "mozilla/dom/cache/ActorUtils.h"
@@ -33,7 +30,6 @@
 #include "mozilla/dom/ServiceWorkerChild.h"
 #include "mozilla/dom/SharedWorkerChild.h"
 #include "mozilla/dom/StorageIPC.h"
-#include "mozilla/dom/MessagePortChild.h"
 #include "mozilla/dom/ServiceWorkerContainerChild.h"
 #include "mozilla/dom/ServiceWorkerManagerChild.h"
 #include "mozilla/ipc/PBackgroundTestChild.h"
@@ -172,7 +168,7 @@ bool BackgroundChildImpl::DeallocPBackgroundIndexedDBUtilsChild(
 
 BackgroundChildImpl::PBackgroundLSObserverChild*
 BackgroundChildImpl::AllocPBackgroundLSObserverChild(
-    const uint64_t& aObserverId) {
+    const uint64_t& /*aObserverId*/) {
   MOZ_CRASH("PBackgroundLSObserverChild actor should be manually constructed!");
 }
 
@@ -186,7 +182,7 @@ bool BackgroundChildImpl::DeallocPBackgroundLSObserverChild(
 
 BackgroundChildImpl::PBackgroundLSRequestChild*
 BackgroundChildImpl::AllocPBackgroundLSRequestChild(
-    const LSRequestParams& aParams) {
+    const LSRequestParams& /*aParams*/) {
   MOZ_CRASH("PBackgroundLSRequestChild actor should be manually constructed!");
 }
 
@@ -200,8 +196,8 @@ bool BackgroundChildImpl::DeallocPBackgroundLSRequestChild(
 
 BackgroundChildImpl::PBackgroundLocalStorageCacheChild*
 BackgroundChildImpl::AllocPBackgroundLocalStorageCacheChild(
-    const PrincipalInfo& aPrincipalInfo, const nsACString& aOriginKey,
-    const uint32_t& aPrivateBrowsingId) {
+    const PrincipalInfo& /*aPrincipalInfo*/, const nsACString& /*aOriginKey*/,
+    const uint32_t& /*aPrivateBrowsingId*/) {
   MOZ_CRASH(
       "PBackgroundLocalStorageChild actors should be manually "
       "constructed!");
@@ -217,7 +213,7 @@ bool BackgroundChildImpl::DeallocPBackgroundLocalStorageCacheChild(
 
 BackgroundChildImpl::PBackgroundLSSimpleRequestChild*
 BackgroundChildImpl::AllocPBackgroundLSSimpleRequestChild(
-    const LSSimpleRequestParams& aParams) {
+    const LSSimpleRequestParams& /*aParams*/) {
   MOZ_CRASH(
       "PBackgroundLSSimpleRequestChild actor should be manually "
       "constructed!");
@@ -233,7 +229,7 @@ bool BackgroundChildImpl::DeallocPBackgroundLSSimpleRequestChild(
 
 BackgroundChildImpl::PBackgroundStorageChild*
 BackgroundChildImpl::AllocPBackgroundStorageChild(
-    const nsAString& aProfilePath, const uint32_t& aPrivateBrowsingId) {
+    const nsAString& /*aProfilePath*/, const uint32_t& /*aPrivateBrowsingId*/) {
   MOZ_CRASH("PBackgroundStorageChild actors should be manually constructed!");
 }
 
@@ -247,8 +243,8 @@ bool BackgroundChildImpl::DeallocPBackgroundStorageChild(
 }
 
 dom::PSharedWorkerChild* BackgroundChildImpl::AllocPSharedWorkerChild(
-    const dom::RemoteWorkerData& aData, const uint64_t& aWindowID,
-    const dom::MessagePortIdentifier& aPortIdentifier) {
+    const dom::RemoteWorkerData& /*aData*/, const uint64_t& /*aWindowID*/,
+    const dom::MessagePortIdentifier& /*aPortIdentifier*/) {
   RefPtr<dom::SharedWorkerChild> agent = new dom::SharedWorkerChild();
   return agent.forget().take();
 }
@@ -256,7 +252,7 @@ dom::PSharedWorkerChild* BackgroundChildImpl::AllocPSharedWorkerChild(
 bool BackgroundChildImpl::DeallocPSharedWorkerChild(
     dom::PSharedWorkerChild* aActor) {
   RefPtr<dom::SharedWorkerChild> actor =
-      dont_AddRef(static_cast<dom::SharedWorkerChild*>(aActor));
+      dont_AddRef(mozilla::ipc::ActorCast<dom::SharedWorkerChild>(aActor));
   return true;
 }
 
@@ -269,31 +265,19 @@ BackgroundChildImpl::AllocPTemporaryIPCBlobChild() {
 bool BackgroundChildImpl::DeallocPTemporaryIPCBlobChild(
     dom::PTemporaryIPCBlobChild* aActor) {
   RefPtr<dom::TemporaryIPCBlobChild> actor =
-      dont_AddRef(static_cast<dom::TemporaryIPCBlobChild*>(aActor));
+      dont_AddRef(mozilla::ipc::ActorCast<dom::TemporaryIPCBlobChild>(aActor));
   return true;
 }
 
 dom::PFileCreatorChild* BackgroundChildImpl::AllocPFileCreatorChild(
-    const nsAString& aFullPath, const nsAString& aType, const nsAString& aName,
-    const Maybe<int64_t>& aLastModified, const bool& aExistenceCheck,
-    const bool& aIsFromNsIFile) {
+    const nsAString& /*aFullPath*/, const nsAString& /*aType*/,
+    const nsAString& /*aName*/, const Maybe<int64_t>& /*aLastModified*/,
+    const bool& /*aExistenceCheck*/, const bool& /*aIsFromNsIFile*/) {
   return new dom::FileCreatorChild();
 }
 
 bool BackgroundChildImpl::DeallocPFileCreatorChild(PFileCreatorChild* aActor) {
-  delete static_cast<dom::FileCreatorChild*>(aActor);
-  return true;
-}
-
-PUDPSocketChild* BackgroundChildImpl::AllocPUDPSocketChild(
-    const Maybe<PrincipalInfo>& aPrincipalInfo, const nsACString& aFilter) {
-  MOZ_CRASH("AllocPUDPSocket should not be called");
-  return nullptr;
-}
-
-bool BackgroundChildImpl::DeallocPUDPSocketChild(PUDPSocketChild* child) {
-  UDPSocketChild* p = static_cast<UDPSocketChild*>(child);
-  p->ReleaseIPDLReference();
+  delete mozilla::ipc::ActorCast<dom::FileCreatorChild>(aActor);
   return true;
 }
 
@@ -302,8 +286,8 @@ bool BackgroundChildImpl::DeallocPUDPSocketChild(PUDPSocketChild* child) {
 // -----------------------------------------------------------------------------
 
 dom::PBroadcastChannelChild* BackgroundChildImpl::AllocPBroadcastChannelChild(
-    const PrincipalInfo& aPrincipalInfo, const nsACString& aOrigin,
-    const nsAString& aChannel) {
+    const PrincipalInfo& /*aPrincipalInfo*/, const nsACString& /*aOrigin*/,
+    const nsAString& /*aChannel*/) {
   RefPtr<dom::BroadcastChannelChild> agent = new dom::BroadcastChannelChild();
   return agent.forget().take();
 }
@@ -327,7 +311,7 @@ dom::PCookieStoreChild* BackgroundChildImpl::AllocPCookieStoreChild() {
 
 bool BackgroundChildImpl::DeallocPCookieStoreChild(PCookieStoreChild* aActor) {
   RefPtr<dom::CookieStoreChild> child =
-      dont_AddRef(static_cast<dom::CookieStoreChild*>(aActor));
+      dont_AddRef(mozilla::ipc::ActorCast<dom::CookieStoreChild>(aActor));
   MOZ_ASSERT(child);
   return true;
 }
@@ -368,8 +352,8 @@ BackgroundChildImpl::AllocPServiceWorkerManagerChild() {
 
 bool BackgroundChildImpl::DeallocPServiceWorkerManagerChild(
     PServiceWorkerManagerChild* aActor) {
-  RefPtr<dom::ServiceWorkerManagerChild> child =
-      dont_AddRef(static_cast<dom::ServiceWorkerManagerChild*>(aActor));
+  RefPtr<dom::ServiceWorkerManagerChild> child = dont_AddRef(
+      mozilla::ipc::ActorCast<dom::ServiceWorkerManagerChild>(aActor));
   MOZ_ASSERT(child);
   return true;
 }
@@ -385,24 +369,6 @@ already_AddRefed<PCacheChild> BackgroundChildImpl::AllocPCacheChild() {
 already_AddRefed<PCacheStreamControlChild>
 BackgroundChildImpl::AllocPCacheStreamControlChild() {
   return dom::cache::AllocPCacheStreamControlChild();
-}
-
-// -----------------------------------------------------------------------------
-// MessageChannel/MessagePort API
-// -----------------------------------------------------------------------------
-
-dom::PMessagePortChild* BackgroundChildImpl::AllocPMessagePortChild(
-    const nsID& aUUID, const nsID& aDestinationUUID,
-    const uint32_t& aSequenceID) {
-  RefPtr<dom::MessagePortChild> agent = new dom::MessagePortChild();
-  return agent.forget().take();
-}
-
-bool BackgroundChildImpl::DeallocPMessagePortChild(PMessagePortChild* aActor) {
-  RefPtr<dom::MessagePortChild> child =
-      dont_AddRef(static_cast<dom::MessagePortChild*>(aActor));
-  MOZ_ASSERT(child);
-  return true;
 }
 
 already_AddRefed<PServiceWorkerChild>
@@ -422,18 +388,6 @@ BackgroundChildImpl::AllocPServiceWorkerRegistrationChild(
     const IPCServiceWorkerRegistrationDescriptor&) {
   MOZ_CRASH("Shouldn't be called.");
   return {};
-}
-
-dom::PEndpointForReportChild* BackgroundChildImpl::AllocPEndpointForReportChild(
-    const nsAString& aGroupName, const PrincipalInfo& aPrincipalInfo) {
-  return new dom::EndpointForReportChild();
-}
-
-bool BackgroundChildImpl::DeallocPEndpointForReportChild(
-    PEndpointForReportChild* aActor) {
-  MOZ_ASSERT(aActor);
-  delete static_cast<dom::EndpointForReportChild*>(aActor);
-  return true;
 }
 
 }  // namespace mozilla::ipc

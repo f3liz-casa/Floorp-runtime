@@ -64,14 +64,16 @@ static void backup2lines(pixel *const dst[3], /*const*/ pixel *const src[3],
 
 static void backup2x8(pixel dst[3][8][2],
                       /*const*/ pixel *const src[3],
-                      const ptrdiff_t src_stride[2], int x_off,
+                      const ptrdiff_t src_stride[2], ptrdiff_t x_off,
                       const enum Dav1dPixelLayout layout,
                       const enum Backup2x8Flags flag)
 {
     ptrdiff_t y_off = 0;
     if (flag & BACKUP_2X8_Y) {
-        for (int y = 0; y < 8; y++, y_off += PXSTRIDE(src_stride[0]))
-            pixel_copy(dst[0][y], &src[0][y_off + x_off - 2], 2);
+        const ptrdiff_t y_stride = PXSTRIDE(src_stride[0]);
+        const pixel *src0 = &src[0][x_off - 2];
+        for (int y = 0; y < 8; y++, y_off += y_stride)
+            pixel_copy(dst[0][y], &src0[y_off], 2);
     }
 
     if (layout == DAV1D_PIXEL_LAYOUT_I400 || !(flag & BACKUP_2X8_UV))
@@ -82,9 +84,11 @@ static void backup2x8(pixel dst[3][8][2],
 
     x_off >>= ss_hor;
     y_off = 0;
-    for (int y = 0; y < (8 >> ss_ver); y++, y_off += PXSTRIDE(src_stride[1])) {
-        pixel_copy(dst[1][y], &src[1][y_off + x_off - 2], 2);
-        pixel_copy(dst[2][y], &src[2][y_off + x_off - 2], 2);
+    const ptrdiff_t uv_stride = PXSTRIDE(src_stride[1]);
+    const pixel *src1 = &src[1][x_off - 2], *const src2 = &src[2][x_off - 2];
+    for (int y = 0; y < (8 >> ss_ver); y++, y_off += uv_stride) {
+        pixel_copy(dst[1][y], &src1[y_off], 2);
+        pixel_copy(dst[2][y], &src2[y_off], 2);
     }
 }
 
@@ -143,7 +147,7 @@ void bytefn(dav1d_cdef_brow)(Dav1dTaskContext *const tc,
         edges &= ~CDEF_HAVE_LEFT;
         edges |= CDEF_HAVE_RIGHT;
         enum Backup2x8Flags prev_flag = 0;
-        for (int sbx = 0, last_skip = 1; sbx < sb64w; sbx++, edges |= CDEF_HAVE_LEFT) {
+        for (int sbx = 0; sbx < sb64w; sbx++, edges |= CDEF_HAVE_LEFT) {
             const int sb128x = sbx >> 1;
             const int sb64_idx = ((by & sbsz) >> 3) + (sbx & 1);
             const int cdef_idx = lflvl[sb128x].cdef_idx[sb64_idx];
@@ -151,7 +155,7 @@ void bytefn(dav1d_cdef_brow)(Dav1dTaskContext *const tc,
                 (!f->frame_hdr->cdef.y_strength[cdef_idx] &&
                  !f->frame_hdr->cdef.uv_strength[cdef_idx]))
             {
-                last_skip = 1;
+                prev_flag = 0;
                 goto next_sb;
             }
 
@@ -184,10 +188,10 @@ void bytefn(dav1d_cdef_brow)(Dav1dTaskContext *const tc,
                 // go to the next block
                 const uint32_t bx_mask = 3U << (bx & 30);
                 if (!(noskip_mask & bx_mask)) {
-                    last_skip = 1;
+                    prev_flag = 0;
                     goto next_b;
                 }
-                const int do_left = last_skip ? flag : (prev_flag ^ flag) & flag;
+                const enum Backup2x8Flags do_left = (prev_flag ^ flag) & flag;
                 prev_flag = flag;
                 if (do_left && edges & CDEF_HAVE_LEFT) {
                     // we didn't backup the prefilter data because it wasn't
@@ -287,7 +291,6 @@ void bytefn(dav1d_cdef_brow)(Dav1dTaskContext *const tc,
 
             skip_uv:
                 bit ^= 1;
-                last_skip = 0;
 
             next_b:
                 bptrs[0] += 8;

@@ -1,6 +1,4 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- * vim: set ts=8 sts=2 et sw=2 tw=80:
- * This Source Code Form is subject to the terms of the Mozilla Public
+/* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
@@ -77,6 +75,8 @@ void MacroAssembler::andPtr(Imm32 imm, Register src, Register dest) {
   MOZ_CRASH();
 }
 
+void MacroAssembler::andPtr(Imm32 imm, const Address& dest) { MOZ_CRASH(); }
+
 void MacroAssembler::and64(Imm64 imm, Register64 dest) { MOZ_CRASH(); }
 
 void MacroAssembler::or64(Imm64 imm, Register64 dest) { MOZ_CRASH(); }
@@ -136,6 +136,7 @@ void MacroAssembler::sub64(Register64 src, Register64 dest) { MOZ_CRASH(); }
 void MacroAssembler::sub64(Imm64 imm, Register64 dest) { MOZ_CRASH(); }
 
 void MacroAssembler::mulPtr(Register rhs, Register srcDest) { MOZ_CRASH(); }
+void MacroAssembler::mulPtr(ImmWord rhs, Register srcDest) { MOZ_CRASH(); }
 
 void MacroAssembler::mul64(Imm64 imm, const Register64& dest) { MOZ_CRASH(); }
 
@@ -179,9 +180,22 @@ void MacroAssembler::rshiftPtrArithmetic(Register shift, Register srcDest) {
 
 void MacroAssembler::lshift64(Imm32 imm, Register64 dest) { MOZ_CRASH(); }
 
+void MacroAssembler::lshift64(Imm32 imm, Register64 src, Register64 dest) {
+  MOZ_CRASH();
+}
+
 void MacroAssembler::rshift64(Imm32 imm, Register64 dest) { MOZ_CRASH(); }
 
+void MacroAssembler::rshift64(Imm32 imm, Register64 src, Register64 dest) {
+  MOZ_CRASH();
+}
+
 void MacroAssembler::rshift64Arithmetic(Imm32 imm, Register64 dest) {
+  MOZ_CRASH();
+}
+
+void MacroAssembler::rshift64Arithmetic(Imm32 imm, Register64 src,
+                                        Register64 dest) {
   MOZ_CRASH();
 }
 
@@ -272,6 +286,10 @@ void MacroAssembler::xor32(Imm32 imm, const Address& dest) { MOZ_CRASH(); }
 
 void MacroAssembler::xor32(const Address& src, Register dest) { MOZ_CRASH(); }
 
+void MacroAssembler::nor32(Imm32 imm, Register src, Register dest) {
+  MOZ_CRASH();
+}
+
 void MacroAssembler::byteSwap16SignExtend(Register reg) { MOZ_CRASH(); }
 
 void MacroAssembler::byteSwap16ZeroExtend(Register reg) { MOZ_CRASH(); }
@@ -287,6 +305,8 @@ void MacroAssembler::add32(Imm32 imm, Register src, Register dest) {
 }
 
 void MacroAssembler::add32(Imm32 imm, const Address& dest) { MOZ_CRASH(); }
+
+void MacroAssembler::add32(const Address& src, Register dest) { MOZ_CRASH(); }
 
 void MacroAssembler::addFloat32(FloatRegister src, FloatRegister dest) {
   MOZ_CRASH();
@@ -588,6 +608,17 @@ void MacroAssembler::branchTestNull(Condition cond, const ValueOperand& value,
   MOZ_CRASH();
 }
 
+void MacroAssembler::branchTestNullOrUndefined(Condition cond, Register tag,
+                                               Label* label) {
+  MOZ_CRASH();
+}
+
+void MacroAssembler::branchTestNullOrUndefined(Condition cond,
+                                               const ValueOperand& value,
+                                               Label* label) {
+  MOZ_CRASH();
+}
+
 void MacroAssembler::branchTestObject(Condition cond, const Address& address,
                                       Label* label) {
   MOZ_CRASH();
@@ -600,6 +631,11 @@ void MacroAssembler::branchTestObject(Condition cond, const BaseIndex& address,
 
 void MacroAssembler::branchTestObject(Condition cond, const ValueOperand& value,
                                       Label* label) {
+  MOZ_CRASH();
+}
+
+void MacroAssembler::branchTestGCThing(Condition cond, Register tag,
+                                       Label* label) {
   MOZ_CRASH();
 }
 
@@ -630,6 +666,11 @@ void MacroAssembler::branchTestMagic(Condition cond, const BaseIndex& address,
 }
 
 void MacroAssembler::branchTestMagic(Condition cond, const Address& valaddr,
+                                     JSWhyMagic why, Label* label) {
+  MOZ_CRASH();
+}
+
+void MacroAssembler::branchTestMagic(Condition cond, const BaseIndex& valaddr,
                                      JSWhyMagic why, Label* label) {
   MOZ_CRASH();
 }
@@ -735,12 +776,12 @@ void MacroAssembler::branch16(Condition cond, const Address& lhs, Imm32 rhs,
 }
 
 void MacroAssembler::branch32(Condition cond, Register lhs, Register rhs,
-                              Label* label, LhsHighBitsAreClean) {
+                              Label* label) {
   MOZ_CRASH();
 }
 
 void MacroAssembler::branch32(Condition cond, Register lhs, Imm32 rhs,
-                              Label* label, LhsHighBitsAreClean) {
+                              Label* label) {
   MOZ_CRASH();
 }
 
@@ -893,33 +934,33 @@ void MacroAssembler::spectreMovePtr(Condition cond, Register src,
   MOZ_CRASH();
 }
 
-FaultingCodeOffset MacroAssembler::storeDouble(FloatRegister src,
+FaultingCodeRange MacroAssembler::storeDouble(FloatRegister src,
+                                              const Address& dest) {
+  MOZ_CRASH();
+}
+
+FaultingCodeRange MacroAssembler::storeDouble(FloatRegister src,
+                                              const BaseIndex& dest) {
+  MOZ_CRASH();
+}
+
+FaultingCodeRange MacroAssembler::storeFloat32(FloatRegister src,
                                                const Address& dest) {
   MOZ_CRASH();
 }
 
-FaultingCodeOffset MacroAssembler::storeDouble(FloatRegister src,
+FaultingCodeRange MacroAssembler::storeFloat32(FloatRegister src,
                                                const BaseIndex& dest) {
   MOZ_CRASH();
 }
 
-FaultingCodeOffset MacroAssembler::storeFloat32(FloatRegister src,
-                                                const Address& dest) {
+FaultingCodeRange MacroAssembler::storeFloat16(FloatRegister src,
+                                               const Address& dest, Register) {
   MOZ_CRASH();
 }
-
-FaultingCodeOffset MacroAssembler::storeFloat32(FloatRegister src,
-                                                const BaseIndex& dest) {
-  MOZ_CRASH();
-}
-
-FaultingCodeOffset MacroAssembler::storeFloat16(FloatRegister src,
-                                                const Address& dest, Register) {
-  MOZ_CRASH();
-}
-FaultingCodeOffset MacroAssembler::storeFloat16(FloatRegister src,
-                                                const BaseIndex& dest,
-                                                Register) {
+FaultingCodeRange MacroAssembler::storeFloat16(FloatRegister src,
+                                               const BaseIndex& dest,
+                                               Register) {
   MOZ_CRASH();
 }
 
@@ -1127,12 +1168,12 @@ void MacroAssembler::branchAdd64(Condition cond, Imm64 imm, Register64 dest,
   MOZ_CRASH();
 }
 
-void MacroAssembler::quotient32(Register rhs, Register srcDest,
+void MacroAssembler::quotient32(Register lhs, Register rhs, Register dest,
                                 bool isUnsigned) {
   MOZ_CRASH();
 }
 
-void MacroAssembler::remainder32(Register rhs, Register srcDest,
+void MacroAssembler::remainder32(Register lhs, Register rhs, Register dest,
                                  bool isUnsigned) {
   MOZ_CRASH();
 }
@@ -1160,6 +1201,38 @@ void MacroAssembler::branch64(Condition cond, const Address& lhs,
 void MacroAssembler::branch64(Condition cond, const Address& lhs,
                               const Address& rhs, Register scratch,
                               Label* label) {
+  MOZ_CRASH();
+}
+
+void MacroAssembler::min32(Register lhs, Register rhs, Register dest) {
+  MOZ_CRASH();
+}
+
+void MacroAssembler::min32(Register lhs, Imm32 rhs, Register dest) {
+  MOZ_CRASH();
+}
+
+void MacroAssembler::max32(Register lhs, Register rhs, Register dest) {
+  MOZ_CRASH();
+}
+
+void MacroAssembler::max32(Register lhs, Imm32 rhs, Register dest) {
+  MOZ_CRASH();
+}
+
+void MacroAssembler::minPtr(Register lhs, Register rhs, Register dest) {
+  MOZ_CRASH();
+}
+
+void MacroAssembler::minPtr(Register lhs, ImmWord rhs, Register dest) {
+  MOZ_CRASH();
+}
+
+void MacroAssembler::maxPtr(Register lhs, Register rhs, Register dest) {
+  MOZ_CRASH();
+}
+
+void MacroAssembler::maxPtr(Register lhs, ImmWord rhs, Register dest) {
   MOZ_CRASH();
 }
 
@@ -1217,6 +1290,29 @@ void MacroAssembler::rotateRight64(Imm32 count, Register64 input,
 
 void MacroAssembler::rotateRight64(Register count, Register64 input,
                                    Register64 dest, Register temp) {
+  MOZ_CRASH();
+}
+
+// ===============================================================
+// Shift or rotate, then combine with another register
+
+void MacroAssembler::lshift32ThenAdd(Imm32 shift, Register rhs,
+                                     Register srcDest) {
+  MOZ_CRASH();
+}
+
+void MacroAssembler::lshift32ThenOr(Imm32 shift, Register rhs,
+                                    Register srcDest) {
+  MOZ_CRASH();
+}
+
+void MacroAssembler::rshiftPtrThenXor(Imm32 shift, Register rhs,
+                                      Register srcDest) {
+  MOZ_CRASH();
+}
+
+void MacroAssembler::rotateLeft64ThenXor(Imm32 count, Register64 rhs,
+                                         Register64 srcDest) {
   MOZ_CRASH();
 }
 

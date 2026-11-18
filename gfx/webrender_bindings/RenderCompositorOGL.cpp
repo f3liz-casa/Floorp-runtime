@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -9,8 +7,8 @@
 #include "GLContext.h"
 #include "GLContextEGL.h"
 #include "GLContextProvider.h"
-#include "mozilla/gfx/gfxVars.h"
 #include "mozilla/gfx/Logging.h"
+#include "mozilla/gfx/gfxVars.h"
 #include "mozilla/webrender/RenderThread.h"
 #include "mozilla/widget/CompositorWidget.h"
 
@@ -33,7 +31,7 @@ UniquePtr<RenderCompositor> RenderCompositorOGL::Create(
                     << gfx::hexa(gl.get());
     return nullptr;
   }
-  return MakeUnique<RenderCompositorOGL>(std::move(gl), aWidget);
+  return std::make_unique<RenderCompositorOGL>(std::move(gl), aWidget);
 }
 
 RenderCompositorOGL::RenderCompositorOGL(
@@ -71,7 +69,7 @@ bool RenderCompositorOGL::BeginFrame() {
 RenderedFrameId RenderCompositorOGL::EndFrame(
     const nsTArray<DeviceIntRect>& aDirtyRects) {
   RenderedFrameId frameId = GetNextRenderFrameId();
-  if (UsePartialPresent() && aDirtyRects.Length() > 0) {
+  if (UseWindowPartialPresent() && aDirtyRects.Length() > 0) {
     gfx::IntRegion bufferInvalid;
     const auto bufferSize = GetBufferSize();
     for (const DeviceIntRect& rect : aDirtyRects) {
@@ -107,12 +105,8 @@ uint32_t RenderCompositorOGL::GetMaxPartialPresentRects() {
 
 bool RenderCompositorOGL::RequestFullRender() { return false; }
 
-bool RenderCompositorOGL::UsePartialPresent() {
+bool RenderCompositorOGL::UseWindowPartialPresent() {
   return gfx::gfxVars::WebRenderMaxPartialPresentRects() > 0;
-}
-
-bool RenderCompositorOGL::ShouldDrawPreviousPartialPresentRegions() {
-  return true;
 }
 
 size_t RenderCompositorOGL::GetBufferAge() const {

@@ -4,6 +4,12 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
+#![allow(
+    clippy::allow_attributes,
+    clippy::unwrap_in_result,
+    reason = "OK in tests."
+)]
+
 use std::{
     cell::RefCell,
     net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
@@ -11,31 +17,33 @@ use std::{
     time::{Duration, Instant},
 };
 
-use neqo_common::{qdebug, Datagram, Decoder};
+use neqo_common::{Datagram, Decoder, event::Provider as _, qdebug, to_u64};
 use test_fixture::{
+    DEFAULT_ADDR, DEFAULT_ADDR_V4,
     assertions::{assert_v4_path, assert_v6_path},
-    fixture_init, new_neqo_qlog, now, DEFAULT_ADDR, DEFAULT_ADDR_V4,
+    fixture_init, new_neqo_qlog, now,
 };
 
 use super::{
     super::{Connection, Output, State, StreamType},
-    connect_fail, connect_force_idle, connect_rtt_idle, default_client, default_server,
-    maybe_authenticate, new_client, new_server, send_something, zero_len_cid_client,
-    CountingConnectionIdGenerator,
+    CountingConnectionIdGenerator, connect_fail, connect_force_idle, connect_rtt_idle,
+    default_client, default_server, maybe_authenticate, new_client, new_server, send_something,
+    zero_len_cid_client,
 };
 use crate::{
-    cid::LOCAL_ACTIVE_CID_LIMIT,
+    CloseReason, ConnectionEvent, ConnectionId, ConnectionIdDecoder, ConnectionIdGenerator,
+    ConnectionIdRef, ConnectionParameters, EmptyConnectionIdGenerator, Error,
+    MIN_INITIAL_PACKET_SIZE,
+    cid::ConnectionIdManager,
     connection::tests::{
         assert_path_challenge_min_len, connect, send_something_paced, send_with_extra,
     },
     frame::FrameType,
     packet,
-    path::MAX_PATH_PROBES,
+    path::Path,
     pmtud::Pmtud,
     stats::FrameStats,
     tparams::{PreferredAddress, TransportParameter, TransportParameterId},
-    CloseReason, ConnectionId, ConnectionIdDecoder as _, ConnectionIdGenerator, ConnectionIdRef,
-    ConnectionParameters, EmptyConnectionIdGenerator, Error, MIN_INITIAL_PACKET_SIZE,
 };
 
 /// This should be a valid-seeming transport parameter.
@@ -45,6 +53,99 @@ const SAMPLE_PREFERRED_ADDRESS: &[u8] = &[
     0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0x01, 0xbb, 0x05, 0x01, 0x02, 0x03, 0x04, 0x05, 0x03, 0x03,
     0x03, 0x03, 0x03, 0x03, 0x03, 0x03, 0x03, 0x03, 0x03, 0x03, 0x03, 0x03, 0x03, 0x03,
 ];
+
+/// Supplies only the initial CID, then returns `None`. Panics after a bounded number of calls
+/// so a regression that keeps requesting CIDs fails instead of hanging the test suite.
+struct ExhaustibleConnectionIdGenerator {
+    inner: Option<CountingConnectionIdGenerator>,
+    attempts_left: usize,
+}
+
+impl ConnectionIdDecoder for ExhaustibleConnectionIdGenerator {
+    fn decode_cid<'a>(&self, dec: &mut Decoder<'a>) -> Option<ConnectionIdRef<'a>> {
+        // Decoding is stateless and must still work after the generator has been consumed.
+        CountingConnectionIdGenerator::default().decode_cid(dec)
+    }
+}
+
+impl ConnectionIdGenerator for ExhaustibleConnectionIdGenerator {
+    fn generate_cid(&mut self) -> Option<ConnectionId> {
+        assert!(
+            self.attempts_left > 0,
+            "CID generation did not stop after exhaustion"
+        );
+        self.attempts_left -= 1;
+        self.inner.take()?.generate_cid()
+    }
+
+    fn as_decoder(&self) -> &dyn ConnectionIdDecoder {
+        self
+    }
+}
+
+/// Exhausting either endpoint's generator after its initial CID must not block the handshake
+/// or subsequent stream output. Each case exhausts a different endpoint; both message directions
+/// use that same connection pair to check that it can still send and receive while exhausted.
+#[test]
+fn cid_generator_exhaustion_allows_connection_progress() {
+    fn transfer(sender: &mut Connection, receiver: &mut Connection) {
+        const MESSAGE: &[u8] = b"hello";
+
+        let stream_id = sender.stream_create(StreamType::UniDi).unwrap();
+        assert_eq!(
+            sender.stream_send(stream_id, MESSAGE).unwrap(),
+            MESSAGE.len()
+        );
+        sender.stream_close_send(stream_id).unwrap();
+        let datagram = sender.process_output(now()).dgram().unwrap();
+        receiver.process_input(datagram, now());
+        let mut buf = [0; MESSAGE.len()];
+        assert_eq!(
+            receiver.stream_recv(stream_id, &mut buf).unwrap(),
+            (MESSAGE.len(), true)
+        );
+        assert_eq!(buf, MESSAGE);
+    }
+
+    fixture_init();
+    for exhausted_client in [false, true] {
+        let generator: Rc<RefCell<dyn ConnectionIdGenerator>> =
+            Rc::new(RefCell::new(ExhaustibleConnectionIdGenerator {
+                inner: Some(CountingConnectionIdGenerator::default()),
+                attempts_left: 100,
+            }));
+        let (mut client, mut server) = if exhausted_client {
+            let client = Connection::new_client(
+                test_fixture::DEFAULT_SERVER_NAME,
+                test_fixture::DEFAULT_ALPN,
+                generator,
+                DEFAULT_ADDR,
+                DEFAULT_ADDR,
+                ConnectionParameters::default(),
+                now(),
+            )
+            .unwrap();
+            (client, default_server())
+        } else {
+            let server = Connection::new_server(
+                test_fixture::DEFAULT_KEYS,
+                test_fixture::DEFAULT_ALPN,
+                generator,
+                ConnectionParameters::default(),
+            )
+            .unwrap();
+            (default_client(), server)
+        };
+        connect(&mut client, &mut server);
+
+        transfer(&mut client, &mut server);
+        transfer(&mut server, &mut client);
+        assert_eq!(*client.state(), State::Confirmed);
+        assert_eq!(*server.state(), State::Confirmed);
+        let exhausted = if exhausted_client { &client } else { &server };
+        assert_eq!(exhausted.stats().frame_tx.new_connection_id, 0);
+    }
+}
 
 // These tests generally use two paths:
 // The connection is established on a path with the same IPv6 address on both ends.
@@ -158,7 +259,7 @@ fn rebind(
 
     // The client should process the ACK and go idle.
     let delay = client.process(Some(s4_reb), now).callback();
-    assert_eq!(delay, ConnectionParameters::default().get_idle_timeout());
+    assert_eq!(delay, ConnectionParameters::DEFAULT_IDLE_TIMEOUT);
 
     let client_uses_zero_len_cid = client
         .paths
@@ -174,7 +275,7 @@ fn rebind(
         match server.process_output(now) {
             Output::Callback(t) => {
                 total_delay += t;
-                if total_delay == ConnectionParameters::default().get_idle_timeout() {
+                if total_delay == ConnectionParameters::DEFAULT_IDLE_TIMEOUT {
                     // Server should only hit the idle timeout here when the client uses a zero-len
                     // CID.
                     assert!(client_uses_zero_len_cid);
@@ -417,6 +518,36 @@ fn path_forwarding_attack() {
     assert_v6_path(&server_data4, false);
 }
 
+/// After a NAT rebinding whose old mapping still delivers, the server's `PATH_CHALLENGE`s on the
+/// new and the old path both reach the client on one path. Each needs a `PATH_RESPONSE`.
+#[test]
+fn path_challenges_on_one_path_each_get_a_response() {
+    let mut client = default_client();
+    let mut server = default_server();
+    connect_force_idle(&mut client, &mut server);
+    let now = now();
+
+    let dgram = send_something(&mut client, now);
+    server.process_input(change_source_port(&dgram, 1), now);
+    let new_probe = server.process_output(now).dgram().unwrap();
+    let old_probe = server.process_output(now).dgram().unwrap();
+    assert_eq!(server.stats().frame_tx.path_challenge, 2);
+
+    // The NAT maps the new path back to the client's address.
+    let new_probe = Datagram::new(
+        new_probe.source(),
+        DEFAULT_ADDR,
+        new_probe.tos(),
+        &new_probe[..],
+    );
+    client.process_input(new_probe, now);
+    client.process_input(old_probe, now);
+    assert_eq!(client.stats().frame_rx.path_challenge, 2);
+
+    while client.process_output(now).dgram().is_some() {}
+    assert_eq!(client.stats().frame_tx.path_response, 2);
+}
+
 #[test]
 fn migrate_immediate() {
     let mut client = default_client();
@@ -427,6 +558,11 @@ fn migrate_immediate() {
     client
         .migrate(Some(DEFAULT_ADDR_V4), Some(DEFAULT_ADDR_V4), true, now)
         .unwrap();
+    assert!(client.events().any(|e| matches!(
+        e,
+        ConnectionEvent::PathMigrated { local, remote }
+        if local == DEFAULT_ADDR_V4 && remote == DEFAULT_ADDR_V4
+    )));
 
     let client1 = send_something(&mut client, now);
     assert_v4_path(&client1, true); // Contains PATH_CHALLENGE.
@@ -440,6 +576,11 @@ fn migrate_immediate() {
     // The server accepts the first packet and migrates (but probes).
     let server1 = server.process(Some(client1), now).dgram().unwrap();
     assert_v4_path(&server1, true);
+    assert!(
+        server
+            .events()
+            .any(|e| matches!(e, ConnectionEvent::PathMigrated { .. }))
+    );
     let server2 = server.process_output(now).dgram().unwrap();
     assert_v6_path(&server2, true);
 
@@ -492,7 +633,7 @@ fn migrate_immediate_fail() {
     assert_path_challenge_min_len(&client, &probe, now);
 
     // -1 because first PATH_CHALLENGE already sent above
-    for _ in 0..MAX_PATH_PROBES * 2 - 1 {
+    for _ in 0..Path::MAX_PROBES * 2 - 1 {
         let cb = client.process_output(now).callback();
         assert_ne!(cb, Duration::new(0, 0));
         now += cb;
@@ -572,7 +713,7 @@ fn migrate_same_fail() {
     assert_path_challenge_min_len(&client, &probe, now);
 
     // -1 because first PATH_CHALLENGE already sent above
-    for _ in 0..MAX_PATH_PROBES - 1 {
+    for _ in 0..Path::MAX_PROBES * 2 - 1 {
         let cb = client.process_output(now).callback();
         assert_ne!(cb, Duration::new(0, 0));
         now += cb;
@@ -612,9 +753,9 @@ fn migrate_same_fail() {
 /// This gets the connection ID from a datagram using the default
 /// connection ID generator/decoder.
 pub fn get_cid(d: &Datagram) -> ConnectionIdRef<'_> {
-    let gen = CountingConnectionIdGenerator::default();
+    let r#gen = CountingConnectionIdGenerator::default();
     assert_eq!(d[0] & 0x80, 0); // Only support short packets for now.
-    gen.decode_cid(&mut Decoder::from(&d[1..])).unwrap()
+    r#gen.decode_cid(&mut Decoder::from(&d[1..])).unwrap()
 }
 
 fn migration(mut client: Connection) {
@@ -648,6 +789,11 @@ fn migration(mut client: Connection) {
 
     // Once the client receives the probe response, it migrates to the new path.
     client.process_input(resp, now);
+    assert!(client.events().any(|e| matches!(
+        e,
+        ConnectionEvent::PathMigrated { local, remote }
+        if local == DEFAULT_ADDR_V4 && remote == DEFAULT_ADDR_V4
+    )));
     assert_eq!(client.stats().frame_rx.path_challenge, 1);
     let migrate_client = send_something(&mut client, now);
     assert_v4_path(&migrate_client, true); // Responds to server probe.
@@ -930,11 +1076,12 @@ fn preferred_address_client() {
         )
         .unwrap();
 
+    // Errors in transport parameters manifest as TLS alerts.
     connect_fail(
         &mut client,
         &mut server,
-        Error::Peer(Error::TransportParameter.code()),
-        Error::TransportParameter,
+        Error::Peer(256 + 47),  // 256 is a TLS alert and...
+        Error::CryptoAlert(47), // ...47 is `illegal_parameter`.
     );
 }
 
@@ -942,35 +1089,47 @@ fn preferred_address_client() {
 #[test]
 fn migration_invalid_state() {
     let mut client = default_client();
-    assert!(client
-        .migrate(Some(DEFAULT_ADDR), Some(DEFAULT_ADDR), false, now())
-        .is_err());
+    assert!(
+        client
+            .migrate(Some(DEFAULT_ADDR), Some(DEFAULT_ADDR), false, now())
+            .is_err()
+    );
 
     let mut server = default_server();
-    assert!(server
-        .migrate(Some(DEFAULT_ADDR), Some(DEFAULT_ADDR), false, now())
-        .is_err());
+    assert!(
+        server
+            .migrate(Some(DEFAULT_ADDR), Some(DEFAULT_ADDR), false, now())
+            .is_err()
+    );
     connect_force_idle(&mut client, &mut server);
 
-    assert!(server
-        .migrate(Some(DEFAULT_ADDR), Some(DEFAULT_ADDR), false, now())
-        .is_err());
+    assert!(
+        server
+            .migrate(Some(DEFAULT_ADDR), Some(DEFAULT_ADDR), false, now())
+            .is_err()
+    );
 
     client.close(now(), 0, "closing");
-    assert!(client
-        .migrate(Some(DEFAULT_ADDR), Some(DEFAULT_ADDR), false, now())
-        .is_err());
+    assert!(
+        client
+            .migrate(Some(DEFAULT_ADDR), Some(DEFAULT_ADDR), false, now())
+            .is_err()
+    );
     let close = client.process_output(now()).dgram();
 
     let dgram = server.process(close, now()).dgram();
-    assert!(server
-        .migrate(Some(DEFAULT_ADDR), Some(DEFAULT_ADDR), false, now())
-        .is_err());
+    assert!(
+        server
+            .migrate(Some(DEFAULT_ADDR), Some(DEFAULT_ADDR), false, now())
+            .is_err()
+    );
 
     client.process_input(dgram.unwrap(), now());
-    assert!(client
-        .migrate(Some(DEFAULT_ADDR), Some(DEFAULT_ADDR), false, now())
-        .is_err());
+    assert!(
+        client
+            .migrate(Some(DEFAULT_ADDR), Some(DEFAULT_ADDR), false, now())
+            .is_err()
+    );
 }
 
 #[test]
@@ -1034,26 +1193,43 @@ fn migration_invalid_address() {
     );
 }
 
-/// This inserts a frame into packets that provides a single new
-/// connection ID and retires all others.
-struct RetireAll {
+/// Writes `count` `NEW_CONNECTION_ID` frames with consecutive sequence numbers,
+/// each retiring every previously issued connection ID.
+struct NewConnectionIds {
+    count: u64,
     cid_gen: Rc<RefCell<dyn ConnectionIdGenerator>>,
 }
 
-impl crate::connection::test_internal::FrameWriter for RetireAll {
+impl NewConnectionIds {
+    // Use a sequence number that is large enough that all existing values
+    // will be lower (so they get retired).
+    const SEQNO: u64 = 100;
+
+    fn new(count: u64, cid_gen: Rc<RefCell<dyn ConnectionIdGenerator>>) -> Self {
+        Self { count, cid_gen }
+    }
+
+    /// A single `NEW_CONNECTION_ID` frame that retires every previously issued
+    /// connection ID.
+    fn retire_all(cid_gen: Rc<RefCell<dyn ConnectionIdGenerator>>) -> Self {
+        Self::new(1, cid_gen)
+    }
+}
+
+impl crate::connection::test_internal::FrameWriter for NewConnectionIds {
     fn write_frames(&mut self, builder: &mut packet::Builder<&mut Vec<u8>>) {
-        // Use a sequence number that is large enough that all existing values
-        // will be lower (so they get retired).  As the code doesn't care about
-        // gaps in sequence numbers, this is safe, even though the gap might
-        // hint that there are more outstanding connection IDs that are allowed.
-        const SEQNO: u64 = 100;
-        let cid = self.cid_gen.borrow_mut().generate_cid().unwrap();
-        builder
-            .encode_varint(FrameType::NewConnectionId)
-            .encode_varint(SEQNO)
-            .encode_varint(SEQNO) // Retire Prior To
-            .encode_vec(1, &cid)
-            .encode(&[0x7f; 16]);
+        for i in 0..self.count {
+            let seqno = Self::SEQNO + i;
+            let cid = self.cid_gen.borrow_mut().generate_cid().unwrap();
+            let mut srt = [0; 16];
+            srt[..8].copy_from_slice(&seqno.to_be_bytes());
+            builder
+                .encode_varint(FrameType::NewConnectionId)
+                .encode_varint(seqno)
+                .encode_varint(seqno) // Retire Prior To
+                .encode_vec(1, &cid)
+                .encode(srt);
+        }
     }
 }
 
@@ -1075,10 +1251,9 @@ fn retire_all() {
 
     let original_cid = ConnectionId::from(get_cid(&send_something(&mut client, now())));
 
-    let ncid = send_with_extra(&mut server, RetireAll { cid_gen }, now());
-
     let new_cid_before = client.stats().frame_rx.new_connection_id;
     let retire_cid_before = client.stats().frame_tx.retire_connection_id;
+    let ncid = send_with_extra(&mut server, NewConnectionIds::retire_all(cid_gen), now());
     client.process_input(ncid, now());
     let retire = send_something(&mut client, now());
     assert_eq!(
@@ -1087,10 +1262,80 @@ fn retire_all() {
     );
     assert_eq!(
         client.stats().frame_tx.retire_connection_id,
-        retire_cid_before + LOCAL_ACTIVE_CID_LIMIT
+        retire_cid_before + ConnectionIdManager::ACTIVE_LIMIT
     );
 
     assert_ne!(get_cid(&retire), original_cid);
+}
+
+/// RFC 9000, Section 5.1.2: an endpoint SHOULD bound the number of connection IDs it
+/// has retired but not yet had acknowledged, and MAY treat exceeding that bound as a
+/// `CONNECTION_ID_LIMIT_ERROR`.  A peer that streams `NEW_CONNECTION_ID` frames with an
+/// ever-increasing Retire Prior To value, while the victim cannot flush its
+/// `RETIRE_CONNECTION_ID` frames, must not be able to grow that queue without bound.
+#[test]
+fn retire_cid_queue_bounded() {
+    let mut client = default_client();
+    let cid_gen: Rc<RefCell<dyn ConnectionIdGenerator>> =
+        Rc::new(RefCell::new(CountingConnectionIdGenerator::default()));
+    let mut server = Connection::new_server(
+        test_fixture::DEFAULT_KEYS,
+        test_fixture::DEFAULT_ALPN,
+        Rc::clone(&cid_gen),
+        ConnectionParameters::default(),
+    )
+    .unwrap();
+    connect_force_idle(&mut client, &mut server);
+
+    // The client never runs `process_output` here, so it cannot send (or get
+    // acknowledgement for) any `RETIRE_CONNECTION_ID` frames: its pending-retirement
+    // queue only grows.  Because every frame retires all prior connection IDs, the
+    // store stays at one active connection ID and the existing
+    // active-connection-ID-limit check never fires; only a dedicated bound on the
+    // retirement queue can stop this.
+    let count = to_u64(ConnectionIdManager::MAX_RETIRE_QUEUE) + 1;
+    let ncids = send_with_extra(&mut server, NewConnectionIds::new(count, cid_gen), now());
+    client.process_input(ncids, now());
+
+    assert!(matches!(
+        client.state(),
+        State::Closing {
+            error: CloseReason::Transport(Error::ConnectionIdLimitExceeded),
+            ..
+        }
+    ));
+}
+
+/// Injects a `RETIRE_CONNECTION_ID` frame for a sequence number that was never issued.
+struct RetireUnissued(u64);
+
+impl crate::connection::test_internal::FrameWriter for RetireUnissued {
+    fn write_frames(&mut self, builder: &mut packet::Builder<&mut Vec<u8>>) {
+        builder
+            .encode_varint(FrameType::RetireConnectionId)
+            .encode_varint(self.0);
+    }
+}
+
+/// RFC 9000, Section 19.16: a `RETIRE_CONNECTION_ID` frame carrying a sequence number
+/// greater than any connection ID the receiver has issued is a connection error.
+#[test]
+fn retire_unissued_connection_id() {
+    let mut client = default_client();
+    let mut server = default_server();
+    connect_force_idle(&mut client, &mut server);
+
+    // The largest sequence number the client could have issued is far below this,
+    // so it has never been sent to the server.
+    let retire = send_with_extra(&mut server, RetireUnissued(1000), now());
+    client.process_input(retire, now());
+    assert!(matches!(
+        client.state(),
+        State::Closing {
+            error: CloseReason::Transport(Error::ProtocolViolation),
+            ..
+        }
+    ));
 }
 
 /// During a graceful migration, if the probed path can't get a new connection ID due
@@ -1125,7 +1370,7 @@ fn retire_prior_to_migration_failure() {
 
     // Have the server receive the probe, but separately have it decide to
     // retire all of the available connection IDs.
-    let retire_all = send_with_extra(&mut server, RetireAll { cid_gen }, now());
+    let retire_all = send_with_extra(&mut server, NewConnectionIds::retire_all(cid_gen), now());
 
     let resp = server.process(Some(probe), now()).dgram().unwrap();
     assert_v4_path(&resp, true);
@@ -1180,7 +1425,7 @@ fn retire_prior_to_migration_success() {
 
     // Have the server receive the probe, but separately have it decide to
     // retire all of the available connection IDs.
-    let retire_all = send_with_extra(&mut server, RetireAll { cid_gen }, now());
+    let retire_all = send_with_extra(&mut server, NewConnectionIds::retire_all(cid_gen), now());
 
     let resp = server.process(Some(probe), now()).dgram().unwrap();
     assert_v4_path(&resp, true);
@@ -1219,7 +1464,7 @@ fn error_on_new_path_with_no_connection_id() {
 
     let cid_gen: Rc<RefCell<dyn ConnectionIdGenerator>> =
         Rc::new(RefCell::new(CountingConnectionIdGenerator::default()));
-    let retire_all = send_with_extra(&mut server, RetireAll { cid_gen }, now());
+    let retire_all = send_with_extra(&mut server, NewConnectionIds::retire_all(cid_gen), now());
 
     client.process_input(retire_all, now());
 

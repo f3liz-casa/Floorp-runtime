@@ -1,21 +1,32 @@
 "use strict";
 
 /* import-globals-from trr_common.js */
+/* import-globals-from head_trr.js */
 
 const gDefaultPref = Services.prefs.getDefaultBranch("");
 
+const { NodeServer } = ChromeUtils.importESModule(
+  "resource://testing-common/NodeServer.sys.mjs"
+);
+
 SetParentalControlEnabled(false);
 
-function setup() {
+let trrServer;
+add_setup(async function setup() {
   Services.prefs.setBoolPref("network.dns.get-ttl", false);
-  h2Port = trr_test_setup();
-}
+  trr_test_setup();
+  trrServer = new TRRServer();
+  await trrServer.start();
+  h2Port = trrServer.port();
 
-setup();
-registerCleanupFunction(async () => {
-  trr_clear_prefs();
-  Services.prefs.clearUserPref("network.dns.get-ttl");
-  Services.prefs.clearUserPref("network.dns.disableIPv6");
+  registerCleanupFunction(async () => {
+    trr_clear_prefs();
+    Services.prefs.clearUserPref("network.dns.get-ttl");
+    Services.prefs.clearUserPref("network.dns.disableIPv6");
+    if (trrServer) {
+      await trrServer.stop();
+    }
+  });
 });
 
 async function waitForConfirmation(expectedResponseIP, confirmationShouldFail) {
@@ -160,7 +171,10 @@ add_task(test_mode_2);
 
 add_task(test_excluded_domains);
 
-add_task(test_captiveportal_canonicalURL);
+add_task(
+  { skip_if: () => mozinfo.os == "android" },
+  test_captiveportal_canonicalURL
+);
 
 add_task(test_parentalcontrols);
 
@@ -169,7 +183,7 @@ add_task(test_builtin_excluded_domains);
 
 add_task(test_excluded_domains_mode3);
 
-add_task(test25e);
+add_task({ skip_if: () => mozinfo.os == "android" }, test25e);
 
 add_task(test_parentalcontrols_mode3);
 
@@ -199,6 +213,13 @@ add_task(async function test_clearCacheOnURIChange() {
 
 add_task(async function test_dnsSuffix() {
   info("Checking that domains matching dns suffix list use Do53");
+  // Preserve historical behavior of this task: DNS-suffix domains are
+  // excluded from TRR in mode 3 as well. The new behavior is exercised by
+  // test_dnsSuffix_mode3_pref below.
+  Services.prefs.setBoolPref(
+    "network.trr.exclude_dns_suffix_in_mode_trronly",
+    true
+  );
   async function checkDnsSuffixInMode(mode) {
     Services.dns.clearCache(true);
     setModeAndURI(mode, "doh?responseIP=1.2.3.4");
@@ -236,6 +257,109 @@ add_task(async function test_dnsSuffix() {
   // Test again with mitigations off
   await checkDnsSuffixInMode(2);
   await checkDnsSuffixInMode(3);
+  Services.prefs.clearUserPref("network.trr.split_horizon_mitigations");
+  Services.prefs.clearUserPref("network.trr.bootstrapAddr");
+  Services.prefs.clearUserPref(
+    "network.trr.exclude_dns_suffix_in_mode_trronly"
+  );
+});
+
+add_task(async function test_dnsSuffix_mode3_pref() {
+  info(
+    "In TRR-only mode the DNS suffix list should be ignored when " +
+      "network.trr.exclude_dns_suffix_in_mode_trronly is false (default)."
+  );
+  Services.prefs.setBoolPref("network.trr.split_horizon_mitigations", true);
+  Services.prefs.setCharPref("network.trr.bootstrapAddr", "127.0.0.1");
+
+  let networkLinkService = {
+    dnsSuffixList: ["example.org"],
+    QueryInterface: ChromeUtils.generateQI(["nsINetworkLinkService"]),
+  };
+
+  async function checkMode3(prefValue, expectedIP) {
+    Services.prefs.setBoolPref(
+      "network.trr.exclude_dns_suffix_in_mode_trronly",
+      prefValue
+    );
+    Services.dns.clearCache(true);
+    setModeAndURI(3, "doh?responseIP=1.2.3.4");
+    Services.obs.notifyObservers(
+      networkLinkService,
+      "network:dns-suffix-list-updated"
+    );
+    await new TRRDNSListener("example.org", expectedIP);
+  }
+
+  // Default behavior: pref is false, suffix is ignored in mode 3, so the
+  // host is resolved via TRR.
+  await checkMode3(false, "1.2.3.4");
+  // Opt-in to old behavior: pref is true, suffix is excluded so the local
+  // bootstrap resolver answers with 127.0.0.1.
+  await checkMode3(true, "127.0.0.1");
+
+  networkLinkService.dnsSuffixList = [];
+  Services.obs.notifyObservers(
+    networkLinkService,
+    "network:dns-suffix-list-updated"
+  );
+  Services.prefs.clearUserPref(
+    "network.trr.exclude_dns_suffix_in_mode_trronly"
+  );
+  Services.prefs.clearUserPref("network.trr.split_horizon_mitigations");
+  Services.prefs.clearUserPref("network.trr.bootstrapAddr");
+});
+
+add_task(async function test_dnsSuffix_request_mode_trronly() {
+  info(
+    "A per-request TRR mode of TRR_ONLY_MODE should also cause the DNS " +
+      "suffix list to be ignored by default, even when the global mode is " +
+      "TRR-first."
+  );
+  Services.prefs.setBoolPref("network.trr.split_horizon_mitigations", true);
+  Services.prefs.setCharPref("network.trr.bootstrapAddr", "127.0.0.1");
+
+  let networkLinkService = {
+    dnsSuffixList: ["example.org"],
+    QueryInterface: ChromeUtils.generateQI(["nsINetworkLinkService"]),
+  };
+
+  // TRR_ONLY_MODE encoded into resolve flags. See RESOLVE_TRR_MODE_MASK in
+  // nsIDNSService.idl: the request TRR mode lives in bits 11/12, so
+  // TRR_ONLY_MODE (=3) corresponds to (3 << 11).
+  const TRR_ONLY_FLAGS = 3 << 11;
+
+  async function checkRequestModeTRROnly(prefValue, expectedIP) {
+    Services.prefs.setBoolPref(
+      "network.trr.exclude_dns_suffix_in_mode_trronly",
+      prefValue
+    );
+    Services.dns.clearCache(true);
+    // Global mode is 2 (TRR-first); the per-request override drives behavior.
+    setModeAndURI(2, "doh?responseIP=1.2.3.4");
+    Services.obs.notifyObservers(
+      networkLinkService,
+      "network:dns-suffix-list-updated"
+    );
+    await new TRRDNSListener("example.org", {
+      expectedAnswer: expectedIP,
+      flags: TRR_ONLY_FLAGS,
+    });
+  }
+
+  // Default: pref is false → request-mode TRR_ONLY ignores the suffix.
+  await checkRequestModeTRROnly(false, "1.2.3.4");
+  // Opt-in: pref is true → suffix is honored even for TRR_ONLY requests.
+  await checkRequestModeTRROnly(true, "127.0.0.1");
+
+  networkLinkService.dnsSuffixList = [];
+  Services.obs.notifyObservers(
+    networkLinkService,
+    "network:dns-suffix-list-updated"
+  );
+  Services.prefs.clearUserPref(
+    "network.trr.exclude_dns_suffix_in_mode_trronly"
+  );
   Services.prefs.clearUserPref("network.trr.split_horizon_mitigations");
   Services.prefs.clearUserPref("network.trr.bootstrapAddr");
 });
@@ -290,15 +414,13 @@ add_task(async function test_async_resolve_with_trr_server() {
   Services.dns.clearCache(true);
   setModeAndURI(5, "doh?responseIP=2.2.2.2");
 
-  // When dns is resolved in socket process, we can't set |expectEarlyFail| to true.
-  let inSocketProcess = mozinfo.socketprocess_networking;
   await new TRRDNSListener(
     "bar_with_trr3.example.com",
     undefined,
     false,
     undefined,
     `https://foo.example.com:${h2Port}/doh?responseIP=3.3.3.3`,
-    !inSocketProcess
+    true
   );
 
   // Call normal AsyncOpen, it will return result from the native resolver.
@@ -875,115 +997,136 @@ add_task(async function test_padding() {
   );
 });
 
-add_task(test_connection_reuse_and_cycling);
+add_task(async function test_trr_pb_telemetry() {
+  setModeAndURI(Ci.nsIDNSService.MODE_TRRONLY, `doh`);
+  Services.dns.clearCache(true);
+  Services.fog.initializeFOG();
+  Services.fog.testResetFOG();
+  await new TRRDNSListener("testytest.com", { expectedAnswer: "5.5.5.5" });
 
-// Can't test for socket process since telemetry is captured in different process.
-add_task(
-  { skip_if: () => mozinfo.socketprocess_networking },
-  async function test_trr_pb_telemetry() {
-    setModeAndURI(Ci.nsIDNSService.MODE_TRRONLY, `doh`);
-    Services.dns.clearCache(true);
-    Services.fog.initializeFOG();
-    Services.fog.testResetFOG();
-    await new TRRDNSListener("testytest.com", { expectedAnswer: "5.5.5.5" });
+  Assert.equal(
+    await Glean.networking.trrRequestCount.regular.testGetValue(),
+    2
+  ); // One for IPv4 and one for IPv6.
+  Assert.equal(
+    await Glean.networking.trrRequestCount.private.testGetValue(),
+    null
+  );
 
-    Assert.equal(
-      await Glean.networking.trrRequestCount.regular.testGetValue(),
-      2
-    ); // One for IPv4 and one for IPv6.
-    Assert.equal(
-      await Glean.networking.trrRequestCount.private.testGetValue(),
-      null
-    );
+  await new TRRDNSListener("testytest.com", {
+    expectedAnswer: "5.5.5.5",
+    originAttributes: { privateBrowsingId: 1 },
+  });
 
-    await new TRRDNSListener("testytest.com", {
-      expectedAnswer: "5.5.5.5",
-      originAttributes: { privateBrowsingId: 1 },
-    });
+  Assert.equal(
+    await Glean.networking.trrRequestCount.regular.testGetValue(),
+    2
+  );
+  Assert.equal(
+    await Glean.networking.trrRequestCount.private.testGetValue(),
+    2
+  );
+  // We've made 4 TRR requests. Size metrics are recorded after the lookup
+  // completes, so wait for them.
+  await TestUtils.waitForCondition(
+    () => Glean.networking.trrResponseSize.other.testGetValue()?.count == 4,
+    "Wait for all TRR response sizes to be recorded"
+  );
+  Assert.equal(
+    await Glean.networking.trrRequestSize.other.testGetValue().count,
+    4
+  );
+  Assert.equal(
+    await Glean.networking.trrResponseSize.other.testGetValue().count,
+    4
+  );
+});
 
-    Assert.equal(
-      await Glean.networking.trrRequestCount.regular.testGetValue(),
-      2
-    );
-    Assert.equal(
-      await Glean.networking.trrRequestCount.private.testGetValue(),
-      2
-    );
-    // We've made 4 TRR requests.
-    Assert.equal(
-      await Glean.networking.trrRequestSize.other.testGetValue().count,
-      4
-    );
-    Assert.equal(
-      await Glean.networking.trrResponseSize.other.testGetValue().count,
-      4
-    );
+add_task(async function test_trr_timing_telemetry() {
+  setModeAndURI(Ci.nsIDNSService.MODE_TRRONLY, `doh`);
+  Services.dns.clearCache(true);
+
+  // Close the previous TRR connection.
+  Services.obs.notifyObservers(null, "net:cancel-all-connections");
+  await new Promise(r => do_timeout(3000, r));
+
+  Services.fog.testResetFOG();
+  // Disable IPv6, so we only send one TRR request.
+  Services.prefs.setBoolPref("network.dns.disableIPv6", true);
+  await new TRRDNSListener("timing.com", { expectedAnswer: "5.5.5.5" });
+
+  await new Promise(r => do_timeout(100, r));
+
+  let dnsStart = await Glean.networking.trrDnsStart.other.testGetValue();
+  let dnsEnd = await Glean.networking.trrDnsEnd.other.testGetValue();
+  let tcpConnection =
+    await Glean.networking.trrTcpConnection.other.testGetValue();
+  let tlsHandshake =
+    await Glean.networking.trrTlsHandshake.other.testGetValue();
+  let openToFirstSent =
+    await Glean.networking.trrOpenToFirstSent.other.testGetValue();
+  let firstSentToLastReceived =
+    await Glean.networking.trrFirstSentToLastReceived.other.testGetValue();
+  let openToFirstReceived =
+    await Glean.networking.trrOpenToFirstReceived.other.testGetValue();
+  let completeLoad =
+    await Glean.networking.trrCompleteLoad.other.testGetValue();
+
+  info("dnsStart=" + JSON.stringify(dnsStart));
+  info("dnsEnd=" + JSON.stringify(dnsEnd));
+  info("tcpConnection=" + JSON.stringify(tcpConnection));
+  info("tlsHandshake=" + JSON.stringify(tlsHandshake));
+  info("openToFirstSent=" + JSON.stringify(openToFirstSent));
+  info("firstSentToLastReceived=" + JSON.stringify(firstSentToLastReceived));
+  info("openToFirstReceived=" + JSON.stringify(openToFirstReceived));
+  info("completeLoad=" + JSON.stringify(completeLoad));
+
+  Assert.equal(dnsStart.count, 1);
+  Assert.equal(dnsEnd.count, 1);
+  Assert.equal(tcpConnection.count, 1);
+  Assert.equal(tlsHandshake.count, 1);
+  Assert.equal(openToFirstSent.count, 1);
+  Assert.equal(firstSentToLastReceived.count, 1);
+  Assert.equal(openToFirstReceived.count, 1);
+  Assert.equal(completeLoad.count, 1);
+
+  function getValue(obj) {
+    const keys = Object.keys(obj);
+    return keys.length ? +keys[0] : 0;
   }
-);
+  Assert.greaterOrEqual(
+    getValue(openToFirstReceived.values),
+    getValue(openToFirstSent.values),
+    "openToFirstReceived >= openToFirstSent"
+  );
+  Assert.greaterOrEqual(
+    getValue(completeLoad.values),
+    getValue(openToFirstReceived.values),
+    "completeLoad >= openToFirstReceived"
+  );
+});
 
-add_task(
-  { skip_if: () => mozinfo.socketprocess_networking },
-  async function test_trr_timing_telemetry() {
-    setModeAndURI(Ci.nsIDNSService.MODE_TRRONLY, `doh`);
-    Services.dns.clearCache(true);
+add_task(async function test_trr_request_per_conn_telemetry() {
+  setModeAndURI(Ci.nsIDNSService.MODE_TRRONLY, `doh`);
+  Services.dns.clearCache(true);
 
-    // Close the previous TRR connection.
-    Services.obs.notifyObservers(null, "net:cancel-all-connections");
-    await new Promise(r => do_timeout(3000, r));
+  // Close the previous TRR connection.
+  Services.obs.notifyObservers(null, "net:cancel-all-connections");
+  await new Promise(r => do_timeout(3000, r));
 
-    Services.fog.testResetFOG();
-    // Disable IPv6, so we only send one TRR request.
-    Services.prefs.setBoolPref("network.dns.disableIPv6", true);
-    await new TRRDNSListener("timing.com", { expectedAnswer: "5.5.5.5" });
+  Services.fog.testResetFOG();
+  Services.prefs.setBoolPref("network.dns.disableIPv6", false);
+  await new TRRDNSListener("timing.com", { expectedAnswer: "5.5.5.5" });
 
-    await new Promise(r => do_timeout(100, r));
+  // Close the TRR connection again, so trr_request_count_per_conn
+  // can be recorded.
+  Services.obs.notifyObservers(null, "net:cancel-all-connections");
+  await new Promise(r => do_timeout(3000, r));
 
-    let dnsStart = await Glean.networking.trrDnsStart.other.testGetValue();
-    let dnsEnd = await Glean.networking.trrDnsEnd.other.testGetValue();
-    let tcpConnection =
-      await Glean.networking.trrTcpConnection.other.testGetValue();
-    let tlsHandshake =
-      await Glean.networking.trrTlsHandshake.other.testGetValue();
-    let openToFirstSent =
-      await Glean.networking.trrOpenToFirstSent.other.testGetValue();
-    let firstSentToLastReceived =
-      await Glean.networking.trrFirstSentToLastReceived.other.testGetValue();
-    let openToFirstReceived =
-      await Glean.networking.trrOpenToFirstReceived.other.testGetValue();
-    let completeLoad =
-      await Glean.networking.trrCompleteLoad.other.testGetValue();
+  let requestPerConn =
+    await Glean.networking.trrRequestCountPerConn.other.testGetValue();
 
-    info("dnsStart=" + JSON.stringify(dnsStart));
-    info("dnsEnd=" + JSON.stringify(dnsEnd));
-    info("tcpConnection=" + JSON.stringify(tcpConnection));
-    info("tlsHandshake=" + JSON.stringify(tlsHandshake));
-    info("openToFirstSent=" + JSON.stringify(openToFirstSent));
-    info("firstSentToLastReceived=" + JSON.stringify(firstSentToLastReceived));
-    info("openToFirstReceived=" + JSON.stringify(openToFirstReceived));
-    info("completeLoad=" + JSON.stringify(completeLoad));
+  info("requestPerConn=" + JSON.stringify(requestPerConn));
 
-    Assert.equal(dnsStart.count, 1);
-    Assert.equal(dnsEnd.count, 1);
-    Assert.equal(tcpConnection.count, 1);
-    Assert.equal(tlsHandshake.count, 1);
-    Assert.equal(openToFirstSent.count, 1);
-    Assert.equal(firstSentToLastReceived.count, 1);
-    Assert.equal(openToFirstReceived.count, 1);
-    Assert.equal(completeLoad.count, 1);
-
-    function getValue(obj) {
-      const keys = Object.keys(obj);
-      return keys.length ? +keys[0] : 0;
-    }
-    Assert.greaterOrEqual(
-      getValue(openToFirstReceived.values),
-      getValue(openToFirstSent.values),
-      "openToFirstReceived >= openToFirstSent"
-    );
-    Assert.greaterOrEqual(
-      getValue(completeLoad.values),
-      getValue(openToFirstReceived.values),
-      "completeLoad >= openToFirstReceived"
-    );
-  }
-);
+  Assert.greaterOrEqual(requestPerConn, 2);
+});

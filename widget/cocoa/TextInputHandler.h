@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=2 sw=2 et tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -11,16 +9,16 @@
 
 #import <Carbon/Carbon.h>
 #import <Cocoa/Cocoa.h>
+#include "WritingModes.h"
 #include "mozView.h"
-#include "nsString.h"
-#include "nsCOMPtr.h"
-#include "nsITimer.h"
-#include "nsTArray.h"
 #include "mozilla/BasicEvents.h"
 #include "mozilla/EventForwards.h"
 #include "mozilla/Maybe.h"
 #include "mozilla/TextEventDispatcherListener.h"
-#include "WritingModes.h"
+#include "nsCOMPtr.h"
+#include "nsITimer.h"
+#include "nsString.h"
+#include "nsTArray.h"
 
 class nsCocoaWindow;
 
@@ -54,6 +52,14 @@ enum {
 class TISInputSourceWrapper {
  public:
   static TISInputSourceWrapper& CurrentInputSource();
+
+  /**
+   * The character that aKeyCode produces on this input source with the given
+   * native modifier flags, or 0 when it produces none or more than one.
+   */
+  uint32_t CharForKeyCode(UInt32 aKeyCode, UInt32 aModifiers) {
+    return TranslateToChar(aKeyCode, aModifiers, GetKbdType());
+  }
   /**
    * Shutdown() should be called when nobody doesn't need to use this class.
    */
@@ -453,7 +459,7 @@ class TextInputHandlerBase : public TextEventDispatcherListener {
    */
   nsresult SynthesizeNativeKeyEvent(int32_t aNativeKeyboardLayout,
                                     int32_t aNativeKeyCode,
-                                    uint32_t aModifierFlags,
+                                    nsIWidget::NativeModifiers aModifierFlags,
                                     const nsAString& aCharacters,
                                     const nsAString& aUnmodifiedCharacters);
 
@@ -510,12 +516,12 @@ class TextInputHandlerBase : public TextEventDispatcherListener {
   /**
    * mWidget must not be destroyed without OnDestroyWidget being called.
    *
-   * @param aDestroyingWidget     Destroying widget.  This might not be mWidget.
+   * @param aDestroyingWidget     Destroying widget. This might not be mWidget.
    * @return                      This result doesn't have any meaning for
-   *                              callers.  When aDstroyingWidget isn't the same
-   *                              as mWidget, FALSE.  Then, inherited methods in
-   *                              sub classes should return from this method
-   *                              without cleaning up.
+   *                              callers.  When aDestroyingWidget isn't the
+   *                              same as mWidget, FALSE.  Then, inherited
+   *                              methods in sub classes should return from
+   *                              this method without cleaning up.
    */
   virtual bool OnDestroyWidget(nsCocoaWindow* aDestroyingWidget);
 
@@ -668,9 +674,11 @@ class TextInputHandlerBase : public TextEventDispatcherListener {
           return keyNameIndex == KEY_NAME_INDEX_ArrowRight &&
                  modifiers == (MODIFIER_ALT | MODIFIER_SHIFT);
         case Command::EndLine:
+        case Command::MoveRight3:
           return keyNameIndex == KEY_NAME_INDEX_ArrowRight &&
                  modifiers == MODIFIER_META;
         case Command::SelectEndLine:
+        case Command::SelectRight3:
           return keyNameIndex == KEY_NAME_INDEX_ArrowRight &&
                  modifiers == (MODIFIER_META | MODIFIER_SHIFT);
         case Command::CharPrevious:
@@ -686,9 +694,11 @@ class TextInputHandlerBase : public TextEventDispatcherListener {
           return keyNameIndex == KEY_NAME_INDEX_ArrowLeft &&
                  modifiers == (MODIFIER_ALT | MODIFIER_SHIFT);
         case Command::BeginLine:
+        case Command::MoveLeft3:
           return keyNameIndex == KEY_NAME_INDEX_ArrowLeft &&
                  modifiers == MODIFIER_META;
         case Command::SelectBeginLine:
+        case Command::SelectLeft3:
           return keyNameIndex == KEY_NAME_INDEX_ArrowLeft &&
                  modifiers == (MODIFIER_META | MODIFIER_SHIFT);
         case Command::LinePrevious:
@@ -940,12 +950,13 @@ class IMEInputHandler : public TextInputHandlerBase {
   /**
    * SetMarkedText() is a handler of setMarkedText of NSTextInput.
    *
-   * @param aAttrString           This mut be an instance of NSAttributedString.
-   *                              If the aString parameter to
-   *                              [ChildView setMarkedText:setSelectedRange:]
-   *                              isn't an instance of NSAttributedString,
-   *                              create an NSAttributedString from it and pass
-   *                              that instead.
+   * @param aAttrString           This must be an instance of
+   *                              NSAttributedString. If the aString parameter
+   *                              to ChildView's
+   *                              setMarkedText:setSelectedRange: isn't an
+   *                              instance of NSAttributedString, create an
+   *                              NSAttributedString from it and pass that
+   *                              instead.
    * @param aSelectedRange        Current selected range (or caret position).
    * @param aReplacementRange     The range which will be replaced with the
    *                              aAttrString instead of current marked range.
@@ -1044,7 +1055,7 @@ class IMEInputHandler : public TextInputHandlerBase {
   void SetASCIICapableOnly(bool aASCIICapableOnly);
 
   /**
-   * True if OSX believes that our view has keyboard focus.
+   * True if macOS believes that our view has keyboard focus.
    */
   bool IsFocused();
 
@@ -1072,6 +1083,7 @@ class IMEInputHandler : public TextInputHandlerBase {
   NSTextCheckingResult* mCandidatedTextSubstitutionResult;
   bool mProcessTextSubstitution;
   bool mBlockDismissTextSubstitutionPanel = false;
+  bool mPendingDismissTextSubstitution = false;
 
   IMEInputHandler(nsCocoaWindow* aWidget, NSView<mozView>* aNativeView);
   virtual ~IMEInputHandler();
@@ -1247,20 +1259,18 @@ class IMEInputHandler : public TextInputHandlerBase {
    */
   void OnTextSubstitution(uint32_t aStartOffset);
 
-  enum class PreventSetSelection { Yes, No };
-
   void ReplaceTextForTextSubstitution(const nsAString& aOriginalString,
                                       NSString* aString, const NSRange& aRange,
                                       PreventSetSelection aPreventSetSelection);
 
-  // The focused IME handler.  Please note that the handler might lost the
+  // The focused IME handler.  Please note that the handler might lose the
   // actual focus by deactivating the application.  If we are active, this
   // must have the actual focused handle.
-  // We cannot access to the NSInputManager during we aren't active, so, the
-  // focused handler can have an IME transaction even if we are deactive.
+  // We cannot access the NSInputManager while we aren't active, so the
+  // focused handler can have an IME transaction even if we are deactivated.
   static IMEInputHandler* sFocusedIMEHandler;
 
-  static bool sCachedIsForRTLLangage;
+  static bool sCachedIsForRTLLanguage;
 };
 
 /**

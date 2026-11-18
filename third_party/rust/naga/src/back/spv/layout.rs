@@ -39,8 +39,8 @@ impl PhysicalLayout {
     }
 }
 
-impl super::recyclable::Recyclable for PhysicalLayout {
-    fn recycle(self) -> Self {
+impl super::reclaimable::Reclaimable for PhysicalLayout {
+    fn reclaim(self) -> Self {
         PhysicalLayout {
             magic_number: self.magic_number,
             version: self.version,
@@ -67,20 +67,20 @@ impl LogicalLayout {
     }
 }
 
-impl super::recyclable::Recyclable for LogicalLayout {
-    fn recycle(self) -> Self {
+impl super::reclaimable::Reclaimable for LogicalLayout {
+    fn reclaim(self) -> Self {
         Self {
-            capabilities: self.capabilities.recycle(),
-            extensions: self.extensions.recycle(),
-            ext_inst_imports: self.ext_inst_imports.recycle(),
-            memory_model: self.memory_model.recycle(),
-            entry_points: self.entry_points.recycle(),
-            execution_modes: self.execution_modes.recycle(),
-            debugs: self.debugs.recycle(),
-            annotations: self.annotations.recycle(),
-            declarations: self.declarations.recycle(),
-            function_declarations: self.function_declarations.recycle(),
-            function_definitions: self.function_definitions.recycle(),
+            capabilities: self.capabilities.reclaim(),
+            extensions: self.extensions.reclaim(),
+            ext_inst_imports: self.ext_inst_imports.reclaim(),
+            memory_model: self.memory_model.reclaim(),
+            entry_points: self.entry_points.reclaim(),
+            execution_modes: self.execution_modes.reclaim(),
+            debugs: self.debugs.reclaim(),
+            annotations: self.annotations.reclaim(),
+            declarations: self.declarations.reclaim(),
+            function_declarations: self.function_declarations.reclaim(),
+            function_definitions: self.function_definitions.reclaim(),
         }
     }
 }
@@ -89,30 +89,24 @@ impl Instruction {
     pub(super) const fn new(op: Op) -> Self {
         Instruction {
             op,
-            wc: 1, // Always start at 1 for the first word (OP + WC),
             type_id: None,
             result_id: None,
             operands: vec![],
         }
     }
 
-    #[allow(clippy::panic)]
     pub(super) fn set_type(&mut self, id: Word) {
         assert!(self.type_id.is_none(), "Type can only be set once");
         self.type_id = Some(id);
-        self.wc += 1;
     }
 
-    #[allow(clippy::panic)]
     pub(super) fn set_result(&mut self, id: Word) {
         assert!(self.result_id.is_none(), "Result can only be set once");
         self.result_id = Some(id);
-        self.wc += 1;
     }
 
     pub(super) fn add_operand(&mut self, operand: Word) {
         self.operands.push(operand);
-        self.wc += 1;
     }
 
     pub(super) fn add_operands(&mut self, operands: Vec<Word>) {
@@ -121,8 +115,24 @@ impl Instruction {
         }
     }
 
+    fn word_count(&self) -> usize {
+        const OPCODE_WORD_COUNT_FIELDS_SIZE: usize = 1;
+
+        OPCODE_WORD_COUNT_FIELDS_SIZE
+            + usize::from(self.type_id.is_some())
+            + usize::from(self.result_id.is_some())
+            + self.operands.len()
+    }
+
     pub(super) fn to_words(&self, sink: &mut impl Extend<Word>) {
-        sink.extend(Some((self.wc << 16) | self.op as u32));
+        let word_count = self.word_count();
+        assert!(
+            word_count <= usize::from(u16::MAX),
+            "{:?} instruction is {word_count} words long, but SPIR-V instructions are limited to {} words",
+            self.op,
+            u16::MAX
+        );
+        sink.extend(Some(((word_count as u32) << 16) | self.op as u32));
         sink.extend(self.type_id);
         sink.extend(self.result_id);
         sink.extend(self.operands.iter().cloned());
@@ -139,13 +149,13 @@ impl Instruction {
         assert_eq!(wc, words.len() as u16);
         assert_eq!(op, self.op as u16);
 
-        if self.type_id.is_some() {
-            assert_eq!(words[inst_index], self.type_id.unwrap());
+        if let Some(type_id) = self.type_id {
+            assert_eq!(words[inst_index], type_id);
             inst_index += 1;
         }
 
-        if self.result_id.is_some() {
-            assert_eq!(words[inst_index], self.result_id.unwrap());
+        if let Some(result_id) = self.result_id {
+            assert_eq!(words[inst_index], result_id);
             inst_index += 1;
         }
 
@@ -220,8 +230,37 @@ fn test_logical_layout_in_words() {
 
     let mut index: usize = 0;
     for instruction in instructions {
-        let wc = instruction.wc as usize;
+        let wc = instruction.word_count();
         instruction.validate(&output[index..index + wc]);
         index += wc;
     }
+}
+
+#[cfg(test)]
+fn entry_point_of_word_count(word_count: usize) -> Vec<Word> {
+    let mut instruction = Instruction::new(Op::EntryPoint);
+    // `Instruction::new` already accounts for the opcode/word-count word.
+    instruction.add_operands(vec![1; word_count - 1]);
+
+    let mut output = vec![];
+    instruction.to_words(&mut output);
+    output
+}
+
+/// Ensure we allow `u16::MAX` words in an instruction.
+#[test]
+fn test_longest_encodable_instruction() {
+    let output = entry_point_of_word_count(u16::MAX as usize);
+
+    assert_eq!(output.len(), u16::MAX as usize);
+    assert_eq!(output[0] >> 16, u16::MAX as Word);
+}
+
+/// Ensure we panic when we have more than `u16::MAX` words in an instruction.
+#[test]
+#[should_panic(
+    expected = "EntryPoint instruction is 65536 words long, but SPIR-V instructions are limited to 65535 words"
+)]
+fn test_instruction_word_count_overflow() {
+    entry_point_of_word_count(u16::MAX as usize + 1);
 }

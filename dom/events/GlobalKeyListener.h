@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -8,6 +6,7 @@
 #define mozilla_GlobalKeyListener_h_
 
 #include "mozilla/EventForwards.h"
+#include "mozilla/RefPtr.h"
 #include "mozilla/layers/KeyboardMap.h"
 #include "nsIDOMEventListener.h"
 #include "nsIWeakReferenceUtils.h"
@@ -51,7 +50,7 @@ class GlobalKeyListener : public nsIDOMEventListener {
   NS_DECL_NSIDOMEVENTLISTENER
 
  protected:
-  virtual ~GlobalKeyListener() = default;
+  virtual ~GlobalKeyListener();
 
   MOZ_CAN_RUN_SCRIPT
   void WalkHandlers(dom::KeyboardEvent* aKeyEvent);
@@ -69,9 +68,9 @@ class GlobalKeyListener : public nsIDOMEventListener {
     bool mReservedHandlerForChromeFound = false;
     // Set to true if found handler is disabled.
     bool mDisabledHandlerFound = false;
-    // Set to true if a command is found but may correspond to a different type
-    // of keyboard event.
-    bool mRelevantHandlerFound = false;
+    // Set to a Command that is found but may correspond to a different type
+    // of keyboard event, this is set only for LookForCommand purpose.
+    Maybe<Command> mRelevantCommand;
   };
 
   // walk the handlers, looking for one to handle the event
@@ -119,7 +118,7 @@ class GlobalKeyListener : public nsIDOMEventListener {
 
   dom::EventTarget* mTarget;  // weak ref;
 
-  KeyEventHandler* mHandler;  // Linked list of event handlers.
+  RefPtr<KeyEventHandler> mHandler;  // Linked list of event handlers.
 };
 
 /**
@@ -135,6 +134,11 @@ class XULKeySetGlobalKeyListener final : public GlobalKeyListener {
 
   static void AttachKeyHandler(dom::Element* aElementTarget);
   static void DetachKeyHandler(dom::Element* aElementTarget);
+
+  // Called when a key element was added to or removed from aKeysetElement, or
+  // changed one of the attributes its handler was built from, so that the next
+  // key event rebuilds the handlers from the current key elements.
+  static void InvalidateHandlers(dom::Element* aKeysetElement);
 
  protected:
   virtual ~XULKeySetGlobalKeyListener();

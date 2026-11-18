@@ -144,7 +144,7 @@ add_task(async function invalid_input_throws() {
     () =>
       PlacesUtils.bookmarks.insert({
         type: PlacesUtils.bookmarks.TYPE_BOOKMARK,
-        url: NetUtil.newURI(longurl),
+        url: Services.io.newURI(longurl),
       }),
     /Invalid value for property 'url'/
   );
@@ -211,6 +211,30 @@ add_task(async function test_insert_into_root_throws() {
     "Should throw when inserting a folder into the root."
   );
   sandbox.restore();
+});
+
+add_task(async function test_insert_into_non_folder_rejects() {
+  let bm = await PlacesUtils.bookmarks.insert({
+    parentGuid: PlacesUtils.bookmarks.unfiledGuid,
+    url: "http://example.com/",
+  });
+  await Assert.rejects(
+    PlacesUtils.bookmarks.insert({
+      parentGuid: bm.guid,
+      url: "http://example.com/child",
+    }),
+    /parentGuid must be a folder/,
+    "Should reject when inserting a bookmark into a bookmark."
+  );
+  await Assert.rejects(
+    PlacesUtils.bookmarks.insert({
+      parentGuid: bm.guid,
+      type: PlacesUtils.bookmarks.TYPE_FOLDER,
+    }),
+    /parentGuid must be a folder/,
+    "Should reject when inserting a folder into a bookmark."
+  );
+  await PlacesUtils.bookmarks.remove(bm);
 });
 
 add_task(async function long_title_trim() {

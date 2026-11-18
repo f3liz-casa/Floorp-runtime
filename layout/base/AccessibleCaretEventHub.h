@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -10,12 +8,10 @@
 #include "LayoutConstants.h"
 #include "mozilla/EventForwards.h"
 #include "mozilla/MouseEvents.h"
-#include "mozilla/RefPtr.h"
 #include "mozilla/UniquePtr.h"
 #include "mozilla/WeakPtr.h"
 #include "nsCOMPtr.h"
 #include "nsDocShell.h"
-#include "nsIReflowObserver.h"
 #include "nsIScrollObserver.h"
 #include "nsPoint.h"
 #include "nsWeakReference.h"
@@ -57,8 +53,7 @@ class WidgetTouchEvent;
 // HTML: https://firefox-source-docs.mozilla.org/layout/AccessibleCaret.html
 // Source rst: layout/docs/AccessibleCaret.rst
 //
-class AccessibleCaretEventHub : public nsIReflowObserver,
-                                public nsIScrollObserver,
+class AccessibleCaretEventHub : public nsIScrollObserver,
                                 public nsSupportsWeakReference {
  public:
   explicit AccessibleCaretEventHub(PresShell* aPresShell);
@@ -74,20 +69,12 @@ class AccessibleCaretEventHub : public nsIReflowObserver,
 
   NS_DECL_ISUPPORTS
 
-  // nsIReflowObserver
-  MOZ_CAN_RUN_SCRIPT_BOUNDARY
-  NS_IMETHOD Reflow(DOMHighResTimeStamp start, DOMHighResTimeStamp end) final;
-  MOZ_CAN_RUN_SCRIPT_BOUNDARY
-  NS_IMETHOD ReflowInterruptible(DOMHighResTimeStamp start,
-                                 DOMHighResTimeStamp end) final;
+  MOZ_CAN_RUN_SCRIPT_BOUNDARY void DidReflow();
 
   // Override nsIScrollObserver methods.
-  MOZ_CAN_RUN_SCRIPT_BOUNDARY
-  virtual void ScrollPositionChanged() override;
-  MOZ_CAN_RUN_SCRIPT
-  virtual void AsyncPanZoomStarted() override;
-  MOZ_CAN_RUN_SCRIPT
-  virtual void AsyncPanZoomStopped() override;
+  MOZ_CAN_RUN_SCRIPT_BOUNDARY void ScrollPositionChanged() override;
+  MOZ_CAN_RUN_SCRIPT void AsyncPanZoomStarted() override;
+  MOZ_CAN_RUN_SCRIPT void AsyncPanZoomStopped() override;
 
   // Base state
   class State;

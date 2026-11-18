@@ -10,6 +10,25 @@ var { AppConstants } = ChromeUtils.importESModule(
 const { SitePermissions } = ChromeUtils.importESModule(
   "resource:///modules/SitePermissions.sys.mjs"
 );
+var { XPCOMUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/XPCOMUtils.sys.mjs"
+);
+
+const lazy = {};
+
+ChromeUtils.defineESModuleGetters(lazy, {
+  isTrailingDotPolicyDuplicate:
+    "resource://gre/modules/PoliciesHelpers.sys.mjs",
+  PushNotificationHelper:
+    "resource://gre/modules/PushNotificationHelper.sys.mjs",
+});
+
+XPCOMUtils.defineLazyServiceGetter(
+  this,
+  "SiteCategory",
+  "@mozilla.org/site-category;1",
+  Ci.nsISiteCategory
+);
 
 const sitePermissionsL10n = {
   "desktop-notification": {
@@ -29,6 +48,10 @@ const sitePermissionsL10n = {
     description: "permissions-site-xr-desc",
     disableLabel: "permissions-site-xr-disable-label",
     disableDescription: "permissions-site-xr-disable-desc",
+  },
+  "register-protocol-handler": {
+    window: "permissions-site-app-links-window",
+    description: "permissions-site-app-links-desc",
   },
   camera: {
     window: "permissions-site-camera-window2",
@@ -50,7 +73,7 @@ const sitePermissionsL10n = {
     window: "permissions-site-autoplay-window2",
     description: "permissions-site-autoplay-desc",
   },
-  localhost: {
+  "loopback-network": {
     window: "permissions-site-localhost-window",
     description: "permissions-site-localhost-desc",
     disableLabel: "permissions-site-localhost-disable-label",
@@ -142,6 +165,11 @@ const NOTIFICATIONS_PERMISSION_PREF =
 
 const AUTOPLAY_PREF = "media.autoplay.default";
 
+const CLOSED_DELIVERY_AVAILABLE_PREF =
+  "app.backgroundNotifications.helper.available";
+const CLOSED_DELIVERY_ENABLED_PREF =
+  "app.backgroundNotifications.helper.enabled";
+
 var gSitePermissionsManager = {
   _type: "",
   _isObserving: false,
@@ -198,6 +226,10 @@ var gSitePermissionsManager = {
       "permissionsDisableDescription"
     );
     this._setAutoplayPref = document.getElementById("setAutoplayPref");
+    this._closedDeliveryBox = document.getElementById("closedDeliveryBox");
+    this._closedDeliveryCheckbox = document.getElementById(
+      "closedDeliveryCheckbox"
+    );
 
     this._list.addEventListener("keypress", event =>
       this.onPermissionKeyPress(event)
@@ -211,6 +243,9 @@ var gSitePermissionsManager = {
     document.l10n.setAttributes(permissionsText, l10n.description);
     if (l10n.disableLabel) {
       document.l10n.setAttributes(this._checkbox, l10n.disableLabel);
+    } else {
+      this._checkbox.hidden = true;
+      this._permissionsDisableDescription.hidden = true;
     }
     if (l10n.disableDescription) {
       document.l10n.setAttributes(
@@ -232,6 +267,9 @@ var gSitePermissionsManager = {
     // when it is disabled by an extension.
     this._defaultPermissionStatePrefName = "permissions.default." + this._type;
     this._watchPermissionPrefChange();
+    if (this._type == "desktop-notification") {
+      this._watchClosedDeliveryPrefs();
+    }
 
     this._loadPermissions();
     this.buildPermissionsList();
@@ -256,6 +294,15 @@ var gSitePermissionsManager = {
 
   observe(subject, topic, data) {
     if (topic !== "perm-changed") {
+      return;
+    }
+
+    if (data === "cleared") {
+      this._permissionGroups.clear();
+      this._permissionsToChange.clear();
+      this._permissionsToDelete.clear();
+      this._loadPermissions();
+      this.buildPermissionsList();
       return;
     }
 
@@ -374,6 +421,48 @@ var gSitePermissionsManager = {
   },
 
   /**
+   * Shows the closed-browser delivery checkbox only on Windows, where
+   * PushNotificationHelper is packaged, and where Nimbus has made the feature
+   * available. Keeps it in step with writes made elsewhere, such as from
+   * messaging, while the dialog is open.
+   */
+  _watchClosedDeliveryPrefs() {
+    if (AppConstants.platform != "win") {
+      return;
+    }
+    let updateVisibility = () => {
+      this._closedDeliveryBox.hidden = !Services.prefs.getBoolPref(
+        CLOSED_DELIVERY_AVAILABLE_PREF,
+        false
+      );
+    };
+    let updateChecked = () => {
+      this._closedDeliveryCheckbox.checked = Services.prefs.getBoolPref(
+        CLOSED_DELIVERY_ENABLED_PREF,
+        false
+      );
+    };
+    updateVisibility();
+    updateChecked();
+
+    Services.prefs.addObserver(
+      CLOSED_DELIVERY_AVAILABLE_PREF,
+      updateVisibility
+    );
+    Services.prefs.addObserver(CLOSED_DELIVERY_ENABLED_PREF, updateChecked);
+    window.addEventListener("unload", () => {
+      Services.prefs.removeObserver(
+        CLOSED_DELIVERY_AVAILABLE_PREF,
+        updateVisibility
+      );
+      Services.prefs.removeObserver(
+        CLOSED_DELIVERY_ENABLED_PREF,
+        updateChecked
+      );
+    });
+  },
+
+  /**
    * Handles the UI update for web notifications disable by extensions.
    */
   async _handleWebNotificationsDisable() {
@@ -429,6 +518,9 @@ var gSitePermissionsManager = {
     if (
       type !== this._type ||
       !PERMISSION_STATES.includes(perm.capability) ||
+      !SitePermissions.isSupportedPrincipal(perm.principal) ||
+      (perm.expireType === Services.perms.EXPIRE_POLICY &&
+        lazy.isTrailingDotPolicyDuplicate(perm)) ||
       // Skip private browsing session permissions
       (perm.principal.privateBrowsingId !==
         Services.scriptSecurityManager.DEFAULT_PRIVATE_BROWSING_ID &&
@@ -589,6 +681,15 @@ var gSitePermissionsManager = {
     // to update the UI
     this.uninit();
 
+    // Record telemetry for notification permission revocation via preferences
+    if (this._type === "desktop-notification") {
+      for (let group of this._permissionsToDelete.values()) {
+        Glean.webNotificationPermission.permissionRevokedPreferences.record({
+          site_category: SiteCategory.getCategory(group.principal),
+        });
+      }
+    }
+
     // Delete even _permissionsToChange to clear out double-keyed permissions
     for (let group of [
       ...this._permissionsToDelete.values(),
@@ -617,6 +718,19 @@ var gSitePermissionsManager = {
         this._defaultPermissionStatePrefName,
         SitePermissions.UNKNOWN
       );
+    }
+
+    if (
+      this._type == "desktop-notification" &&
+      !this._closedDeliveryBox.hidden
+    ) {
+      let { checked } = this._closedDeliveryCheckbox;
+      if (
+        checked !=
+        Services.prefs.getBoolPref(CLOSED_DELIVERY_ENABLED_PREF, false)
+      ) {
+        lazy.PushNotificationHelper.setEnabled(checked);
+      }
     }
   },
 
@@ -666,7 +780,7 @@ var gSitePermissionsManager = {
       SitePermissions.setDefault("autoplay-media", Number(menulist.value));
     });
 
-    menulist.menupopup.setAttribute("incontentshell", "false");
+    menulist.menupopup.setAttribute("escapecontentshell", true);
 
     menulist.disabled = Services.prefs.prefIsLocked(AUTOPLAY_PREF);
 

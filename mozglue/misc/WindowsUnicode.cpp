@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
@@ -9,8 +7,6 @@
 #include <windows.h>
 // For UNICODE_STRING
 #include <winternl.h>
-
-#include <string.h>
 
 namespace mozilla {
 namespace glue {
@@ -24,7 +20,7 @@ mozilla::UniquePtr<char[]> WideToUTF8(const wchar_t* aStr,
   }
 
   // Include room for the null terminator by adding one
-  auto buf = mozilla::MakeUnique<char[]>(numConv + 1);
+  auto buf = std::make_unique<char[]>(numConv + 1);
 
   numConv = ::WideCharToMultiByte(CP_UTF8, 0, aStr, aStrLenExclNul, buf.get(),
                                   numConv, nullptr, nullptr);

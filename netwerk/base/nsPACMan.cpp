@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim:set ts=2 sw=2 sts=2 et cindent: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -7,8 +5,10 @@
 #include "nsPACMan.h"
 
 #include "mozilla/Preferences.h"
-#include "nsContentUtils.h"
+#include "mozilla/StaticPrefs_network.h"
+#include "mozilla/Try.h"
 #include "nsComponentManagerUtils.h"
+#include "nsContentUtils.h"
 #include "nsIAsyncVerifyRedirectCallback.h"
 #include "nsIAuthPrompt.h"
 #include "nsIDHCPClient.h"
@@ -17,12 +17,8 @@
 #include "nsIPromptFactory.h"
 #include "nsIProtocolProxyService.h"
 #include "nsISystemProxySettings.h"
-#include "nsIOService.h"
 #include "nsNetUtil.h"
 #include "nsThreadUtils.h"
-#include "mozilla/ResultExtensions.h"
-#include "mozilla/StaticPrefs_network.h"
-#include "mozilla/Try.h"
 
 //-----------------------------------------------------------------------------
 
@@ -60,7 +56,7 @@ static bool HttpRequestSucceeded(nsIStreamLoader* loader) {
   nsCOMPtr<nsIHttpChannel> httpChannel = do_QueryInterface(request);
   if (httpChannel) {
     // failsafe
-    Unused << httpChannel->GetRequestSucceeded(&result);
+    (void)httpChannel->GetRequestSucceeded(&result);
   }
 
   return result;
@@ -380,17 +376,12 @@ nsPACMan::nsPACMan(nsISerialEventTarget* mainThreadEventTarget)
       mProxyConfigType(0) {
   MOZ_ASSERT(NS_IsMainThread(), "pacman must be created on main thread");
   mIncludePath = Preferences::GetBool(kPACIncludePath, false);
-  if (StaticPrefs::network_proxy_parse_pac_on_socket_process() &&
-      gIOService->SocketProcessReady()) {
-    mPAC = MakeUnique<RemoteProxyAutoConfig>();
-  } else {
-    mPAC = MakeUnique<ProxyAutoConfig>();
-    if (!sThreadLocalSetup) {
-      sThreadLocalSetup = true;
-      PR_NewThreadPrivateIndex(&sThreadLocalIndex, nullptr);
-    }
-    mPAC->SetThreadLocalIndex(sThreadLocalIndex);
+  mPAC = std::make_unique<ProxyAutoConfig>();
+  if (!sThreadLocalSetup) {
+    sThreadLocalSetup = true;
+    PR_NewThreadPrivateIndex(&sThreadLocalIndex, nullptr);
   }
+  mPAC->SetThreadLocalIndex(sThreadLocalIndex);
 }
 
 nsPACMan::~nsPACMan() {
@@ -452,10 +443,6 @@ nsresult nsPACMan::DispatchToPAC(already_AddRefed<nsIRunnable> aEvent,
   // have to worry about threading issues here.
   if (!mPACThread) {
     MOZ_TRY(NS_NewNamedThread("ProxyResolution", getter_AddRefs(mPACThread)));
-    nsresult rv = mPAC->Init(mPACThread);
-    if (NS_FAILED(rv)) {
-      return rv;
-    }
   }
 
   if (aSync) {
@@ -529,7 +516,8 @@ nsresult nsPACMan::LoadPACFromURI(const nsACString& aSpec,
   NS_ENSURE_STATE(loader);
 
   LOG(("nsPACMan::LoadPACFromURI aSpec: %s, aResetLoadFailureCount: %s\n",
-       aSpec.BeginReading(), aResetLoadFailureCount ? "true" : "false"));
+       PromiseFlatCString(aSpec).get(),
+       aResetLoadFailureCount ? "true" : "false"));
 
   CancelExistingLoad();
 
@@ -619,7 +607,7 @@ nsresult nsPACMan::GetPACFromDHCP(nsACString& aSpec) {
               LOG(
                   ("nsPACMan::GetPACFromDHCP DHCP option %d query succeeded,"
                    "finding PAC URL %s\n",
-                   MOZ_DHCP_WPAD_OPTION, spec.BeginReading()));
+                   MOZ_DHCP_WPAD_OPTION, spec.get()));
             }
             MonitorAutoLock lock(self->mMonitor);
             self->mPACStringFromDHCP = spec;
@@ -644,7 +632,7 @@ nsresult nsPACMan::GetPACFromDHCP(nsACString& aSpec) {
 }
 
 nsresult nsPACMan::ConfigureWPAD(nsACString& aSpec) {
-  LOG(("nsPACMan::ConfigureWPAD(%s)", nsCString(aSpec).get()));
+  LOG(("nsPACMan::ConfigureWPAD(%s)", PromiseFlatCString(aSpec).get()));
   MOZ_ASSERT(!NS_IsMainThread(), "wrong thread");
 
   if (!IsProxyConfigValidForWPAD(mProxyConfigType, mAutoDetect)) {

@@ -4,9 +4,9 @@
 "use strict";
 
 const MASTER_PASSWORD = "omgsecret!";
-const mpToken = Cc["@mozilla.org/security/pk11tokendb;1"]
-  .getService(Ci.nsIPK11TokenDB)
-  .getInternalKeyToken();
+const mpToken = Cc["@mozilla.org/security/internalkeytoken;1"].createInstance(
+  Ci.nsIPKCS11Token
+);
 
 async function checkDeviceManager({ buttonIsDisabled }) {
   let deviceManagerWindow = window.openDialog(
@@ -14,7 +14,7 @@ async function checkDeviceManager({ buttonIsDisabled }) {
     "",
     ""
   );
-  await BrowserTestUtils.waitForEvent(deviceManagerWindow, "load");
+  await TestUtils.topicObserved("device-manager-loaded");
 
   let tree = deviceManagerWindow.document.getElementById("device_tree");
   ok(tree, "The device tree exists");
@@ -35,7 +35,7 @@ async function checkDeviceManager({ buttonIsDisabled }) {
   let changePwButton =
     deviceManagerWindow.document.getElementById("change_pw_button");
   is(
-    changePwButton.getAttribute("disabled") == "true",
+    changePwButton.hasAttribute("disabled"),
     buttonIsDisabled,
     "Change Password button is in the correct state: " + buttonIsDisabled
   );
@@ -43,14 +43,18 @@ async function checkDeviceManager({ buttonIsDisabled }) {
   await BrowserTestUtils.closeWindow(deviceManagerWindow);
 }
 
-async function checkAboutPreferences({ checkboxIsDisabled }) {
+async function checkAboutPreferences({
+  checkboxIsDisabled,
+  hasPassword = false,
+}) {
   await BrowserTestUtils.withNewTab(
-    "about:preferences#privacy",
+    "about:preferences#passwordsAutofill",
     async browser => {
+      let target = hasPassword ? "changePrimaryPassword" : "addPrimaryPassword";
       is(
-        browser.contentDocument.getElementById("useMasterPassword").disabled,
+        browser.contentDocument.getElementById(target).disabled,
         checkboxIsDisabled,
-        "Master Password checkbox is in the correct state: " +
+        `Master Password checkbox is in the correct state: ` +
           checkboxIsDisabled
       );
     }
@@ -76,15 +80,15 @@ add_task(async function test_policy_disable_masterpassword() {
   await checkDeviceManager({ buttonIsDisabled: true });
   await checkAboutPreferences({ checkboxIsDisabled: true });
 
-  mpToken.changePassword("", MASTER_PASSWORD);
+  await mpToken.changePassword("", MASTER_PASSWORD);
   ok(mpToken.hasPassword, "Master password was set");
 
   // If a Primary Password is already set, there's no point in disabling
   // the
   await checkDeviceManager({ buttonIsDisabled: false });
-  await checkAboutPreferences({ checkboxIsDisabled: false });
+  await checkAboutPreferences({ checkboxIsDisabled: false, hasPassword: true });
 
   // Clean up
-  mpToken.changePassword(MASTER_PASSWORD, "");
+  await mpToken.changePassword(MASTER_PASSWORD, "");
   ok(!mpToken.hasPassword, "Master password was cleaned up");
 });

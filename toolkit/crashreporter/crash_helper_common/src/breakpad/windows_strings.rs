@@ -9,29 +9,35 @@ use std::{
     os::windows::ffi::{OsStrExt, OsStringExt},
 };
 
-use crate::{errors::MessageError, BreakpadChar, BreakpadString};
+use crate::{messages::MessageError, BreakpadChar, BreakpadString};
 
 // BreakpadString trait implementation for Windows native UTF-16 strings
 impl BreakpadString for OsString {
-    fn serialize(&self) -> Vec<u8> {
+    fn serialize(self) -> Vec<u8> {
         self.encode_wide().flat_map(|c| c.to_ne_bytes()).collect()
     }
 
-    fn deserialize(bytes: &[u8]) -> Result<OsString, MessageError> {
-        if (bytes.len() % 2) != 0 {
+    fn deserialize(bytes: Vec<u8>) -> Result<OsString, MessageError> {
+        if !bytes.len().is_multiple_of(2) {
             return Err(MessageError::InvalidData);
         }
 
         let wchars: Vec<u16> = bytes
-            .chunks_exact(2)
-            .map(|chunk| {
-                // SAFETY: We're splitting into exact 2 bytes chunks
-                let chunk: [u8; 2] = unsafe { chunk.try_into().unwrap_unchecked() };
-                u16::from_ne_bytes(chunk)
-            })
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|chunk| u16::from_ne_bytes(*chunk))
             .collect();
 
         Ok(OsString::from_wide(&wchars))
+    }
+
+    fn bytes_len(&self) -> usize {
+        self.len() * size_of::<u16>()
+    }
+
+    fn len(&self) -> usize {
+        self.as_os_str().encode_wide().count()
     }
 
     unsafe fn from_ptr(ptr: *const BreakpadChar) -> OsString {

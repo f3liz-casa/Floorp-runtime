@@ -147,7 +147,7 @@ add_task(async function invalid_input_rejects() {
     children: [
       {
         type: PlacesUtils.bookmarks.TYPE_BOOKMARK,
-        url: NetUtil.newURI(longurl),
+        url: Services.io.newURI(longurl),
       },
     ],
     guid: PlacesUtils.bookmarks.unfiledGuid,
@@ -308,6 +308,27 @@ add_task(async function insert_into_root() {
       }),
     /Can't insert into the root/
   );
+});
+
+add_task(async function insert_into_non_folder() {
+  let bm = await PlacesUtils.bookmarks.insert({
+    parentGuid: PlacesUtils.bookmarks.unfiledGuid,
+    url: "http://example.com/",
+  });
+  await Assert.rejects(
+    PlacesUtils.bookmarks.insertTree({
+      guid: bm.guid,
+      children: [
+        {
+          url: "http://example.com/child",
+          title: "Test inserting into a bookmark",
+        },
+      ],
+    }),
+    /The parent you specified must be a folder/,
+    "Should reject when inserting a tree into a bookmark"
+  );
+  await PlacesUtils.bookmarks.remove(bm);
 });
 
 add_task(async function tree_where_separator_or_folder_has_kids() {

@@ -56,7 +56,7 @@ export var GeckoViewRemoteDebugger = {
     lazy.DevToolsServer.init();
     lazy.DevToolsServer.registerAllActors();
     const { createRootActor } = lazy.require(
-      "resource://gre/modules/dbg-browser-actors.js"
+      "moz-src:///mobile/shared/modules/dbg-browser-actors.js"
     );
     lazy.DevToolsServer.setRootActor(createRootActor);
     lazy.DevToolsServer.allowChromeProcess = true;
@@ -65,7 +65,7 @@ export var GeckoViewRemoteDebugger = {
     lazy.DevToolsServer.keepAlive = true;
 
     // Socket address for USB remote debugger expects
-    // @ANDROID_PACKAGE_NAME/firefox-debugger-socket.
+    // @{package_name}/firefox-debugger-socket format.
     // In /proc/net/unix, it will be outputed as
     // @org.mozilla.geckoview_example/firefox-debugger-socket
     //

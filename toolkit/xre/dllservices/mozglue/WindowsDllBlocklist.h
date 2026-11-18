@@ -1,4 +1,3 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -21,21 +20,22 @@ enum DllBlocklistInitFlags {
   eDllBlocklistInitFlagIsChildProcess = 1 << 0,
   eDllBlocklistInitFlagWasBootstrapped = 1 << 1,
   eDllBlocklistInitFlagIsUtilityProcess = 1 << 2,
-  eDllBlocklistInitFlagIsSocketProcess = 1 << 3,
+  // 1 << 3 is unused and can be reused.
   eDllBlocklistInitFlagIsGPUProcess = 1 << 4,
   eDllBlocklistInitFlagIsGMPluginProcess = 1 << 5,
+  eDllBlocklistInitFlagIsRDDProcess = 1 << 6,
 };
 
 inline void SetDllBlocklistProcessTypeFlags(uint32_t& aFlags,
                                             GeckoProcessType aProcessType) {
   if (aProcessType == GeckoProcessType_Utility) {
     aFlags |= eDllBlocklistInitFlagIsUtilityProcess;
-  } else if (aProcessType == GeckoProcessType_Socket) {
-    aFlags |= eDllBlocklistInitFlagIsSocketProcess;
   } else if (aProcessType == GeckoProcessType_GPU) {
     aFlags |= eDllBlocklistInitFlagIsGPUProcess;
   } else if (aProcessType == GeckoProcessType_GMPlugin) {
     aFlags |= eDllBlocklistInitFlagIsGMPluginProcess;
+  } else if (aProcessType == GeckoProcessType_RDD) {
+    aFlags |= eDllBlocklistInitFlagIsRDDProcess;
   }
 }
 
@@ -74,7 +74,7 @@ class WritableBuffer {
   size_t Available() const { return sizeof(mBuffer) - mLen; }
 
  public:
-  WritableBuffer() : mBuffer{0}, mLen(0) {}
+  constexpr WritableBuffer() : mBuffer{0}, mLen(0) {}
 
   void Write(const char* aData, size_t aLen) {
     size_t writable_len = std::min(aLen, Available());

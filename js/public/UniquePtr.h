@@ -1,6 +1,4 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- * vim: set ts=8 sts=2 et sw=2 tw=80:
- * This Source Code Form is subject to the terms of the Mozilla Public
+/* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
@@ -36,7 +34,7 @@ struct UniqueSelector<T[N]> {
 
 }  // namespace detail
 
-// Replacement for mozilla::MakeUnique that correctly calls js_new and produces
+// Replacement for std::make_unique that correctly calls js_new and produces
 // a js::UniquePtr.
 template <typename T, typename... Args>
 typename detail::UniqueSelector<T>::SingleObject MakeUnique(Args&&... aArgs) {

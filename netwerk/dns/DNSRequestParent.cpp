@@ -1,21 +1,18 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set sw=2 ts=8 et tw=80 : */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "mozilla/net/DNSRequestParent.h"
-#include "mozilla/net/DNSRequestChild.h"
-#include "nsIDNSService.h"
-#include "nsNetCID.h"
-#include "nsThreadUtils.h"
+
+#include "DNSAdditionalInfo.h"
+#include "mozilla/Components.h"
+#include "nsHostResolver.h"
 #include "nsICancelable.h"
 #include "nsIDNSRecord.h"
-#include "nsHostResolver.h"
-#include "mozilla/Components.h"
-#include "mozilla/Unused.h"
-#include "DNSAdditionalInfo.h"
+#include "nsIDNSService.h"
+#include "nsNetCID.h"
 #include "nsServiceManagerUtils.h"
+#include "nsThreadUtils.h"
 
 using namespace mozilla::ipc;
 
@@ -28,13 +25,10 @@ namespace net {
 
 NS_IMPL_ISUPPORTS(DNSRequestHandler, nsIDNSListener)
 
-static void SendLookupCompletedHelper(DNSRequestActor* aActor,
-                                      const DNSRequestResponse& aReply) {
-  if (DNSRequestParent* parent = aActor->AsDNSRequestParent()) {
-    Unused << parent->SendLookupCompleted(aReply);
-  } else if (DNSRequestChild* child = aActor->AsDNSRequestChild()) {
-    Unused << child->SendLookupCompleted(aReply);
-  }
+DNSRequestHandler::~DNSRequestHandler() = default;
+
+void DNSRequestHandler::SetIPCActor(DNSRequestParent* aActor) {
+  mIPCActor = aActor;
 }
 
 void DNSRequestHandler::DoAsyncResolve(const nsACString& hostname,
@@ -59,7 +53,7 @@ void DNSRequestHandler::DoAsyncResolve(const nsACString& hostname,
   }
 
   if (NS_FAILED(rv) && mIPCActor->CanSend()) {
-    SendLookupCompletedHelper(mIPCActor, DNSRequestResponse(rv));
+    (void)mIPCActor->SendLookupCompleted(DNSRequestResponse(rv));
   }
 }
 
@@ -81,10 +75,6 @@ void DNSRequestHandler::OnRecvCancelDNSRequest(
   }
 }
 
-bool DNSRequestHandler::OnRecvLookupCompleted(const DNSRequestResponse& reply) {
-  return true;
-}
-
 //-----------------------------------------------------------------------------
 // nsIDNSListener functions
 //-----------------------------------------------------------------------------
@@ -104,11 +94,12 @@ DNSRequestHandler::OnLookupComplete(nsICancelable* request,
     if (byTypeRec) {
       IPCTypeRecord result;
       byTypeRec->GetResults(&result.mData);
+      byTypeRec->GetFromStaleCache(&result.mFromStaleCache);
       if (nsCOMPtr<nsIDNSHTTPSSVCRecord> rec = do_QueryInterface(aRecord)) {
         rec->GetTtl(&result.mTTL);
         rec->IsTRR(&result.mIsTRR);
       }
-      SendLookupCompletedHelper(mIPCActor, DNSRequestResponse(result));
+      (void)mIPCActor->SendLookupCompleted(DNSRequestResponse(result));
       return NS_OK;
     }
 
@@ -144,13 +135,14 @@ DNSRequestHandler::OnLookupComplete(nsICancelable* request,
     TimeStamp lastUpdate;
     rec->GetLastUpdate(&lastUpdate);
 
-    SendLookupCompletedHelper(
-        mIPCActor,
-        DNSRequestResponse(DNSRecord(cname, array, trrFetchDuration,
-                                     trrFetchDurationNetworkOnly, isTRR,
-                                     effectiveTRRMode, ttl, lastUpdate)));
+    bool fromStaleCache = false;
+    rec->GetFromStaleCache(&fromStaleCache);
+
+    (void)mIPCActor->SendLookupCompleted(DNSRequestResponse(
+        DNSRecord(cname, array, trrFetchDuration, trrFetchDurationNetworkOnly,
+                  isTRR, effectiveTRRMode, ttl, lastUpdate, fromStaleCache)));
   } else {
-    SendLookupCompletedHelper(mIPCActor, DNSRequestResponse(status));
+    (void)mIPCActor->SendLookupCompleted(DNSRequestResponse(status));
   }
 
   return NS_OK;
@@ -162,8 +154,8 @@ void DNSRequestHandler::OnIPCActorDestroy() { mIPCActor = nullptr; }
 // DNSRequestParent functions
 //-----------------------------------------------------------------------------
 
-DNSRequestParent::DNSRequestParent(DNSRequestBase* aRequest)
-    : DNSRequestActor(aRequest) {
+DNSRequestParent::DNSRequestParent(DNSRequestHandler* aRequest)
+    : mDNSRequest(aRequest) {
   aRequest->SetIPCActor(this);
 }
 
@@ -174,12 +166,6 @@ mozilla::ipc::IPCResult DNSRequestParent::RecvCancelDNSRequest(
   mDNSRequest->OnRecvCancelDNSRequest(hostName, trrServer, port, type,
                                       originAttributes, flags, reason);
   return IPC_OK();
-}
-
-mozilla::ipc::IPCResult DNSRequestParent::RecvLookupCompleted(
-    const DNSRequestResponse& reply) {
-  return mDNSRequest->OnRecvLookupCompleted(reply) ? IPC_OK()
-                                                   : IPC_FAIL_NO_REASON(this);
 }
 
 void DNSRequestParent::ActorDestroy(ActorDestroyReason) {

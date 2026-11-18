@@ -10,21 +10,20 @@
 
 #include "call/rtp_payload_params.h"
 
-#include <stddef.h>
-
 #include <algorithm>
+#include <cstddef>
 #include <cstdint>
+#include <iterator>
 #include <optional>
 
 #include "absl/container/inlined_vector.h"
-#include "absl/strings/match.h"
+#include "api/environment/environment.h"
 #include "api/field_trials_view.h"
 #include "api/transport/rtp/dependency_descriptor.h"
 #include "api/video/encoded_image.h"
 #include "api/video/render_resolution.h"
 #include "api/video/video_codec_constants.h"
 #include "api/video/video_codec_type.h"
-#include "api/video/video_frame_type.h"
 #include "api/video/video_timing.h"
 #include "call/rtp_config.h"
 #include "common_video/generic_frame_descriptor/generic_frame_info.h"
@@ -36,11 +35,9 @@
 #include "modules/video_coding/codecs/vp9/include/vp9_globals.h"
 #include "modules/video_coding/frame_dependencies_calculator.h"
 #include "modules/video_coding/include/video_codec_interface.h"
-#include "rtc_base/arraysize.h"
 #include "rtc_base/checks.h"
 #include "rtc_base/logging.h"
 #include "rtc_base/random.h"
-#include "rtc_base/time_utils.h"
 
 namespace webrtc {
 namespace {
@@ -181,23 +178,21 @@ FrameDependencyStructure MinimalisticStructure(int num_spatial_layers,
 }
 }  // namespace
 
-RtpPayloadParams::RtpPayloadParams(const uint32_t ssrc,
-                                   const RtpPayloadState* state,
-                                   const FieldTrialsView& trials)
+RtpPayloadParams::RtpPayloadParams(const Environment& env,
+                                   const uint32_t ssrc,
+                                   const RtpPayloadState* state)
     : ssrc_(ssrc),
       generic_picture_id_experiment_(
-          absl::StartsWith(trials.Lookup("WebRTC-GenericPictureId"),
-                           "Enabled")),
-      simulate_generic_structure_(absl::StartsWith(
-          trials.Lookup("WebRTC-GenericCodecDependencyDescriptor"),
-          "Enabled")) {
+          env.field_trials().IsEnabled("WebRTC-GenericPictureId")),
+      simulate_generic_structure_(env.field_trials().IsEnabled(
+          "WebRTC-GenericCodecDependencyDescriptor")) {
   for (auto& spatial_layer : last_frame_id_)
     spatial_layer.fill(-1);
 
   chain_last_frame_id_.fill(-1);
   buffer_id_to_frame_id_.fill(-1);
 
-  Random random(TimeMicros());
+  Random random(env.clock().TimeInMicroseconds());
   state_.picture_id =
       state ? state->picture_id : (random.Rand<int16_t>() & 0x7FFF);
   state_.tl0_pic_idx = state ? state->tl0_pic_idx : (random.Rand<uint8_t>());
@@ -225,7 +220,7 @@ RTPVideoHeader RtpPayloadParams::GetRtpVideoHeader(
                                   &rtp_video_header);
   }
   rtp_video_header.simulcastIdx = image.SimulcastIndex().value_or(0);
-  rtp_video_header.frame_type = image._frameType;
+  rtp_video_header.frame_type = image.frame_type();
   rtp_video_header.rotation = image.rotation_;
   rtp_video_header.content_type = image.content_type_;
   rtp_video_header.playout_delay = image.PlayoutDelay();
@@ -237,7 +232,7 @@ RTPVideoHeader RtpPayloadParams::GetRtpVideoHeader(
   rtp_video_header.video_frame_tracking_id = image.VideoFrameTrackingId();
   SetVideoTiming(image, &rtp_video_header.video_timing);
 
-  const bool is_keyframe = image._frameType == VideoFrameType::kVideoFrameKey;
+  const bool is_keyframe = image.IsKey();
   const bool first_frame_in_picture =
       (codec_specific_info && codec_specific_info->codecType == kVideoCodecVP9)
           ? codec_specific_info->codecSpecific.VP9.first_frame_in_picture
@@ -456,6 +451,12 @@ void RtpPayloadParams::GenericToGeneric(int64_t frame_id,
   last_frame_id_[0][0] = frame_id;
 }
 
+// H264ToGeneric() and Vp8ToGeneric() only check the temporal index against
+// kMaxTemporalStreams, which is sufficient as long as `last_frame_id_` can
+// hold that many temporal layers.
+static_assert(kMaxTemporalStreams <=
+              RtpGenericFrameDescriptor::kMaxTemporalLayers);
+
 void RtpPayloadParams::H264ToGeneric(const CodecSpecificInfoH264& h264_info,
                                      int64_t frame_id,
                                      bool is_keyframe,
@@ -463,7 +464,7 @@ void RtpPayloadParams::H264ToGeneric(const CodecSpecificInfoH264& h264_info,
   const int temporal_index =
       h264_info.temporal_idx != kNoTemporalIdx ? h264_info.temporal_idx : 0;
 
-  if (temporal_index >= RtpGenericFrameDescriptor::kMaxTemporalLayers) {
+  if (temporal_index >= int{kMaxTemporalStreams}) {
     RTC_LOG(LS_WARNING) << "Temporal and/or spatial index is too high to be "
                            "used with generic frame descriptor.";
     return;
@@ -476,7 +477,6 @@ void RtpPayloadParams::H264ToGeneric(const CodecSpecificInfoH264& h264_info,
   generic.temporal_index = temporal_index;
 
   // Generate decode target indications.
-  RTC_DCHECK_LT(temporal_index, kMaxTemporalStreams);
   generic.decode_target_indications.resize(kMaxTemporalStreams);
   auto it = std::fill_n(generic.decode_target_indications.begin(),
                         temporal_index, DecodeTargetIndication::kNotPresent);
@@ -530,7 +530,7 @@ void RtpPayloadParams::Vp8ToGeneric(const CodecSpecificInfoVP8& vp8_info,
   const int temporal_index =
       vp8_header.temporalIdx != kNoTemporalIdx ? vp8_header.temporalIdx : 0;
 
-  if (temporal_index >= RtpGenericFrameDescriptor::kMaxTemporalLayers ||
+  if (temporal_index >= int{kMaxTemporalStreams} ||
       spatial_index >= RtpGenericFrameDescriptor::kMaxSpatialLayers) {
     RTC_LOG(LS_WARNING) << "Temporal and/or spatial index is too high to be "
                            "used with generic frame descriptor.";
@@ -545,7 +545,6 @@ void RtpPayloadParams::Vp8ToGeneric(const CodecSpecificInfoVP8& vp8_info,
   generic.temporal_index = temporal_index;
 
   // Generate decode target indications.
-  RTC_DCHECK_LT(temporal_index, kMaxTemporalStreams);
   generic.decode_target_indications.resize(kMaxTemporalStreams);
   auto it = std::fill_n(generic.decode_target_indications.begin(),
                         temporal_index, DecodeTargetIndication::kNotPresent);
@@ -789,7 +788,7 @@ void RtpPayloadParams::SetDependenciesVp8New(
 
   RTC_DCHECK_GT(vp8_info.referencedBuffersCount, 0u);
   RTC_DCHECK_LE(vp8_info.referencedBuffersCount,
-                arraysize(vp8_info.referencedBuffers));
+                std::size(vp8_info.referencedBuffers));
 
   for (size_t i = 0; i < vp8_info.referencedBuffersCount; ++i) {
     const size_t referenced_buffer = vp8_info.referencedBuffers[i];

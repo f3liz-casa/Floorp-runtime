@@ -19,7 +19,11 @@ ChromeUtils.defineESModuleGetters(lazy, {
 ChromeUtils.defineLazyGetter(
   lazy,
   "l10n",
-  () => new Localization(["toolkit/downloads/downloadUI.ftl"], true)
+  () =>
+    new Localization(
+      ["toolkit/downloads/downloadUI.ftl", "branding/brand.ftl"],
+      true
+    )
 );
 
 /**
@@ -45,15 +49,25 @@ export var DownloadUIHelper = {
   },
 
   /**
-   * Open the given file as a file: URI in the active window
+   * Open the given file as a file: URI in the active window.
    *
-   * @param nsIFile file         The downloaded file
-   * @param options.chromeWindow Optional chrome window where we could open the file URI
-   * @param options.openWhere    String indicating how to open the URI.
-   *                             One of "window", "tab", "tabshifted"
-   * @param options.isPrivate    Open in private window or not
-   * @param options.browsingContextId BrowsingContext ID of the initiating document
-   * @param options.userContextId UserContextID of the initiating document
+   * @param {nsIFile} file
+   *        The downloaded file.
+   * @param {object} [options]
+   * @param {Window} [options.chromeWindow]
+   *        Optional chrome window where we could open the file URI.
+   * @param {string} [options.openWhere="tab"]
+   *        How to open the URI, one of "window", "tab", "tabshifted".
+   * @param {boolean} [options.isPrivate]
+   *        Open in a private window.
+   * @param {number} [options.browsingContextId=0]
+   *        BrowsingContext ID of the initiating document.
+   * @param {number} [options.userContextId=0]
+   *        UserContextID of the initiating document.
+   * @param {boolean} [options.openInBackgroundIfSwitchedBrowsingContext=false]
+   *        If true, open in the background when the browsing context that initiated
+   *        the download is no longer the active tab (i.e. the user switched tabs or
+   *        closed the source tab while the download was in progress).
    */
   loadFileIn(
     file,
@@ -63,6 +77,7 @@ export var DownloadUIHelper = {
       isPrivate,
       userContextId = 0,
       browsingContextId = 0,
+      openInBackgroundIfSwitchedBrowsingContext = false,
     } = {}
   ) {
     let fileURI = Services.io.newFileURI(file);
@@ -106,11 +121,23 @@ export var DownloadUIHelper = {
 
     // a browser window will have the helpers from utilityOverlay.js
     let browsingContext = browserWin?.BrowsingContext.get(browsingContextId);
+    let openerBrowser = browsingContext?.top?.embedderElement;
+
+    // Open in the background if the source tab is no longer the active one.
+    // Handle both the case where the user switched to a different tab or
+    // the source tab was closed. Not having a browsingContextId means no source
+    // context (e.g. Save As).
+    let inBackground =
+      openInBackgroundIfSwitchedBrowsingContext &&
+      !!browsingContextId &&
+      openerBrowser != browserWin.gBrowser.selectedBrowser;
+
     browserWin.openTrustedLinkIn(fileURI.spec, openWhere, {
       triggeringPrincipal: Services.scriptSecurityManager.getSystemPrincipal(),
       private: isPrivate,
       userContextId,
-      openerBrowser: browsingContext?.top?.embedderElement,
+      openerBrowser,
+      inBackground,
     });
   },
 };
@@ -146,7 +173,8 @@ DownloadPrompter.prototype = {
    * @param path
    *        String containing the full path to the file to be opened.
    *
-   * @resolves Boolean indicating whether the launch operation can continue.
+   * @returns {Promise<boolean>}
+   *   Resolves to a boolean indicating whether the launch operation can continue.
    */
   async confirmLaunchExecutable(path) {
     const kPrefSkipConfirm = "browser.download.skipConfirmLaunchExecutable";
@@ -199,26 +227,26 @@ DownloadPrompter.prototype = {
       return false;
     }
 
-    let message, cancelButton;
+    let title, message, okButton;
+    let cancelButton = "download-ui-confirm-cancel-button";
 
     switch (aPromptType) {
       case this.ON_QUIT:
-        message =
-          AppConstants.platform == "macosx"
-            ? "download-ui-confirm-quit-cancel-downloads-mac"
-            : "download-ui-confirm-quit-cancel-downloads";
-        cancelButton = "download-ui-dont-quit-button";
+        title = "download-ui-confirm-quit-title";
+        message = "download-ui-confirm-quit-message";
+        okButton = "download-ui-confirm-quit-button";
         break;
 
       case this.ON_OFFLINE:
-        message = "download-ui-confirm-offline-cancel-downloads";
-        cancelButton = "download-ui-dont-go-offline-button";
+        title = "download-ui-confirm-offline-title";
+        message = "download-ui-confirm-offline-message";
+        okButton = "download-ui-confirm-offline-button";
         break;
 
       case this.ON_LEAVE_PRIVATE_BROWSING:
-        message =
-          "download-ui-confirm-leave-private-browsing-windows-cancel-downloads";
-        cancelButton = "download-ui-dont-leave-private-browsing-button";
+        title = "download-ui-confirm-private-browsing-title";
+        message = "download-ui-confirm-private-browsing-message";
+        okButton = "download-ui-confirm-private-browsing-button";
         break;
     }
 
@@ -226,13 +254,12 @@ DownloadPrompter.prototype = {
       Ci.nsIPrompt.BUTTON_TITLE_IS_STRING * Ci.nsIPrompt.BUTTON_POS_0 +
       Ci.nsIPrompt.BUTTON_TITLE_IS_STRING * Ci.nsIPrompt.BUTTON_POS_1;
 
+    let l10nArgs = { downloadsCount: aDownloadsCount };
     let rv = this._prompter.confirmEx(
-      lazy.l10n.formatValueSync("download-ui-confirm-title"),
-      lazy.l10n.formatValueSync(message, { downloadsCount: aDownloadsCount }),
+      lazy.l10n.formatValueSync(title, l10nArgs),
+      lazy.l10n.formatValueSync(message, l10nArgs),
       buttonFlags,
-      lazy.l10n.formatValueSync("download-ui-cancel-downloads-ok", {
-        downloadsCount: aDownloadsCount,
-      }),
+      lazy.l10n.formatValueSync(okButton, l10nArgs),
       lazy.l10n.formatValueSync(cancelButton),
       null,
       null,

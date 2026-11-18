@@ -8,17 +8,12 @@ use crate::std::borrow::Cow;
 use crate::std::ffi::{OsStr, OsString};
 use crate::std::path::{Path, PathBuf};
 use crate::std::process::Command;
-use crate::{lang, logging::LogTarget, std};
+use crate::{lang, logging::LogTarget, prefs::Prefs, std};
 use anyhow::Context;
 use once_cell::sync::Lazy;
 
-/// The number of the most recent minidump files to retain when pruning.
-const MINIDUMP_PRUNE_SAVE_COUNT: usize = 10;
-
 #[cfg(test)]
 pub mod test {
-    pub const MINIDUMP_PRUNE_SAVE_COUNT: usize = super::MINIDUMP_PRUNE_SAVE_COUNT;
-
     cfg_if::cfg_if! {
         if #[cfg(target_os = "linux")] {
             use crate::std::{mock, env, fs::MockFS, fs::MockFiles};
@@ -75,6 +70,42 @@ pub mod test {
             }
         }
     }
+
+    #[test]
+    fn restart_command_no_extra() {
+        let extra = serde_json::from_str("{}").unwrap();
+        assert!(!super::Config::should_suppress_restart(&extra));
+    }
+
+    #[test]
+    fn restart_command_wer() {
+        let extra = serde_json::from_str(r#"{"WindowsErrorReporting": "1"}"#).unwrap();
+        assert!(super::Config::should_suppress_restart(&extra));
+    }
+
+    #[test]
+    fn restart_command_standard_shutdown() {
+        let extra = serde_json::from_str(
+            r#"{
+            "ShutdownProgress": "quit-application",
+            "ShutdownReason": "AppClose"
+        }"#,
+        )
+        .unwrap();
+        assert!(super::Config::should_suppress_restart(&extra));
+    }
+
+    #[test]
+    fn restart_command_shutdown_for_restart() {
+        let extra = serde_json::from_str(
+            r#"{
+            "ShutdownProgress": "quit-application",
+            "ShutdownReason": "AppRestart"
+        }"#,
+        )
+        .unwrap();
+        assert!(!super::Config::should_suppress_restart(&extra));
+    }
 }
 
 mod buildid_section {
@@ -100,8 +131,6 @@ pub struct Config {
     pub data_dir: Option<PathBuf>,
     /// The events directory.
     pub events_dir: Option<PathBuf>,
-    /// The ping directory.
-    pub ping_dir: Option<PathBuf>,
     /// The profile directory in use when the crash occurred.
     pub profile_dir: Option<PathBuf>,
     /// The dump file.
@@ -120,6 +149,8 @@ pub struct Config {
     pub strings: Option<lang::LangStrings>,
     /// The log target.
     pub log_target: Option<LogTarget>,
+    /// The loaded prefs data.
+    pub prefs: Prefs,
 }
 
 pub struct ConfigStringBuilder<'a>(lang::LangStringBuilder<'a>);
@@ -142,6 +173,11 @@ impl Config {
         Self::default()
     }
 
+    /// Load the prefs from the installation directory.
+    pub fn read_app_prefs(&mut self) {
+        self.prefs.update_from_app_dir(installation_path());
+    }
+
     /// Load a configuration from the application environment.
     #[cfg_attr(mock, allow(unused))]
     pub fn read_from_environment(&mut self) {
@@ -151,7 +187,6 @@ impl Config {
         self.run_memtest = env_bool(ekey!("RUN_MEMTEST"));
         self.data_dir = env_path(ekey!("DATA_DIRECTORY"));
         self.events_dir = env_path(ekey!("EVENTS_DIRECTORY"));
-        self.ping_dir = env_path(ekey!("PING_DIRECTORY"));
         self.app_file = std::env::var_os(ekey!("RESTART_XUL_APP_FILE"));
 
         self.update_log_file();
@@ -185,6 +220,8 @@ impl Config {
         }
 
         self.strings = Some(lang::load());
+
+        self.read_app_prefs();
     }
 
     /// Get the localized string for the given index.
@@ -245,20 +282,26 @@ impl Config {
             self.update_log_file();
         }
 
-        // Clear the restart command if WER handled the crash. This prevents restarting the
-        // program. See bug 1872920.
-        if extra.get("WindowsErrorReporting").is_some() {
+        if Self::should_suppress_restart(&extra) {
             self.restart_command = None;
         }
 
         self.load_profile_directory_from_extra(&extra);
-
         Ok(extra)
+    }
+
+    // Clear the restart command if the browser was already shutting down or if WER handled the
+    // crash. This prevents restarting the program. See bugs 1872920 and 2012347.
+    fn should_suppress_restart(extra: &serde_json::Value) -> bool {
+        extra.get("WindowsErrorReporting").is_some()
+            || (extra.get("ShutdownProgress").is_some()
+                && extra.get("ShutdownReason").and_then(|v| v.as_str()) != Some("AppRestart"))
     }
 
     /// Load the profile directory from the extra file information.
     ///
     /// This also loads the following information that relies on the profile directory:
+    /// * profile-specific prefs
     /// * localization strings from langpacks
     fn load_profile_directory_from_extra(&mut self, extra: &serde_json::Value) {
         let Some(profile_dir) = extra
@@ -272,11 +315,13 @@ impl Config {
             return;
         }
 
+        self.prefs.update_from_profile_dir(&profile_dir);
         self.profile_dir = Some(profile_dir);
 
         // Update the localization information.
         if let Some(strings) = self.strings.as_mut() {
             if let Err(e) = strings.add_langpack(
+                &self.prefs,
                 self.profile_dir.as_deref().unwrap(),
                 extra.get("useragent_locale").and_then(|v| v.as_str()),
             ) {
@@ -319,7 +364,7 @@ impl Config {
     /// The id of the local dump file (the base filename without extension).
     ///
     /// Panics if no dump file is set.
-    pub fn local_dump_id(&self) -> Cow<str> {
+    pub fn local_dump_id(&self) -> Cow<'_, str> {
         self.dump_file().file_stem().unwrap().to_string_lossy()
     }
 
@@ -394,70 +439,6 @@ impl Config {
                 log::warn!("failed to remove {}: {e}", file.display());
             }
         }
-    }
-
-    /// Prune old minidump files adjacent to the dump file.
-    pub fn prune_files(&self) -> anyhow::Result<()> {
-        log::info!("pruning minidump files to the {MINIDUMP_PRUNE_SAVE_COUNT} most recent");
-        let Some(file) = &self.dump_file else {
-            anyhow::bail!("no dump file")
-        };
-        let Some(dir) = file.parent() else {
-            anyhow::bail!("no parent directory for dump file")
-        };
-        log::debug!("pruning {} directory", dir.display());
-        let read_dir = dir.read_dir().with_context(|| {
-            format!(
-                "failed to read dump file parent directory {}",
-                dir.display()
-            )
-        })?;
-
-        let mut minidump_files = Vec::new();
-        for entry in read_dir {
-            match entry {
-                Err(e) => log::error!(
-                    "error while iterating over {} directory entry: {e}",
-                    dir.display()
-                ),
-                Ok(e) if e.path().extension() == Some("dmp".as_ref()) => {
-                    // Return if the metadata can't be read, since not being able to get metadata
-                    // for any file could make the selection of minidumps to delete incorrect.
-                    let meta = e.metadata().with_context(|| {
-                        format!("failed to read metadata for {}", e.path().display())
-                    })?;
-                    if meta.is_file() {
-                        let modified_time =
-                            meta.modified().expect(
-                                "file modification time should be available on all crashreporter platforms",
-                            );
-                        minidump_files.push((modified_time, e.path()));
-                    }
-                }
-                _ => (),
-            }
-        }
-
-        // Sort by modification time first, then path (just to have a defined behavior in the case
-        // of identical times). The reverse leaves the files in order from newest to oldest.
-        minidump_files.sort_unstable_by(|a, b| a.cmp(b).reverse());
-
-        // Delete files, skipping the most recent MINIDUMP_PRUNE_SAVE_COUNT.
-        for dump_file in minidump_files
-            .into_iter()
-            .skip(MINIDUMP_PRUNE_SAVE_COUNT)
-            .map(|v| v.1)
-        {
-            log::debug!("pruning {} and related files", dump_file.display());
-            if let Err(e) = std::fs::remove_file(&dump_file) {
-                log::warn!("failed to delete {}: {e}", dump_file.display());
-            }
-
-            // Ignore errors for the extra file and the memory file: they may not exist.
-            let _ = std::fs::remove_file(extra_file_for_dump_file(dump_file.clone()));
-            let _ = std::fs::remove_file(memory_file_for_dump_file(dump_file));
-        }
-        Ok(())
     }
 
     /// Restart the program based on the configured restart command.
@@ -590,7 +571,7 @@ impl Config {
                 };
 
                 let mut path: PWSTR = std::ptr::null_mut();
-                let result = unsafe { SHGetKnownFolderPath(&FOLDERID_RoamingAppData, 0, 0, &mut path) };
+                let result = unsafe { SHGetKnownFolderPath(&FOLDERID_RoamingAppData, 0, std::ptr::null_mut(), &mut path) };
                 if result != 0 {
                     unsafe { CoTaskMemFree(path as _) };
                     anyhow::bail!("failed to get known path for roaming appdata");
@@ -705,6 +686,52 @@ fn self_path() -> &'static Path {
         PathBuf::from(std::env::args_os().next().expect("failed to get argv[0]"))
     });
     &*PATH
+}
+
+#[cfg(target_os = "linux")]
+pub mod linux {
+    #![cfg_attr(mock, allow(unused))]
+
+    #[cfg(mock)]
+    use crate::std::mock::MockKey;
+    use crate::std::{mock::mocked_static, path::Path};
+    use once_cell::sync::Lazy;
+
+    struct IsRunningUnderFlatpak {
+        inner: Lazy<bool>,
+    }
+
+    impl IsRunningUnderFlatpak {
+        const fn new() -> Self {
+            Self {
+                inner: Lazy::new(|| {
+                    // https://gitlab.gnome.org/GNOME/gtk/-/blob/4300a5c609306ce77cbc8a3580c19201dccd8d13/gdk/gdk.c#L472
+                    Path::new("/.flatpak-info").exists()
+                }),
+            }
+        }
+    }
+
+    impl IsRunningUnderFlatpak {
+        fn get(&self) -> bool {
+            *self.inner
+        }
+    }
+
+    mocked_static! {
+        static IS_RUNNING_UNDER_FLATPAK: IsRunningUnderFlatpak = IsRunningUnderFlatpak::new();
+        mocked type = bool;
+
+        impl IS_RUNNING_UNDER_FLATPAK {
+            fn get(&self) -> bool {
+                Self.try_get(|v| *v).unwrap_or(false)
+            }
+        }
+    }
+
+    pub fn is_running_under_flatpak() -> bool {
+        IS_RUNNING_UNDER_FLATPAK.get()
+    }
 }
 
 fn env_bool<K: AsRef<OsStr>>(name: K) -> bool {

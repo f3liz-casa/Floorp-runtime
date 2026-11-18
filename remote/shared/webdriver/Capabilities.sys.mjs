@@ -16,10 +16,6 @@ ChromeUtils.defineESModuleGetters(lazy, {
     "chrome://remote/content/shared/webdriver/UserPromptHandler.sys.mjs",
 });
 
-ChromeUtils.defineLazyGetter(lazy, "isHeadless", () => {
-  return Cc["@mozilla.org/gfx/info;1"].getService(Ci.nsIGfxInfo).isHeadless;
-});
-
 ChromeUtils.defineLazyGetter(lazy, "userAgent", () => {
   return Cc["@mozilla.org/network/protocol;1?name=http"].getService(
     Ci.nsIHttpProtocolHandler
@@ -28,9 +24,17 @@ ChromeUtils.defineLazyGetter(lazy, "userAgent", () => {
 
 XPCOMUtils.defineLazyPreferenceGetter(
   lazy,
-  "shutdownTimeout",
+  "asyncShutdownCrashTimeout",
   "toolkit.asyncshutdown.crash_timeout"
 );
+
+XPCOMUtils.defineLazyPreferenceGetter(
+  lazy,
+  "asyncShutdownCrashAdditionalWait",
+  "toolkit.asyncshutdown.crash_timeout_additional_wait"
+);
+
+const TIMEOUT_SHUTDOWN_EXTRA_WAIT = 3000;
 
 // List of capabilities which are only relevant for Webdriver Classic.
 export const WEBDRIVER_CLASSIC_CAPABILITIES = [
@@ -84,39 +88,23 @@ export class Timeouts {
     let t = new Timeouts();
 
     for (let [type, ms] of Object.entries(json)) {
-      switch (type) {
-        case "implicit":
-          t.implicit = lazy.assert.positiveInteger(
-            ms,
-            `Expected "${type}" to be a positive integer, ` +
-              lazy.pprint`got ${ms}`
-          );
-          break;
-
-        case "script":
-          if (ms !== null) {
-            lazy.assert.positiveInteger(
-              ms,
-              `Expected "${type}" to be a positive integer, ` +
-                lazy.pprint`got ${ms}`
-            );
-          }
-          t.script = ms;
-          break;
-
-        case "pageLoad":
-          t.pageLoad = lazy.assert.positiveInteger(
-            ms,
-            `Expected "${type}" to be a positive integer, ` +
-              lazy.pprint`got ${ms}`
-          );
-          break;
-
-        default:
-          throw new lazy.error.InvalidArgumentError(
-            `Unrecognized timeout: ${type}`
-          );
+      const supportedTimeouts = ["implicit", "pageLoad", "script"];
+      if (!supportedTimeouts.includes(type)) {
+        throw new lazy.error.InvalidArgumentError(
+          `Expected type of timeout to be one of "${supportedTimeouts.join(", ")}", ` +
+            lazy.pprint`got ${type}`
+        );
       }
+
+      if (ms !== null) {
+        lazy.assert.positiveInteger(
+          ms,
+          `Expected "${type}" to be a positive integer, ` +
+            lazy.pprint`got ${ms}`
+        );
+      }
+
+      t[type] = ms;
     }
 
     return t;
@@ -486,6 +474,8 @@ export class ProxyConfiguration {
 }
 
 export class Capabilities extends Map {
+  #isBidi;
+
   /**
    * WebDriver session capabilities representation.
    *
@@ -500,16 +490,17 @@ export class Capabilities extends Map {
       ["browserVersion", lazy.AppInfo.version],
       ["platformName", getWebDriverPlatformName()],
       ["proxy", new ProxyConfiguration()],
+      ["setWindowRect", !lazy.AppInfo.isAndroid],
       ["unhandledPromptBehavior", new lazy.UserPromptHandler()],
       ["userAgent", lazy.userAgent],
 
       // Gecko specific capabilities
       ["moz:buildID", lazy.AppInfo.appBuildID],
-      ["moz:headless", lazy.isHeadless],
+      ["moz:headless", lazy.AppInfo.isHeadless],
       ["moz:platformVersion", Services.sysinfo.getProperty("version")],
       ["moz:processID", lazy.AppInfo.processID],
       ["moz:profile", maybeProfile()],
-      ["moz:shutdownTimeout", lazy.shutdownTimeout],
+      ["moz:shutdownTimeout", getShutdownTimeout()],
     ];
 
     if (!isBidi) {
@@ -517,9 +508,9 @@ export class Capabilities extends Map {
       defaults.push(
         ["pageLoadStrategy", PageLoadStrategy.Normal],
         ["timeouts", new Timeouts()],
-        ["setWindowRect", !lazy.AppInfo.isAndroid],
         ["strictFileInteractability", false],
 
+        // Gecko specific capabilities
         ["moz:accessibilityChecks", false],
         ["moz:webdriverClick", true],
         ["moz:windowless", false]
@@ -527,6 +518,8 @@ export class Capabilities extends Map {
     }
 
     super(defaults);
+
+    this.#isBidi = isBidi;
   }
 
   /**
@@ -557,12 +550,17 @@ export class Capabilities extends Map {
   toJSON() {
     let marshalled = marshal(this);
 
-    // Always return the proxy capability even if it's empty
-    if (!("proxy" in marshalled)) {
-      marshalled.proxy = {};
+    if (!this.#isBidi) {
+      // For classic WebDriver, proxy is always returned at the moment even when not configured.
+      // See as well: https://github.com/w3c/webdriver/issues/1813
+      if (!("proxy" in marshalled)) {
+        marshalled.proxy = {};
+      }
+
+      // Don't add timeouts which is a WebDriver classic specific capability.
+      marshalled.timeouts = super.get("timeouts");
     }
 
-    marshalled.timeouts = super.get("timeouts");
     marshalled.unhandledPromptBehavior = super.get("unhandledPromptBehavior");
 
     return marshalled;
@@ -728,6 +726,11 @@ export class Capabilities extends Map {
             );
           }
           break;
+
+        case "moz:userContext":
+          throw new lazy.error.InvalidArgumentError(
+            `"${k}" is a readonly capability and cannot be requested`
+          );
       }
       capabilities.set(k, v);
     }
@@ -863,6 +866,11 @@ export class Capabilities extends Map {
         }
         return value;
 
+      case "moz:userContext":
+        throw new lazy.error.InvalidArgumentError(
+          `"${name}" is a readonly capability and cannot be requested`
+        );
+
       default:
         lazy.assert.string(
           name,
@@ -880,6 +888,17 @@ export class Capabilities extends Map {
         );
     }
   }
+}
+
+function getShutdownTimeout() {
+  // Clients should wait at least this long before forcefully terminating
+  // Firefox. This gives the shutdown hang monitor enough time to detect
+  // and terminate the process in case of a shutdown hang.
+  return (
+    lazy.asyncShutdownCrashTimeout +
+    lazy.asyncShutdownCrashAdditionalWait +
+    TIMEOUT_SHUTDOWN_EXTRA_WAIT
+  );
 }
 
 function getWebDriverBrowserName() {

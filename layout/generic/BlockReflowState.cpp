@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -12,11 +10,15 @@
 
 #include "LayoutLogging.h"
 #include "TextOverflow.h"
+#ifdef DEBUG
+#  include "fmt/base.h"
+#endif
 #include "mozilla/AutoRestore.h"
-#include "mozilla/DebugOnly.h"
 #include "mozilla/Preferences.h"
+#include "mozilla/ReflowInput.h"
 #include "mozilla/StaticPrefs_layout.h"
 #include "nsBlockFrame.h"
+#include "nsBlockReflowContext.h"
 #include "nsIFrameInlines.h"
 #include "nsLineLayout.h"
 #include "nsPresContext.h"
@@ -63,6 +65,49 @@ BlockReflowState::BlockReflowState(
   }
   if (aBlockNeedsFloatManager) {
     mFlags.mBlockNeedsFloatManager = true;
+  }
+
+  mFlags.mIsCurrentLineAdjacentToBStart = !aFrame->GetPrevInFlow();
+
+  // Determine the requested text-box-trim sides for this block by checking
+  // the request both from the block's ancestors (passed down via `ReflowInput`)
+  // and from the block itself.
+  mFlags.mShouldApplyTextBoxTrimStart =
+      aReflowInput.mFlags.mShouldApplyTextBoxTrimStart;
+  mFlags.mShouldApplyTextBoxTrimAtBlockEnd =
+      aReflowInput.mFlags.mShouldApplyTextBoxTrimAtBlockEnd;
+  mFlags.mShouldApplyTextBoxTrimAtFragmentEnd =
+      aReflowInput.mFlags.mShouldApplyTextBoxTrimAtFragmentEnd;
+
+  const StyleTextBoxTrim trim = mBlock->StyleTextReset()->mTextBoxTrim;
+  const bool selfTextBoxTrimStart = bool(trim & StyleTextBoxTrim::TRIM_START);
+  const bool selfTextBoxTrimEnd = bool(trim & StyleTextBoxTrim::TRIM_END);
+
+  // "When the box to which `text-box-trim` has been applied is split by
+  // fragmentation, whether trimming is applied per fragment or only to the
+  // start/end edges of its first/last fragments is determined by
+  // `box-decoration-break`."
+  //
+  // https://drafts.csswg.org/css-inline-3/#text-box-trim
+  const bool isBoxDecorationBreakClone =
+      aFrame->StyleBorder()->mBoxDecorationBreak ==
+      StyleBoxDecorationBreak::Clone;
+
+  if (selfTextBoxTrimStart) {
+    // This box can be always trimmed on the start side if it's the first
+    // fragment (or if the box is not fragmented at all). Otherwise, as a
+    // continuation, this fragment requires `box-decoration-break: clone`
+    // to be eligible.
+    mFlags.mShouldApplyTextBoxTrimStart =
+        !aFrame->GetPrevInFlow() || isBoxDecorationBreakClone;
+  }
+
+  if (selfTextBoxTrimEnd) {
+    // The last formatted line of this block should be trimmed directly.
+    // If the block is fragmented when reflowed, then non-last fragments
+    // should only be trimmed if `box-decoration-break` is `clone`.
+    mFlags.mShouldApplyTextBoxTrimAtBlockEnd = true;
+    mFlags.mShouldApplyTextBoxTrimAtFragmentEnd = isBoxDecorationBreakClone;
   }
 
   mFlags.mCanHaveOverflowMarkers = css::TextOverflow::CanHaveOverflowMarkers(
@@ -139,6 +184,44 @@ void BlockReflowState::UndoAlignContentShift() {
   if (mReflowInput.AvailableBSize() != NS_UNCONSTRAINEDSIZE) {
     mContentArea.BSize(mReflowInput.GetWritingMode()) -= mAlignContentShift;
   }
+}
+
+/* static */
+ReflowInput::InitFlags BlockReflowState::ComputeChildMarginTrim(
+    nsBlockFrame* aBlock, bool aTrimChildBStartMargins,
+    bool aTrimChildBEndMargins, nsLineList::iterator aLine,
+    bool aIsAdjacentToBStart) {
+  ReflowInput::InitFlags flags;
+  if (!aTrimChildBStartMargins && !aTrimChildBEndMargins) {
+    return flags;
+  }
+  MOZ_ASSERT(aLine->IsBlock(), "Only block-level margins can be trimmed");
+
+  bool trimBStart = aTrimChildBStartMargins && aIsAdjacentToBStart;
+  bool trimBEnd = aTrimChildBEndMargins && aBlock->IsLineAdjacentToBEnd(aLine);
+  // An empty block's margins collapses, so trimming either adjoining margin
+  // also trims the other.
+  if ((trimBStart || trimBEnd) && aLine->IsEmpty()) {
+    trimBStart = true;
+    trimBEnd = true;
+  }
+  if (trimBStart) {
+    flags += ReflowInput::InitFlag::TrimBStartMargin;
+  }
+  if (trimBEnd) {
+    flags += ReflowInput::InitFlag::TrimBEndMargin;
+  }
+  return flags;
+}
+
+bool BlockReflowState::ShouldTrimChildBStartMargins() const {
+  return nsBlockReflowContext::StyleTrimsChildBStartMargins(mBlock) ||
+         (mReflowInput.mFlags.mTrimBStartMargin && !mFlags.mIsBStartMarginRoot);
+}
+
+bool BlockReflowState::ShouldTrimChildBEndMargins() const {
+  return nsBlockReflowContext::StyleTrimsChildBEndMargins(mBlock) ||
+         mFlags.mShouldTrimInheritedBEndMargins;
 }
 
 void BlockReflowState::ComputeFloatAvoidingOffsets(
@@ -330,9 +413,8 @@ nsFlowAreaRect BlockReflowState::GetFloatAvailableSpaceWithState(
 #ifdef DEBUG
   if (nsBlockFrame::gNoisyReflow) {
     nsIFrame::IndentBy(stdout, nsBlockFrame::gNoiseIndent);
-    printf("%s: band=%d,%d,%d,%d hasfloats=%d\n", __func__,
-           result.mRect.IStart(wm), result.mRect.BStart(wm),
-           result.mRect.ISize(wm), result.mRect.BSize(wm), result.HasFloats());
+    fmt::println("{} band={} hasFloats={}", __func__, result.mRect,
+                 YesOrNo(result.HasFloats()));
   }
 #endif
   return result;
@@ -361,9 +443,8 @@ nsFlowAreaRect BlockReflowState::GetFloatAvailableSpaceForBSize(
 #ifdef DEBUG
   if (nsBlockFrame::gNoisyReflow) {
     nsIFrame::IndentBy(stdout, nsBlockFrame::gNoiseIndent);
-    printf("%s: space=%d,%d,%d,%d hasfloats=%d\n", __func__,
-           result.mRect.IStart(wm), result.mRect.BStart(wm),
-           result.mRect.ISize(wm), result.mRect.BSize(wm), result.HasFloats());
+    fmt::println("{} band={} hasFloats={}", __func__, result.mRect,
+                 YesOrNo(result.HasFloats()));
   }
 #endif
   return result;
@@ -410,7 +491,7 @@ void BlockReflowState::ReconstructMarginBefore(nsLineList::iterator aLine) {
 void BlockReflowState::AppendPushedFloatChain(nsIFrame* aFloatCont) {
   nsFrameList* pushedFloats = mBlock->EnsurePushedFloats();
   while (true) {
-    aFloatCont->AddStateBits(NS_FRAME_IS_PUSHED_FLOAT);
+    aFloatCont->AddStateBits(NS_FRAME_IS_PUSHED_OUT_OF_FLOW);
     pushedFloats->AppendFrame(mBlock, aFloatCont);
     aFloatCont = aFloatCont->GetNextInFlow();
     if (!aFloatCont || aFloatCont->GetParent() != mBlock) {
@@ -437,8 +518,6 @@ void BlockReflowState::RecoverFloats(nsLineList::iterator aLine,
     for (nsIFrame* floatFrame : aLine->Floats()) {
       if (aDeltaBCoord != 0) {
         floatFrame->MovePositionBy(nsPoint(0, aDeltaBCoord));
-        nsContainerFrame::PositionFrameView(floatFrame);
-        nsContainerFrame::PositionChildViews(floatFrame);
       }
 #ifdef DEBUG
       if (nsBlockFrame::gNoisyReflow || nsBlockFrame::gNoisyFloatManager) {
@@ -515,12 +594,12 @@ bool BlockReflowState::AddFloat(nsLineLayout* aLineLayout, nsIFrame* aFloat,
   MOZ_ASSERT(aFloat->GetParent(), "float must have parent");
   MOZ_ASSERT(aFloat->GetParent()->IsBlockFrameOrSubclass(),
              "float's parent must be block");
-  if (aFloat->HasAnyStateBits(NS_FRAME_IS_PUSHED_FLOAT) ||
+  if (aFloat->HasAnyStateBits(NS_FRAME_IS_PUSHED_OUT_OF_FLOW) ||
       aFloat->GetParent() != mBlock) {
-    MOZ_ASSERT(aFloat->HasAnyStateBits(NS_FRAME_IS_PUSHED_FLOAT |
+    MOZ_ASSERT(aFloat->HasAnyStateBits(NS_FRAME_IS_PUSHED_OUT_OF_FLOW |
                                        NS_FRAME_FIRST_REFLOW),
                "float should be in this block unless it was marked as "
-               "pushed float, or just inserted");
+               "pushed out-of-flow, or just inserted");
     MOZ_ASSERT(aFloat->GetParent()->FirstContinuation() ==
                mBlock->FirstContinuation());
     // If, in a previous reflow, the float was pushed entirely to
@@ -534,7 +613,7 @@ bool BlockReflowState::AddFloat(nsLineLayout* aLineLayout, nsIFrame* aFloat,
     auto* floatParent = static_cast<nsBlockFrame*>(aFloat->GetParent());
     floatParent->StealFrame(aFloat);
 
-    aFloat->RemoveStateBits(NS_FRAME_IS_PUSHED_FLOAT);
+    aFloat->RemoveStateBits(NS_FRAME_IS_PUSHED_OUT_OF_FLOW);
 
     // Appending is fine, since if a float was pushed to the next
     // page/column, all later floats were also pushed.
@@ -886,14 +965,10 @@ BlockReflowState::PlaceFloatResult BlockReflowState::FlowAndPlaceFloat(
   ReflowInput::ApplyRelativePositioning(aFloat, wm, floatOffsets, &origin,
                                         ContainerSize());
 
-  // Position the float and make sure and views are properly
-  // positioned. We need to explicitly position its child views as
-  // well, since we're moving the float after flowing it.
+  // Position the float.
   bool moved = aFloat->GetLogicalPosition(wm, ContainerSize()) != origin;
   if (moved) {
     aFloat->SetPosition(wm, origin, ContainerSize());
-    nsContainerFrame::PositionFrameView(aFloat);
-    nsContainerFrame::PositionChildViews(aFloat);
   }
 
   // Update the float combined area state

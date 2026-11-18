@@ -6,48 +6,92 @@ package org.mozilla.fenix.messaging
 
 import io.mockk.spyk
 import io.mockk.verify
-import kotlinx.coroutines.ExperimentalCoroutinesApi
-import mozilla.components.support.test.rule.MainCoroutineRule
-import mozilla.components.support.test.rule.runTestOnMain
-import mozilla.components.support.utils.RunWhenReadyQueue
-import org.junit.Rule
+import io.mockk.verifyOrder
+import kotlinx.coroutines.test.runTest
 import org.junit.Test
 import org.mozilla.fenix.components.AppStore
 import org.mozilla.fenix.components.appstate.AppAction.MessagingAction
+import org.mozilla.fenix.helpers.lifecycle.TestLifecycleOwner
 
 class MessagingFeatureTest {
-    @OptIn(ExperimentalCoroutinesApi::class)
-    @get:Rule
-    val coroutinesTestRule = MainCoroutineRule()
 
     @Test
-    fun `WHEN start is called and queue is not ready THEN do nothing`() = runTestOnMain {
+    fun `WHEN onResume is called THEN evaluate message`() = runTest {
         val appStore: AppStore = spyk(AppStore())
-        val queue = RunWhenReadyQueue(this)
-        val binding = MessagingFeature(
-            appStore = appStore,
-            surface = FenixMessageSurfaceId.HOMESCREEN,
-            runWhenReadyQueue = queue,
-        )
+        val lifecycleOwner = TestLifecycleOwner()
+        val binding =
+            MessagingFeature(
+                appStore = appStore,
+                surfaces = listOf(FenixMessageSurfaceId.HOMESCREEN),
+            )
 
-        binding.start()
-
-        verify(exactly = 0) { appStore.dispatch(MessagingAction.Evaluate(FenixMessageSurfaceId.HOMESCREEN)) }
-    }
-
-    @Test
-    fun `WHEN start is called and queue is ready THEN evaluate message`() = runTestOnMain {
-        val appStore: AppStore = spyk(AppStore())
-        val queue = RunWhenReadyQueue(this)
-        val binding = MessagingFeature(
-            appStore = appStore,
-            surface = FenixMessageSurfaceId.HOMESCREEN,
-            runWhenReadyQueue = queue,
-        )
-
-        binding.start()
-        queue.ready()
+        binding.onResume(lifecycleOwner)
+        testScheduler.advanceUntilIdle()
 
         verify { appStore.dispatch(MessagingAction.Evaluate(FenixMessageSurfaceId.HOMESCREEN)) }
     }
+
+    @Test
+    fun `GIVEN a trigger context WHEN onResume is called THEN make a new trigger context each time`() = runTest {
+        val appStore: AppStore = spyk(AppStore())
+        val lifecycleOwner = TestLifecycleOwner()
+        var count = 0
+        val binding =
+            MessagingFeature(
+                appStore = appStore,
+                surfaces = listOf(FenixMessageSurfaceId.HOMESCREEN),
+                makeTriggerContext = { mapOf("id" to "test", "count" to ++count) },
+            )
+
+        binding.onResume(lifecycleOwner)
+        binding.onResume(lifecycleOwner)
+        testScheduler.advanceUntilIdle()
+
+        verifyOrder {
+            appStore.dispatch(
+                MessagingAction.Evaluate(
+                    FenixMessageSurfaceId.HOMESCREEN,
+                    mapOf("id" to "test", "count" to 1),
+                )
+            )
+            appStore.dispatch(
+                MessagingAction.Evaluate(
+                    FenixMessageSurfaceId.HOMESCREEN,
+                    mapOf("id" to "test", "count" to 2),
+                )
+            )
+        }
+    }
+
+    @Test
+    fun `GIVEN multiple surfaces WHEN onResume is called THEN evaluate each surface with the same trigger context`() =
+        runTest {
+            val appStore: AppStore = spyk(AppStore())
+            val lifecycleOwner = TestLifecycleOwner()
+            var count = 0
+            val binding =
+                MessagingFeature(
+                    appStore = appStore,
+                    surfaces = listOf(FenixMessageSurfaceId.HOMESCREEN, FenixMessageSurfaceId.MICROSURVEY),
+                    makeTriggerContext = { mapOf("id" to "test", "count" to ++count) },
+                )
+
+            binding.onResume(lifecycleOwner)
+            testScheduler.advanceUntilIdle()
+
+            verify {
+                appStore.dispatch(
+                    MessagingAction.Evaluate(
+                        FenixMessageSurfaceId.HOMESCREEN,
+                        mapOf("id" to "test", "count" to 1),
+                    )
+                )
+                appStore.dispatch(
+                    MessagingAction.Evaluate(
+                        FenixMessageSurfaceId.MICROSURVEY,
+                        mapOf("id" to "test", "count" to 1),
+                    )
+                )
+            }
+        }
 }

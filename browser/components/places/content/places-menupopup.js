@@ -4,7 +4,6 @@
 
 "use strict";
 
-/* eslint-env mozilla/browser-window */
 /* import-globals-from controller.js */
 
 // On Wayland when D&D source popup is closed,
@@ -48,7 +47,7 @@ function closingPopupEndsDrag(popup) {
       }
     }
 
-    get markup() {
+    static get markup() {
       return `
       <html:link rel="stylesheet" href="chrome://global/skin/global.css" />
       <hbox part="drop-indicator-container">

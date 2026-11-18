@@ -8,6 +8,7 @@ Generally speaking, the more complicated is the data you want to transfer, the
 harder it'll be to transfer across the FFI boundary.
 
 Booleans, integers, and pointers cause little trouble.
+
 - C++ `bool` matches Rust `bool`
 - C++ `uint8_t` matches Rust `u8`, `int32_t` matches Rust `i32`, etc.
 - C++ `const T*` matches Rust `*const T`, `T*` matches Rust `*mut T`.
@@ -45,7 +46,9 @@ bool UniquelyNamedFunction(const nsCString* aInput, nsCString* aRetVal) {
 }
 }
 ```
+
 add this declaration to the Rust code:
+
 ```rust
 extern "C" {
     pub fn UniquelyNamedFunction(input: &nsCString, ret_val: &mut nsCString) -> bool;
@@ -60,8 +63,8 @@ the `unsafe` block.)
 Because of this unsafety, for non-trivial interfaces (in particular when C++
 structs and classes must be accessed from Rust code) it's common to use
 [rust-bindgen](https://github.com/rust-lang/rust-bindgen), which generates Rust
-bindings. The documentation is
-[here](https://rust-lang.github.io/rust-bindgen/).
+bindings. See the
+[rust-bindgen documentation](https://rust-lang.github.io/rust-bindgen/).
 
 ## Accessing Rust code and data from C++
 
@@ -113,12 +116,13 @@ namespaces = ["mozilla", "intl", "ffi"]
 Next, extend the relevant `moz.build` file to invoke cbindgen.
 
 ```python
-if CONFIG['COMPILE_ENVIRONMENT']:
-    CbindgenHeader('unic_langid_ffi_generated.h',
-                   inputs=['/intl/locale/rust/unic-langid-ffi'])
+if CONFIG["COMPILE_ENVIRONMENT"]:
+    CbindgenHeader(
+        "unic_langid_ffi_generated.h", inputs=["/intl/locale/rust/unic-langid-ffi"]
+    )
 
     EXPORTS.mozilla.intl += [
-        '!unic_langid_ffi_generated.h',
+        "!unic_langid_ffi_generated.h",
     ]
 ```
 
@@ -199,32 +203,19 @@ pub unsafe extern "C" fn unic_langid_as_string(
 }
 ```
 
-Next, in a C++ header define a destructor via `DefaultDelete`.
+Next, in a C++ header add a few includes and the appropriate namespace:
 
 ```cpp
 #include "mozilla/intl/unic_langid_ffi_generated.h"
-#include "mozilla/UniquePtr.h"
-
-namespace mozilla {
-
-template <>
-class DefaultDelete<intl::ffi::LanguageIdentifier> {
- public:
-  void operator()(intl::ffi::LanguageIdentifier* aPtr) const {
-    unic_langid_destroy(aPtr);
-  }
-};
-
-}  // namespace mozilla
+#include <memory>
 ```
 
-(This definition must be visible any place where
-`UniquePtr<intl::ffi::LanguageIdentifier>` is used, otherwise C++ will try to
-free the code, which might lead to strange behaviour!)
-
-Finally, implement the class.
+Then, implement the class, delegating memory handling to `std::unique_ptr` with
+a custom deleter.
 
 ```cpp
+namespace mozilla {
+
 class Locale {
 public:
   explicit Locale(const nsACString& aLocale)
@@ -237,8 +228,16 @@ public:
   }
 
 private:
-  UniquePtr<ffi::LanguageIdentifier> mRaw;
-}
+  struct Deleter {
+    void operator()(ffi::LanguageIdentifier* aPtr) {
+      unic_langid_destroy(aPtr);
+    }
+  };
+
+  std::unique_ptr<ffi::LanguageIdentifier, Deleter> mRaw;
+};
+
+}  // namespace mozilla
 ```
 
 This makes it possible to instantiate a `Locale` object and call `AsString()`,

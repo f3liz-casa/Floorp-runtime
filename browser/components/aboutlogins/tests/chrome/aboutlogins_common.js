@@ -5,6 +5,7 @@
 /**
  * A helper to await on while waiting for an asynchronous rendering of a Custom
  * Element.
+ *
  * @returns {Promise}
  */
 function asyncElementRendered() {
@@ -13,6 +14,7 @@ function asyncElementRendered() {
 
 /**
  * Import the templates from the real page to avoid duplication in the tests.
+ *
  * @param {HTMLIFrameElement} templateFrame - Frame to copy the resources from
  * @param {HTMLElement} destinationEl - Where to append the copied resources
  */
@@ -49,6 +51,9 @@ Object.defineProperty(document, "l10n", {
     connectRoot() {},
     disconnectRoot() {},
     translateElements() {
+      return Promise.resolve();
+    },
+    translateFragment() {
       return Promise.resolve();
     },
     getAttributes(element) {

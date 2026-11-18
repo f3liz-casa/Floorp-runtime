@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -12,17 +10,16 @@
 #include "mozilla/dom/Document.h"
 #include "mozilla/dom/Element.h"
 #include "mozilla/dom/PointerEventHandler.h"
-#include "mozilla/layers/CompositorBridgeParent.h"
 #include "mozilla/layers/APZCCallbackHelper.h"
 #include "mozilla/layers/APZEventState.h"
 #include "mozilla/layers/APZThreadUtils.h"
+#include "mozilla/layers/CompositorBridgeParent.h"
+#include "mozilla/layers/DoubleTapToZoom.h"
 #include "mozilla/layers/IAPZCTreeManager.h"
 #include "mozilla/layers/InputAPZContext.h"
-#include "mozilla/layers/DoubleTapToZoom.h"
 #include "mozilla/layers/RepaintRequest.h"
 #include "nsIInterfaceRequestorUtils.h"
 #include "nsLayoutUtils.h"
-#include "nsView.h"
 
 static mozilla::LazyLogModule sApzChromeLog("apz.cc.chrome");
 
@@ -38,7 +35,7 @@ ChromeProcessController::ChromeProcessController(
       mAPZCTreeManager(aAPZCTreeManager),
       mUIThread(NS_GetCurrentThread()) {
   // Otherwise we're initializing mUIThread incorrectly.
-  MOZ_ASSERT(NS_IsMainThread());
+  MOZ_RELEASE_ASSERT(NS_IsMainThread());
   MOZ_ASSERT(aAPZEventState);
   MOZ_ASSERT(aAPZCTreeManager);
 
@@ -77,7 +74,7 @@ void ChromeProcessController::NotifyLayerTransforms(
 
 void ChromeProcessController::RequestContentRepaint(
     const RepaintRequest& aRequest) {
-  MOZ_ASSERT(IsRepaintThread());
+  MOZ_RELEASE_ASSERT(IsRepaintThread());
 
   if (aRequest.IsRootContent()) {
     APZCCallbackHelper::UpdateRootFrame(aRequest);
@@ -101,7 +98,7 @@ void ChromeProcessController::Destroy() {
     return;
   }
 
-  MOZ_ASSERT(mUIThread->IsOnCurrentThread());
+  MOZ_RELEASE_ASSERT(mUIThread->IsOnCurrentThread());
   mWidget = nullptr;
   if (mAPZEventState) {
     mAPZEventState->Destroy();
@@ -113,10 +110,8 @@ PresShell* ChromeProcessController::GetPresShell() const {
   if (!mWidget) {
     return nullptr;
   }
-  if (nsView* view = nsView::GetViewFor(mWidget)) {
-    return view->GetPresShell();
-  }
-  return nullptr;
+  auto* frame = mWidget->GetFrame();
+  return frame ? frame->PresShell() : nullptr;
 }
 
 dom::Document* ChromeProcessController::GetRootDocument() const {
@@ -145,10 +140,10 @@ void ChromeProcessController::HandleDoubleTap(
     const ScrollableLayerGuid& aGuid,
     const DoubleTapToZoomMetrics& aDoubleTapToZoomMetrics) {
   MOZ_LOG(sApzChromeLog, LogLevel::Debug, ("HandleDoubleTap\n"));
-  MOZ_ASSERT(mUIThread->IsOnCurrentThread());
+  MOZ_RELEASE_ASSERT(mUIThread->IsOnCurrentThread());
 
   RefPtr<dom::Document> document = GetRootContentDocument(aGuid.mScrollId);
-  if (!document.get()) {
+  if (!document) {
     return;
   }
 
@@ -296,7 +291,7 @@ void ChromeProcessController::NotifyMozMouseScrollEvent(
 }
 
 void ChromeProcessController::NotifyFlushComplete() {
-  MOZ_ASSERT(IsRepaintThread());
+  MOZ_RELEASE_ASSERT(IsRepaintThread());
 
   APZCCallbackHelper::NotifyFlushComplete(GetPresShell());
 }
@@ -344,14 +339,9 @@ void ChromeProcessController::NotifyAsyncAutoscrollRejected(
 
 void ChromeProcessController::CancelAutoscroll(
     const ScrollableLayerGuid& aGuid) {
-  if (!mUIThread->IsOnCurrentThread()) {
-    mUIThread->Dispatch(NewRunnableMethod<ScrollableLayerGuid>(
-        "layers::ChromeProcessController::CancelAutoscroll", this,
-        &ChromeProcessController::CancelAutoscroll, aGuid));
-    return;
-  }
-
-  APZCCallbackHelper::CancelAutoscroll(aGuid.mScrollId);
+  mUIThread->Dispatch(NewRunnableFunction("layers::CancelAutoscroll",
+                                          &APZCCallbackHelper::CancelAutoscroll,
+                                          aGuid.mScrollId));
 }
 
 void ChromeProcessController::NotifyScaleGestureComplete(
@@ -375,14 +365,5 @@ void ChromeProcessController::NotifyScaleGestureComplete(
 }
 
 nsIFrame* ChromeProcessController::GetWidgetFrame() const {
-  if (!mWidget) {
-    return nullptr;
-  }
-
-  nsView* view = nsView::GetViewFor(mWidget);
-  if (!view) {
-    return nullptr;
-  }
-
-  return view->GetFrame();
+  return mWidget ? mWidget->GetFrame() : nullptr;
 }

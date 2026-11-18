@@ -13,7 +13,7 @@ use neqo_common::Tos;
 use qlog::events::quic::PacketHeader;
 use strum::Display;
 
-use crate::{packet, path::PathRef};
+use crate::{packet, path::PathRef, version::Version};
 
 #[derive(Clone, Copy, Display)]
 pub enum Direction {
@@ -23,14 +23,19 @@ pub enum Direction {
     Rx,
 }
 
+/// `(scid, dcid)`, as in [`PacketHeader`].
+type Cids<'a> = (Option<&'a [u8]>, Option<&'a [u8]>);
+
 pub struct MetaData<'a> {
     path: &'a PathRef,
-    direction: Direction,
     packet_type: packet::Type,
     packet_number: packet::Number,
+    version: Version,
     tos: Tos,
     len: usize,
     payload: &'a [u8],
+    /// The CIDs of a received packet, as these can differ from the path's.
+    rx_cids: Option<Cids<'a>>,
 }
 
 impl MetaData<'_> {
@@ -39,15 +44,17 @@ impl MetaData<'_> {
         tos: Tos,
         len: usize,
         decrypted: &'a packet::Decrypted,
+        version: Version,
     ) -> MetaData<'a> {
         MetaData {
             path,
-            direction: Direction::Rx,
             packet_type: decrypted.packet_type(),
             packet_number: decrypted.pn(),
+            version,
             tos,
             len,
             payload: decrypted,
+            rx_cids: Some((decrypted.scid.as_deref(), Some(&decrypted.dcid))),
         }
     }
 
@@ -58,21 +65,27 @@ impl MetaData<'_> {
         length: usize,
         payload: &'a [u8],
         tos: Tos,
+        version: Version,
     ) -> MetaData<'a> {
         MetaData {
             path,
-            direction: Direction::Tx,
             packet_type,
             packet_number,
+            version,
             tos,
             len: length,
             payload,
+            rx_cids: None,
         }
     }
 
     #[must_use]
     pub const fn direction(&self) -> Direction {
-        self.direction
+        if self.rx_cids.is_some() {
+            Direction::Rx
+        } else {
+            Direction::Tx
+        }
     }
 
     #[must_use]
@@ -88,12 +101,20 @@ impl MetaData<'_> {
 
 impl From<MetaData<'_>> for PacketHeader {
     fn from(val: MetaData<'_>) -> Self {
+        let path = val.path.borrow();
+        // On TX, the path's CIDs are the ones written into the packet.
+        let (scid, dcid) = val.rx_cids.unwrap_or_else(|| {
+            (
+                path.local_cid().map(AsRef::as_ref),
+                path.remote_cid().map(AsRef::as_ref),
+            )
+        });
         Self::with_type(
             val.packet_type.into(),
             Some(val.packet_number),
-            None,
-            None,
-            None,
+            Some(val.version.wire_version()),
+            scid,
+            dcid,
         )
     }
 }

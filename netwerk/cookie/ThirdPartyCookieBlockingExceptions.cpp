@@ -5,21 +5,20 @@
 #include "ThirdPartyCookieBlockingExceptions.h"
 
 #include "mozilla/Components.h"
-#include "mozilla/dom/BrowsingContext.h"
-#include "mozilla/dom/CanonicalBrowsingContext.h"
-#include "mozilla/dom/Promise.h"
-#include "mozilla/dom/Promise-inl.h"
-#include "mozilla/dom/WindowGlobalParent.h"
 #include "mozilla/ErrorNames.h"
 #include "mozilla/Logging.h"
-
-#include "nsIEffectiveTLDService.h"
+#include "mozilla/dom/BrowsingContext.h"
+#include "mozilla/dom/CanonicalBrowsingContext.h"
+#include "mozilla/dom/Promise-inl.h"
+#include "mozilla/dom/Promise.h"
+#include "mozilla/dom/WindowGlobalParent.h"
 #include "nsIChannel.h"
+#include "nsIEffectiveTLDService.h"
 
 namespace mozilla {
 namespace net {
 
-LazyLogModule g3PCBExceptionLog("3pcbexception");
+LazyLogModule g3PCBExceptionLog("ThirdPartyCookieBlockingExceptions");
 
 void ThirdPartyCookieBlockingExceptions::Initialize() {
   if (mIsInitialized) {
@@ -60,7 +59,7 @@ void ThirdPartyCookieBlockingExceptions::Initialize() {
 
 void ThirdPartyCookieBlockingExceptions::Shutdown() {
   if (m3PCBExceptionService) {
-    Unused << m3PCBExceptionService->Shutdown();
+    (void)m3PCBExceptionService->Shutdown();
     m3PCBExceptionService = nullptr;
   }
 
@@ -154,7 +153,7 @@ bool ThirdPartyCookieBlockingExceptions::CheckExceptionForChannel(
   RefPtr<dom::BrowsingContext> bc;
   loadInfo->GetBrowsingContext(getter_AddRefs(bc));
   if (!bc) {
-    bc = loadInfo->GetWorkerAssociatedBrowsingContext();
+    bc = loadInfo->GetAssociatedBrowsingContext();
   }
 
   nsAutoCString firstPartySite;

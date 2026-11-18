@@ -2,7 +2,10 @@
 
 /* stylelint-disable max-nesting-depth */
 
-.card-outer {
+// @nova-cleanup(remove-styles): Remove the classic card styles. In Nova, Card
+// is only rendered by Highlights, so its styles live in
+// DiscoveryStreamComponents/Highlights/_Highlights.scss.
+.classic-enabled .card-outer {
   @include context-menu-button;
 
   background: var(--newtab-background-color-secondary);
@@ -34,8 +37,9 @@
   }
 
   .card {
+    border: var(--card-border);
     border-radius: var(--border-radius-medium);
-    box-shadow: $shadow-card;
+    box-shadow: var(--card-box-shadow);
     height: 100%;
   }
 
@@ -90,7 +94,7 @@
     position: relative;
 
     &::after {
-      border-bottom: 1px solid var(--newtab-card-hairline-color);
+      border-block-end: 1px solid var(--card-border-color);
       inset-block-end: 0;
       content: '';
       position: absolute;
@@ -149,7 +153,7 @@
 
   .card-title {
     font-size: inherit;
-    font-weight: var(--font-weight-bold);
+    font-weight: var(--font-weight-heading);
     line-height: $card-text-line-height;
     margin: 0 0 var(--space-xxsmall);
     word-wrap: break-word;
@@ -188,7 +192,7 @@
   }
 }
 
-.normal-cards {
+.classic-enabled .normal-cards {
   .card-outer {
     // Wide layout styles
     @media (min-width: $break-point-widest) {
@@ -239,9 +243,8 @@
   }
 }
 
-.compact-cards {
+.classic-enabled .compact-cards {
   $card-detail-vertical-spacing: 12px;
-  $card-title-font-size: var(--font-size-small);
 
   .card-outer {
     height: $card-height-compact;
@@ -261,9 +264,9 @@
     .card-text {
       .card-title,
       &:not(.no-description) .card-title {
-        font-size: $card-title-font-size;
-        line-height: $card-title-font-size + 1;
-        max-height: $card-title-font-size + 5;
+        font-size: var(--font-size-small);
+        line-height: calc(var(--font-size-small) + 1px);
+        max-height: calc(var(--font-size-small) + 5px);
         overflow: hidden;
         padding: 0 0 var(--space-xsmall);
         text-overflow: ellipsis;
@@ -292,8 +295,8 @@
       inset-inline-start: auto;
 
       &::after {
-        border: 1px solid var(--newtab-card-hairline-color);
-        border-bottom: 0;
+        border: 1px solid var(--card-border-color);
+        border-block-end: 0;
         border-radius: var(--border-radius-medium);
         content: '';
         position: absolute;

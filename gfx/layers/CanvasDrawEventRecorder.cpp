@@ -1,21 +1,17 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "CanvasDrawEventRecorder.h"
 
-#include <string.h>
-
+#include "RecordedCanvasEventImpl.h"
+#include "mozilla/StaticPrefs_gfx.h"
 #include "mozilla/dom/WorkerCommon.h"
 #include "mozilla/dom/WorkerPrivate.h"
 #include "mozilla/dom/WorkerRef.h"
 #include "mozilla/dom/WorkerRunnable.h"
-#include "mozilla/layers/TextureRecorded.h"
 #include "mozilla/layers/SharedSurfacesChild.h"
-#include "mozilla/StaticPrefs_gfx.h"
-#include "RecordedCanvasEventImpl.h"
+#include "mozilla/layers/TextureRecorded.h"
 
 namespace mozilla {
 namespace layers {
@@ -226,7 +222,7 @@ gfx::ContiguousBuffer& CanvasDrawEventRecorder::GetContiguousBuffer(
         mCurrentBuffer =
             CanvasBuffer(std::move(mRecycledBuffers.front().shmem));
         mRecycledBuffers.pop();
-        mDropBufferOnZero = 1;
+        mDropBufferOnZero = mDropBufferLimit;
       }
     } else {
       mDropBufferOnZero = mDropBufferLimit;
@@ -453,22 +449,25 @@ void CanvasDrawEventRecorder::StoreImageRecording(
   ClearProcessedExternalImages();
 }
 
-void CanvasDrawEventRecorder::ClearProcessedExternalSurfaces() {
-  while (!mExternalSurfaces.empty()) {
-    if (mExternalSurfaces.front().mEventCount > mHeader->processedCount) {
-      break;
-    }
-    mExternalSurfaces.pop_front();
+template <typename Holder>
+static void ClearProcessedEntries(Holder& aEntries, int64_t aProcessedCount) {
+  // Find the first entry that has not been processed.
+  auto it = aEntries.begin();
+  while (it != aEntries.end() && it->mEventCount <= aProcessedCount) {
+    ++it;
+  }
+  // Erase any processed entries up to the unprocessed entry.
+  if (it != aEntries.begin()) {
+    aEntries.erase(aEntries.begin(), it);
   }
 }
 
+void CanvasDrawEventRecorder::ClearProcessedExternalSurfaces() {
+  ClearProcessedEntries(mExternalSurfaces, mHeader->processedCount);
+}
+
 void CanvasDrawEventRecorder::ClearProcessedExternalImages() {
-  while (!mExternalImages.empty()) {
-    if (mExternalImages.front().mEventCount > mHeader->processedCount) {
-      break;
-    }
-    mExternalImages.pop_front();
-  }
+  ClearProcessedEntries(mExternalImages, mHeader->processedCount);
 }
 
 }  // namespace layers

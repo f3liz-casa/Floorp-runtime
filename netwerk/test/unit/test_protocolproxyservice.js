@@ -1,5 +1,3 @@
-/* -*- indent-tabs-mode: nil; js-indent-level: 2 -*- */
-/* vim:set ts=2 sw=2 sts=2 et: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -23,7 +21,6 @@
 var ios = Services.io;
 var pps = Cc["@mozilla.org/network/protocol-proxy-service;1"].getService();
 var prefs = Services.prefs;
-var again = true;
 
 /**
  * Test nsIProtocolHandler that allows proxying, but doesn't allow HTTP
@@ -1037,16 +1034,8 @@ function localhost_callback(pi) {
 
   prefs.setIntPref("network.proxy.type", 0);
 
-  if (mozinfo.socketprocess_networking && again) {
-    info("run test again");
-    again = false;
-    cleanUp();
-    prefs.setBoolPref("network.proxy.parse_pac_on_socket_process", true);
-    run_filter_test();
-  } else {
-    cleanUp();
-    do_test_finished();
-  }
+  cleanUp();
+  do_test_finished();
 }
 
 function cleanUp() {
@@ -1058,13 +1047,11 @@ function cleanUp() {
   prefs.clearUserPref("network.proxy.autoconfig_url");
   prefs.clearUserPref("network.proxy.proxy_over_tls");
   prefs.clearUserPref("network.proxy.no_proxies_on");
-  prefs.clearUserPref("network.proxy.parse_pac_on_socket_process");
 }
 
 function run_test() {
   register_test_protocol_handler();
 
-  prefs.setBoolPref("network.proxy.parse_pac_on_socket_process", false);
   // start of asynchronous test chain
   run_filter_test();
   do_test_pending();

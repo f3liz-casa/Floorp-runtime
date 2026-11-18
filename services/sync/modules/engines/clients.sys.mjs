@@ -35,6 +35,7 @@ import {
   SyncEngine,
   LegacyTracker,
 } from "resource://services-sync/engines.sys.mjs";
+import { Weave } from "resource://services-sync/main.sys.mjs";
 import { CryptoWrapper } from "resource://services-sync/record.sys.mjs";
 import { Resource } from "resource://services-sync/resource.sys.mjs";
 import { Svc, Utils } from "resource://services-sync/util.sys.mjs";
@@ -815,12 +816,6 @@ ClientEngine.prototype = {
         flow_id: telemetryExtra.flowID,
         reason: telemetryExtra.reason,
       });
-      this.service.recordTelemetryEvent(
-        "sendcommand",
-        command,
-        undefined,
-        telemetryExtra
-      );
     } else {
       this._log.trace(`Client ${clientId} got a duplicate action`, [
         command,
@@ -860,13 +855,6 @@ ClientEngine.prototype = {
           command,
           flow_id: flowID,
         });
-        this.service.recordTelemetryEvent(
-          "processcommand",
-          command,
-          undefined,
-          { flowID }
-        );
-
         let engines = [args[0]];
         switch (command) {
           case "resetAll":
@@ -876,6 +864,14 @@ ClientEngine.prototype = {
             await this.service.resetClient(engines);
             break;
           case "wipeEngine":
+            // We'd never download the replacement data for a disabled engine.
+            if (
+              Weave.perDeviceEngineChoices &&
+              !this.service.engineManager.get(args[0])?.enabled
+            ) {
+              this._log.info(`Not wiping locally disabled engine ${args[0]}`);
+              break;
+            }
             await this.service.wipeClient(engines);
             break;
           case "logout":

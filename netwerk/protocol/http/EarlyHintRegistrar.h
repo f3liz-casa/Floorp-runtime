@@ -1,18 +1,18 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef mozilla_net_EarlyHintRegistrar_h__
-#define mozilla_net_EarlyHintRegistrar_h__
+#ifndef mozilla_net_EarlyHintRegistrar_h_
+#define mozilla_net_EarlyHintRegistrar_h_
 
+#include "mozilla/AlreadyAddRefed.h"
 #include "mozilla/RefCounted.h"
 #include "mozilla/dom/ipc/IdType.h"
 #include "nsRefPtrHashtable.h"
-#include "mozilla/AlreadyAddRefed.h"
 
+class nsILoadInfo;
 class nsIParentChannel;
+class nsIURI;
 
 namespace mozilla::net {
 
@@ -56,6 +56,14 @@ class EarlyHintRegistrar final : public RefCounted<EarlyHintRegistrar> {
                          nsIParentChannel* aParent);
 
   /*
+   * Returns true if an EarlyHintPreloader is registered for
+   * aEarlyHintPreloaderId and was started for the request described by aURI
+   * and aLoadInfo.
+   */
+  bool MatchesRequest(uint64_t aEarlyHintPreloaderId, nsIURI* aURI,
+                      nsILoadInfo* aLoadInfo);
+
+  /*
    * Delete previous stored EarlyHintPreloader
    *
    * @param aEarlyHintPreloaderId identifying the EarlyHintPreloader
@@ -79,4 +87,4 @@ class EarlyHintRegistrar final : public RefCounted<EarlyHintRegistrar> {
 
 }  // namespace mozilla::net
 
-#endif  // mozilla_net_EarlyHintRegistrar_h__
+#endif  // mozilla_net_EarlyHintRegistrar_h_

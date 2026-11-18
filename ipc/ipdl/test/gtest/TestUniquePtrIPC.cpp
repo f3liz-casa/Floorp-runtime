@@ -1,4 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -57,11 +56,11 @@ class TestUniquePtrIPCChild : public PTestUniquePtrIPCChild {
 };
 
 IPDL_TEST(TestUniquePtrIPC) {
-  UniquePtr<std::string> a1 = MakeUnique<std::string>("unique");
-  UniquePtr<DummyStruct> a2 = MakeUnique<DummyStruct>("uniqueStruct");
+  auto a1 = std::make_unique<std::string>("unique");
+  auto a2 = std::make_unique<DummyStruct>("uniqueStruct");
   DummyStruct a3("struct");
   UniquePtr<std::string> a4;
-  DummyUnion a5(MakeUnique<std::string>("union"));
+  DummyUnion a5(std::make_unique<std::string>("union"));
 
   EXPECT_TRUE(mActor->SendTestMessage(a1, a2, a3, a4, a5));
 
@@ -73,7 +72,7 @@ IPDL_TEST(TestUniquePtrIPC) {
   EXPECT_FALSE(a4) << "somehow turned null ptr into non-null by sending it";
 
   // Pass UniquePtr by reference
-  UniquePtr<DummyStruct> b = MakeUnique<DummyStruct>("reference");
+  auto b = std::make_unique<DummyStruct>("reference");
 
   EXPECT_TRUE(mActor->SendTestSendReference(b));
   EXPECT_TRUE(b)

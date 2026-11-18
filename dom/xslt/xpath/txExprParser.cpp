@@ -1,4 +1,3 @@
-/* -*- Mode: C++; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -11,9 +10,9 @@
 
 #include "txExprParser.h"
 
+#include <memory>
 #include <utility>
 
-#include "mozilla/UniquePtrExtensions.h"
 #include "nsError.h"
 #include "nsGkAtoms.h"
 #include "txExpr.h"
@@ -24,9 +23,7 @@
 #include "txXPathNode.h"
 #include "txXPathOptimizer.h"
 
-using mozilla::MakeUnique;
 using mozilla::UniquePtr;
-using mozilla::Unused;
 using mozilla::WrapUnique;
 
 /**
@@ -84,15 +81,15 @@ nsresult txExprParser::createAVT(const nsAString& aAttrValue,
         // Restart the loop since we didn't create an expression
         continue;
       }
-      newExpr =
-          MakeUnique<txLiteralExpr>(literalString + Substring(start, iter));
+      newExpr = std::make_unique<txLiteralExpr>(literalString +
+                                                Substring(start, iter));
     } else {
       // Parse expressions, iter is already past the initial '{' when
       // we get here.
       while (iter != end) {
         if (*iter == '}') {
           rv = createExprInternal(Substring(start, iter), start - avtStart,
-                                  aContext, getter_Transfers(newExpr));
+                                  aContext, mozilla::getter_Transfers(newExpr));
           NS_ENSURE_SUCCESS(rv, rv);
 
           inExpr = false;
@@ -135,7 +132,7 @@ nsresult txExprParser::createAVT(const nsAString& aAttrValue,
   }
 
   if (!expr) {
-    expr = MakeUnique<txLiteralExpr>(u""_ns);
+    expr = std::make_unique<txLiteralExpr>(u""_ns);
   }
 
   *aResult = expr.release();
@@ -158,7 +155,7 @@ nsresult txExprParser::createExprInternal(const nsAString& aExpression,
     return rv;
   }
   UniquePtr<Expr> expr;
-  rv = createExpr(lexer, aContext, getter_Transfers(expr));
+  rv = createExpr(lexer, aContext, mozilla::getter_Transfers(expr));
   if (NS_SUCCEEDED(rv) && lexer.peek()->mType != Token::END) {
     rv = NS_ERROR_XPATH_BINARY_EXPECTED;
   }
@@ -251,8 +248,8 @@ nsresult txExprParser::createBinaryExpr(UniquePtr<Expr>& left,
       return NS_ERROR_UNEXPECTED;
   }
 
-  Unused << left.release();
-  Unused << right.release();
+  (void)left.release();
+  (void)right.release();
 
   *aResult = expr;
   return NS_OK;
@@ -277,7 +274,7 @@ nsresult txExprParser::createExpr(txExprLexer& lexer, txIParseContext* aContext,
       lexer.nextToken();
     }
 
-    rv = createUnionExpr(lexer, aContext, getter_Transfers(expr));
+    rv = createUnionExpr(lexer, aContext, mozilla::getter_Transfers(expr));
     if (NS_FAILED(rv)) {
       break;
     }
@@ -285,12 +282,12 @@ nsresult txExprParser::createExpr(txExprLexer& lexer, txIParseContext* aContext,
     if (negations > 0) {
       if (negations % 2 == 0) {
         auto fcExpr =
-            MakeUnique<txCoreFunctionCall>(txCoreFunctionCall::NUMBER);
+            std::make_unique<txCoreFunctionCall>(txCoreFunctionCall::NUMBER);
 
         fcExpr->addParam(expr.release());
         expr = std::move(fcExpr);
       } else {
-        expr = MakeUnique<UnaryExpr>(expr.release());
+        expr = std::make_unique<UnaryExpr>(expr.release());
       }
     }
 
@@ -303,7 +300,7 @@ nsresult txExprParser::createExpr(txExprLexer& lexer, txIParseContext* aContext,
         UniquePtr<Expr> left(static_cast<Expr*>(exprs.pop()));
         UniquePtr<Expr> right(std::move(expr));
         rv = createBinaryExpr(left, right, static_cast<Token*>(ops.pop()),
-                              getter_Transfers(expr));
+                              mozilla::getter_Transfers(expr));
         if (NS_FAILED(rv)) {
           done = true;
           break;
@@ -320,7 +317,7 @@ nsresult txExprParser::createExpr(txExprLexer& lexer, txIParseContext* aContext,
     UniquePtr<Expr> left(static_cast<Expr*>(exprs.pop()));
     UniquePtr<Expr> right(std::move(expr));
     rv = createBinaryExpr(left, right, static_cast<Token*>(ops.pop()),
-                          getter_Transfers(expr));
+                          mozilla::getter_Transfers(expr));
   }
   // clean up on error
   while (!exprs.isEmpty()) {
@@ -343,7 +340,7 @@ nsresult txExprParser::createFilterOrStep(txExprLexer& lexer,
   UniquePtr<Expr> expr;
   switch (tok->mType) {
     case Token::FUNCTION_NAME_AND_PAREN:
-      rv = createFunctionCall(lexer, aContext, getter_Transfers(expr));
+      rv = createFunctionCall(lexer, aContext, mozilla::getter_Transfers(expr));
       NS_ENSURE_SUCCESS(rv, rv);
       break;
     case Token::VAR_REFERENCE:
@@ -354,12 +351,12 @@ nsresult txExprParser::createFilterOrStep(txExprLexer& lexer,
         nsresult rv = resolveQName(tok->Value(), getter_AddRefs(prefix),
                                    aContext, getter_AddRefs(lName), nspace);
         NS_ENSURE_SUCCESS(rv, rv);
-        expr = MakeUnique<VariableRefExpr>(prefix, lName, nspace);
+        expr = std::make_unique<VariableRefExpr>(prefix, lName, nspace);
       }
       break;
     case Token::L_PAREN:
       lexer.nextToken();
-      rv = createExpr(lexer, aContext, getter_Transfers(expr));
+      rv = createExpr(lexer, aContext, mozilla::getter_Transfers(expr));
       NS_ENSURE_SUCCESS(rv, rv);
 
       if (lexer.peek()->mType != Token::R_PAREN) {
@@ -369,11 +366,11 @@ nsresult txExprParser::createFilterOrStep(txExprLexer& lexer,
       break;
     case Token::LITERAL:
       lexer.nextToken();
-      expr = MakeUnique<txLiteralExpr>(tok->Value());
+      expr = std::make_unique<txLiteralExpr>(tok->Value());
       break;
     case Token::NUMBER: {
       lexer.nextToken();
-      expr = MakeUnique<txLiteralExpr>(txDouble::toDouble(tok->Value()));
+      expr = std::make_unique<txLiteralExpr>(txDouble::toDouble(tok->Value()));
       break;
     }
     default:
@@ -381,9 +378,9 @@ nsresult txExprParser::createFilterOrStep(txExprLexer& lexer,
   }
 
   if (lexer.peek()->mType == Token::L_BRACKET) {
-    UniquePtr<FilterExpr> filterExpr(new FilterExpr(expr.get()));
+    auto filterExpr = std::make_unique<FilterExpr>(expr.get());
 
-    Unused << expr.release();
+    (void)expr.release();
 
     //-- handle predicates
     rv = parsePredicates(filterExpr.get(), lexer, aContext);
@@ -417,18 +414,18 @@ nsresult txExprParser::createFunctionCall(txExprLexer& lexer,
   if (namespaceID == kNameSpaceID_None &&
       txCoreFunctionCall::getTypeFromAtom(lName, type)) {
     // It is a known built-in function.
-    fnCall = MakeUnique<txCoreFunctionCall>(type);
+    fnCall = std::make_unique<txCoreFunctionCall>(type);
   }
 
   // check extension functions and xslt
   if (!fnCall) {
     rv = aContext->resolveFunctionCall(lName, namespaceID,
-                                       getter_Transfers(fnCall));
+                                       mozilla::getter_Transfers(fnCall));
 
     if (rv == NS_ERROR_NOT_IMPLEMENTED) {
       // this should just happen for unparsed-entity-uri()
       NS_ASSERTION(!fnCall, "Now is it implemented or not?");
-      rv = parseParameters(0, lexer, aContext);
+      rv = parseParameters(nullptr, lexer, aContext);
       NS_ENSURE_SUCCESS(rv, rv);
 
       *aResult = new txLiteralExpr(tok->Value() + u" not implemented."_ns);
@@ -503,13 +500,13 @@ nsresult txExprParser::createLocationStep(txExprLexer& lexer,
       //-- eat token
       lexer.nextToken();
       axisIdentifier = LocationStep::PARENT_AXIS;
-      nodeTest = MakeUnique<txNodeTypeTest>(txNodeTypeTest::NODE_TYPE);
+      nodeTest = std::make_unique<txNodeTypeTest>(txNodeTypeTest::NODE_TYPE);
       break;
     case Token::SELF_NODE:
       //-- eat token
       lexer.nextToken();
       axisIdentifier = LocationStep::SELF_AXIS;
-      nodeTest = MakeUnique<txNodeTypeTest>(txNodeTypeTest::NODE_TYPE);
+      nodeTest = std::make_unique<txNodeTypeTest>(txNodeTypeTest::NODE_TYPE);
       break;
     default:
       break;
@@ -529,21 +526,20 @@ nsresult txExprParser::createLocationStep(txExprLexer& lexer,
                         getter_AddRefs(lName), nspace, true);
       NS_ENSURE_SUCCESS(rv, rv);
 
-      nodeTest = MakeUnique<txNameTest>(
+      nodeTest = std::make_unique<txNameTest>(
           prefix, lName, nspace,
           axisIdentifier == LocationStep::ATTRIBUTE_AXIS
               ? static_cast<uint16_t>(txXPathNodeType::ATTRIBUTE_NODE)
               : static_cast<uint16_t>(txXPathNodeType::ELEMENT_NODE));
     } else {
-      rv = createNodeTypeTest(lexer, getter_Transfers(nodeTest));
+      rv = createNodeTypeTest(lexer, mozilla::getter_Transfers(nodeTest));
       NS_ENSURE_SUCCESS(rv, rv);
     }
   }
 
-  UniquePtr<LocationStep> lstep(
-      new LocationStep(nodeTest.get(), axisIdentifier));
+  auto lstep = std::make_unique<LocationStep>(nodeTest.get(), axisIdentifier);
 
-  Unused << nodeTest.release();
+  (void)nodeTest.release();
 
   //-- handle predicates
   rv = parsePredicates(lstep.get(), lexer, aContext);
@@ -559,7 +555,7 @@ nsresult txExprParser::createLocationStep(txExprLexer& lexer,
  */
 nsresult txExprParser::createNodeTypeTest(txExprLexer& lexer,
                                           txNodeTest** aTest) {
-  *aTest = 0;
+  *aTest = nullptr;
   UniquePtr<txNodeTypeTest> nodeTest;
 
   Token* nodeTok = lexer.peek();
@@ -567,19 +563,19 @@ nsresult txExprParser::createNodeTypeTest(txExprLexer& lexer,
   switch (nodeTok->mType) {
     case Token::COMMENT_AND_PAREN:
       lexer.nextToken();
-      nodeTest = MakeUnique<txNodeTypeTest>(txNodeTypeTest::COMMENT_TYPE);
+      nodeTest = std::make_unique<txNodeTypeTest>(txNodeTypeTest::COMMENT_TYPE);
       break;
     case Token::NODE_AND_PAREN:
       lexer.nextToken();
-      nodeTest = MakeUnique<txNodeTypeTest>(txNodeTypeTest::NODE_TYPE);
+      nodeTest = std::make_unique<txNodeTypeTest>(txNodeTypeTest::NODE_TYPE);
       break;
     case Token::PROC_INST_AND_PAREN:
       lexer.nextToken();
-      nodeTest = MakeUnique<txNodeTypeTest>(txNodeTypeTest::PI_TYPE);
+      nodeTest = std::make_unique<txNodeTypeTest>(txNodeTypeTest::PI_TYPE);
       break;
     case Token::TEXT_AND_PAREN:
       lexer.nextToken();
-      nodeTest = MakeUnique<txNodeTypeTest>(txNodeTypeTest::TEXT_TYPE);
+      nodeTest = std::make_unique<txNodeTypeTest>(txNodeTypeTest::TEXT_TYPE);
       break;
     default:
       return NS_ERROR_XPATH_NO_NODE_TYPE_TEST;
@@ -624,7 +620,7 @@ nsresult txExprParser::createPathExpr(txExprLexer& lexer,
   // parse first step (possibly a FilterExpr)
   nsresult rv = NS_OK;
   if (tok->mType != Token::PARENT_OP && tok->mType != Token::ANCESTOR_OP) {
-    rv = createFilterOrStep(lexer, aContext, getter_Transfers(expr));
+    rv = createFilterOrStep(lexer, aContext, mozilla::getter_Transfers(expr));
     NS_ENSURE_SUCCESS(rv, rv);
 
     // is this a singlestep path expression?
@@ -634,7 +630,7 @@ nsresult txExprParser::createPathExpr(txExprLexer& lexer,
       return NS_OK;
     }
   } else {
-    expr = MakeUnique<RootExpr>();
+    expr = std::make_unique<RootExpr>();
 
 #ifdef TX_TO_STRING
     static_cast<RootExpr*>(expr.get())->setSerialize(false);
@@ -642,11 +638,11 @@ nsresult txExprParser::createPathExpr(txExprLexer& lexer,
   }
 
   // We have a PathExpr containing several steps
-  UniquePtr<PathExpr> pathExpr(new PathExpr());
+  auto pathExpr = std::make_unique<PathExpr>();
   pathExpr->addExpr(expr.release(), PathExpr::RELATIVE_OP);
 
   // this is ugly
-  while (1) {
+  while (true) {
     PathExpr::PathOperator pathOp;
     switch (lexer.peek()->mType) {
       case Token::ANCESTOR_OP:
@@ -661,7 +657,7 @@ nsresult txExprParser::createPathExpr(txExprLexer& lexer,
     }
     lexer.nextToken();
 
-    rv = createLocationStep(lexer, aContext, getter_Transfers(expr));
+    rv = createLocationStep(lexer, aContext, mozilla::getter_Transfers(expr));
     NS_ENSURE_SUCCESS(rv, rv);
 
     pathExpr->addExpr(expr.release(), pathOp);
@@ -680,7 +676,8 @@ nsresult txExprParser::createUnionExpr(txExprLexer& lexer,
   *aResult = nullptr;
 
   UniquePtr<Expr> expr;
-  nsresult rv = createPathExpr(lexer, aContext, getter_Transfers(expr));
+  nsresult rv =
+      createPathExpr(lexer, aContext, mozilla::getter_Transfers(expr));
   NS_ENSURE_SUCCESS(rv, rv);
 
   if (lexer.peek()->mType != Token::UNION_OP) {
@@ -688,13 +685,13 @@ nsresult txExprParser::createUnionExpr(txExprLexer& lexer,
     return NS_OK;
   }
 
-  UniquePtr<UnionExpr> unionExpr(new UnionExpr());
+  auto unionExpr = std::make_unique<UnionExpr>();
   unionExpr->addExpr(expr.release());
 
   while (lexer.peek()->mType == Token::UNION_OP) {
     lexer.nextToken();  //-- eat token
 
-    rv = createPathExpr(lexer, aContext, getter_Transfers(expr));
+    rv = createPathExpr(lexer, aContext, mozilla::getter_Transfers(expr));
     NS_ENSURE_SUCCESS(rv, rv);
 
     unionExpr->addExpr(expr.release());
@@ -733,7 +730,7 @@ nsresult txExprParser::parsePredicates(PredicateList* aPredicateList,
     //-- eat Token
     lexer.nextToken();
 
-    rv = createExpr(lexer, aContext, getter_Transfers(expr));
+    rv = createExpr(lexer, aContext, mozilla::getter_Transfers(expr));
     NS_ENSURE_SUCCESS(rv, rv);
 
     aPredicateList->add(expr.release());
@@ -764,8 +761,8 @@ nsresult txExprParser::parseParameters(FunctionCall* aFnCall,
 
   UniquePtr<Expr> expr;
   nsresult rv = NS_OK;
-  while (1) {
-    rv = createExpr(lexer, aContext, getter_Transfers(expr));
+  while (true) {
+    rv = createExpr(lexer, aContext, mozilla::getter_Transfers(expr));
     NS_ENSURE_SUCCESS(rv, rv);
 
     if (aFnCall) {
@@ -835,7 +832,7 @@ nsresult txExprParser::resolveQName(const nsAString& aQName, nsAtom** aPrefix,
   }
   aNamespace = kNameSpaceID_None;
   // the lexer dealt with idx == 0
-  *aPrefix = 0;
+  *aPrefix = nullptr;
   if (aIsNameTest && aContext->caseInsensitiveNameTests()) {
     nsAutoString lcname;
     nsContentUtils::ASCIIToLower(aQName, lcname);

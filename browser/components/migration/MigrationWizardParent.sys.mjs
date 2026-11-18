@@ -3,7 +3,7 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 import { AppConstants } from "resource://gre/modules/AppConstants.sys.mjs";
-import { MigrationUtils } from "resource:///modules/MigrationUtils.sys.mjs";
+import { MigrationUtils } from "moz-src:///browser/components/migration/MigrationUtils.sys.mjs";
 import { E10SUtils } from "resource://gre/modules/E10SUtils.sys.mjs";
 
 const lazy = {};
@@ -16,18 +16,22 @@ ChromeUtils.defineLazyGetter(lazy, "gFluentStrings", function () {
 });
 
 ChromeUtils.defineESModuleGetters(lazy, {
-  FirefoxProfileMigrator: "resource:///modules/FirefoxProfileMigrator.sys.mjs",
+  FileUtils: "resource://gre/modules/FileUtils.sys.mjs",
+  FirefoxProfileMigrator:
+    "moz-src:///browser/components/migration/FirefoxProfileMigrator.sys.mjs",
   InternalTestingProfileMigrator:
-    "resource:///modules/InternalTestingProfileMigrator.sys.mjs",
+    "moz-src:///browser/components/migration/InternalTestingProfileMigrator.sys.mjs",
   LoginCSVImport: "resource://gre/modules/LoginCSVImport.sys.mjs",
   MigrationWizardConstants:
     "chrome://browser/content/migration/migration-wizard-constants.mjs",
-  PasswordFileMigrator: "resource:///modules/FileMigrators.sys.mjs",
+  PasswordFileMigrator:
+    "moz-src:///browser/components/migration/FileMigrators.sys.mjs",
 });
 
 if (AppConstants.platform == "macosx") {
   ChromeUtils.defineESModuleGetters(lazy, {
-    SafariProfileMigrator: "resource:///modules/SafariProfileMigrator.sys.mjs",
+    SafariProfileMigrator:
+      "moz-src:///browser/components/migration/SafariProfileMigrator.sys.mjs",
   });
 }
 
@@ -62,9 +66,8 @@ export class MigrationWizardParent extends JSWindowActorParent {
     // make sure that any messages from content are coming from the privileged
     // about content process type.
     if (
-      !this.browsingContext.currentWindowGlobal.isInProcess &&
-      this.browsingContext.currentRemoteType !=
-        E10SUtils.PRIVILEGEDABOUT_REMOTE_TYPE
+      !this.manager.isInProcess &&
+      this.manager.remoteType != E10SUtils.PRIVILEGEDABOUT_REMOTE_TYPE
     ) {
       throw new Error(
         "MigrationWizardParent: received message from the wrong content process type."
@@ -109,12 +112,16 @@ export class MigrationWizardParent extends JSWindowActorParent {
       }
 
       case "Migrate": {
-        let { migrationDetails, extraArgs } = message.data;
+        let { migrationDetails, extraArgs, entrypoint } = message.data;
         if (
           migrationDetails.type ==
           lazy.MigrationWizardConstants.MIGRATOR_TYPES.BROWSER
         ) {
-          return this.#doBrowserMigration(migrationDetails, extraArgs);
+          return this.#doBrowserMigration(
+            migrationDetails,
+            extraArgs,
+            entrypoint
+          );
         } else if (
           migrationDetails.type ==
           lazy.MigrationWizardConstants.MIGRATOR_TYPES.FILE
@@ -156,8 +163,8 @@ export class MigrationWizardParent extends JSWindowActorParent {
       }
 
       case "OpenAboutAddons": {
-        let browser = this.browsingContext.topChromeWindow;
-        this.#openAboutAddons(browser);
+        let window = this.browsingContext.topChromeWindow;
+        this.#openAboutAddons(window);
         break;
       }
 
@@ -169,6 +176,16 @@ export class MigrationWizardParent extends JSWindowActorParent {
       case "OpenURL": {
         let browser = this.browsingContext.topChromeWindow;
         this.#openURL(browser, message.data.url, message.data.where);
+        break;
+      }
+
+      case "LaunchMacOSPasswordsApp": {
+        let pwAppFile = lazy.FileUtils.File(
+          "/System/Applications/Passwords.app"
+        );
+        if (await IOUtils.exists(pwAppFile.path)) {
+          pwAppFile.launch();
+        }
         break;
       }
     }
@@ -333,13 +350,22 @@ export class MigrationWizardParent extends JSWindowActorParent {
    *   finishing the migration. This was initialized in the child actor, and
    *   will be sent back down to it to write to Telemetry once migration
    *   completes.
+   * @param {string} [entrypoint]
+   *   The MigrationUtils.MIGRATION_ENTRYPOINTS value for where the wizard was
+   *   opened from.
    *
    * @returns {Promise<object>}
    *   Resolves once the Migration:Ended observer notification has fired,
    *   passing the extraArgs for Telemetry back with any relevant properties
    *   updated.
    */
-  async #doBrowserMigration(migrationDetails, extraArgs) {
+  async #doBrowserMigration(migrationDetails, extraArgs, entrypoint) {
+    if (
+      !Object.values(MigrationUtils.MIGRATION_ENTRYPOINTS).includes(entrypoint)
+    ) {
+      entrypoint = MigrationUtils.MIGRATION_ENTRYPOINTS.UNKNOWN;
+    }
+
     Glean.browserMigration.sourceBrowser.accumulateSingleSample(
       MigrationUtils.getSourceIdForTelemetry(migrationDetails.key)
     );
@@ -392,6 +418,13 @@ export class MigrationWizardParent extends JSWindowActorParent {
         let quantity = summary.filter(entry => entry.result == "added").length;
 
         MigrationUtils.notifyLoginsManuallyImported(quantity);
+        this.#recordResourceMigrated(
+          migrator,
+          entrypoint,
+          lazy.MigrationWizardConstants.DISPLAYED_RESOURCE_TYPES.PASSWORDS,
+          summary.length,
+          quantity
+        );
 
         progress[
           lazy.MigrationWizardConstants.DISPLAYED_RESOURCE_TYPES.PASSWORDS
@@ -405,6 +438,13 @@ export class MigrationWizardParent extends JSWindowActorParent {
           ),
         };
       } catch (e) {
+        this.#recordResourceMigrated(
+          migrator,
+          entrypoint,
+          lazy.MigrationWizardConstants.DISPLAYED_RESOURCE_TYPES.PASSWORDS,
+          undefined,
+          0
+        );
         progress[
           lazy.MigrationWizardConstants.DISPLAYED_RESOURCE_TYPES.PASSWORDS
         ] = {
@@ -435,7 +475,7 @@ export class MigrationWizardParent extends JSWindowActorParent {
         resourceTypesToMigrate,
         false,
         migrationDetails.profile,
-        async (resourceTypeNum, success, details) => {
+        async (resourceTypeNum, success, details, availableQuantity) => {
           // Unfortunately, MigratorBase hands us the the numeric value of the
           // MigrationUtils.resourceType for this callback. For now, we'll just
           // do a look-up to map it to the right constant.
@@ -455,6 +495,13 @@ export class MigrationWizardParent extends JSWindowActorParent {
               resourceTypeNum
             );
           } else {
+            this.#recordResourceMigrated(
+              migrator,
+              entrypoint,
+              foundResourceTypeName,
+              availableQuantity,
+              this.#getImportedCount(foundResourceTypeName)
+            );
             if (!success) {
               Glean.browserMigration.errors[
                 migrationDetails.key
@@ -543,6 +590,76 @@ export class MigrationWizardParent extends JSWindowActorParent {
     }
 
     return extraArgs;
+  }
+
+  /**
+   * Returns the number of items of a resource type that were migrated during
+   * the most recent migration.
+   *
+   * @param {string} resourceTypeStr
+   *   A string mapping to one of the key values of
+   *   MigrationWizardConstants.DISPLAYED_RESOURCE_TYPES.
+   * @returns {number|undefined}
+   *   The number of migrated items, or undefined if they aren't counted for
+   *   this resource type.
+   */
+  #getImportedCount(resourceTypeStr) {
+    let importedCountKey = {
+      HISTORY: "history",
+      FORMDATA: "formdata",
+      PASSWORDS: "logins",
+      BOOKMARKS: "bookmarks",
+      PAYMENT_METHODS: "cards",
+      EXTENSIONS: "extensions",
+    }[resourceTypeStr];
+    return importedCountKey
+      ? MigrationUtils.getImportedCount(importedCountKey)
+      : undefined;
+  }
+
+  /**
+   * Records the browser_migration.resource_migrated event for a single
+   * resource type. Nothing is recorded when copying another Firefox profile,
+   * such as for profile refreshes.
+   *
+   * @param {MigratorBase} migrator
+   *   The migrator being used.
+   * @param {string} entrypoint
+   *   The MigrationUtils.MIGRATION_ENTRYPOINTS value for where the wizard was
+   *   opened from.
+   * @param {string} resourceTypeStr
+   *   A string mapping to one of the key values of
+   *   MigrationWizardConstants.DISPLAYED_RESOURCE_TYPES.
+   * @param {number|undefined} available
+   *   The number of items the other browser had available to migrate, or
+   *   undefined if that is not known.
+   * @param {number|undefined} migrated
+   *   The number of items that were migrated, or undefined if that is not
+   *   known.
+   */
+  #recordResourceMigrated(
+    migrator,
+    entrypoint,
+    resourceTypeStr,
+    available,
+    migrated
+  ) {
+    if (migrator instanceof lazy.FirefoxProfileMigrator) {
+      return;
+    }
+
+    let extra = {
+      migrator_key: migrator.constructor.key,
+      entrypoint,
+      resource_type: resourceTypeStr.toLowerCase(),
+    };
+    if (Number.isInteger(available)) {
+      extra.available = available;
+    }
+    if (Number.isInteger(migrated)) {
+      extra.migrated = migrated;
+    }
+    Glean.browserMigration.resourceMigrated.record(extra);
   }
 
   /**
@@ -815,11 +932,10 @@ export class MigrationWizardParent extends JSWindowActorParent {
    * Opens the about:addons page in a new background tab in the same window
    * as the passed browser.
    *
-   * @param {Element} browser
-   *   The browser element requesting that about:addons opens.
+   * @param {ChromeWindow} window
+   *   The window requesting that about:addons opens.
    */
-  #openAboutAddons(browser) {
-    let window = browser.ownerGlobal;
+  #openAboutAddons(window) {
     window.openTrustedLinkIn("about:addons", "tab", { inBackground: true });
   }
 
@@ -835,7 +951,7 @@ export class MigrationWizardParent extends JSWindowActorParent {
    *   Where the URL will be opened. Defaults to current tab.
    */
   #openURL(browser, url, where) {
-    let window = browser.ownerGlobal;
+    let window = browser.documentGlobal;
     window.openLinkIn(
       Services.urlFormatter.formatURL(url),
       where || "current",

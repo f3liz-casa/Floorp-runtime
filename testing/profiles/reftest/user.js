@@ -13,6 +13,8 @@ user_pref("browser.safebrowsing.provider.google.gethashURL", "http://127.0.0.1/s
 user_pref("browser.safebrowsing.provider.google.updateURL", "http://127.0.0.1/safebrowsing-dummyg/update");
 user_pref("browser.safebrowsing.provider.google4.gethashURL", "http://127.0.0.1/safebrowsing-dummyg4/gethash");
 user_pref("browser.safebrowsing.provider.google4.updateURL", "http://127.0.0.1/safebrowsing-dummyg4/update");
+user_pref("browser.safebrowsing.provider.google5.gethashURL", "http://127.0.0.1/safebrowsing-dummyg5/gethash");
+user_pref("browser.safebrowsing.provider.google5.updateURL", "http://127.0.0.1/safebrowsing-dummyg5/update");
 user_pref("browser.safebrowsing.provider.mozilla.gethashURL", "http://127.0.0.1/safebrowsing-dummym/gethash");
 user_pref("browser.safebrowsing.provider.mozilla.updateURL", "http://127.0.0.1/safebrowsing-dummym/update");
 // use about:blank, not browser.startup.homepage
@@ -25,6 +27,8 @@ user_pref("browser.viewport.desktopWidth", 800);
 user_pref("datareporting.healthreport.uploadEnabled", false);
 // Don't forcibly kill content processes after a timeout
 user_pref("dom.ipc.tabs.shutdownTimeoutSecs", 0);
+// Allow loading chrome://reftest/* documents in content processes.
+user_pref("dom.ipc.validatePrincipal.testing.allowContentSystemDocuments", true);
 // For mochitests, we're more interested in testing the behavior of in-
 // content XBL bindings, so we set this pref to true. In reftests, we're
 // more interested in testing the behavior of XBL as it works in chrome,
@@ -39,6 +43,9 @@ user_pref("extensions.systemAddon.update.url", "http://localhost/dummy-system-ad
 user_pref("gfx.color_management.force_srgb", true);
 user_pref("gfx.color_management.mode", 2);
 user_pref("gfx.logging.level", 1);
+// Ignoring the blocklist is necessary to run tests in CI on old Mesa versions
+// (https://bugzilla.mozilla.org/show_bug.cgi?id=1985348).
+user_pref("gfx.webgpu.ignore-blocklist", true);
 // Disable downscale-during-decode, since it makes reftests more difficult.
 user_pref("image.downscale-during-decode.enabled", false);
 // We do the capturing the reftest results with sync decoding
@@ -103,13 +110,13 @@ user_pref("toolkit.telemetry.server", "https://%(server)s/telemetry-dummy/");
 user_pref("telemetry.fog.test.localhost_port", -1);
 user_pref("telemetry.fog.test.activity_limit", -1);
 user_pref("telemetry.fog.test.inactivity_limit", -1);
+// Slow down early "events" pings to make testing easier.
+user_pref("telemetry.fog.test.decelerate_early_events", true);
 user_pref("ui.caretBlinkTime", -1);
 user_pref("ui.caretWidth", 1);
 user_pref("ui.prefersReducedMotion", 0);
 user_pref("ui.systemUsesDarkTheme", 0);
 user_pref("ui.useAccessibilityTheme", 0);
-user_pref("ui.windowForeground", "");
-user_pref("ui.windowBackground", "");
 // Turn off the Push service.
 user_pref("dom.push.serverURL", "");
 // Disable intermittent telemetry collection

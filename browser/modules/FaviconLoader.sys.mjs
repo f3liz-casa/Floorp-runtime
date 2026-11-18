@@ -2,6 +2,16 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
+// Bug 1924775 - ESLint doesn't yet know about `ImageDecoder`.
+/* globals ImageDecoder:false */
+
+import {
+  TYPE_SVG,
+  TYPE_ICO,
+  TRUSTED_FAVICON_SCHEMES,
+  blobAsDataURL,
+} from "moz-src:///toolkit/modules/FaviconUtils.sys.mjs";
+
 const lazy = {};
 
 ChromeUtils.defineESModuleGetters(lazy, {
@@ -35,56 +45,98 @@ const SIZES_TELEMETRY_ENUM = {
 };
 
 const FAVICON_PARSING_TIMEOUT = 100;
-const FAVICON_RICH_ICON_MIN_WIDTH = 96;
+// Without an explicit idle timeout DeferredTask waits indefinitely for an idle
+// slot, letting a busy content process suppress favicon updates globally.
+const FAVICON_PARSING_MAX_IDLE_WAIT = 3000;
+const FAVICON_LARGE_ICON_MIN_WIDTH = 96;
 const PREFERRED_WIDTH = 16;
-
-// URL schemes that we don't want to load and convert to data URLs.
-const LOCAL_FAVICON_SCHEMES = ["chrome", "about", "resource", "data"];
 
 const MAX_FAVICON_EXPIRATION = 7 * 24 * 60 * 60 * 1000;
 const MAX_ICON_SIZE = 2048;
 
-const TYPE_ICO = "image/x-icon";
-const TYPE_SVG = "image/svg+xml";
-
-function promiseBlobAsDataURL(blob) {
-  return new Promise((resolve, reject) => {
-    let reader = new FileReader();
-    reader.addEventListener("load", () => resolve(reader.result));
-    reader.addEventListener("error", reject);
-    reader.readAsDataURL(blob);
-  });
-}
-
-function promiseBlobAsOctets(blob) {
-  return new Promise((resolve, reject) => {
-    let reader = new FileReader();
-    reader.addEventListener("load", () => {
-      resolve(Array.from(reader.result).map(c => c.charCodeAt(0)));
-    });
-    reader.addEventListener("error", reject);
-    reader.readAsBinaryString(blob);
-  });
-}
-
-function promiseImage(stream, type) {
-  return new Promise((resolve, reject) => {
-    let imgTools = Cc["@mozilla.org/image/tools;1"].getService(Ci.imgITools);
-
-    imgTools.decodeImageAsync(
-      stream,
+async function decodeImage({
+  url,
+  type,
+  data,
+  transfer,
+  desiredWidth,
+  desiredHeight,
+}) {
+  let image;
+  try {
+    let decoder = new ImageDecoder({
       type,
-      (image, result) => {
-        if (!Components.isSuccessCode(result)) {
-          reject();
-          return;
-        }
+      data,
+      desiredWidth,
+      desiredHeight,
+      transfer: transfer ? [data] : undefined,
+    });
 
-        resolve(image);
-      },
-      Services.tm.currentThread
+    let result = await decoder.decode({ completeFramesOnly: true });
+    image = result.image;
+  } catch {
+    throw Components.Exception(
+      `Favicon at "${url}" could not be decoded.`,
+      Cr.NS_ERROR_FAILURE
     );
+  }
+
+  if (
+    image.displayWidth > MAX_ICON_SIZE ||
+    image.displayHeight > MAX_ICON_SIZE
+  ) {
+    throw Components.Exception(
+      `Favicon at "${url}" is too large.`,
+      Cr.NS_ERROR_FAILURE
+    );
+  }
+
+  let imageBuffer = new ArrayBuffer(image.allocationSize());
+  await image.copyTo(imageBuffer);
+  return {
+    blob: new Blob([imageBuffer]),
+    format: image.format,
+    displayWidth: image.displayWidth,
+    displayHeight: image.displayHeight,
+  };
+}
+
+// Convert image data bytes to an array of blobs with associated format/size info.
+async function convertImage(url, type, data) {
+  if (type == TYPE_ICO) {
+    try {
+      let decoder = new ImageDecoder({
+        type,
+        data,
+      });
+      await decoder.tracks.ready;
+      let sizes = decoder.tracks[0].getSizes();
+      if (sizes.length > 1) {
+        return Promise.all(
+          sizes.map(({ width, height }) =>
+            decodeImage({
+              url,
+              type,
+              // Can't transfer the data buffer, because we decode multiple times.
+              transfer: false,
+              data,
+              // Decode the ICO image at the different sizes of contained images.
+              desiredWidth: width,
+              desiredHeight: height,
+            })
+          )
+        );
+      }
+    } catch {}
+  }
+
+  let image = await decodeImage({
+    url,
+    type,
+    transfer: true,
+    data,
   });
+  return [image];
 }
 
 class FaviconLoad {
@@ -128,14 +180,19 @@ class FaviconLoad {
       }
       this.channel.referrerInfo = referrerInfo;
     }
-    this.channel.loadFlags |=
-      Ci.nsIRequest.LOAD_BACKGROUND |
-      Ci.nsIRequest.VALIDATE_NEVER |
-      Ci.nsIRequest.LOAD_FROM_CACHE;
+    if (iconInfo.isForceReload) {
+      this.channel.loadFlags |=
+        Ci.nsIRequest.LOAD_BACKGROUND | Ci.nsIRequest.LOAD_BYPASS_CACHE;
+    } else {
+      this.channel.loadFlags |=
+        Ci.nsIRequest.LOAD_BACKGROUND |
+        Ci.nsIRequest.VALIDATE_NEVER |
+        Ci.nsIRequest.LOAD_FROM_CACHE;
+    }
     // Sometimes node is a document and sometimes it is an element. This is
     // the easiest single way to get to the load group in both those cases.
     this.channel.loadGroup =
-      iconInfo.node.ownerGlobal.document.documentLoadGroup;
+      iconInfo.node.documentGlobal.document.documentLoadGroup;
     this.channel.notificationCallbacks = this;
 
     if (this.channel instanceof Ci.nsIHttpChannelInternal) {
@@ -290,10 +347,9 @@ class FaviconLoad {
       stream.readArrayBuffer(buffer.byteLength, buffer);
 
       let type = this.channel.contentType;
-      let blob = new Blob([buffer], { type });
-
+      let images, dataURL;
       if (type != "image/svg+xml") {
-        let octets = await promiseBlobAsOctets(blob);
+        let octets = new Uint8Array(buffer);
         let sniffer = Cc["@mozilla.org/image/loader;1"].createInstance(
           Ci.nsIContentSniffer
         );
@@ -310,30 +366,14 @@ class FaviconLoad {
           );
         }
 
-        blob = blob.slice(0, blob.size, type);
-
-        let image;
-        try {
-          image = await promiseImage(this.dataBuffer.newInputStream(0), type);
-        } catch (e) {
-          throw Components.Exception(
-            `Favicon at "${this.icon.iconUri.spec}" could not be decoded.`,
-            Cr.NS_ERROR_FAILURE
-          );
-        }
-
-        if (image.width > MAX_ICON_SIZE || image.height > MAX_ICON_SIZE) {
-          throw Components.Exception(
-            `Favicon at "${this.icon.iconUri.spec}" is too large.`,
-            Cr.NS_ERROR_FAILURE
-          );
-        }
+        images = await convertImage(this.icon.iconUri.spec, type, buffer);
+      } else {
+        dataURL = await blobAsDataURL(new Blob([buffer], { type }));
       }
-
-      let dataURL = await promiseBlobAsDataURL(blob);
 
       this._deferred.resolve({
         expiration,
+        images,
         dataURL,
         canStoreIcon,
       });
@@ -350,12 +390,12 @@ class FaviconLoad {
   }
 }
 
-/*
+/**
  * Extract the icon width from the size attribute. It also sends the telemetry
  * about the size type and size dimension info.
  *
  * @param {Array} aSizes An array of strings about size.
- * @return {Number} A width of the icon in pixel.
+ * @return {number} A width of the icon in pixel.
  */
 function extractIconSize(aSizes) {
   let width = -1;
@@ -393,7 +433,7 @@ function extractIconSize(aSizes) {
   return width;
 }
 
-/*
+/**
  * Get link icon URI from a link dom node.
  *
  * @param {DOMNode} aLink A link dom node.
@@ -434,8 +474,8 @@ function guessType(icon) {
   return icon.type == "image/vnd.microsoft.icon" ? TYPE_ICO : icon.type || "";
 }
 
-/*
- * Selects the best rich icon and tab icon from a list of IconInfo objects.
+/**
+ * Selects the best large icon and tab icon from a list of IconInfo objects.
  *
  * @param {Array} iconInfos A list of IconInfo objects.
  * @param {integer} preferredWidth The preferred width for tab icons.
@@ -443,7 +483,7 @@ function guessType(icon) {
 function selectIcons(iconInfos, preferredWidth) {
   if (!iconInfos.length) {
     return {
-      richIcon: null,
+      largeIcon: null,
       tabIcon: null,
     };
   }
@@ -452,9 +492,9 @@ function selectIcons(iconInfos, preferredWidth) {
   let bestSizedIcon;
   // Other links with the "icon" tag are the default icons
   let defaultIcon;
-  // Rich icons are either apple-touch or fluid icons, or the ones of the
-  // dimension 96x96 or greater
-  let largestRichIcon;
+  // Large icons are either rich icons (apple-touch or fluid icons), or the ones
+  // with a declared width of at least FAVICON_LARGE_ICON_MIN_WIDTH.
+  let bestLargeIcon;
 
   for (let icon of iconInfos) {
     if (!icon.isRichIcon) {
@@ -487,9 +527,9 @@ function selectIcons(iconInfos, preferredWidth) {
 
     // Note that some sites use hi-res icons without specifying them as
     // apple-touch or fluid icons.
-    if (icon.isRichIcon || icon.width >= FAVICON_RICH_ICON_MIN_WIDTH) {
-      if (!largestRichIcon || largestRichIcon.width < icon.width) {
-        largestRichIcon = icon;
+    if (icon.isRichIcon || icon.width >= FAVICON_LARGE_ICON_MIN_WIDTH) {
+      if (!bestLargeIcon || bestLargeIcon.width < icon.width) {
+        bestLargeIcon = icon;
       }
     } else {
       defaultIcon = icon;
@@ -497,10 +537,10 @@ function selectIcons(iconInfos, preferredWidth) {
   }
 
   // Now set the favicons for the page in the following order:
-  // 1. Set the best rich icon if any.
+  // 1. Set the best large icon if any.
   // 2. Set the preferred one if any, otherwise check if there's a better
   //    sized fit.
-  // This order allows smaller icon frames to eventually override rich icon
+  // This order allows smaller icon frames to eventually override large icon
   // frames.
 
   let tabIcon = null;
@@ -513,7 +553,7 @@ function selectIcons(iconInfos, preferredWidth) {
   }
 
   return {
-    richIcon: largestRichIcon,
+    largeIcon: bestLargeIcon,
     tabIcon,
   };
 }
@@ -532,7 +572,7 @@ class IconLoader {
       this._loader.cancel();
     }
 
-    if (LOCAL_FAVICON_SCHEMES.includes(iconInfo.iconUri.scheme)) {
+    if (TRUSTED_FAVICON_SCHEMES.includes(iconInfo.iconUri.scheme)) {
       // We need to do a manual security check because the channel won't do
       // it for us.
       try {
@@ -545,7 +585,6 @@ class IconLoader {
         return;
       }
       this.actor.sendAsyncMessage("Link:SetIcon", {
-        pageURL: iconInfo.pageUri.spec,
         originalURL: iconInfo.iconUri.spec,
         expiration: undefined,
         iconURL: iconInfo.iconUri.spec,
@@ -553,6 +592,7 @@ class IconLoader {
           iconInfo.beforePageShow && iconInfo.iconUri.schemeIs("data"),
         beforePageShow: iconInfo.beforePageShow,
         isRichIcon: iconInfo.isRichIcon,
+        isTabIcon: iconInfo.isTabIcon,
       });
       return;
     }
@@ -561,20 +601,23 @@ class IconLoader {
     this.actor.sendAsyncMessage("Link:LoadingIcon", {
       originalURL: iconInfo.iconUri.spec,
       isRichIcon: iconInfo.isRichIcon,
+      isTabIcon: iconInfo.isTabIcon,
     });
 
     try {
       this._loader = new FaviconLoad(iconInfo);
-      let { dataURL, expiration, canStoreIcon } = await this._loader.load();
+      let { dataURL, images, expiration, canStoreIcon } =
+        await this._loader.load();
 
       this.actor.sendAsyncMessage("Link:SetIcon", {
-        pageURL: iconInfo.pageUri.spec,
         originalURL: iconInfo.iconUri.spec,
         expiration,
         iconURL: dataURL,
+        images,
         canStoreIcon,
         beforePageShow: iconInfo.beforePageShow,
         isRichIcon: iconInfo.isRichIcon,
+        isTabIcon: iconInfo.isTabIcon,
       });
     } catch (e) {
       if (e.result != Cr.NS_BINDING_ABORTED) {
@@ -586,6 +629,7 @@ class IconLoader {
         this.actor.sendAsyncMessage("Link:SetFailedIcon", {
           originalURL: iconInfo.iconUri.spec,
           isRichIcon: iconInfo.isRichIcon,
+          isTabIcon: iconInfo.isTabIcon,
         });
       }
     } finally {
@@ -614,14 +658,15 @@ export class FaviconLoader {
     // randomly generated. This boolean can be used to track that case.
     this.beforePageShow = true;
 
-    // For every page we attempt to find a rich icon and a tab icon. These
+    // For every page we attempt to find a large icon and a tab icon. These
     // objects take care of the load process for each.
-    this.richIconLoader = new IconLoader(actor);
+    this.largeIconLoader = new IconLoader(actor);
     this.tabIconLoader = new IconLoader(actor);
 
     this.iconTask = new lazy.DeferredTask(
       () => this.loadIcons(),
-      FAVICON_PARSING_TIMEOUT
+      FAVICON_PARSING_TIMEOUT,
+      FAVICON_PARSING_MAX_IDLE_WAIT
     );
   }
 
@@ -636,14 +681,24 @@ export class FaviconLoader {
 
     let preferredWidth =
       PREFERRED_WIDTH * Math.ceil(this.actor.contentWindow.devicePixelRatio);
-    let { richIcon, tabIcon } = selectIcons(this.iconInfos, preferredWidth);
+    let { largeIcon, tabIcon } = selectIcons(this.iconInfos, preferredWidth);
     this.iconInfos = [];
 
-    if (richIcon) {
-      this.richIconLoader.load(richIcon).catch(console.error);
+    let isForceReload =
+      this.beforePageShow && (this.actor.docShell?.isForceReloading ?? false);
+    if (isForceReload && (largeIcon || tabIcon)) {
+      this.actor.sendAsyncMessage("Link:ExpireFavicons");
+    }
+
+    if (largeIcon) {
+      largeIcon.isForceReload = isForceReload;
+      largeIcon.isTabIcon = false;
+      this.largeIconLoader.load(largeIcon).catch(console.error);
     }
 
     if (tabIcon) {
+      tabIcon.isForceReload = isForceReload;
+      tabIcon.isTabIcon = true;
       this.tabIconLoader.load(tabIcon).catch(console.error);
     }
   }
@@ -663,7 +718,6 @@ export class FaviconLoader {
     // Currently ImageDocuments will just load the default favicon, see bug
     // 403651 for discussion.
     this.iconInfos.push({
-      pageUri,
       iconUri: pageUri.mutate().setPathQueryRef("/favicon.ico").finalize(),
       width: -1,
       isRichIcon: false,
@@ -684,7 +738,7 @@ export class FaviconLoader {
   }
 
   onPageHide() {
-    this.richIconLoader.cancel();
+    this.largeIconLoader.cancel();
     this.tabIconLoader.cancel();
 
     this.iconTask.disarm();
@@ -702,7 +756,6 @@ function makeFaviconFromLink(aLink, aIsRichIcon) {
   let width = extractIconSize(aLink.sizes);
 
   return {
-    pageUri: aLink.ownerDocument.documentURIObject,
     iconUri,
     width,
     isRichIcon: aIsRichIcon,

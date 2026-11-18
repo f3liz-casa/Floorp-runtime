@@ -155,6 +155,12 @@
           seenEvents.push(event.type);
         }
 
+        // Wait for the inner button to be visible before triggering accesskeys.
+        await TestUtils.waitForCondition(
+          () => BrowserTestUtils.isVisible(firstButton.buttonEl),
+          "Waiting for button to be visible."
+        );
+
         [firstButton, secondButton].forEach(button => {
           button.addEventListener("click", trackEvent);
         });
@@ -207,6 +213,26 @@
           "Focus cycles between buttons with the same accesskey."
         );
         is(seenEvents.length, 1, "No additional click events were triggered.");
+      });
+
+      add_task(async function testMozBoxButtonLabelUpdate() {
+        const FIRST_LABEL = "Old label";
+        const SECOND_LABEL = "New label";
+        const ACCESSKEY = "l";
+
+        let renderTarget = await testHelpers.renderTemplate(
+          testHelpers.templateFn({ label: FIRST_LABEL, accesskey: ACCESSKEY })
+        );
+        let button = renderTarget.firstElementChild;
+
+        button.label = SECOND_LABEL;
+        await button.updateComplete;
+
+        is(
+          button.labelEl.textContent.trim(),
+          SECOND_LABEL,
+          "Box button label updates to new value without corruption when accesskey is set."
+        );
       });
     </script>
   </head>

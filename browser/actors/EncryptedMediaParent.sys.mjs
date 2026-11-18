@@ -1,21 +1,8 @@
-/* vim: set ts=2 sw=2 sts=2 et tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 const lazy = {};
-
-ChromeUtils.defineLazyGetter(lazy, "gBrandBundle", function () {
-  return Services.strings.createBundle(
-    "chrome://branding/locale/brand.properties"
-  );
-});
-
-ChromeUtils.defineLazyGetter(lazy, "gNavigatorBundle", function () {
-  return Services.strings.createBundle(
-    "chrome://browser/locale/browser.properties"
-  );
-});
 
 ChromeUtils.defineLazyGetter(lazy, "gFluentStrings", function () {
   return new Localization(["branding/brand.ftl", "browser/browser.ftl"], true);
@@ -50,13 +37,6 @@ export class EncryptedMediaParent extends JSWindowActorParent {
       return Services.prefs.getBoolPref("media.gmp-widevinecdm.visible");
     }
     return true;
-  }
-
-  getMessageWithBrandName(aNotificationId) {
-    let msgId = "emeNotifications." + aNotificationId + ".message";
-    return lazy.gNavigatorBundle.formatStringFromName(msgId, [
-      lazy.gBrandBundle.GetStringFromName("brandShortName"),
-    ]);
   }
 
   async receiveMessage(aMessage) {
@@ -100,7 +80,6 @@ export class EncryptedMediaParent extends JSWindowActorParent {
     let notificationId;
     let buttonCallback;
     let supportPage;
-    // Notification message can be either a string or a DOM fragment.
     let notificationMessage;
     switch (status) {
       case "available":
@@ -120,16 +99,18 @@ export class EncryptedMediaParent extends JSWindowActorParent {
         buttonCallback = () => {
           this.ensureEMEEnabled(browser, keySystem);
         };
-        notificationMessage = lazy.gNavigatorBundle.GetStringFromName(
-          "emeNotifications.drmContentDisabled.message2"
-        );
+        notificationMessage = {
+          "l10n-id": "eme-notifications-drm-content-disabled-message",
+        };
         supportPage = "drm-content";
         break;
 
       case "cdm-not-installed":
         this.handledMessages.add(status);
         notificationId = "drmContentCDMInstalling";
-        notificationMessage = this.getMessageWithBrandName(notificationId);
+        notificationMessage = {
+          "l10n-id": "eme-notifications-drm-content-cdm-installing-message",
+        };
         break;
 
       case "cdm-not-supported":
@@ -161,12 +142,8 @@ export class EncryptedMediaParent extends JSWindowActorParent {
       buttons.push({ supportPage });
     }
     if (buttonCallback) {
-      let msgPrefix = "emeNotifications." + notificationId + ".";
-      let manageLabelId = msgPrefix + "button.label";
-      let manageAccessKeyId = msgPrefix + "button.accesskey";
       buttons.push({
-        label: lazy.gNavigatorBundle.GetStringFromName(manageLabelId),
-        accessKey: lazy.gNavigatorBundle.GetStringFromName(manageAccessKeyId),
+        "l10n-id": "eme-notifications-drm-content-disabled-button",
         callback: buttonCallback,
       });
     }
@@ -196,7 +173,7 @@ export class EncryptedMediaParent extends JSWindowActorParent {
 
     // Don't bother creating it if it's already there:
     if (
-      aBrowser.ownerGlobal.PopupNotifications.getNotification(
+      aBrowser.documentGlobal.PopupNotifications.getNotification(
         "drmContentPlaying",
         aBrowser
       )
@@ -243,7 +220,7 @@ export class EncryptedMediaParent extends JSWindowActorParent {
       label: manageLabel,
       accessKey: manageAccessKey,
       callback() {
-        aBrowser.ownerGlobal.openPreferences("general-drm");
+        aBrowser.documentGlobal.openPreferences("general-drm");
       },
       dismiss: true,
     };
@@ -265,7 +242,7 @@ export class EncryptedMediaParent extends JSWindowActorParent {
         "drm-content",
       hideClose: true,
     };
-    aBrowser.ownerGlobal.PopupNotifications.show(
+    aBrowser.documentGlobal.PopupNotifications.show(
       aBrowser,
       "drmContentPlaying",
       message,
@@ -280,7 +257,6 @@ export class EncryptedMediaParent extends JSWindowActorParent {
     let hasHardwareDecryption = false;
     let hasSoftwareClearlead = false;
     let hasHardwareClearlead = false;
-    let hasHdcp22Plus = false;
     let hasWMF = false;
 
     // Get CDM capabilities from the GMP process.
@@ -306,16 +282,12 @@ export class EncryptedMediaParent extends JSWindowActorParent {
           hasSoftwareClearlead = true;
         }
       }
-      if (info.isHDCP22Compatible) {
-        hasHdcp22Plus = true;
-      }
     }
     Glean.mediadrm.decryption.has_hardware_decryption.set(
       hasHardwareDecryption
     );
     Glean.mediadrm.decryption.has_hardware_clearlead.set(hasHardwareClearlead);
     Glean.mediadrm.decryption.has_software_clearlead.set(hasSoftwareClearlead);
-    Glean.mediadrm.decryption.has_hdcp22_plus.set(hasHdcp22Plus);
     Glean.mediadrm.decryption.has_wmf.set(hasWMF);
   }
 }

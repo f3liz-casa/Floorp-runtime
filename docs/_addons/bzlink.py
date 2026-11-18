@@ -30,7 +30,6 @@ class ConvertBugsToLinks(SphinxTransform):
         changed = True
         while changed:
             changed = self.textToReferences(check_if_paragraph, check_if_text)
-        return
 
     def textToReferences(self, check_if_paragraph, check_if_text):
         # Analyses the document and replaces from the paragraph nodes
@@ -60,4 +59,5 @@ class ConvertBugsToLinks(SphinxTransform):
 
 def setup(app):
     app.add_transform(ConvertBugsToLinks)
-    return
+
+    return {"parallel_read_safe": True, "parallel_write_safe": True}

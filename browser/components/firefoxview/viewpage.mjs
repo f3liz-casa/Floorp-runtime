@@ -4,11 +4,11 @@
 
 import { MozLitElement } from "chrome://global/content/lit-utils.mjs";
 
-// eslint-disable-next-line import/no-unassigned-import
+// eslint-disable-next-line import-x/no-unassigned-import
 import "chrome://browser/content/firefoxview/card-container.mjs";
-// eslint-disable-next-line import/no-unassigned-import
+// eslint-disable-next-line import-x/no-unassigned-import
 import "chrome://browser/content/firefoxview/fxview-empty-state.mjs";
-// eslint-disable-next-line import/no-unassigned-import
+// eslint-disable-next-line import-x/no-unassigned-import
 import "chrome://browser/content/firefoxview/fxview-tab-list.mjs";
 
 const lazy = {};
@@ -91,10 +91,10 @@ export class ViewPageContent extends MozLitElement {
     this.recordContextMenuTelemetry("open-in-private-window", e);
   }
 
-  recordContextMenuTelemetry(menuAction, event) {
+  recordContextMenuTelemetry(menuAction, event, tabType) {
     Glean.firefoxviewNext.contextMenuTabs.record({
       menu_action: menuAction,
-      data_type: event.target.panel.dataset.tabType,
+      data_type: tabType ?? event.target.panel.dataset.tabType,
     });
   }
 
@@ -140,7 +140,7 @@ export class ViewPage extends ViewPageContent {
   }
 
   onTabSelect({ target }) {
-    const win = target.ownerGlobal;
+    const win = target.documentGlobal;
 
     let selfBrowser = window.docShell?.chromeEventHandler;
     const { gBrowser } = this.getWindow();

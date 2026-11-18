@@ -9,22 +9,18 @@ from tryselect.selectors.auto import TRY_AUTO_PARAMETERS
 
 pytestmark = pytest.mark.slow
 PARAMS = TRY_AUTO_PARAMETERS.copy()
-PARAMS.update(
-    {
-        "files_changed": [
-            "dom/html/HTMLDetailsElement.cpp",
-            "gfx/thebes/gfxUserFontSet.cpp",
-        ],
-        "head_repository": "https://hg.mozilla.org/try",
-        "project": "try",
-        "target_kind": "test",
-        # These ensure this isn't considered a backstop. The pushdate must
-        # be slightly higher than the one in data/pushes.json, and
-        # pushlog_id must not be a multiple of 10.
-        "pushdate": 1593029536,
-        "pushlog_id": "2",
-    }
-)
+PARAMS.update({
+    "files_changed": [
+        "dom/html/HTMLDetailsElement.cpp",
+        "gfx/thebes/gfxUserFontSet.cpp",
+    ],
+    "head_repository": "https://hg.mozilla.org/try",
+    "project": "try",
+    "target_kind": "mochitest",
+    # A multiple of 10 makes this an "expanded" push on autoland, which must
+    # not affect what runs on try.
+    "pushlog_id": "10",
+})
 
 
 def test_generate_graph(optimized_task_graph):
@@ -41,19 +37,14 @@ def test_only_important_manifests(params, full_task_graph, filter_tasks):
     }
 
     # Ensure we don't schedule unimportant manifests.
-    for task in filter_tasks(full_task_graph, lambda t: t.kind == "test"):
+    for task in filter_tasks(full_task_graph, lambda t: t.kind == "mochitest"):
         attr = task.attributes.get
 
         if "test_manifests" in task.attributes:
             unimportant = [
                 t for t in attr("test_manifests") if t not in important_manifests
             ]
-
-            # Manifest scheduling is disabled for mochitest-ally.
-            if attr("unittest_suite") in ["mochitest-a11y"]:
-                assert len(unimportant) > 0
-            else:
-                assert unimportant == []
+            assert unimportant == []
 
 
 @pytest.mark.parametrize(
@@ -61,7 +52,7 @@ def test_only_important_manifests(params, full_task_graph, filter_tasks):
     (
         pytest.param(
             lambda t: (
-                t.kind == "test"
+                t.kind == "mochitest"
                 and t.attributes["unittest_suite"] == "mochitest-browser-chrome"
             ),
             5,
@@ -79,8 +70,9 @@ def test_tasks_are_scheduled(optimized_task_graph, filter_tasks, func, min_expec
     "func",
     (
         pytest.param(
-            lambda t: t.kind == "build"
-            and "shippable" in t.attributes["build_platform"],
+            lambda t: (
+                t.kind == "build" and "shippable" in t.attributes["build_platform"]
+            ),
             id="no shippable builds",
         ),
         pytest.param(
@@ -101,6 +93,13 @@ def test_tasks_are_scheduled(optimized_task_graph, filter_tasks, func, min_expec
         pytest.param(
             lambda t: t.kind == "upload-symbols",
             id="no upload-symbols",
+        ),
+        pytest.param(
+            lambda t: (
+                {"perf-cadence-backstop", "perf-cadence-expanded"}
+                & set(t.optimization or {})
+            ),
+            id="no backstop or expanded perf tasks",
         ),
     ),
 )

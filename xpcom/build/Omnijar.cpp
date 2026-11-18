@@ -1,18 +1,17 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "Omnijar.h"
 
+#include "mozilla/GeckoArgs.h"
+#include "mozilla/HelperMacros.h"
+#include "mozilla/ipc/ProcessChild.h"
 #include "nsDirectoryService.h"
 #include "nsDirectoryServiceDefs.h"
-#include "mozilla/GeckoArgs.h"
-#include "mozilla/ipc/ProcessChild.h"
 #include "nsIFile.h"
-#include "nsZipArchive.h"
 #include "nsNetUtil.h"
+#include "nsZipArchive.h"
 
 namespace mozilla {
 
@@ -78,7 +77,10 @@ nsresult Omnijar::InitOne(nsIFile* aPath, Type aType) {
     return NS_OK;
   }
 
-  RefPtr<nsZipArchive> zipReader = nsZipArchive::OpenArchive(file);
+  // This file is our own build-time packaged omni.jar, so it's safe to let
+  // nsZipArchive trust its optimized (Central-Directory-at-offset-4) layout.
+  RefPtr<nsZipArchive> zipReader =
+      nsZipArchive::OpenArchive(file, /* aAllowOptimizedLayout */ true);
   if (!zipReader) {
     // As file has been checked to exist as file above, any error indicates
     // that it is somehow corrupted internally.
@@ -91,7 +93,8 @@ nsresult Omnijar::InitOne(nsIFile* aPath, Type aType) {
   if (NS_SUCCEEDED(
           nsZipHandle::Init(zipReader, kOmnijarName, getter_AddRefs(handle)))) {
     outerReader = zipReader;
-    zipReader = nsZipArchive::OpenArchive(handle);
+    zipReader = nsZipArchive::OpenArchive(handle, nullptr,
+                                          /* aAllowOptimizedLayout */ true);
     if (!zipReader) {
       return NS_ERROR_FILE_CORRUPTED;
     }

@@ -5,20 +5,23 @@
 const lazy = {};
 
 ChromeUtils.defineESModuleGetters(lazy, {
-  MerinoClient: "resource:///modules/MerinoClient.sys.mjs",
-  UrlbarUtils: "resource:///modules/UrlbarUtils.sys.mjs",
+  MerinoClient: "moz-src:///browser/components/urlbar/MerinoClient.sys.mjs",
+  UrlbarShared: "chrome://browser/content/urlbar/UrlbarShared.mjs",
 });
 
 ChromeUtils.defineLazyGetter(lazy, "logger", () =>
-  lazy.UrlbarUtils.getLogger({ prefix: "GeolocationUtils" })
+  lazy.UrlbarShared.getLogger({ prefix: "GeolocationUtils" })
 );
 
 // Cache period for Merino's geolocation response. This is intentionally a small
 // amount of time. See the `cachePeriodMs` discussion in `MerinoClient`.
-const GEOLOCATION_CACHE_PERIOD_MS = 120000; // 2 minutes
+const GEOLOCATION_CACHE_PERIOD_MS = 2 * 60 * 60 * 1000; // 2 hours.
 
 // The mean Earth radius used in distance calculations.
 const EARTH_RADIUS_KM = 6371.009;
+
+// Timeout setting to fetch geolocation from Merino.
+const MERINO_TIMEOUT_MS = 5000;
 
 /**
  * Utils for fetching the client's geolocation from Merino, computing distances
@@ -29,7 +32,9 @@ class _GeolocationUtils {
    * Fetches the client's geolocation from Merino. Merino gets the geolocation
    * by looking up the client's IP address in its MaxMind database. We cache
    * responses for a brief period of time so that fetches during a urlbar
-   * session don't ping Merino over and over.
+   * session don't ping Merino over and over. Concurrent calls share one
+   * request, because `MerinoClient` aborts a pending fetch when a new one
+   * starts.
    *
    * @returns {Promise<object>}
    *   An object with the following properties (see Merino source for latest):
@@ -53,7 +58,22 @@ class _GeolocationUtils {
    *     {number} radius
    *       Accuracy radius in km.
    */
-  async geolocation() {
+  geolocation() {
+    if (!this.#pendingGeolocation) {
+      this.#pendingGeolocation = this.#fetchGeolocation().finally(() => {
+        this.#pendingGeolocation = null;
+      });
+    }
+    return this.#pendingGeolocation;
+  }
+
+  /**
+   * Fetches the geolocation from Merino. See `geolocation()` for the shape of
+   * the returned object.
+   *
+   * @returns {Promise<object>}
+   */
+  async #fetchGeolocation() {
     if (!this.#merino) {
       this.#merino = new lazy.MerinoClient("GeolocationUtils", {
         cachePeriodMs: GEOLOCATION_CACHE_PERIOD_MS,
@@ -64,6 +84,7 @@ class _GeolocationUtils {
     let results = await this.#merino.fetch({
       providers: ["geolocation"],
       query: "",
+      timeoutMs: MERINO_TIMEOUT_MS,
     });
 
     lazy.logger.debug("Got geolocation from Merino", results);
@@ -275,6 +296,9 @@ class _GeolocationUtils {
 
   // `MerinoClient`
   #merino;
+
+  // Pending `geolocation()` promise shared by concurrent callers.
+  #pendingGeolocation = null;
 }
 
 function toRadians(deg) {

@@ -4,6 +4,10 @@
 
 package mozilla.components.feature.search.ext
 
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
+import kotlin.test.assertNotNull
 import mozilla.components.browser.state.action.SearchAction
 import mozilla.components.browser.state.search.SearchEngine
 import mozilla.components.browser.state.state.BrowserState
@@ -11,38 +15,38 @@ import mozilla.components.browser.state.state.SearchState
 import mozilla.components.browser.state.store.BrowserStore
 import mozilla.components.support.test.mock
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
-import java.util.concurrent.CountDownLatch
-import java.util.concurrent.TimeUnit
 
 class BrowserStoreKtTest {
     @Test
     fun `waitForDefaultSearchEngine - with state already loaded`() {
-        val store = BrowserStore(
-            BrowserState(
-                search = SearchState(
-                    regionSearchEngines = listOf(
-                        SearchEngine(
-                            id = "google",
-                            name = "Google",
-                            icon = mock(),
-                            type = SearchEngine.Type.BUNDLED,
-                        ),
-                    ),
-                    userSelectedSearchEngineId = "google",
-                    complete = true,
-                ),
-            ),
-        )
+        val store =
+            BrowserStore(
+                BrowserState(
+                    search =
+                        SearchState(
+                            regionSearchEngines =
+                                listOf(
+                                    SearchEngine(
+                                        id = "google",
+                                        name = "Google",
+                                        icon = mock(),
+                                        type = SearchEngine.Type.BUNDLED,
+                                    )
+                                ),
+                            userSelectedSearchEngineId = "google",
+                            complete = true,
+                        )
+                )
+            )
 
         val latch = CountDownLatch(1)
 
         store.waitForSelectedOrDefaultSearchEngine { searchEngine ->
             assertNotNull(searchEngine)
-            assertEquals("google", searchEngine!!.id)
+            assertEquals("google", searchEngine.id)
             latch.countDown()
         }
 
@@ -57,22 +61,25 @@ class BrowserStoreKtTest {
 
         store.waitForSelectedOrDefaultSearchEngine { searchEngine ->
             assertNotNull(searchEngine)
-            assertEquals("google", searchEngine!!.id)
+            assertEquals("google", searchEngine.id)
             latch.countDown()
         }
 
         store.dispatch(
             SearchAction.SetSearchEnginesAction(
-                regionSearchEngines = listOf(
-                    SearchEngine(
-                        id = "google",
-                        name = "Google",
-                        icon = mock(),
-                        type = SearchEngine.Type.BUNDLED,
+                regionSearchEngines =
+                    listOf(
+                        SearchEngine(
+                            id = "google",
+                            name = "Google",
+                            icon = mock(),
+                            type = SearchEngine.Type.BUNDLED,
+                        )
                     ),
-                ),
                 userSelectedSearchEngineId = null,
                 userSelectedSearchEngineName = null,
+                userSelectedPrivateSearchEngineId = null,
+                userSelectedPrivateSearchEngineName = null,
                 regionDefaultSearchEngineId = "google",
                 customSearchEngines = emptyList(),
                 hiddenSearchEngines = emptyList(),
@@ -80,7 +87,8 @@ class BrowserStoreKtTest {
                 additionalAvailableSearchEngines = emptyList(),
                 additionalSearchEngines = emptyList(),
                 regionSearchEnginesOrder = listOf("google"),
-            ),
+                searchEnginesConfigurationId = 1,
+            )
         )
 
         assertTrue(latch.await(10, TimeUnit.SECONDS))
@@ -102,6 +110,8 @@ class BrowserStoreKtTest {
                 regionSearchEngines = listOf(),
                 userSelectedSearchEngineId = null,
                 userSelectedSearchEngineName = null,
+                userSelectedPrivateSearchEngineId = null,
+                userSelectedPrivateSearchEngineName = null,
                 regionDefaultSearchEngineId = "default",
                 customSearchEngines = emptyList(),
                 hiddenSearchEngines = emptyList(),
@@ -109,9 +119,64 @@ class BrowserStoreKtTest {
                 additionalAvailableSearchEngines = emptyList(),
                 additionalSearchEngines = emptyList(),
                 regionSearchEnginesOrder = listOf("google"),
-            ),
+                searchEnginesConfigurationId = 12,
+            )
         )
 
         assertTrue(latch.await(10, TimeUnit.SECONDS))
+    }
+
+    @Test
+    fun `waitForDefaultSearchEngine - a block that dispatches is only invoked once`() {
+        val store = BrowserStore()
+
+        val invocations = AtomicInteger(0)
+
+        store.waitForSelectedOrDefaultSearchEngine {
+            // Dispatching re-enters the store's subscribers synchronously. Only dispatch on the first invocation so
+            // that a regression fails the assertion below instead of recursing until the stack overflows.
+            if (invocations.incrementAndGet() == 1) {
+                store.dispatch(
+                    SearchAction.ApplicationSearchEnginesLoaded(
+                        listOf(
+                            SearchEngine(
+                                id = "bookmarks",
+                                name = "Bookmarks",
+                                icon = mock(),
+                                type = SearchEngine.Type.APPLICATION,
+                            )
+                        )
+                    )
+                )
+            }
+        }
+
+        store.dispatch(
+            SearchAction.SetSearchEnginesAction(
+                regionSearchEngines =
+                    listOf(
+                        SearchEngine(
+                            id = "google",
+                            name = "Google",
+                            icon = mock(),
+                            type = SearchEngine.Type.BUNDLED,
+                        )
+                    ),
+                userSelectedSearchEngineId = null,
+                userSelectedSearchEngineName = null,
+                userSelectedPrivateSearchEngineId = null,
+                userSelectedPrivateSearchEngineName = null,
+                regionDefaultSearchEngineId = "google",
+                customSearchEngines = emptyList(),
+                hiddenSearchEngines = emptyList(),
+                disabledSearchEngineIds = emptyList(),
+                additionalAvailableSearchEngines = emptyList(),
+                additionalSearchEngines = emptyList(),
+                regionSearchEnginesOrder = listOf("google"),
+                searchEnginesConfigurationId = 1,
+            )
+        )
+
+        assertEquals(1, invocations.get())
     }
 }

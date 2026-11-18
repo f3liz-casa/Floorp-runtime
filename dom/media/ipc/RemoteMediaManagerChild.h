@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -9,10 +7,11 @@
 #include <functional>
 
 #include "GPUVideoImage.h"
+#include "MediaCodecsSupport.h"
 #include "PDMFactory.h"
 #include "PlatformEncoderModule.h"
 #include "ipc/EnumSerializer.h"
-#include "mozilla/EnumTypeTraits.h"
+#include "mozilla/MozPromise.h"
 #include "mozilla/PRemoteMediaManagerChild.h"
 #include "mozilla/ipc/UtilityProcessSandboxing.h"
 #include "mozilla/layers/VideoBridgeUtils.h"
@@ -25,9 +24,9 @@ class MediaKeys;
 
 class PMFCDMChild;
 class PMFMediaEngineChild;
-class RemoteCDMChild;
+class RemoteCDMProxy;
 class RemoteDecoderChild;
-class RemoteMediaDataEncoderChild;
+class RemoteMediaDataEncoder;
 
 enum class RemoteMediaIn {
   Unspecified,
@@ -65,28 +64,39 @@ class RemoteMediaManagerChild final
   static void SetSupported(RemoteMediaIn aLocation,
                            const media::MediaCodecsSupported& aSupported);
 
+  // Resolves with true once codec support for a location is known. The actual
+  // MediaCodecsSupported snapshot is read separately via the synchronous
+  // Supports() once this has resolved.
+  using CodecSupportPromise = GenericNonExclusivePromise;
+
   // Can be called from any thread.
-  static bool Supports(RemoteMediaIn aLocation,
-                       const SupportDecoderParams& aParams,
-                       DecoderDoctorDiagnostics* aDiagnostics);
+  static media::DecodeSupportSet Supports(
+      RemoteMediaIn aLocation, const SupportDecoderParams& aParams,
+      DecoderDoctorDiagnostics* aDiagnostics);
   static RefPtr<PlatformDecoderModule::CreateDecoderPromise> CreateAudioDecoder(
       const CreateDecoderParams& aParams, RemoteMediaIn aLocation);
   static RefPtr<PlatformDecoderModule::CreateDecoderPromise> CreateVideoDecoder(
       const CreateDecoderParams& aParams, RemoteMediaIn aLocation);
-  static RefPtr<RemoteCDMChild> CreateCDM(RemoteMediaIn aLocation,
-                                          dom::MediaKeys* aKeys,
+  static RefPtr<RemoteCDMProxy> CreateCDM(dom::MediaKeys* aKeys,
                                           const nsAString& aKeySystem,
                                           bool aDistinctiveIdentifierRequired,
                                           bool aPersistentStateRequired);
 
   static media::EncodeSupportSet Supports(RemoteMediaIn aLocation,
                                           CodecType aCodec);
+
+  // Resolves immediately if codec support for aLocation is already cached;
+  // otherwise resolves once SetSupported() fires for that location.
+  // Pass aForceRefresh=true to wait for the next update even when the cache
+  // is populated (the cache itself is not cleared, so sync callers are
+  // unaffected).
+  static RefPtr<CodecSupportPromise> EnsureCodecSupportFor(
+      RemoteMediaIn aLocation, bool aForceRefresh = false);
   static RefPtr<PlatformEncoderModule::CreateEncoderPromise> InitializeEncoder(
-      RefPtr<RemoteMediaDataEncoderChild>&& aEncoder,
-      const EncoderConfig& aConfig);
+      RefPtr<RemoteMediaDataEncoder>&& aEncoder, const EncoderConfig& aConfig);
 
   // Can be called from any thread.
-  static nsISerialEventTarget* GetManagerThread();
+  static nsCOMPtr<nsISerialEventTarget> GetManagerThread();
 
   // Return the track support information based on the location of the remote
   // process. Thread-safe.
@@ -117,6 +127,16 @@ class RemoteMediaManagerChild final
   // internally and will be ignored if the IPDL actor has been destroyed.
   bool DeallocShmem(mozilla::ipc::Shmem& aShmem) override;
 
+  // Whether or not the GPU process may be used for decoding. This remains true
+  // while it is recovering from a crash, and on Windows after media in it is
+  // disabled because of crashes, in which case creating decoders is rejected.
+  static bool IsGpuProcessDecodingAvailable();
+
+  // Whether or not the GPU process may be used for encoding. This remains true
+  // while it is recovering from a crash, and on Windows after media in it is
+  // disabled because of crashes, in which case creating encoders is rejected.
+  static bool IsGpuProcessEncodingAvailable();
+
   // Main thread only
   static void InitForGPUProcess(
       Endpoint<PRemoteMediaManagerChild>&& aVideoManager);
@@ -145,34 +165,28 @@ class RemoteMediaManagerChild final
   static RefPtr<GenericNonExclusivePromise> LaunchUtilityProcessIfNeeded(
       RemoteMediaIn aLocation);
 
+  // A thread-safe method to launch the RDD process if it hasn't launched yet.
+  static RefPtr<GenericNonExclusivePromise> LaunchRDDProcessIfNeeded();
+
  protected:
   void HandleFatalError(const char* aMsg) override;
-
-  PRemoteDecoderChild* AllocPRemoteDecoderChild(
-      const RemoteDecoderInfoIPDL& aRemoteDecoderInfo,
-      const CreateDecoderParams::OptionSet& aOptions,
-      const Maybe<layers::TextureFactoryIdentifier>& aIdentifier,
-      const Maybe<uint64_t>& aMediaEngineId,
-      const Maybe<TrackingId>& aTrackingId, PRemoteCDMChild* aCDM);
-  bool DeallocPRemoteDecoderChild(PRemoteDecoderChild* actor);
-
-  PMFMediaEngineChild* AllocPMFMediaEngineChild();
-  bool DeallocPMFMediaEngineChild(PMFMediaEngineChild* actor);
-
-  PMFCDMChild* AllocPMFCDMChild(const nsAString& aKeySystem);
-  bool DeallocPMFCDMChild(PMFCDMChild* actor);
+  void ActorDestroy(ActorDestroyReason aWhy) override;
 
  private:
   explicit RemoteMediaManagerChild(RemoteMediaIn aLocation);
   ~RemoteMediaManagerChild() = default;
   static RefPtr<PlatformDecoderModule::CreateDecoderPromise> Construct(
-      RefPtr<RemoteDecoderChild>&& aChild, RemoteMediaIn aLocation);
+      RefPtr<RemoteDecoderChild>&& aChild,
+      CreateDecoderParamsForAsync&& aParams, RemoteMediaIn aLocation);
 
   static void OpenRemoteMediaManagerChildForProcess(
       Endpoint<PRemoteMediaManagerChild>&& aEndpoint, RemoteMediaIn aLocation);
 
-  // A thread-safe method to launch the RDD process if it hasn't launched yet.
-  static RefPtr<GenericNonExclusivePromise> LaunchRDDProcessIfNeeded();
+  // A thread-safe method to wait for the GPU process manager to be available.
+  // If the GPU process is recovering from a crash, this waits until it is
+  // recreated. It is rejected if the GPU process, or decoding in it, is
+  // disabled.
+  static RefPtr<GenericNonExclusivePromise> EnsureGPUProcessReady();
 
   // The location for decoding, Rdd or Gpu process.
   const RemoteMediaIn mLocation;

@@ -19,7 +19,6 @@
 #include "p2p/base/ice_credentials_iterator.h"
 #include "p2p/base/transport_description.h"
 #include "rtc_base/rtc_certificate.h"
-#include "rtc_base/ssl_identity.h"
 
 namespace webrtc {
 
@@ -29,6 +28,9 @@ struct TransportOptions {
   // If true, ICE renomination is supported and will be used if it is also
   // supported by the remote side.
   bool enable_ice_renomination = false;
+  // If true, SPED (STUN Protocol for Embedding DTLS) is supported and will
+  // be used if it is also supported by the remote side.
+  bool dtls_handshake_in_stun = false;
 };
 
 // Creates transport descriptions according to the supplied configuration.
@@ -88,13 +90,5 @@ class TransportDescriptionFactory {
 
 }  //  namespace webrtc
 
-// Re-export symbols from the webrtc namespace for backwards compatibility.
-// TODO(bugs.webrtc.org/4222596): Remove once all references are updated.
-#ifdef WEBRTC_ALLOW_DEPRECATED_NAMESPACES
-namespace cricket {
-using ::webrtc::TransportDescriptionFactory;
-using ::webrtc::TransportOptions;
-}  // namespace cricket
-#endif  // WEBRTC_ALLOW_DEPRECATED_NAMESPACES
 
 #endif  // P2P_BASE_TRANSPORT_DESCRIPTION_FACTORY_H_

@@ -128,22 +128,24 @@ public class WebExtension {
           "websiteContent");
 
   // Keep in sync with GeckoViewWebExtension.sys.mjs
+  /** Flags that can be used to configure WebExtension behavior. */
   public static class Flags {
-    /*
-     * Default flags for this WebExtension.
-     */
+    /** Default flags for this WebExtension. */
     public static final long NONE = 0;
 
     /**
      * Set this flag if you want to enable content scripts messaging. To listen to such messages you
-     * can use {@link SessionController#setMessageDelegate}.
+     * can use {@link SessionController#setMessageDelegate}. This flag is set if the extension is
+     * built-in or a privileged extension, with its manifest.json containing the
+     * "nativeMessagingFromContent" permission.
      */
     public static final long ALLOW_CONTENT_MESSAGING = 1 << 0;
 
-    // Do not instantiate this class.
+    /** Do not instantiate this class. */
     protected Flags() {}
   }
 
+  /** Defines the valid flags that can be applied to a WebExtension. */
   @Retention(RetentionPolicy.SOURCE)
   @LongDef(
       flag = true,
@@ -156,7 +158,11 @@ public class WebExtension {
     flags = bundle.getInt("webExtensionFlags", 0);
     isBuiltIn = bundle.getBoolean("isBuiltIn", false);
     if (bundle.containsKey("metaData")) {
-      metaData = new MetaData(bundle.getBundle("metaData"));
+      try {
+        metaData = new MetaData(bundle.getBundle("metaData"));
+      } catch (final Exception e) {
+        throw new InvalidMetaDataException(e, id);
+      }
     } else {
       metaData = null;
     }
@@ -172,9 +178,16 @@ public class WebExtension {
    * <p>For messages from content scripts, set a session-specific message delegate using {@link
    * SessionController#setMessageDelegate}.
    *
-   * <p>See also <a
+   * <p>This functionality currently requires the "geckoViewAddons" permission, only available to
+   * built-in and privileged extensions.
+   *
+   * <p>For the extension API side, see <a
    * href="https://developer.mozilla.org/en-US/docs/Mozilla/Add-ons/WebExtensions/Native_messaging">
-   * WebExtensions/Native_messaging </a>
+   * WebExtensions/Native_messaging</a>.
+   *
+   * <p>For the GeckoView API side, see <a
+   * href="https://firefox-source-docs.mozilla.org/mobile/android/geckoview/consumer/web-extensions.html">
+   * Using GeckoView: Interacting with Web content and WebExtensions</a>.
    *
    * @param messageDelegate handles messaging between the WebExtension and the app. To send a
    *     message from the WebExtension use the <code>runtime.sendNativeMessage</code> WebExtension
@@ -208,6 +221,7 @@ public class WebExtension {
     mDelegateController.onMessageDelegate(nativeApp, messageDelegate);
   }
 
+  /** Browsing data type definitions for extensions. */
   @Retention(RetentionPolicy.SOURCE)
   @LongDef(
       value = {
@@ -308,14 +322,28 @@ public class WebExtension {
 
     /** Types of data that a browser "Clear Data" UI might have access to. */
     class Type {
+      /** Utility class; do not instantiate. */
       protected Type() {}
 
+      /** Cache entries. */
       public static final long CACHE = 1 << 0;
+
+      /** Cookie data. */
       public static final long COOKIES = 1 << 1;
+
+      /** Downloads data. */
       public static final long DOWNLOADS = 1 << 2;
+
+      /** Form data. */
       public static final long FORM_DATA = 1 << 3;
+
+      /** Browsing history. */
       public static final long HISTORY = 1 << 4;
+
+      /** Local storage. */
       public static final long LOCAL_STORAGE = 1 << 5;
+
+      /** Saved passwords. */
       public static final long PASSWORDS = 1 << 6;
     }
 
@@ -818,12 +846,22 @@ public class WebExtension {
     mDelegateController.onTabDelegate(delegate);
   }
 
+  /**
+   * Returns the delegate handling browsing-data operations for this extension.
+   *
+   * @return the current BrowsingDataDelegate, or null if none set
+   */
   @UiThread
   @Nullable
   public BrowsingDataDelegate getBrowsingDataDelegate() {
     return mDelegateController.getBrowsingDataDelegate();
   }
 
+  /**
+   * Sets the delegate to handle browsing-data operations (clear, remove, get settings).
+   *
+   * @param delegate the BrowsingDataDelegate to receive browsing-data calls; may be null
+   */
   @UiThread
   public void setBrowsingDataDelegate(final @Nullable BrowsingDataDelegate delegate) {
     mDelegateController.onBrowsingDataDelegate(delegate);
@@ -854,7 +892,7 @@ public class WebExtension {
     }
   }
 
-  // Public wrapper for Listener
+  /** Controller for WebExtension session-related APIs (tabs, browsingData, downloads, etc.). */
   public static class SessionController {
     private final Listener<SessionTabDelegate> mListener;
 
@@ -872,17 +910,23 @@ public class WebExtension {
      * <p>If a delegate is already present, this delegate will replace the existing one.
      *
      * <p>This message delegate will be responsible for handling messaging between a WebExtension
-     * content script running on the {@link GeckoSession}.
+     * content script or extension page running on the {@link GeckoSession}.
      *
-     * <p>Note: To receive messages from content scripts, the WebExtension needs to explicitely
-     * allow it in {@link WebExtension#WebExtension} by setting {@link
-     * Flags#ALLOW_CONTENT_MESSAGING}.
+     * <p>Note: To receive messages from content scripts, the WebExtension needs to explicitly allow
+     * it in {@link WebExtension#WebExtension} by setting {@link Flags#ALLOW_CONTENT_MESSAGING}.
+     *
+     * <p>For more information, see <a
+     * href="https://firefox-source-docs.mozilla.org/mobile/android/geckoview/consumer/web-extensions.html">
+     * Using GeckoView: Interacting with Web content and WebExtensions</a>.
      *
      * @param webExtension {@link WebExtension} that this delegate receives messages from.
      * @param delegate {@link MessageDelegate} that will receive messages from this session.
      * @param nativeApp which native app id this message delegate will handle messaging for.
      * @see WebExtension#setMessageDelegate
      */
+    // ThreadConstraint false positive: delegate registration is thread-safe; delivery is dispatched
+    // to the UI thread.
+    @SuppressLint("ThreadConstraint")
     @AnyThread
     public void setMessageDelegate(
         final @NonNull WebExtension webExtension,
@@ -1131,6 +1175,7 @@ public class WebExtension {
      */
     public final @Nullable GeckoSession session;
 
+    /** Environment type definitions for WebExtension messaging. */
     @Retention(RetentionPolicy.SOURCE)
     @IntDef({ENV_TYPE_UNKNOWN, ENV_TYPE_EXTENSION, ENV_TYPE_CONTENT_SCRIPT})
     public @interface EnvType {}
@@ -1303,6 +1348,7 @@ public class WebExtension {
     /* package */ static final int TYPE_BROWSER_ACTION = 1;
     /* package */ static final int TYPE_PAGE_ACTION = 2;
 
+    /** Action type definitions for WebExtension actions. */
     @Retention(RetentionPolicy.SOURCE)
     @IntDef({TYPE_BROWSER_ACTION, TYPE_PAGE_ACTION})
     public @interface ActionType {}
@@ -1368,7 +1414,7 @@ public class WebExtension {
           + "}";
     }
 
-    // For testing
+    /** Create a default Action for testing purposes. */
     protected Action() {
       type = TYPE_BROWSER_ACTION;
       mExtension = null;
@@ -1559,8 +1605,27 @@ public class WebExtension {
     }
   }
 
+  /**
+   * Exception thrown when GeckoView receives unexpected invalid WebExtension metadata from Gecko
+   * (e.g. when metadata properties in the bundle are not matching the type expected by GeckoView).
+   */
+  public static class InvalidMetaDataException extends RuntimeException {
+    /** For testing */
+    protected InvalidMetaDataException() {
+      super("InvalidMetaDataException");
+    }
+
+    /* package */ InvalidMetaDataException(
+        final @Nullable Throwable cause, final @Nullable String extensionId) {
+      super(
+          "InvalidMetaDataException" + (extensionId != null ? " for add-on id " + extensionId : ""),
+          cause);
+    }
+  }
+
   /** Extension thrown when an error occurs during extension installation. */
   public static class InstallException extends Exception {
+    /** Error code definitions for extension installation failures. */
     public static class ErrorCodes {
       /** The download failed due to network problems. */
       public static final int ERROR_NETWORK_FAILURE = -1;
@@ -1641,6 +1706,7 @@ public class WebExtension {
       }
     }
 
+    /** Error code type definitions for WebExtension installation exceptions. */
     @Retention(RetentionPolicy.SOURCE)
     @IntDef(
         value = {
@@ -1753,6 +1819,9 @@ public class WebExtension {
    * in Firefox. </a>
    */
   public static class SignedStateFlags {
+    /** Public constructor for SignedStateFlags. */
+    public SignedStateFlags() {}
+
     // Keep in sync with AddonManager.sys.mjs
     /**
      * This extension may be signed but by a certificate that doesn't chain to our our trusted
@@ -1778,6 +1847,7 @@ public class WebExtension {
     /* package */ static final int LAST = PRIVILEGED;
   }
 
+  /** Signed state type definitions for WebExtension verification status. */
   @Retention(RetentionPolicy.SOURCE)
   @IntDef({
     SignedStateFlags.UNKNOWN,
@@ -1795,6 +1865,9 @@ public class WebExtension {
    * cause stability or security issues are put on a blocklist </a>.
    */
   public static class BlocklistStateFlags {
+    /** Public constructor for BlocklistStateFlags. */
+    public BlocklistStateFlags() {}
+
     // Keep in sync with nsIBlocklistService.idl
     /** This extension does not appear in the blocklist. */
     public static final int NOT_BLOCKED = 0;
@@ -1818,6 +1891,7 @@ public class WebExtension {
     public static final int VULNERABLE_NO_UPDATE = 5;
   }
 
+  /** Blocklist state definitions for extensions. */
   @Retention(RetentionPolicy.SOURCE)
   @IntDef({
     BlocklistStateFlags.NOT_BLOCKED,
@@ -1829,7 +1903,11 @@ public class WebExtension {
   })
   public @interface BlocklistState {}
 
+  /** Flags indicating reasons why an extension is disabled. */
   public static class DisabledFlags {
+    /** Public constructor for DisabledFlags. */
+    public DisabledFlags() {}
+
     /** The extension has been disabled by the user */
     public static final int USER = 1 << 1;
 
@@ -1861,6 +1939,7 @@ public class WebExtension {
     public static final int SOFT_BLOCKLIST = 1 << 6;
   }
 
+  /** Enabled/disabled flag definitions for WebExtensions. */
   @Retention(RetentionPolicy.SOURCE)
   @IntDef(
       flag = true,
@@ -2226,6 +2305,7 @@ public class WebExtension {
 
   // TODO: make public bug 1595822
 
+  /** Context flag definitions for menu items. */
   @Retention(RetentionPolicy.SOURCE)
   @IntDef(
       flag = true,
@@ -2335,6 +2415,7 @@ public class WebExtension {
    */
   static class MenuItem {
 
+    /** Menu item type definitions. */
     @Retention(RetentionPolicy.SOURCE)
     @IntDef(
         flag = false,
@@ -2451,6 +2532,7 @@ public class WebExtension {
     }
   }
 
+  /** Handles download requests from WebExtensions. */
   public interface DownloadDelegate {
     /**
      * Method that is called when Web Extension requests a download (when downloads.download() is
@@ -2651,34 +2733,83 @@ public class WebExtension {
     public @interface DownloadInterruptReason {}
 
     // File-related errors
+    /** No interruption. */
     public static final int INTERRUPT_REASON_NO_INTERRUPT = 0;
+
+    /** Generic file error. */
     public static final int INTERRUPT_REASON_FILE_FAILED = 1;
+
+    /** File access denied. */
     public static final int INTERRUPT_REASON_FILE_ACCESS_DENIED = 2;
+
+    /** Insufficient disk space. */
     public static final int INTERRUPT_REASON_FILE_NO_SPACE = 3;
+
+    /** File name too long. */
     public static final int INTERRUPT_REASON_FILE_NAME_TOO_LONG = 4;
+
+    /** File too large. */
     public static final int INTERRUPT_REASON_FILE_TOO_LARGE = 5;
+
+    /** File infected by virus. */
     public static final int INTERRUPT_REASON_FILE_VIRUS_INFECTED = 6;
+
+    /** Transient file error. */
     public static final int INTERRUPT_REASON_FILE_TRANSIENT_ERROR = 7;
+
+    /** File blocked. */
     public static final int INTERRUPT_REASON_FILE_BLOCKED = 8;
+
+    /** File security check failed. */
     public static final int INTERRUPT_REASON_FILE_SECURITY_CHECK_FAILED = 9;
+
+    /** File download too short. */
     public static final int INTERRUPT_REASON_FILE_TOO_SHORT = 10;
+
     // Network-related errors
+    /** Network request failed. */
     public static final int INTERRUPT_REASON_NETWORK_FAILED = 11;
+
+    /** Network timed out. */
     public static final int INTERRUPT_REASON_NETWORK_TIMEOUT = 12;
+
+    /** Network disconnected. */
     public static final int INTERRUPT_REASON_NETWORK_DISCONNECTED = 13;
+
+    /** Server is down. */
     public static final int INTERRUPT_REASON_NETWORK_SERVER_DOWN = 14;
+
+    /** Invalid network request. */
     public static final int INTERRUPT_REASON_NETWORK_INVALID_REQUEST = 15;
+
     // Server-related errors
+    /** Server returned a generic error. */
     public static final int INTERRUPT_REASON_SERVER_FAILED = 16;
+
+    /** Server does not support range requests. */
     public static final int INTERRUPT_REASON_SERVER_NO_RANGE = 17;
+
+    /** Server returned bad content. */
     public static final int INTERRUPT_REASON_SERVER_BAD_CONTENT = 18;
+
+    /** Server unauthorized request. */
     public static final int INTERRUPT_REASON_SERVER_UNAUTHORIZED = 19;
+
+    /** Server certificate problem. */
     public static final int INTERRUPT_REASON_SERVER_CERT_PROBLEM = 20;
+
+    /** Server forbidden request. */
     public static final int INTERRUPT_REASON_SERVER_FORBIDDEN = 21;
+
     // User-related errors
+    /** Download canceled by user. */
     public static final int INTERRUPT_REASON_USER_CANCELED = 22;
+
+    /** Download terminated due to user shutdown. */
     public static final int INTERRUPT_REASON_USER_SHUTDOWN = 23;
+
     // Miscellaneous
+    /** Download interrupted by crash. */
     public static final int INTERRUPT_REASON_CRASH = 24;
 
     /**
@@ -2688,8 +2819,8 @@ public class WebExtension {
     public interface Info {
 
       /**
-       * @return A number representing the number of bytes received so far from the host during the
-       *     download This does not take file compression into consideration
+       * {@return a number representing the number of bytes received so far from the host during the
+       * download} This does not take file compression into consideration.
        */
       @UiThread
       default long bytesReceived() {
@@ -2697,8 +2828,8 @@ public class WebExtension {
       }
 
       /**
-       * @return boolean indicating whether a currently-interrupted (e.g. paused) download can be
-       *     resumed from the point where it was interrupted
+       * {@return a boolean indicating whether a currently-interrupted (e.g. paused) download can be
+       * resumed from the point where it was interrupted}
        */
       @UiThread
       default boolean canResume() {
@@ -2706,8 +2837,8 @@ public class WebExtension {
       }
 
       /**
-       * @return A number representing the time when this download ended. This is null if the
-       *     download has not yet finished.
+       * {@return a number representing the time when this download ended} This is null if the
+       * download has not yet finished.
        */
       @Nullable
       @UiThread
@@ -2716,9 +2847,9 @@ public class WebExtension {
       }
 
       /**
-       * @return One of <a
-       *     href="https://developer.mozilla.org/en-US/docs/Mozilla/Add-ons/WebExtensions/API/downloads/InterruptReason">Interrupt
-       *     Reason</a> constants denoting the error reason.
+       * {@return one of <a
+       * href="https://developer.mozilla.org/en-US/docs/Mozilla/Add-ons/WebExtensions/API/downloads/InterruptReason">Interrupt
+       * Reason</a> constants denoting the error reason}
        */
       @Nullable
       @UiThread
@@ -2727,8 +2858,8 @@ public class WebExtension {
       }
 
       /**
-       * @return the estimated number of milliseconds between the UNIX epoch and when this download
-       *     is estimated to be completed. This is null if it is not known.
+       * {@return the estimated number of milliseconds between the UNIX epoch and when this download
+       * is estimated to be completed} This is null if it is not known.
        */
       @Nullable
       @UiThread
@@ -2736,17 +2867,13 @@ public class WebExtension {
         return null;
       }
 
-      /**
-       * @return boolean indicating whether a downloaded file still exists
-       */
+      /** {@return a boolean indicating whether a downloaded file still exists} */
       @UiThread
       default boolean fileExists() {
         return false;
       }
 
-      /**
-       * @return the filename.
-       */
+      /** {@return the filename} */
       @NonNull
       @UiThread
       default String filename() {
@@ -2754,17 +2881,15 @@ public class WebExtension {
       }
 
       /**
-       * @return the total number of bytes in the whole file, after decompression. A value of -1
-       *     means that the total file size is unknown.
+       * {@return the total number of bytes in the whole file, after decompression} A value of -1
+       * means that the total file size is unknown.
        */
       @UiThread
       default long fileSize() {
         return -1;
       }
 
-      /**
-       * @return the downloaded file's MIME type
-       */
+      /** {@return the downloaded file's MIME type} */
       @NonNull
       @UiThread
       default String mime() {
@@ -2772,17 +2897,15 @@ public class WebExtension {
       }
 
       /**
-       * @return boolean indicating whether the download is paused i.e. if the download has stopped
-       *     reading data from the host but has kept the connection open
+       * {@return a boolean indicating whether the download is paused i.e. if the download has
+       * stopped reading data from the host but has kept the connection open}
        */
       @UiThread
       default boolean paused() {
         return false;
       }
 
-      /**
-       * @return String representing the downloaded file's referrer
-       */
+      /** {@return a string representing the downloaded file's referrer} */
       @NonNull
       @UiThread
       default String referrer() {
@@ -2790,7 +2913,7 @@ public class WebExtension {
       }
 
       /**
-       * @return the number of milliseconds between the UNIX epoch and when this download began
+       * {@return the number of milliseconds between the UNIX epoch and when this download began}
        */
       @UiThread
       default long startTime() {
@@ -2798,8 +2921,8 @@ public class WebExtension {
       }
 
       /**
-       * @return a new state; one of the state constants to indicate whether the download is in
-       *     progress, interrupted or complete
+       * {@return a new state; one of the state constants to indicate whether the download is in
+       * progress, interrupted or complete}
        */
       @UiThread
       default @DownloadState int state() {
@@ -2807,9 +2930,9 @@ public class WebExtension {
       }
 
       /**
-       * @return total number of bytes in the file being downloaded. This does not take file
-       *     compression into consideration. A value of -1 here means that the total number of bytes
-       *     is unknown
+       * {@return the total number of bytes in the file being downloaded} This does not take file
+       * compression into consideration. A value of -1 here means that the total number of bytes is
+       * unknown.
        */
       @UiThread
       default long totalBytes() {
@@ -2882,6 +3005,7 @@ public class WebExtension {
      */
     public final boolean allowHttpErrors;
 
+    /** Conflict action flag definitions for downloads. */
     @Retention(RetentionPolicy.SOURCE)
     @IntDef(
         flag = true,
@@ -2897,6 +3021,11 @@ public class WebExtension {
     /** The app should prompt the user, asking them to choose whether to uniquify or overwrite */
     public static final int CONFLICT_ACTION_PROMPT = 1 << 1;
 
+    /**
+     * Create a DownloadRequest from the given builder.
+     *
+     * @param builder The builder containing the request configuration.
+     */
     protected DownloadRequest(final DownloadRequest.Builder builder) {
       this.request = builder.mRequest;
       this.downloadFlags = builder.mDownloadFlags;
@@ -3018,9 +3147,18 @@ public class WebExtension {
 
   /** Represents initial information on a download provided to Web Extension */
   public static class DownloadInitData {
+    /** The download object associated with this data. */
     @NonNull public final WebExtension.Download download;
+
+    /** The initial download information. */
     @NonNull public final Download.Info initData;
 
+    /**
+     * Create a DownloadInitData with the given download and info.
+     *
+     * @param download The download object.
+     * @param initData The initial download information.
+     */
     public DownloadInitData(final Download download, final Download.Info initData) {
       this.download = download;
       this.initData = initData;

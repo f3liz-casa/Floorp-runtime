@@ -8,6 +8,12 @@ interface URI;
 interface InputStream;
 interface ReferrerInfo;
 
+enum ForceMediaDocument {
+  "none",
+  "image",
+  "video",
+};
+
 /**
  * This dictionary holds load arguments for docshell loads.
  */
@@ -80,13 +86,9 @@ dictionary LoadURIOptions {
   unsigned long triggeringSandboxFlags = 0;
 
   /**
-  * The window id and storage access status of the window of the
-  * context that triggered the load. This is used to allow self-initiated
-  * same-origin navigations to propagate their "has storage access" bit
-  * to the next Document.
+  * The window id of the window of the context that triggered the load.
   */
   unsigned long long triggeringWindowId = 0;
-  boolean triggeringStorageAccess = false;
 
   /**
    * The RemoteType of the entity that's responsible for the load. Defaults to
@@ -118,4 +120,23 @@ dictionary LoadURIOptions {
    * This holds enum values for SchemelessInputType from nsILoadInfo.idl.
    */
   octet schemelessInput = 0;
+
+  /**
+   * If this is not none, the result document will be forced to to load as either
+   * an ImageDocument or VideoDocument.
+   */
+  ForceMediaDocument forceMediaDocument = "none";
+
+  /**
+  * The app-link intent launch type of the page load. Defaults to 0 (UNKNOWN).
+  * The launch type can be COLD, WARM, HOT or UNKNOWN.
+  * COLD = 1, WARM = 2, HOT = 3, UNKNOWN = 0.
+  */
+  unsigned long appLinkLaunchType = 0;
+
+  /**
+   * Whether this is a captive portal tab. Used to grant local network access
+   * permissions without prompting the user.
+   */
+  boolean isCaptivePortalTab = false;
 };

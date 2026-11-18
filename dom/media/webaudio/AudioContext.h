@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim:set ts=2 sw=2 sts=2 et cindent: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -11,7 +9,6 @@
 #include "MediaBufferDecoder.h"
 #include "X11UndefineNone.h"
 #include "js/TypeDecls.h"
-#include "mozilla/Attributes.h"
 #include "mozilla/DOMEventTargetHelper.h"
 #include "mozilla/MemoryReporting.h"
 #include "mozilla/RelativeTimeline.h"
@@ -147,9 +144,7 @@ class AudioContext final : public DOMEventTargetHelper,
   NS_DECL_CYCLE_COLLECTION_CLASS_INHERITED(AudioContext, DOMEventTargetHelper)
   MOZ_DEFINE_MALLOC_SIZE_OF(MallocSizeOf)
 
-  nsIGlobalObject* GetParentObject() const { return GetOwnerGlobal(); }
-
-  nsISerialEventTarget* GetMainThread() const;
+  nsIGlobalObject* GetParentObject() const { return GetRelevantGlobal(); }
 
   void DisconnectFromOwner() override;
 
@@ -185,6 +180,13 @@ class AudioContext final : public DOMEventTargetHelper,
 
   bool ShouldSuspendNewTrack() const {
     return mTracksAreSuspended || mCloseCalled;
+  }
+  // Whether the page and media control want the context to run, even while its
+  // window is suspended. Unlike State(), this changes as soon as a suspend or
+  // resume is requested.
+  bool IsRunningOrResuming() const {
+    return mWasAllowedToStart && !mSuspendedByContent &&
+           !mSuspendedByMediaControl && !mCloseCalled && !mIsShutDown;
   }
   double CurrentTime();
 
@@ -229,6 +231,18 @@ class AudioContext final : public DOMEventTargetHelper,
   // calling from inner window, so we won't need to return promise for caller.
   void SuspendFromChrome();
   void ResumeFromChrome();
+
+  // Suspend from media-control infrastructure (e.g. audio focus loss). Fires
+  // a statechange event so the page can observe and call resume().
+  void SuspendFromMediaControl();
+  // Resume a media-control suspend (e.g. audio focus restored). Mirrors
+  // SuspendFromMediaControl by clearing the same suspended-by-content
+  // bookkeeping and firing a statechange event. Returns whether it released the
+  // media-control suspend.
+  bool ResumeFromMediaControl();
+  // Make a suspend media control caused count as one the page asked for,
+  // without resuming, so a page resume() can restart the context.
+  void TransferSuspendToContent();
   // Called on completion of offline rendering:
   void OfflineClose();
 
@@ -335,6 +349,7 @@ class AudioContext final : public DOMEventTargetHelper,
   void RegisterNode(AudioNode* aNode);
   void UnregisterNode(AudioNode* aNode);
 
+  void QueueOnStateChanged(void* aPromise, AudioContextState aNewState);
   void OnStateChanged(void* aPromise, AudioContextState aNewState);
 
   BasicWaveFormCache* GetBasicWaveFormCache();
@@ -348,7 +363,7 @@ class AudioContext final : public DOMEventTargetHelper,
     return mWorkletParamDescriptors.Lookup(aName).DataPtrOrNull();
   }
 
-  void Dispatch(already_AddRefed<nsIRunnable>&& aRunnable);
+  void Dispatch(already_AddRefed<nsIRunnable> aRunnable);
 
  private:
   void DisconnectFromWindow();
@@ -429,12 +444,18 @@ class AudioContext final : public DOMEventTargetHelper,
   // This flag stores the value of previous status of `allowed-to-start`.
   // true if offline.
   bool mWasAllowedToStart;
-  // Whether this AudioContext is suspended because the page called suspend().
+  // Whether this AudioContext is in a suspend the page owns: one it asked for
+  // with suspend(), or one handed to it after a permanent audio-focus loss.
   // Unused if offline.
   bool mSuspendedByContent;
   // Whether this AudioContext is suspended because the Window is suspended.
   // Unused if offline.
   bool mSuspendedByChrome;
+  // Whether the current suspend was started by an audio-focus interruption and
+  // the page has not since taken over with its own suspend()/resume(). Only
+  // such a suspend is auto-resumed when the interruption ends. Unused if
+  // offline.
+  bool mSuspendedByMediaControl;
 
   // Whether we have set the page awake reqeust when non-offline audio context
   // is running. That will keep the audio context being able to continue running

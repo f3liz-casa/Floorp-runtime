@@ -48,6 +48,8 @@ class MockProfileService {
   async asyncFlush() {}
 
   async asyncFlushCurrentProfile() {}
+
+  async removeProfileFilesByPath() {}
 }
 
 const gProfileService = new MockProfileService();
@@ -101,9 +103,9 @@ add_setup(async () => {
   registerCleanupFunction(async () => {
     await SpecialPowers.popPrefEnv();
     ProfilesDatastoreService.overrideDirectoryService(null);
+    await SelectableProfileService.uninit();
     await ProfilesDatastoreService.resetProfileService(null);
     await ProfilesDatastoreService.uninit();
-    await SelectableProfileService.uninit();
   });
 });
 
@@ -175,4 +177,22 @@ const assertGlean = async (category, method, object, extra) => {
     method,
     object,
   });
+};
+
+// Verifies a single theme_picker.change event was recorded for selecting
+// `themeId` in a profiles page theme picker.
+const assertThemePickerThemeChange = async themeId => {
+  await Services.fog.testFlushAllChildren();
+  Assert.deepEqual(
+    Glean.themePicker.change.testGetValue()?.map(event => event.extra),
+    [
+      {
+        source: "profiles",
+        layout: "full",
+        property: "theme",
+        theme_id: themeId,
+      },
+    ],
+    "Should record one theme_picker.change event for the selected theme"
+  );
 };

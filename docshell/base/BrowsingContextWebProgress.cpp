@@ -15,11 +15,12 @@
 #include "nsIChannel.h"
 #include "xptinfo.h"
 #include "mozilla/RefPtr.h"
+#include "mozilla/ScopedPrefs.h"
+
+mozilla::LazyLogModule gBCWebProgressLog("BCWebProgress");
 
 namespace mozilla {
 namespace dom {
-
-static mozilla::LazyLogModule gBCWebProgressLog("BCWebProgress");
 
 static nsCString DescribeBrowsingContext(CanonicalBrowsingContext* aContext);
 static nsCString DescribeWebProgress(nsIWebProgress* aWebProgress);
@@ -82,7 +83,7 @@ BrowsingContext* BrowsingContextWebProgress::GetBrowsingContext() {
 }
 
 NS_IMETHODIMP BrowsingContextWebProgress::GetDOMWindow(
-    mozIDOMWindowProxy** aDOMWindow) {
+    mozIDOMWindowProxy** /*aDOMWindow*/) {
   return NS_ERROR_NOT_AVAILABLE;
 }
 
@@ -102,11 +103,13 @@ NS_IMETHODIMP BrowsingContextWebProgress::GetLoadType(uint32_t* aLoadType) {
   return NS_OK;
 }
 
-NS_IMETHODIMP BrowsingContextWebProgress::GetTarget(nsIEventTarget** aTarget) {
+NS_IMETHODIMP BrowsingContextWebProgress::GetTarget(
+    nsIEventTarget** /*aTarget*/) {
   return NS_ERROR_NOT_IMPLEMENTED;
 }
 
-NS_IMETHODIMP BrowsingContextWebProgress::SetTarget(nsIEventTarget* aTarget) {
+NS_IMETHODIMP BrowsingContextWebProgress::SetTarget(
+    nsIEventTarget* /*aTarget*/) {
   return NS_ERROR_NOT_IMPLEMENTED;
 }
 
@@ -162,6 +165,8 @@ already_AddRefed<nsIWebProgress> BrowsingContextWebProgress::ResolveWebProgress(
 void BrowsingContextWebProgress::ContextDiscarded() {
   if (mBounceTrackingState) {
     mBounceTrackingState->OnBrowsingContextDiscarded();
+    // Drop the reference now that the context is discarded.
+    mBounceTrackingState = nullptr;
   }
 
   if (!mIsLoadingDocument) {
@@ -190,6 +195,10 @@ void BrowsingContextWebProgress::ContextReplaced(
 
 already_AddRefed<BounceTrackingState>
 BrowsingContextWebProgress::GetBounceTrackingState() {
+  // Don't return BounceTrackingState for discarded contexts.
+  if (!mCurrentBrowsingContext || mCurrentBrowsingContext->IsDiscarded()) {
+    return nullptr;
+  }
   if (!mBounceTrackingState) {
     nsresult rv = NS_OK;
     mBounceTrackingState = BounceTrackingState::GetOrCreate(this, rv);

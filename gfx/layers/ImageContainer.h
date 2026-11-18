@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -7,32 +5,35 @@
 #ifndef GFX_IMAGECONTAINER_H
 #define GFX_IMAGECONTAINER_H
 
-#include <stdint.h>      // for int32_t, uint32_t, uint8_t, uint64_t
+#include <stdint.h>  // for int32_t, uint32_t, uint8_t, uint64_t
+
 #include "ImageTypes.h"  // for ImageFormat, etc
+#include "MediaData.h"
+#include "TimeUnits.h"
 #include "mozilla/AlreadyAddRefed.h"
-#include "mozilla/Assertions.h"      // for MOZ_ASSERT_HELPER2
+#include "mozilla/Assertions.h"  // for MOZ_ASSERT_HELPER2
+#include "mozilla/Atomics.h"
+#include "mozilla/DataMutex.h"  // for DataMutex
+#include "mozilla/EnumeratedArray.h"
 #include "mozilla/Mutex.h"           // for Mutex
 #include "mozilla/RecursiveMutex.h"  // for RecursiveMutex, etc
 #include "mozilla/ThreadSafeWeakPtr.h"
 #include "mozilla/TimeStamp.h"  // for TimeStamp
+#include "mozilla/TypedEnumBits.h"
+#include "mozilla/UniquePtr.h"
+#include "mozilla/gfx/2D.h"
 #include "mozilla/gfx/Point.h"  // For IntSize
 #include "mozilla/gfx/Rect.h"
-#include "mozilla/gfx/Types.h"           // For ColorDepth
-#include "mozilla/layers/LayersTypes.h"  // for LayersBackend, etc
+#include "mozilla/gfx/Types.h"  // For ColorDepth
 #include "mozilla/layers/CompositorTypes.h"
-#include "mozilla/mozalloc.h"  // for operator delete, etc
-#include "mozilla/TypedEnumBits.h"
-#include "nsDebug.h"          // for NS_ASSERTION
-#include "nsISupportsImpl.h"  // for Image::Release, etc
-#include "nsTArray.h"         // for nsTArray
-#include "nsThreadUtils.h"    // for NS_IsMainThread
-#include "mozilla/Atomics.h"
-#include "mozilla/gfx/2D.h"
-#include "mozilla/EnumeratedArray.h"
-#include "mozilla/UniquePtr.h"
+#include "mozilla/layers/LayersTypes.h"  // for LayersBackend, etc
+#include "mozilla/mozalloc.h"            // for operator delete, etc
+#include "nsDebug.h"                     // for NS_ASSERTION
+#include "nsISupportsImpl.h"             // for Image::Release, etc
+#include "nsProxyRelease.h"              // for NS_ReleaseOnMainThread
+#include "nsTArray.h"                    // for nsTArray
 #include "nsTHashMap.h"
-#include "TimeUnits.h"
-#include "MediaData.h"
+#include "nsThreadUtils.h"  // for NS_IsMainThread
 
 #ifdef XP_WIN
 struct ID3D10Texture2D;
@@ -83,6 +84,7 @@ class GLImage;
 class SharedRGBImage;
 #ifdef MOZ_WIDGET_ANDROID
 class SurfaceTextureImage;
+class AndroidImageReaderImage;
 #elif defined(XP_DARWIN)
 class MacIOSurfaceImage;
 #elif MOZ_WIDGET_GTK
@@ -116,6 +118,10 @@ class Image {
     return gfx::IntRect(GetOrigin().x, GetOrigin().y, GetSize().width,
                         GetSize().height);
   }
+  // Returns the size of the pixel buffer addressed by this image, or Nothing()
+  // if the image is invalid or its picture rect is empty, has a negative
+  // origin, or extends past the buffer.
+  virtual Maybe<gfx::IntSize> GetAddressableSize() const;
   virtual gfx::ColorDepth GetColorDepth() const {
     return gfx::ColorDepth::COLOR_8;
   }
@@ -172,6 +178,9 @@ class Image {
   virtual GPUVideoImage* AsGPUVideoImage() { return nullptr; }
 #ifdef MOZ_WIDGET_ANDROID
   virtual SurfaceTextureImage* AsSurfaceTextureImage() { return nullptr; }
+  virtual AndroidImageReaderImage* AsAndroidImageReaderImage() {
+    return nullptr;
+  }
 #endif
 #ifdef XP_DARWIN
   virtual MacIOSurfaceImage* AsMacIOSurfaceImage() { return nullptr; }
@@ -215,6 +224,46 @@ class Image {
   bool mIsDRM;
 
   static mozilla::Atomic<int32_t> sSerialCounter;
+};
+
+/**
+ * A thread-safe, lazily-populated cache of an Image's rasterized surface.
+ */
+class CachedSurface final {
+ public:
+  CachedSurface() : mSurface("layers::CachedSurface") {}
+
+  ~CachedSurface() {
+    // The surface may have been created off the main thread, but like the rest
+    // of the gfx surface machinery it must be released on the main thread.
+    RefPtr<gfx::DataSourceSurface> surface;
+    {
+      auto guard = mSurface.Lock();
+      surface = guard->forget();
+    }
+    NS_ReleaseOnMainThread("layers::CachedSurface", surface.forget());
+  }
+
+  // Returns the cached surface, or nullptr if nothing has been cached yet.
+  already_AddRefed<gfx::DataSourceSurface> Get() {
+    auto guard = mSurface.Lock();
+    RefPtr<gfx::DataSourceSurface> surface = *guard;
+    return surface.forget();
+  }
+
+  // Stores aSurface unless another thread has already cached one. The caller
+  // may keep using its own surface regardless: both are equivalent
+  // rasterizations of the same image, and keeping the first one avoids dropping
+  // a surface that a concurrent caller may already have handed out.
+  void Set(gfx::DataSourceSurface* aSurface) {
+    auto guard = mSurface.Lock();
+    if (!*guard) {
+      *guard = aSurface;
+    }
+  }
+
+ private:
+  mozilla::DataMutex<RefPtr<gfx::DataSourceSurface>> mSurface;
 };
 
 MOZ_MAKE_ENUM_CLASS_BITWISE_OPERATORS(Image::BuildSdbFlags)
@@ -363,7 +412,8 @@ class ImageContainer final : public SupportsThreadSafeWeakPtr<ImageContainer> {
         media::TimeUnit aMediaTime = media::TimeUnit::Invalid(),
         const CaptureTime& aWebrtcCaptureTime = AsVariant(Nothing()),
         const ReceiveTime& aWebrtcReceiveTime = Nothing(),
-        const RtpTimestamp& aRtpTimestamp = Nothing())
+        const RtpTimestamp& aRtpTimestamp = Nothing(),
+        const Maybe<VideoRotation>& aRotation = Nothing())
         : mImage(aImage),
           mTimeStamp(aTimeStamp),
           mFrameID(aFrameID),
@@ -372,7 +422,8 @@ class ImageContainer final : public SupportsThreadSafeWeakPtr<ImageContainer> {
           mMediaTime(aMediaTime),
           mWebrtcCaptureTime(aWebrtcCaptureTime),
           mWebrtcReceiveTime(aWebrtcReceiveTime),
-          mRtpTimestamp(aRtpTimestamp) {}
+          mRtpTimestamp(aRtpTimestamp),
+          mRotation(aRotation) {}
     Image* mImage;
     TimeStamp mTimeStamp;
     FrameID mFrameID;
@@ -382,6 +433,7 @@ class ImageContainer final : public SupportsThreadSafeWeakPtr<ImageContainer> {
     CaptureTime mWebrtcCaptureTime = AsVariant(Nothing());
     ReceiveTime mWebrtcReceiveTime;
     RtpTimestamp mRtpTimestamp;
+    Maybe<VideoRotation> mRotation;
   };
   /**
    * Set aImages as the list of timestamped to display. The Images must have
@@ -484,6 +536,7 @@ class ImageContainer final : public SupportsThreadSafeWeakPtr<ImageContainer> {
     FrameID mFrameID = 0;
     ProducerID mProducerID = 0;
     bool mComposited = false;
+    Maybe<VideoRotation> mRotation;
   };
   /**
    * Copy the current Image list to aImages.
@@ -773,6 +826,7 @@ struct PlanarYCbCrData {
   gfx::YUVColorSpace mYUVColorSpace = gfx::YUVColorSpace::Default;
   gfx::ColorSpace2 mColorPrimaries = gfx::ColorSpace2::UNKNOWN;
   gfx::TransferFunction mTransferFunction = gfx::TransferFunction::BT709;
+  Maybe<gfx::HDRMetadata> mHDRMetadata;
   gfx::ColorRange mColorRange = gfx::ColorRange::LIMITED;
   gfx::ChromaSubsampling mChromaSubsampling = gfx::ChromaSubsampling::FULL;
 
@@ -785,20 +839,22 @@ struct PlanarYCbCrData {
                            : gfx::IntSize(0, 0);
   }
 
-  // The total uncropped size of data in the Y channel.
-  gfx::IntSize YDataSize() const {
-    return gfx::IntSize(mPictureRect.XMost(), mPictureRect.YMost());
-  }
+  struct PlaneSizes {
+    gfx::IntSize mY;
+    gfx::IntSize mCbCr;
+  };
 
-  // The total uncropped size of data in the Cb/Cr channels.
-  gfx::IntSize CbCrDataSize() const {
-    return mCbCrStride > 0 ? gfx::ChromaSize(YDataSize(), mChromaSubsampling)
-                           : gfx::IntSize(0, 0);
-  }
+  // Returns the uncropped Y and chroma sizes when the picture rect is
+  // non-empty, has a non-negative origin, and both endpoints fit in int32_t,
+  // or Nothing() otherwise. The chroma size is empty when mCbCrStride <= 0,
+  // as for monochrome data. The backing buffers are not validated.
+  Maybe<PlaneSizes> GetPlaneSizes() const;
 
   static Maybe<PlanarYCbCrData> From(const SurfaceDescriptorBuffer&);
   static Maybe<PlanarYCbCrData> From(const VideoData::YCbCrBuffer&);
 };
+
+std::ostream& operator<<(std::ostream& aOut, const PlanarYCbCrData& aData);
 
 /****** Image subtypes for the different formats ******/
 
@@ -818,20 +874,24 @@ struct PlanarYCbCrData {
  *
  * mYSkip, mCbSkip, mCrSkip are added to support various output
  * formats from hardware decoder. They are per-pixel skips in the
- * source image.
+ * source image: the number of samples skipped between adjacent samples
+ * in a row, such as the other channels' samples in an interleaved
+ * format. Planar data has skips of 0. Rows start a stride apart, so
+ * any padding after the row data follows from the stride and the
+ * width, not from the skip.
  *
- * For example when image width is 640, mYStride is 670, mYSkip is 2,
+ * For example when image width is 200, mYStride is 670, mYSkip is 2,
  * the mYChannel buffer looks like:
  *
- * |<----------------------- mYStride ----------------------------->|
- * |<----------------- YDataSize().width ---------->|
- *  0   3   6   9   12  15  18  21                639             669
+ * |<-------------------------- mYStride -------------------------->|
+ * |<----------------- row data ----------------->|
+ *  0  3  6  9  12 15 18 21                    599               669
  * |----------------------------------------------------------------|
- * |Y___Y___Y___Y___Y___Y___Y___Y...                |%%%%%%%%%%%%%%%|
- * |Y___Y___Y___Y___Y___Y___Y___Y...                |%%%%%%%%%%%%%%%|
- * |Y___Y___Y___Y___Y___Y___Y___Y...                |%%%%%%%%%%%%%%%|
- * |            |<->|
- *                mYSkip
+ * |Y__Y__Y__Y__Y__Y__Y__Y__...                Y__|%%%%%%%%%%%%%%%%%|
+ * |Y__Y__Y__Y__Y__Y__Y__Y__...                Y__|%%%%%%%%%%%%%%%%%|
+ * |Y__Y__Y__Y__Y__Y__Y__Y__...                Y__|%%%%%%%%%%%%%%%%%|
+ *   ^^
+ *   mYSkip
  */
 class PlanarYCbCrImage : public Image {
  public:
@@ -877,6 +937,8 @@ class PlanarYCbCrImage : public Image {
 
   gfx::IntPoint GetOrigin() const override { return mOrigin; }
 
+  Maybe<gfx::IntSize> GetAddressableSize() const override;
+
   PlanarYCbCrImage();
 
   virtual size_t SizeOfIncludingThis(MallocSizeOf aMallocSizeOf) const {
@@ -912,7 +974,7 @@ class PlanarYCbCrImage : public Image {
   gfx::IntSize mSize;
   gfx::ColorDepth mColorDepth = gfx::ColorDepth::COLOR_8;
   gfxImageFormat mOffscreenFormat;
-  RefPtr<gfx::DataSourceSurface> mSourceSurface;
+  CachedSurface mSourceSurface;
   uint32_t mBufferSize;
 };
 
@@ -953,6 +1015,7 @@ class NVImage final : public Image {
   // Methods inherited from layers::Image.
   gfx::IntSize GetSize() const override;
   gfx::IntRect GetPictureRect() const override;
+  Maybe<gfx::IntSize> GetAddressableSize() const override;
   already_AddRefed<gfx::SourceSurface> GetAsSourceSurface() override;
   nsresult BuildSurfaceDescriptorBuffer(
       SurfaceDescriptorBuffer& aSdBuffer, BuildSdbFlags aFlags,
@@ -975,7 +1038,7 @@ class NVImage final : public Image {
   uint32_t mBufferSize;
   gfx::IntSize mSize;
   Data mData;
-  RefPtr<gfx::DataSourceSurface> mSourceSurface;
+  CachedSurface mSourceSurface;
 };
 
 /**

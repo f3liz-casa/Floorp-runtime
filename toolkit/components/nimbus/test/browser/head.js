@@ -54,23 +54,19 @@ add_setup(async function () {
       return origAddExperiment(enrollment, recipe);
     });
 
+  registerCleanupFunction(NimbusTestUtils.disableSignatureVerification());
+
   // Ensure the inner callback runs after all other registered cleanup
   // functions. This lets tests use registerCleanupFunction to clean up any
   // stray enrollments.
   registerCleanupFunction(() => {
     registerCleanupFunction(async () => {
-      await NimbusTestUtils.assert.storeIsEmpty(ExperimentAPI.manager.store);
+      await NimbusTestUtils.assert.storeIsEmpty();
       await resetRemoteSettingsCollections();
       sandbox.restore();
     });
   });
 });
-
-async function setupTest() {
-  return async function cleanup() {
-    await NimbusTestUtils.removeStore(ExperimentAPI.manager.store);
-  };
-}
 
 /**
  * Wait for a message from a child process.

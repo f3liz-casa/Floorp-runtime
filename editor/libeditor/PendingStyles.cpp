@@ -1,4 +1,3 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -27,6 +26,11 @@
 #include "nsReadableUtils.h"
 #include "nsString.h"
 #include "nsTArray.h"
+
+// from vs/Windows Kits/10/.../rpcndr.h
+#ifdef small
+#  undef small
+#endif
 
 namespace mozilla {
 
@@ -377,8 +381,8 @@ void PendingStyles::PreserveStyle(nsStaticAtom& aHTMLProperty,
   // outer inline elements of them are computed without these styles.  E.g.,
   // background-color may be applied bottom-half of the text.  Therefore, we
   // need to apply the font styles first.
-  UniquePtr<PendingStyle> style = MakeUnique<PendingStyle>(
-      &aHTMLProperty, aAttribute, aAttributeValueOrCSSValue);
+  auto style = std::make_unique<PendingStyle>(&aHTMLProperty, aAttribute,
+                                              aAttributeValueOrCSSValue);
   if (&aHTMLProperty == nsGkAtoms::font && aAttribute != nsGkAtoms::bgcolor) {
     MOZ_ASSERT(aAttribute == nsGkAtoms::color ||
                aAttribute == nsGkAtoms::face || aAttribute == nsGkAtoms::size);
@@ -415,7 +419,7 @@ void PendingStyles::ClearStyleInternal(
 
   CancelPreservingStyle(aHTMLProperty, aAttribute);
 
-  mClearingStyles.AppendElement(MakeUnique<PendingStyle>(
+  mClearingStyles.AppendElement(std::make_unique<PendingStyle>(
       aHTMLProperty, aAttribute, u""_ns, aSpecifiedStyle));
 }
 

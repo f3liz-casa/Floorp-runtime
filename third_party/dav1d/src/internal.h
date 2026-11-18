@@ -302,7 +302,7 @@ struct Dav1dFrameContext {
         int cdef_buf_sbh;
         int lr_buf_plane_sz[2]; /* (stride*sbh*4) << sb128 if n_tc > 1, else stride*4 */
         int re_sz /* h */;
-        ALIGN(Av1FilterLUT lim_lut, 16);
+        Av1FilterLUT lim_lut;
         ALIGN(uint8_t lvl[8 /* seg_id */][4 /* dir */][8 /* ref */][2 /* is_gmv */], 16);
         int last_sharpness;
         uint8_t *tx_lpf_right_edge[2];
@@ -419,13 +419,7 @@ struct Dav1dTaskContext {
             };
         };
         struct {
-            union {
-                uint8_t levels[32 * 34];
-                struct {
-                    uint8_t pal_order[64][8];
-                    uint8_t pal_ctx[64];
-                };
-            };
+            uint8_t levels[32 * 34];
             union {
                 int16_t ac[32 * 32]; // intra-only
                 uint8_t txtp_map[32 * 32]; // inter-only

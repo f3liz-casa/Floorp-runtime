@@ -1,23 +1,26 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#include "mozilla/StaticPrefs_gfx.h"
+#include <memory>
+#include <unordered_map>
+
+#include "GeckoProfiler.h"
+#include "WebRenderTypes.h"
 #include "gfxUtils.h"
+#include "mozilla/CheckedInt.h"
 #include "mozilla/Mutex.h"
 #include "mozilla/Range.h"
+#include "mozilla/StaticPrefs_gfx.h"
 #include "mozilla/gfx/2D.h"
-#include "mozilla/gfx/RectAbsolute.h"
 #include "mozilla/gfx/Logging.h"
 #include "mozilla/gfx/RecordedEvent.h"
+#include "mozilla/gfx/RectAbsolute.h"
 #include "mozilla/layers/WebRenderDrawEventRecorder.h"
-#include "WebRenderTypes.h"
 #include "webrender_ffi.h"
-#include "GeckoProfiler.h"
-
-#include <unordered_map>
+#ifdef FUZZING
+#  include "prenv.h"
+#endif
 
 #ifdef XP_DARWIN
 #  include "mozilla/gfx/UnscaledFontMac.h"
@@ -66,11 +69,11 @@ struct FontTemplate {
 };
 
 struct FontInstanceData {
-  WrFontKey mFontKey;
+  WrFontKey mFontKey{};
   float mSize;
   Maybe<FontInstanceOptions> mOptions;
   Maybe<FontInstancePlatformOptions> mPlatformOptions;
-  UniquePtr<gfx::FontVariation[]> mVariations;
+  UniquePtr<wr::FontVariation[]> mVariations;
   size_t mNumVariations;
   RefPtr<ScaledFont> mScaledFont;
 
@@ -169,7 +172,8 @@ void AddFontData(WrFontKey aKey, const uint8_t* aData, size_t aSize,
   }
 }
 
-void AddNativeFontHandle(WrFontKey aKey, void* aHandle, uint32_t aIndex) {
+void AddNativeFontHandle(WrFontKey aKey, void* aHandle, size_t aSize,
+                         uint32_t aIndex) {
   StaticMutexAutoLock lock(sFontDataTableLock);
   auto i = sFontDataTable.find(aKey);
   if (i == sFontDataTable.end()) {
@@ -180,12 +184,18 @@ void AddNativeFontHandle(WrFontKey aKey, void* aHandle, uint32_t aIndex) {
 #elif defined(XP_WIN)
     font.mUnscaledFont = new UnscaledFontDWrite(
         reinterpret_cast<IDWriteFontFace*>(aHandle), nullptr);
-#elif defined(ANDROID)
-    font.mUnscaledFont = new UnscaledFontFreeType(
-        reinterpret_cast<const char*>(aHandle), aIndex);
 #else
-    font.mUnscaledFont = new UnscaledFontFontconfig(
-        reinterpret_cast<const char*>(aHandle), aIndex);
+    CheckedUint32 size(aSize);
+    if (!size.isValid()) {
+      return;
+    }
+#  ifdef ANDROID
+    FontType type = FontType::FREETYPE;
+#  else
+    FontType type = FontType::FONTCONFIG;
+#  endif
+    font.mUnscaledFont = Factory::CreateUnscaledFontFromFontDescriptor(
+        type, reinterpret_cast<const uint8_t*>(aHandle), size.value(), aIndex);
 #endif
   }
 }
@@ -202,7 +212,7 @@ void DeleteFontData(WrFontKey aKey) {
 void AddBlobFont(WrFontInstanceKey aInstanceKey, WrFontKey aFontKey,
                  float aSize, const FontInstanceOptions* aOptions,
                  const FontInstancePlatformOptions* aPlatformOptions,
-                 const FontVariation* aVariations, size_t aNumVariations) {
+                 const wr::FontVariation* aVariations, size_t aNumVariations) {
   StaticMutexAutoLock lock(sFontDataTableLock);
   auto i = sBlobFontTable.find(aInstanceKey);
   if (i == sBlobFontTable.end()) {
@@ -217,9 +227,9 @@ void AddBlobFont(WrFontInstanceKey aInstanceKey, WrFontKey aFontKey,
     }
     if (aNumVariations) {
       font.mNumVariations = aNumVariations;
-      font.mVariations.reset(new gfx::FontVariation[aNumVariations]);
+      font.mVariations = std::make_unique<wr::FontVariation[]>(aNumVariations);
       PodCopy(font.mVariations.get(),
-              reinterpret_cast<const gfx::FontVariation*>(aVariations),
+              reinterpret_cast<const wr::FontVariation*>(aVariations),
               aNumVariations);
     }
   }
@@ -260,8 +270,13 @@ static RefPtr<UnscaledFont> GetUnscaledFont(Translator* aTranslator,
       FontType::FONTCONFIG;
 #endif
   // makes a copy of the data
-  RefPtr<NativeFontResource> fontResource = Factory::CreateNativeFontResource(
-      (uint8_t*)data.mData, data.mSize, type, aTranslator->GetFontContext());
+  CheckedUint32 size(data.mSize);
+  RefPtr<NativeFontResource> fontResource;
+  if (size.isValid()) {
+    fontResource =
+        Factory::CreateNativeFontResource((uint8_t*)data.mData, size.value(),
+                                          type, aTranslator->GetFontContext());
+  }
   RefPtr<UnscaledFont> unscaledFont;
   if (!fontResource) {
     gfxDevCrash(LogReason::NativeFontResourceNotFound)
@@ -320,12 +335,22 @@ struct Reader {
   const uint8_t* buf;
   size_t len;
   size_t pos;
+#ifdef FUZZING
+  bool ok = true;
+#endif
 
   Reader(const uint8_t* buf, size_t len) : buf(buf), len(len), pos(0) {}
 
   template <typename T>
   T Read() {
+#ifdef FUZZING
+    if (pos + sizeof(T) > len) {
+      ok = false;
+      return T{};
+    }
+#else
     MOZ_RELEASE_ASSERT(pos + sizeof(T) <= len);
+#endif
     T ret = ConvertFromBytes<T>(buf + pos);
     pos += sizeof(T);
     return ret;
@@ -340,6 +365,7 @@ struct Reader {
 };
 
 static bool Moz2DRenderCallback(const Range<const uint8_t> aBlob,
+                                const mozilla::wr::IdNamespace& aIdNamespace,
                                 gfx::SurfaceFormat aFormat,
                                 const mozilla::wr::DeviceIntRect* aVisibleRect,
                                 const mozilla::wr::LayoutIntRect* aRenderRect,
@@ -348,8 +374,10 @@ static bool Moz2DRenderCallback(const Range<const uint8_t> aBlob,
                                 const mozilla::wr::LayoutIntRect* aDirtyRect,
                                 Range<uint8_t> aOutput) {
   IntSize size(aRenderRect->width(), aRenderRect->height());
-  AUTO_PROFILER_TRACING_MARKER("WebRender", "RasterizeSingleBlob", GRAPHICS);
+  AUTO_PROFILER_MARKER("RasterizeSingleBlob", GRAPHICS);
+#ifndef FUZZING
   MOZ_RELEASE_ASSERT(size.width > 0 && size.height > 0);
+#endif
   if (size.width <= 0 || size.height <= 0) {
     return false;
   }
@@ -383,10 +411,22 @@ static bool Moz2DRenderCallback(const Range<const uint8_t> aBlob,
   // We try hard to not have empty blobs but we can end up with
   // them because of CompositorHitTestInfo and merging.
   size_t footerSize = sizeof(size_t);
+#ifdef FUZZING
+  if (aBlob.length() < footerSize) {
+    return false;
+  }
+#else
   MOZ_RELEASE_ASSERT(aBlob.length() >= footerSize);
+#endif
   size_t indexOffset = ConvertFromBytes<size_t>(aBlob.end().get() - footerSize);
 
+#ifdef FUZZING
+  if (indexOffset > aBlob.length() - footerSize) {
+    return false;
+  }
+#else
   MOZ_RELEASE_ASSERT(indexOffset <= aBlob.length() - footerSize);
+#endif
   Reader reader(aBlob.begin().get() + indexOffset,
                 aBlob.length() - footerSize - indexOffset);
 
@@ -407,21 +447,45 @@ static bool Moz2DRenderCallback(const Range<const uint8_t> aBlob,
   while (reader.pos < reader.len) {
     size_t end = reader.ReadSize();
     size_t extra_end = reader.ReadSize();
+#ifdef FUZZING
+    if (!reader.ok) {
+      return false;
+    }
+    if (offset > end || extra_end < end || extra_end >= aBlob.length()) {
+      return false;
+    }
+#else
     MOZ_RELEASE_ASSERT(offset <= end);
     MOZ_RELEASE_ASSERT(extra_end >= end);
     MOZ_RELEASE_ASSERT(extra_end < aBlob.length());
+#endif
 
     auto combinedBounds = absBounds.Intersect(reader.ReadBounds());
+#ifdef FUZZING
+    if (!reader.ok) {
+      return false;
+    }
+#endif
     if (combinedBounds.IsEmpty()) {
       offset = extra_end;
       continue;
     }
 
-    layers::WebRenderTranslator translator(dt);
+    layers::WebRenderTranslator translator(dt, aIdNamespace);
     Reader fontReader(aBlob.begin().get() + end, extra_end - end);
     size_t count = fontReader.ReadSize();
+#ifdef FUZZING
+    if (!fontReader.ok) {
+      return false;
+    }
+#endif
     for (size_t i = 0; i < count; i++) {
       layers::BlobFont blobFont = fontReader.ReadBlobFont();
+#ifdef FUZZING
+      if (!fontReader.ok) {
+        return false;
+      }
+#endif
       RefPtr<ScaledFont> scaledFont =
           GetScaledFont(&translator, blobFont.mFontInstanceKey);
       translator.AddScaledFont(blobFont.mScaledFontPtr, scaledFont);
@@ -432,7 +496,11 @@ static bool Moz2DRenderCallback(const Range<const uint8_t> aBlob,
         translator.TranslateRecording((char*)blob.begin().get(), blob.length());
     if (!ret) {
       gfxCriticalNote << "Replay failure: " << translator.GetError();
+#ifdef FUZZING
+      return false;
+#else
       MOZ_RELEASE_ASSERT(false);
+#endif
     }
     offset = extra_end;
   }
@@ -463,9 +531,18 @@ static bool Moz2DRenderCallback(const Range<const uint8_t> aBlob,
 }  // namespace wr
 }  // namespace mozilla
 
+#ifdef FUZZING
+mozilla::StaticMutex sFuzzDumpLock;
+static void writehex(const void* bytes, size_t len) {
+  const uint8_t* ptr = static_cast<const uint8_t*>(bytes);
+  while (len--) printf("%02X", *ptr++ & 0xFF);
+}
+#endif
+
 extern "C" {
 
 bool wr_moz2d_render_cb(const mozilla::wr::ByteSlice blob,
+                        const mozilla::wr::IdNamespace aIdNamespace,
                         mozilla::wr::ImageFormat aFormat,
                         const mozilla::wr::LayoutIntRect* aRenderRect,
                         const mozilla::wr::DeviceIntRect* aVisibleRect,
@@ -473,8 +550,41 @@ bool wr_moz2d_render_cb(const mozilla::wr::ByteSlice blob,
                         const mozilla::wr::TileOffset* aTileOffset,
                         const mozilla::wr::LayoutIntRect* aDirtyRect,
                         mozilla::wr::MutByteSlice output) {
+#ifdef FUZZING
+  if (!!PR_GetEnv("MOZ2D_RECORD")) {
+    sFuzzDumpLock.Lock();
+    printf("<dump>");
+    writehex(&aFormat, sizeof(uint8_t));
+    writehex(&aRenderRect->min.x, sizeof(int32_t));
+    writehex(&aRenderRect->min.y, sizeof(int32_t));
+    writehex(&aRenderRect->max.x, sizeof(int32_t));
+    writehex(&aRenderRect->max.y, sizeof(int32_t));
+    writehex(&aVisibleRect->min.x, sizeof(int32_t));
+    writehex(&aVisibleRect->min.y, sizeof(int32_t));
+    writehex(&aVisibleRect->max.x, sizeof(int32_t));
+    writehex(&aVisibleRect->max.y, sizeof(int32_t));
+    writehex(&aTileSize, sizeof(uint16_t));
+    if (aTileSize) {
+      writehex(&aTileOffset->x, sizeof(int32_t));
+      writehex(&aTileOffset->y, sizeof(int32_t));
+    }
+    uint8_t byte = aDirtyRect ? 1 : 0;
+    writehex(&byte, 1);
+    if (byte) {
+      writehex(&aDirtyRect->min.x, sizeof(int32_t));
+      writehex(&aDirtyRect->min.y, sizeof(int32_t));
+      writehex(&aDirtyRect->max.x, sizeof(int32_t));
+      writehex(&aDirtyRect->max.y, sizeof(int32_t));
+    }
+    writehex(&output.len, sizeof(uint32_t));
+    writehex(blob.buffer, blob.len);
+    printf("</dump>\n");
+    sFuzzDumpLock.Unlock();
+  }
+#endif
+
   return mozilla::wr::Moz2DRenderCallback(
-      mozilla::wr::ByteSliceToRange(blob),
+      mozilla::wr::ByteSliceToRange(blob), aIdNamespace,
       mozilla::wr::ImageFormatToSurfaceFormat(aFormat), aVisibleRect,
       aRenderRect, aTileSize, aTileOffset, aDirtyRect,
       mozilla::wr::MutByteSliceToRange(output));

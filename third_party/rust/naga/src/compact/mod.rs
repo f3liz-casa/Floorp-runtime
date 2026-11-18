@@ -1,5 +1,5 @@
-mod expressions;
-mod functions;
+pub(crate) mod expressions;
+pub(crate) mod functions;
 mod handle_set_map;
 mod statements;
 mod types;
@@ -129,6 +129,42 @@ pub fn compact(module: &mut crate::Module, keep_unused: KeepUnused) {
             if let Some(sizes) = e.workgroup_size_overrides {
                 for size in sizes.iter().filter_map(|x| *x) {
                     module_tracer.global_expressions_used.insert(size);
+                }
+            }
+
+            if let Some(task_payload) = e.task_payload {
+                module_tracer.global_variables_used.insert(task_payload);
+            }
+            if let Some(ref mesh_info) = e.mesh_info {
+                module_tracer
+                    .global_variables_used
+                    .insert(mesh_info.output_variable);
+                module_tracer
+                    .types_used
+                    .insert(mesh_info.vertex_output_type);
+                module_tracer
+                    .types_used
+                    .insert(mesh_info.primitive_output_type);
+                if let Some(max_vertices_override) = mesh_info.max_vertices_override {
+                    module_tracer
+                        .global_expressions_used
+                        .insert(max_vertices_override);
+                }
+                if let Some(max_primitives_override) = mesh_info.max_primitives_override {
+                    module_tracer
+                        .global_expressions_used
+                        .insert(max_primitives_override);
+                }
+            }
+            if e.stage == crate::ShaderStage::Task || e.stage == crate::ShaderStage::Mesh {
+                // Mesh shaders always need a u32 type, as it is e.g. the type of some
+                // expressions. We tolerate its absence here because compaction is
+                // infallible, but the module will fail validation.
+                if let Some(u32_type) = module.types.iter().find_map(|tuple| {
+                    (tuple.1.inner == crate::TypeInner::Scalar(crate::Scalar::U32))
+                        .then_some(tuple.0)
+                }) {
+                    module_tracer.types_used.insert(u32_type);
                 }
             }
 
@@ -342,10 +378,28 @@ pub fn compact(module: &mut crate::Module, keep_unused: KeepUnused) {
             &module_map,
             &mut reused_named_expressions,
         );
+        if let Some(ref mut task_payload) = entry.task_payload {
+            module_map.globals.adjust(task_payload);
+        }
+        if let Some(ref mut mesh_info) = entry.mesh_info {
+            module_map.globals.adjust(&mut mesh_info.output_variable);
+            module_map.types.adjust(&mut mesh_info.vertex_output_type);
+            module_map
+                .types
+                .adjust(&mut mesh_info.primitive_output_type);
+            if let Some(ref mut max_vertices_override) = mesh_info.max_vertices_override {
+                module_map.global_expressions.adjust(max_vertices_override);
+            }
+            if let Some(ref mut max_primitives_override) = mesh_info.max_primitives_override {
+                module_map
+                    .global_expressions
+                    .adjust(max_primitives_override);
+            }
+        }
     }
 }
 
-struct ModuleTracer<'module> {
+pub(crate) struct ModuleTracer<'module> {
     module: &'module crate::Module,
 
     /// The subset of functions in `functions_used` that have not yet been
@@ -361,7 +415,7 @@ struct ModuleTracer<'module> {
 }
 
 impl<'module> ModuleTracer<'module> {
-    fn new(module: &'module crate::Module) -> Self {
+    pub(crate) fn new(module: &'module crate::Module) -> Self {
         Self {
             module,
             functions_pending: HandleSet::for_arena(&module.functions),
@@ -471,7 +525,7 @@ impl<'module> ModuleTracer<'module> {
         }
     }
 
-    fn as_type(&mut self) -> types::TypeTracer<'_> {
+    const fn as_type(&mut self) -> types::TypeTracer<'_> {
         types::TypeTracer {
             overrides: &self.module.overrides,
             types_used: &mut self.types_used,
@@ -480,7 +534,7 @@ impl<'module> ModuleTracer<'module> {
         }
     }
 
-    fn as_const_expression(&mut self) -> expressions::ExpressionTracer<'_> {
+    const fn as_const_expression(&mut self) -> expressions::ExpressionTracer<'_> {
         expressions::ExpressionTracer {
             constants: &self.module.constants,
             overrides: &self.module.overrides,

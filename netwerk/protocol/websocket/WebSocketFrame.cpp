@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -9,6 +7,7 @@
 #include "ErrorList.h"
 #include "MainThreadUtils.h"
 #include "chrome/common/ipc_message_utils.h"
+#include "ipc/IPCMessageUtilsSpecializations.h"
 #include "mozilla/Assertions.h"
 #include "nsDOMNavigationTiming.h"
 #include "nsSocketTransportService2.h"
@@ -34,8 +33,6 @@ WebSocketFrame::WebSocketFrame(bool aFinBit, bool aRsvBit1, bool aRsvBit2,
                                uint32_t aMask, const nsCString& aPayload)
     : mData(PR_Now(), aFinBit, aRsvBit1, aRsvBit2, aRsvBit3, aOpCode, aMaskBit,
             aMask, aPayload) {
-  // This could be called on the background thread when socket process is
-  // enabled.
   mData.mTimeStamp = PR_Now();
 }
 

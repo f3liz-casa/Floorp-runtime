@@ -56,6 +56,7 @@ static const struct vp9_token inter_mode_encodings[INTER_MODES] = {
 
 static void write_intra_mode(vpx_writer *w, PREDICTION_MODE mode,
                              const vpx_prob *probs) {
+  assert(!is_inter_mode(mode));
   vp9_write_token(w, vp9_intra_mode_tree, probs, &intra_mode_encodings[mode]);
 }
 
@@ -519,7 +520,7 @@ static void build_tree_distribution(VP9_COMP *cpi, TX_SIZE tx_size,
                                     vp9_coeff_stats *coef_branch_ct,
                                     vp9_coeff_probs_model *coef_probs) {
   vp9_coeff_count *coef_counts = cpi->td.rd_counts.coef_counts[tx_size];
-  unsigned int(*eob_branch_ct)[REF_TYPES][COEF_BANDS][COEFF_CONTEXTS] =
+  unsigned int (*eob_branch_ct)[REF_TYPES][COEF_BANDS][COEFF_CONTEXTS] =
       cpi->common.counts.eob_branch[tx_size];
   int i, j, k, l, m;
 

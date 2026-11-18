@@ -18,7 +18,12 @@ const perfMetadata = {
       perfherder: true,
       perfherder_metrics: [
         // Total time for the entire run (this probe is not process specific)
-        { name: "A11Y_TotalTime", unit: "ms", shouldAlert: false },
+        {
+          name: "A11Y_TotalTime",
+          unit: "ms",
+          alertThreshold: 5.0,
+          shouldAlert: true,
+        },
 
         //////////////// PARENT PROCESS
 
@@ -322,9 +327,9 @@ addAccessibleTask(
   async function testRemoveManySpellingErrors(browser) {
     // populate the container with pseudoelements
     const reorder = waitForEvent(EVENT_REORDER, "container");
-    await invokeContentTask(browser, [], () => {
+    await invokeContentTask(browser, [XLARGE_NODE_COUNT], count => {
       const container = content.document.getElementById("container");
-      for (let i = 0; i < 15000; i++) {
+      for (let i = 0; i < count; i++) {
         const newRow = content.document.createElement("div");
         newRow.setAttribute("id", "data" + i);
         newRow.setAttribute("class", "row");

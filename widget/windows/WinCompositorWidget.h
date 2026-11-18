@@ -1,4 +1,3 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -8,12 +7,11 @@
 
 #include "CompositorWidget.h"
 #include "mozilla/Atomics.h"
+#include "mozilla/Mutex.h"
 #include "mozilla/gfx/CriticalSection.h"
 #include "mozilla/gfx/Point.h"
 #include "mozilla/layers/LayersTypes.h"
-#include "mozilla/Mutex.h"
 #include "mozilla/widget/WinCompositorWindowThread.h"
-#include "FxROutputHandler.h"
 #include "nsIWidget.h"
 
 class nsWindow;
@@ -69,10 +67,6 @@ class WinCompositorWidget : public CompositorWidget {
   void DestroyCompositorWindow();
   void UpdateCompositorWndSizeIfNecessary();
 
-  void RequestFxrOutput();
-  bool HasFxrOutputHandler() const { return !!mFxrHandler; }
-  FxROutputHandler* GetFxrOutputHandler() const { return mFxrHandler.get(); }
-
   virtual bool GetWindowIsFullyOccluded() const = 0;
 
   virtual void UpdateCompositorWnd(const HWND aCompositorWnd,
@@ -96,8 +90,6 @@ class WinCompositorWidget : public CompositorWidget {
   mozilla::Atomic<uint32_t, MemoryOrdering::Relaxed> mTransparencyMode;
   WinCompositorWnds mCompositorWnds;
   LayoutDeviceIntSize mLastCompositorWndSize;
-
-  UniquePtr<FxROutputHandler> mFxrHandler;
 };
 
 }  // namespace mozilla::widget

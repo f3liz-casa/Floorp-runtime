@@ -1,22 +1,16 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set sw=2 ts=8 et tw=80 : */
-
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 // HttpLog.h should generally be included first
-#include "HttpLog.h"
-
 #include "HttpBackgroundChannelChild.h"
 
 #include "HttpChannelChild.h"
+#include "HttpLog.h"
+#include "mozilla/IntegerPrintfMacros.h"
 #include "mozilla/ipc/BackgroundChild.h"
 #include "mozilla/ipc/Endpoint.h"
 #include "mozilla/ipc/PBackgroundChild.h"
-#include "mozilla/IntegerPrintfMacros.h"
-#include "mozilla/net/BackgroundDataBridgeChild.h"
-#include "mozilla/Unused.h"
 #include "nsSocketTransportService2.h"
 
 using mozilla::ipc::BackgroundChild;
@@ -49,22 +43,7 @@ nsresult HttpBackgroundChannelChild::Init(HttpChannelChild* aChannelChild) {
     return NS_ERROR_FAILURE;
   }
 
-  mFirstODASource = ODA_PENDING;
-  mOnStopRequestCalled = false;
   return NS_OK;
-}
-
-void HttpBackgroundChannelChild::CreateDataBridge(
-    Endpoint<PBackgroundDataBridgeChild>&& aEndpoint) {
-  MOZ_ASSERT(OnSocketThread());
-
-  if (!mChannelChild) {
-    return;
-  }
-
-  RefPtr<BackgroundDataBridgeChild> dataBridgeChild =
-      new BackgroundDataBridgeChild(this);
-  aEndpoint.Bind(dataBridgeChild);
 }
 
 void HttpBackgroundChannelChild::OnChannelClosed() {
@@ -84,13 +63,6 @@ void HttpBackgroundChannelChild::OnChannelClosed() {
 
   // Remove pending IPC messages as well.
   mQueuedRunnables.Clear();
-  mConsoleReportTask = nullptr;
-}
-
-bool HttpBackgroundChannelChild::ChannelClosed() {
-  MOZ_ASSERT(OnSocketThread());
-
-  return !mChannelChild;
 }
 
 void HttpBackgroundChannelChild::OnStartRequestReceived(
@@ -197,9 +169,6 @@ IPCResult HttpBackgroundChannelChild::RecvOnStartRequest(
     return IPC_OK();
   }
 
-  mFirstODASource =
-      aArgs.dataFromSocketProcess() ? ODA_FROM_SOCKET : ODA_FROM_PARENT;
-
   mChannelChild->ProcessOnStartRequest(aResponseHead, aUseResponseHead,
                                        aRequestHeaders, aArgs, aAltData,
                                        aOnStartRequestStart);
@@ -212,34 +181,22 @@ IPCResult HttpBackgroundChannelChild::RecvOnStartRequest(
 
 IPCResult HttpBackgroundChannelChild::RecvOnTransportAndData(
     const nsresult& aChannelStatus, const nsresult& aTransportStatus,
-    const uint64_t& aOffset, const uint32_t& aCount, const nsACString& aData,
-    const bool& aDataFromSocketProcess,
+    const uint64_t& aOffset, const nsACString& aData,
     const TimeStamp& aOnDataAvailableStart) {
   RefPtr<HttpBackgroundChannelChild> self = this;
   std::function<void()> callProcessOnTransportAndData =
-      [self, aChannelStatus, aTransportStatus, aOffset, aCount,
-       data = nsCString(aData), aDataFromSocketProcess,
+      [self, aChannelStatus, aTransportStatus, aOffset, data = nsCString(aData),
        aOnDataAvailableStart]() {
-        LOG(
-            ("HttpBackgroundChannelChild::RecvOnTransportAndData [this=%p, "
-             "aDataFromSocketProcess=%d, mFirstODASource=%d]\n",
-             self.get(), aDataFromSocketProcess, self->mFirstODASource));
+        LOG(("HttpBackgroundChannelChild::RecvOnTransportAndData [this=%p]\n",
+             self.get()));
         MOZ_ASSERT(OnSocketThread());
 
         if (NS_WARN_IF(!self->mChannelChild)) {
           return;
         }
 
-        if (((self->mFirstODASource == ODA_FROM_SOCKET) &&
-             !aDataFromSocketProcess) ||
-            ((self->mFirstODASource == ODA_FROM_PARENT) &&
-             aDataFromSocketProcess)) {
-          return;
-        }
-
-        // The HttpTransactionChild in socket process may not know that this
-        // request is cancelled or failed due to the IPC delay. In this case, we
-        // should not forward ODA to HttpChannelChild.
+        // The request may have been cancelled or failed due to the IPC delay.
+        // In this case, we should not forward ODA to HttpChannelChild.
         nsresult channelStatus;
         self->mChannelChild->GetStatus(&channelStatus);
         if (NS_FAILED(channelStatus)) {
@@ -247,15 +204,13 @@ IPCResult HttpBackgroundChannelChild::RecvOnTransportAndData(
         }
 
         self->mChannelChild->ProcessOnTransportAndData(
-            aChannelStatus, aTransportStatus, aOffset, aCount, data,
+            aChannelStatus, aTransportStatus, aOffset, data,
             aOnDataAvailableStart);
       };
 
-  // Bug 1641336: Race only happens if the data is from socket process.
   if (IsWaitingOnStartRequest()) {
-    LOG(("  > pending until OnStartRequest [offset=%" PRIu64 " count=%" PRIu32
-         "]\n",
-         aOffset, aCount));
+    LOG(("  > pending until OnStartRequest [offset=%" PRIu64 " count=%zu]\n",
+         aOffset, aData.Length()));
 
     mQueuedRunnables.AppendElement(NS_NewRunnableFunction(
         "HttpBackgroundChannelChild::RecvOnTransportAndData",
@@ -272,11 +227,8 @@ IPCResult HttpBackgroundChannelChild::RecvOnStopRequest(
     const TimeStamp& aLastActiveTabOptHit,
     const nsHttpHeaderArray& aResponseTrailers,
     nsTArray<ConsoleReportCollected>&& aConsoleReports,
-    const bool& aFromSocketProcess, const TimeStamp& aOnStopRequestStart) {
-  LOG(
-      ("HttpBackgroundChannelChild::RecvOnStopRequest [this=%p, "
-       "aFromSocketProcess=%d, mFirstODASource=%d]\n",
-       this, aFromSocketProcess, mFirstODASource));
+    const TimeStamp& aOnStopRequestStart) {
+  LOG(("HttpBackgroundChannelChild::RecvOnStopRequest [this=%p]\n", this));
   MOZ_ASSERT(gSocketTransportService);
   MOZ_ASSERT(gSocketTransportService->IsOnCurrentThreadInfallible());
 
@@ -300,77 +252,19 @@ IPCResult HttpBackgroundChannelChild::RecvOnStopRequest(
         "HttpBackgroundChannelChild::RecvOnStopRequest",
         [self, aChannelStatus, aTiming, aLastActiveTabOptHit, aResponseTrailers,
          consoleReports = CopyableTArray{std::move(aConsoleReports)},
-         aFromSocketProcess, aOnStopRequestStart]() mutable {
+         aOnStopRequestStart]() mutable {
           self->RecvOnStopRequest(aChannelStatus, aTiming, aLastActiveTabOptHit,
                                   aResponseTrailers, std::move(consoleReports),
-                                  aFromSocketProcess, aOnStopRequestStart);
+                                  aOnStopRequestStart);
         });
 
     mQueuedRunnables.AppendElement(task.forget());
     return IPC_OK();
   }
 
-  if (mFirstODASource != ODA_FROM_SOCKET) {
-    if (!aFromSocketProcess) {
-      mOnStopRequestCalled = true;
-      mChannelChild->ProcessOnStopRequest(
-          aChannelStatus, aTiming, aResponseTrailers,
-          std::move(aConsoleReports), false, aOnStopRequestStart);
-    }
-    return IPC_OK();
-  }
-
-  MOZ_ASSERT(mFirstODASource == ODA_FROM_SOCKET);
-
-  if (aFromSocketProcess) {
-    MOZ_ASSERT(!mOnStopRequestCalled);
-    mOnStopRequestCalled = true;
-    mChannelChild->ProcessOnStopRequest(
-        aChannelStatus, aTiming, aResponseTrailers, std::move(aConsoleReports),
-        true, aOnStopRequestStart);
-    if (mConsoleReportTask) {
-      mConsoleReportTask();
-      mConsoleReportTask = nullptr;
-    }
-    return IPC_OK();
-  }
-
-  return IPC_OK();
-}
-
-IPCResult HttpBackgroundChannelChild::RecvOnConsoleReport(
-    nsTArray<ConsoleReportCollected>&& aConsoleReports) {
-  LOG(("HttpBackgroundChannelChild::RecvOnConsoleReport [this=%p]\n", this));
-  MOZ_ASSERT(mFirstODASource == ODA_FROM_SOCKET);
-  MOZ_ASSERT(gSocketTransportService);
-  MOZ_ASSERT(gSocketTransportService->IsOnCurrentThreadInfallible());
-
-  if (IsWaitingOnStartRequest()) {
-    LOG(("  > pending until OnStartRequest\n"));
-
-    RefPtr<HttpBackgroundChannelChild> self = this;
-
-    nsCOMPtr<nsIRunnable> task = NS_NewRunnableFunction(
-        "HttpBackgroundChannelChild::RecvOnConsoleReport",
-        [self, consoleReports =
-                   CopyableTArray{std::move(aConsoleReports)}]() mutable {
-          self->RecvOnConsoleReport(std::move(consoleReports));
-        });
-
-    mQueuedRunnables.AppendElement(task.forget());
-    return IPC_OK();
-  }
-
-  if (mOnStopRequestCalled) {
-    mChannelChild->ProcessOnConsoleReport(std::move(aConsoleReports));
-  } else {
-    RefPtr<HttpBackgroundChannelChild> self = this;
-    mConsoleReportTask = [self, consoleReports = CopyableTArray{
-                                    std::move(aConsoleReports)}]() mutable {
-      self->mChannelChild->ProcessOnConsoleReport(std::move(consoleReports));
-    };
-  }
-
+  mChannelChild->ProcessOnStopRequest(
+      aChannelStatus, aTiming, aResponseTrailers, std::move(aConsoleReports),
+      aOnStopRequestStart);
   return IPC_OK();
 }
 
@@ -459,34 +353,19 @@ IPCResult HttpBackgroundChannelChild::RecvDetachStreamFilters() {
 }
 
 void HttpBackgroundChannelChild::ActorDestroy(ActorDestroyReason aWhy) {
-  LOG(("HttpBackgroundChannelChild::ActorDestroy[this=%p]\n", this));
+  LOG(("HttpBackgroundChannelChild::ActorDestroy[this=%p reason=%d]\n", this,
+       static_cast<int>(aWhy)));
   // This function might be called during shutdown phase, so OnSocketThread()
   // might return false even on STS thread. Use IsOnCurrentThreadInfallible()
   // to get correct information.
   MOZ_ASSERT(gSocketTransportService);
   MOZ_ASSERT(gSocketTransportService->IsOnCurrentThreadInfallible());
 
-  // Ensure all IPC messages received before ActorDestroy can be
-  // handled correctly. If there is any pending IPC message, destroyed
-  // mChannelChild until those messages are flushed.
-  // If background channel is not closed by normal IPDL actor deletion,
-  // remove the HttpChannelChild reference and notify background channel
-  // destroyed immediately.
-  if (aWhy == Deletion && !mQueuedRunnables.IsEmpty()) {
-    LOG(("  > pending until queued messages are flushed\n"));
-    RefPtr<HttpBackgroundChannelChild> self = this;
-    mQueuedRunnables.AppendElement(NS_NewRunnableFunction(
-        "HttpBackgroundChannelChild::ActorDestroy", [self]() {
-          MOZ_ASSERT(OnSocketThread());
-          RefPtr<HttpChannelChild> channelChild =
-              std::move(self->mChannelChild);
-
-          if (channelChild) {
-            channelChild->OnBackgroundChildDestroyed(self);
-          }
-        }));
-    return;
-  }
+  // Drop any IPC runnables that were queued waiting for OnStartRequest. After
+  // ActorDestroy returns, no further Recv* calls fire to drain the queue, and
+  // each entry holds a RefPtr<self> via its capture; without clearing them
+  // the actor (and everything it transitively owns) is kept alive forever.
+  mQueuedRunnables.Clear();
 
   if (mChannelChild) {
     RefPtr<HttpChannelChild> channelChild = std::move(mChannelChild);

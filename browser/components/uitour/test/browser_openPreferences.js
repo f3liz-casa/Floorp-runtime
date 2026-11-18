@@ -19,7 +19,7 @@ add_UITour_task(async function test_openInvalidPreferences() {
   await gContentAPI.openPreferences(999);
 
   try {
-    await waitForConditionPromise(() => {
+    await TestUtils.waitForCondition(() => {
       return gBrowser.selectedBrowser.currentURI.spec.startsWith(
         "about:preferences"
       );
@@ -57,7 +57,7 @@ add_UITour_task(async function test_openPrivacyReports() {
   let doc = gBrowser.selectedBrowser.contentDocument;
   is(
     doc.location.hash,
-    "#privacy",
+    "#permissionsData",
     "Should not display the reports subcategory in the location hash."
   );
   await TestUtils.waitForCondition(

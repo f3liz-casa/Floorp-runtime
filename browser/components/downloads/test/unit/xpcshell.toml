@@ -1,4 +1,7 @@
 [DEFAULT]
+run-if = [
+  "os != 'android'",
+]
 head = "head.js"
 firefox-appdir = "browser"
 
@@ -7,5 +10,7 @@ firefox-appdir = "browser"
 ["test_DownloadsCommon_getMimeInfo.js"]
 
 ["test_DownloadsCommon_isFileOfType.js"]
+
+["test_DownloadsViewUI_getCommandNamesFrom.js"]
 
 ["test_DownloadsViewableInternally.js"]

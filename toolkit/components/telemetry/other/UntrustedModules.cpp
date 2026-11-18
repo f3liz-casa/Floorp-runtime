@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -11,7 +9,6 @@
 #include "mozilla/glean/GleanPings.h"
 #include "mozilla/glean/TelemetryMetrics.h"
 #include "mozilla/MozPromise.h"
-#include "mozilla/net/SocketProcessParent.h"
 #include "mozilla/ipc/UtilityProcessParent.h"
 #include "mozilla/ipc/UtilityProcessManager.h"
 #include "mozilla/RDDChild.h"
@@ -138,11 +135,6 @@ MultiGetUntrustedModulesData::GetUntrustedModuleLoadEvents() {
   dom::ContentParent::GetAll(contentParents);
   for (auto&& contentParent : contentParents) {
     AddPending(contentParent->SendGetUntrustedModulesData());
-  }
-
-  if (RefPtr<net::SocketProcessParent> socketActor =
-          net::SocketProcessParent::GetSingleton()) {
-    AddPending(socketActor->SendGetUntrustedModulesData());
   }
 
   if (RDDProcessManager* rddMgr = RDDProcessManager::Get()) {
@@ -289,6 +281,7 @@ nsresult MultiGetUntrustedModulesData::SubmitToGlean() {
         .processType = Some(processType),
         .sanitizationFailures = Some(data.mSanitizationFailures),
         .trustTestFailures = Some(data.mTrustTestFailures),
+        .rejectedFiles = Some(data.mRejectedFiles),
     };
 
     nsCString strPid(processType);
@@ -297,7 +290,7 @@ nsresult MultiGetUntrustedModulesData::SubmitToGlean() {
     process.processName = Some(strPid);
 
     nsCString elapsed;
-    elapsed.AppendFloat(data.mElapsed.ToSecondsSigDigits());
+    elapsed.AppendFloat(data.mElapsed.ToSeconds());
     process.elapsed = Some(elapsed);
 
     if (data.mXULLoadDurationMS.isSome()) {

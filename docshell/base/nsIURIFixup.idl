@@ -1,5 +1,4 @@
-/* -*- Mode: IDL; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 4 -*-
- *
+/*
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -39,16 +38,28 @@ interface nsIURIFixupInfo : nsISupports
   attribute nsIURI fixedURI;
 
   /**
-   * The name of the keyword search provider used to provide a keyword search;
+   * The id of the search engine used to provide a keyword search;
    * empty string if no keyword search was done.
    */
-  attribute AString keywordProviderName;
+  attribute AString keywordProviderId;
 
   /**
    * The keyword as used for the search (post trimming etc.)
    * empty string if no keyword search was done.
    */
   attribute AString keywordAsSent;
+
+  /**
+   * The partner code used in the keyword search submission;
+   * empty string if no keyword search was done or there is no partner code.
+   */
+  attribute AString keywordPartnerCode;
+
+  /**
+   * The telemetry id of the keyword search submission;
+   * empty string if no keyword search was done.
+   */
+  attribute AString keywordTelemetryId;
 
   /**
    * Whether there was no protocol at all and we had to add one in the first place.
@@ -74,7 +85,7 @@ interface nsIURIFixupInfo : nsISupports
   attribute AUTF8String originalInput;
 
   /**
-   * The POST data to submit with the returned URI (see nsISearchSubmission).
+   * The POST data to submit with the returned URI.
    */
   attribute nsIInputStream postData;
 };
@@ -113,6 +124,14 @@ interface nsIURIFixup : nsISupports
      * Fix common scheme typos.
      */
     const unsigned long FIXUP_FLAG_FIX_SCHEME_TYPOS = 8;
+
+    /**
+     * Like FIXUP_FLAG_ALLOW_KEYWORD_LOOKUP, but does the lookup even when
+     * keyword.enabled is false. It decides only what becomes of a string that
+     * doesn't parse as a URI; one that parses is still a URI. For a search bar,
+     * which searches such a string whatever the pref says.
+     */
+    const unsigned long FIXUP_FLAG_FORCE_KEYWORD_LOOKUP = 16;
 
     /**
      * Tries to converts the specified string into a URI, first attempting

@@ -4,7 +4,7 @@
  *
  *   FreeType internal cache interface (specification).
  *
- * Copyright (C) 2000-2024 by
+ * Copyright (C) 2000-2026 by
  * David Turner, Robert Wilhelm, and Werner Lemberg.
  *
  * This file is part of the FreeType project, and may only be used,
@@ -61,7 +61,7 @@ FT_BEGIN_HEADER
     FTC_Node        link;         /* used for hashing                    */
     FT_Offset       hash;         /* used for hashing too                */
     FT_UShort       cache_index;  /* index of cache the node belongs to  */
-    FT_Short        ref_count;    /* reference count for this node       */
+    FT_UShort       ref_count;    /* reference count for this node       */
 
   } FTC_NodeRec;
 

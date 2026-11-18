@@ -2,22 +2,20 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef HttpTransactionShell_h__
-#define HttpTransactionShell_h__
-
-#include <functional>
+#ifndef HttpTransactionShell_h_
+#define HttpTransactionShell_h_
 
 #include "TimingStruct.h"
-#include "mozilla/Maybe.h"
+#include "mozilla/RefPtr.h"
 #include "mozilla/UniquePtr.h"
+#include "nsHttpRequestHead.h"
 #include "nsIClassOfService.h"
 #include "nsIEarlyHintObserver.h"
 #include "nsILoadInfo.h"
 #include "nsISupports.h"
+#include "nsITRRSkipReason.h"
 #include "nsITransportSecurityInfo.h"
 #include "nsInputStreamPump.h"
-#include "nsHttpRequestHead.h"
-#include "nsITRRSkipReason.h"
 
 class nsIEventTraget;
 class nsIInputStream;
@@ -29,12 +27,11 @@ class nsITransportEventSink;
 namespace mozilla::net {
 
 enum HttpTrafficCategory : uint8_t;
-class HttpTransactionParent;
 class nsHttpConnectionInfo;
 class nsHttpHeaderArray;
 class nsHttpRequestHead;
 class nsHttpTransaction;
-class TransactionObserverResult;
+class ProxyConnectResponseHead;
 union NetAddr;
 
 enum class LNAPermission {
@@ -60,9 +57,6 @@ class HttpTransactionShell : public nsISupports {
  public:
   NS_INLINE_DECL_STATIC_IID(HTTPTRANSACTIONSHELL_IID)
 
-  using TransactionObserverFunc =
-      std::function<void(TransactionObserverResult&&)>;
-
   //
   // called to initialize the transaction
   //
@@ -74,8 +68,6 @@ class HttpTransactionShell : public nsISupports {
   //        the request header struct
   // @param reqBody
   //        the request body (POST or PUT data stream)
-  // @param reqBodyIncludesHeaders
-  //        fun stuff to support NPAPI plugins.
   // @param target
   //        the dispatch target were notifications should be sent.
   // @param callbacks
@@ -86,13 +78,11 @@ class HttpTransactionShell : public nsISupports {
   [[nodiscard]] nsresult virtual Init(
       uint32_t caps, nsHttpConnectionInfo* connInfo,
       nsHttpRequestHead* reqHeaders, nsIInputStream* reqBody,
-      uint64_t reqContentLength, bool reqBodyIncludesHeaders,
-      nsIEventTarget* consumerTarget, nsIInterfaceRequestor* callbacks,
-      nsITransportEventSink* eventsink, uint64_t browserId,
-      HttpTrafficCategory trafficCategory, nsIRequestContext* requestContext,
-      ClassOfService classOfService, uint32_t initialRwin,
-      bool responseTimeoutEnabled, uint64_t channelId,
-      TransactionObserverFunc&& transactionObserver,
+      uint64_t reqContentLength, nsIEventTarget* consumerTarget,
+      nsIInterfaceRequestor* callbacks, nsITransportEventSink* eventsink,
+      uint64_t browserId, HttpTrafficCategory trafficCategory,
+      nsIRequestContext* requestContext, ClassOfService classOfService,
+      uint32_t initialRwin, bool responseTimeoutEnabled, uint64_t channelId,
       nsILoadInfo::IPAddressSpace aParentIPAddressSpace,
       const LNAPerms& aLnaPermissionStatus) = 0;
 
@@ -135,6 +125,8 @@ class HttpTransactionShell : public nsISupports {
   virtual mozilla::TimeStamp GetConnectEnd() = 0;
   virtual mozilla::TimeStamp GetRequestStart() = 0;
   virtual mozilla::TimeStamp GetResponseStart() = 0;
+  virtual mozilla::TimeStamp GetFirstInterimResponseStart() = 0;
+  virtual mozilla::TimeStamp GetFinalResponseHeadersStart() = 0;
   virtual mozilla::TimeStamp GetResponseEnd() = 0;
 
   virtual void SetDomainLookupStart(mozilla::TimeStamp timeStamp,
@@ -162,11 +154,9 @@ class HttpTransactionShell : public nsISupports {
 
   virtual bool ProxyConnectFailed() = 0;
   virtual int32_t GetProxyConnectResponseCode() = 0;
-
-  virtual bool DataSentToChildProcess() = 0;
+  virtual RefPtr<ProxyConnectResponseHead> GetProxyConnectResponseHead() = 0;
 
   virtual nsHttpTransaction* AsHttpTransaction() = 0;
-  virtual HttpTransactionParent* AsHttpTransactionParent() = 0;
 
   virtual bool TakeRestartedState() = 0;
   virtual uint32_t HTTPSSVCReceivedStage() = 0;
@@ -179,22 +169,23 @@ class HttpTransactionShell : public nsISupports {
 
   virtual void SetIsForWebTransport(bool aIsForWebTransport) = 0;
 
-  virtual TimeStamp GetOnStartRequestStartTime() const { return TimeStamp(); }
-  virtual TimeStamp GetDataAvailableStartTime() const { return TimeStamp(); }
-  virtual TimeStamp GetOnStopRequestStartTime() const { return TimeStamp(); }
+  // Marks the transaction as uploading a non-replayable streaming body
+  // (e.g. a JS ReadableStream). Such a body has no length known up front,
+  // and retry or restart logic must not attempt to re-send it.
+  virtual void SetRequestBodyIsStreaming(bool aIsStreaming) = 0;
+
+  virtual void SetIsTRRTransaction() {}
 };
 
 #define NS_DECL_HTTPTRANSACTIONSHELL                                           \
   virtual nsresult Init(                                                       \
       uint32_t caps, nsHttpConnectionInfo* connInfo,                           \
       nsHttpRequestHead* reqHeaders, nsIInputStream* reqBody,                  \
-      uint64_t reqContentLength, bool reqBodyIncludesHeaders,                  \
-      nsIEventTarget* consumerTarget, nsIInterfaceRequestor* callbacks,        \
-      nsITransportEventSink* eventsink, uint64_t browserId,                    \
-      HttpTrafficCategory trafficCategory, nsIRequestContext* requestContext,  \
-      ClassOfService classOfService, uint32_t initialRwin,                     \
-      bool responseTimeoutEnabled, uint64_t channelId,                         \
-      TransactionObserverFunc&& transactionObserver,                           \
+      uint64_t reqContentLength, nsIEventTarget* consumerTarget,               \
+      nsIInterfaceRequestor* callbacks, nsITransportEventSink* eventsink,      \
+      uint64_t browserId, HttpTrafficCategory trafficCategory,                 \
+      nsIRequestContext* requestContext, ClassOfService classOfService,        \
+      uint32_t initialRwin, bool responseTimeoutEnabled, uint64_t channelId,   \
       nsILoadInfo::IPAddressSpace aParentIPAddressSpace,                       \
       const LNAPerms& aLnaPermissionStatus) override;                          \
   virtual nsresult AsyncRead(nsIStreamListener* listener, nsIRequest** pump)   \
@@ -217,6 +208,8 @@ class HttpTransactionShell : public nsISupports {
   virtual mozilla::TimeStamp GetConnectEnd() override;                         \
   virtual mozilla::TimeStamp GetRequestStart() override;                       \
   virtual mozilla::TimeStamp GetResponseStart() override;                      \
+  virtual mozilla::TimeStamp GetFirstInterimResponseStart() override;          \
+  virtual mozilla::TimeStamp GetFinalResponseHeadersStart() override;          \
   virtual mozilla::TimeStamp GetResponseEnd() override;                        \
   virtual void SetDomainLookupStart(mozilla::TimeStamp timeStamp,              \
                                     bool onlyIfNull = false) override;         \
@@ -233,9 +226,9 @@ class HttpTransactionShell : public nsISupports {
   virtual void SetH2WSConnRefTaken() override;                                 \
   virtual bool ProxyConnectFailed() override;                                  \
   virtual int32_t GetProxyConnectResponseCode() override;                      \
-  virtual bool DataSentToChildProcess() override;                              \
+  virtual RefPtr<ProxyConnectResponseHead> GetProxyConnectResponseHead()       \
+      override;                                                                \
   virtual nsHttpTransaction* AsHttpTransaction() override;                     \
-  virtual HttpTransactionParent* AsHttpTransactionParent() override;           \
   virtual bool TakeRestartedState() override;                                  \
   virtual uint32_t HTTPSSVCReceivedStage() override;                           \
   virtual bool Http2Disabled() const override;                                 \
@@ -247,4 +240,4 @@ class HttpTransactionShell : public nsISupports {
 
 }  // namespace mozilla::net
 
-#endif  // HttpTransactionShell_h__
+#endif  // HttpTransactionShell_h_

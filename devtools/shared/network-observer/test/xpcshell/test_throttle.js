@@ -10,17 +10,17 @@ const { NetworkThrottleManager } = ChromeUtils.importESModule(
 );
 const nsIScriptableInputStream = Ci.nsIScriptableInputStream;
 
-function TestStreamListener() {
-  this.state = "initial";
-}
-TestStreamListener.prototype = {
+class TestStreamListener {
+  constructor() {
+    this.state = "initial";
+  }
   onStartRequest() {
     this.setState("start");
-  },
+  }
 
   onStopRequest() {
     this.setState("stop");
-  },
+  }
 
   onDataAvailable(request, inputStream, offset, count) {
     const sin = Cc["@mozilla.org/scriptableinputstream;1"].createInstance(
@@ -29,7 +29,7 @@ TestStreamListener.prototype = {
     sin.init(inputStream);
     this.data = sin.read(count);
     this.setState("data");
-  },
+  }
 
   setState(state) {
     this.state = state;
@@ -37,7 +37,7 @@ TestStreamListener.prototype = {
       this._deferred.resolve(state);
       this._deferred = null;
     }
-  },
+  }
 
   onStateChanged() {
     if (!this._deferred) {
@@ -49,34 +49,34 @@ TestStreamListener.prototype = {
       this._deferred = { resolve, reject, promise };
     }
     return this._deferred.promise;
-  },
-};
-
-function TestChannel() {
-  this.state = "initial";
-  this.testListener = new TestStreamListener();
-  this._throttleQueue = null;
+  }
 }
-TestChannel.prototype = {
+
+class TestChannel {
+  constructor() {
+    this.state = "initial";
+    this.testListener = new TestStreamListener();
+    this._throttleQueue = null;
+  }
   QueryInterface() {
     return this;
-  },
+  }
 
   get throttleQueue() {
     return this._throttleQueue;
-  },
+  }
 
   set throttleQueue(q) {
     this._throttleQueue = q;
     this.state = "throttled";
-  },
+  }
 
   setNewListener(listener) {
     this.listener = listener;
     this.state = "listener";
     return this.testListener;
-  },
-};
+  }
+}
 
 add_task(async function () {
   const throttler = new NetworkThrottleManager({
@@ -159,4 +159,63 @@ add_task(async function () {
   listener.onStopRequest(null, null);
   newState = await onChange;
   equal(newState, "stop", "onStateChanged reported");
+});
+
+add_task(async function test_destroy_unthrottles_all_requests() {
+  const throttler = new NetworkThrottleManager({
+    latencyMean: 100000,
+    latencyMax: 100000,
+    downloadBPSMean: 1,
+    downloadBPSMax: 1,
+    uploadBPSMean: 0,
+    uploadBPSMax: 0,
+  });
+
+  const TEST_INPUT = "hi bob";
+  const createInputStream = () => {
+    const storageStream = Cc["@mozilla.org/storagestream;1"].createInstance(
+      Ci.nsIStorageStream
+    );
+    storageStream.init(512, 512);
+    const out = storageStream.getOutputStream(0);
+    out.write(TEST_INPUT, TEST_INPUT.length);
+    out.close();
+    return storageStream.newInputStream(0);
+  };
+
+  const bufferedChannel = new TestChannel();
+  const bufferedListener = throttler.manage(bufferedChannel);
+  bufferedListener.onStartRequest(null);
+  bufferedListener.onDataAvailable(null, createInputStream(), 0, 6);
+
+  const startedChannel = new TestChannel();
+  const startedListener = throttler.manage(startedChannel);
+  startedListener.onStartRequest(null);
+
+  const notStartedChannel = new TestChannel();
+  const notStartedListener = throttler.manage(notStartedChannel);
+
+  equal(bufferedChannel.testListener.state, "start", "data is buffered");
+
+  throttler.destroy();
+  equal(
+    bufferedChannel.testListener.data,
+    TEST_INPUT,
+    "buffered data is sent on destroy"
+  );
+
+  startedListener.onDataAvailable(null, createInputStream(), 0, 6);
+  equal(
+    startedChannel.testListener.data,
+    TEST_INPUT,
+    "data is sent immediately for a request started before destroy"
+  );
+
+  notStartedListener.onStartRequest(null);
+  notStartedListener.onDataAvailable(null, createInputStream(), 0, 6);
+  equal(
+    notStartedChannel.testListener.data,
+    TEST_INPUT,
+    "data is sent immediately for a request started after destroy"
+  );
 });

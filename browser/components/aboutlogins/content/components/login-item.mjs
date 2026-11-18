@@ -23,6 +23,7 @@ export default class LoginItem extends HTMLElement {
     this._error = null;
     this._copyUsernameTimeoutId = 0;
     this._copyPasswordTimeoutId = 0;
+    this._perDeviceSyncEnabled = false;
   }
 
   connectedCallback() {
@@ -209,7 +210,11 @@ export default class LoginItem extends HTMLElement {
     if (!this._breachAlert.hidden) {
       const breachDetails = this._breachesMap.get(this._login.guid);
       const breachTimestamp = new Date(breachDetails.BreachDate ?? 0).getTime();
-      this.#updateBreachAlert(this._login.origin, breachTimestamp);
+      this.#updateBreachAlert(
+        this._login.origin,
+        breachTimestamp,
+        breachDetails.Name
+      );
     }
     this._vulnerableAlert.hidden =
       !this._vulnerableLoginsMap ||
@@ -311,6 +316,29 @@ export default class LoginItem extends HTMLElement {
       "_vulnerableLoginsMap",
       vulnerableLoginsByLoginGUID
     );
+  }
+
+  setChangePasswordURLs(changePasswordURLsByLoginGUID) {
+    this._internalSetMonitorData(
+      "_changePasswordURLsMap",
+      changePasswordURLsByLoginGUID
+    );
+  }
+
+  updateChangePasswordURLs(changePasswordURLsByLoginGUID) {
+    this._internalUpdateMonitorData(
+      "_changePasswordURLsMap",
+      changePasswordURLsByLoginGUID
+    );
+  }
+
+  updateSyncState(syncState) {
+    this._perDeviceSyncEnabled = !!(
+      syncState.loggedIn &&
+      syncState.passwordSyncEnabled &&
+      syncState.perDeviceSyncEnabled
+    );
+    this._deleteButton.perDeviceSyncEnabled = this._perDeviceSyncEnabled;
   }
 
   _internalSetMonitorData(internalMemberName, mapByLoginGUID) {
@@ -667,6 +695,7 @@ export default class LoginItem extends HTMLElement {
   /**
    * Helper to show the "Discard changes" confirmation dialog and delay the
    * received event after confirmation.
+   *
    * @param {object} event The event to be delayed.
    * @param {object} login The login to be shown on confirmation.
    */
@@ -691,6 +720,7 @@ export default class LoginItem extends HTMLElement {
 
   /**
    * Shows a confirmation dialog.
+   *
    * @param {string} type The type of confirmation dialog to display.
    * @param {boolean} onConfirm Optional, the function to execute when the confirm button is clicked.
    */
@@ -699,12 +729,19 @@ export default class LoginItem extends HTMLElement {
     let options;
     switch (type) {
       case "delete": {
-        options = {
-          title: "about-logins-confirm-delete-dialog-title",
-          message: "about-logins-confirm-delete-dialog-message",
-          confirmButtonLabel:
-            "about-logins-confirm-remove-dialog-confirm-button",
-        };
+        options = this._perDeviceSyncEnabled
+          ? {
+              title: "about-logins-confirm-delete-dialog-title2",
+              message: "about-logins-confirm-delete-dialog-message2",
+              confirmButtonLabel:
+                "about-logins-confirm-delete-dialog-confirm-button",
+            }
+          : {
+              title: "about-logins-confirm-delete-dialog-title",
+              message: "about-logins-confirm-delete-dialog-message",
+              confirmButtonLabel:
+                "about-logins-confirm-remove-dialog-confirm-button",
+            };
         break;
       }
       case "discard-changes": {
@@ -969,13 +1006,6 @@ export default class LoginItem extends HTMLElement {
   }
 
   _updatePasswordRevealState() {
-    if (
-      window.AboutLoginsUtils &&
-      window.AboutLoginsUtils.passwordRevealVisible === false
-    ) {
-      this._revealCheckbox.hidden = true;
-    }
-
     let { checked } = this._revealCheckbox;
     let inputType = checked ? "text" : "password";
     this._passwordInput.type = inputType;
@@ -986,6 +1016,13 @@ export default class LoginItem extends HTMLElement {
     } else {
       this._passwordDisplayInput.setAttribute("tabindex", -1);
       this._revealCheckbox.hidden = false;
+    }
+
+    if (
+      window.AboutLoginsUtils &&
+      window.AboutLoginsUtils.passwordRevealVisible === false
+    ) {
+      this._revealCheckbox.hidden = true;
     }
 
     // Swap which <input> is in the document depending on whether we need the
@@ -1019,13 +1056,18 @@ export default class LoginItem extends HTMLElement {
   // in favour of updating the props themselves.
   // NOTE: Adding this method here instead of login-alert because this file will be
   // refactored soon.
-  #updateBreachAlert(hostname, date) {
+  #updateBreachAlert(hostname, date, breachName) {
     this._breachAlert.hostname = hostname;
     this._breachAlert.date = date;
+    this._breachAlert.breachName = breachName || "";
+    this._breachAlert.changePasswordURL =
+      this._changePasswordURLsMap?.get(this._login.guid) || null;
   }
 
   #updateVulnerablePasswordAlert(hostname) {
     this._vulnerableAlert.hostname = hostname;
+    this._vulnerableAlert.changePasswordURL =
+      this._changePasswordURLsMap?.get(this._login.guid) || null;
   }
 
   #updatePasswordMessage() {

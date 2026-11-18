@@ -61,6 +61,7 @@ class Metric:
         data_sensitivity: Optional[List[str]] = None,
         defined_in: Optional[Dict] = None,
         telemetry_mirror: Optional[str] = None,
+        in_session: bool = False,
         _config: Optional[Dict[str, Any]] = None,
         _validated: bool = False,
     ):
@@ -98,6 +99,8 @@ class Metric:
         self.defined_in = defined_in
         if telemetry_mirror is not None:
             self.telemetry_mirror = telemetry_mirror
+        if not hasattr(self, "in_session"):
+            self.in_session = in_session
 
         # _validated indicates whether this metric has already been jsonschema
         # validated (but not any of the Python-level validation).
@@ -162,7 +165,9 @@ class Metric:
             **metric_info,
         )
 
-    def serialize(self) -> Dict[str, util.JSONType]:
+    def serialize(
+        self, rename_fields: Optional[Dict[str, str]] = None
+    ) -> Dict[str, util.JSONType]:
         """
         Serialize the metric back to JSON object model.
         """
@@ -175,6 +180,13 @@ class Metric:
                 d[key] = sorted(list(val))
             if isinstance(val, list) and len(val) and isinstance(val[0], enum.Enum):
                 d[key] = [x.name for x in val]
+
+        if rename_fields is not None:
+            for key, val in rename_fields.items():
+                if key in d:
+                    d[val] = d[key]
+                    del d[key]
+
         del d["name"]
         del d["category"]
         if not d["unit"]:
@@ -312,6 +324,7 @@ class Event(Metric):
 
     def __init__(self, *args, **kwargs):
         self.extra_keys = kwargs.pop("extra_keys", {})
+        self.in_session = kwargs.pop("in_session", True)
         self.validate_extra_keys(self.extra_keys, kwargs.get("_config", {}))
         super().__init__(*args, **kwargs)
         self._generate_enums = [("allowed_extra_keys_with_types", "Extra")]
@@ -395,11 +408,13 @@ class Labeled(Metric):
             self.labels = None
         super().__init__(*args, **kwargs)
 
-    def serialize(self) -> Dict[str, util.JSONType]:
+    def serialize(
+        self, rename_fields: Optional[Dict[str, str]] = None
+    ) -> Dict[str, util.JSONType]:
         """
         Serialize the metric back to JSON object model.
         """
-        d = super().serialize()
+        d = super().serialize(rename_fields=rename_fields)
         d["labels"] = self.ordered_labels
         del d["ordered_labels"]
         return d
@@ -462,8 +477,10 @@ class Object(Metric):
         self._generate_structure = self.validate_structure(structure)
         super().__init__(*args, **kwargs)
 
-    ALLOWED_TOPLEVEL = {"type", "properties", "items"}
+    ALLOWED_TOPLEVEL = {"type", "properties", "items", "description", "oneOf"}
     ALLOWED_TYPES = ["object", "array", "number", "string", "boolean"]
+    ALLOWED_SUBTYPES = ["number", "string", "boolean"]
+    ALLOWED_ONEOF_FIELDS = {"description", "type"}
 
     @staticmethod
     def _validate_substructure(structure):
@@ -474,6 +491,34 @@ class Object(Metric):
             raise ValueError(
                 f"Found additional fields: {extra}. Only allowed: {allowed}"
             )
+
+        if "oneOf" in structure:
+            subtypes = structure.pop("oneOf")
+            structure["type"] = "oneof"
+            structure["subtypes"] = []
+            if not subtypes:
+                raise ValueError("List of types required.")
+
+            for typ in subtypes:
+                extra = set(typ.keys()) - Object.ALLOWED_ONEOF_FIELDS
+                if extra:
+                    extra = ", ".join(extra)
+                    allowed = ", ".join(Object.ALLOWED_ONEOF_FIELDS)
+                    raise ValueError(
+                        f"Found additional fields: {extra}. Only allowed: {allowed}"
+                    )
+
+                ty = typ.get("type")
+                if not ty:
+                    raise ValueError("element of `oneOf` list must contain a type")
+
+                if ty not in Object.ALLOWED_SUBTYPES:
+                    raise ValueError(
+                        f"invalid `type` in `oneOf` list. found: {ty}, only allowed: {Object.ALLOWED_SUBTYPES}"
+                    )
+
+                structure["subtypes"].append(ty)
+            return structure
 
         if "type" not in structure:
             raise ValueError(
@@ -570,16 +615,17 @@ class DualLabeledCounter(Metric):
             self.categories = None
         super().__init__(*args, **kwargs)
 
-    def serialize(self) -> Dict[str, util.JSONType]:
+    def serialize(
+        self, rename_fields: Optional[Dict[str, str]] = None
+    ) -> Dict[str, util.JSONType]:
         """
         Serialize the metric back to JSON object model.
         """
-        d = super().serialize()
+        d = super().serialize(rename_fields=rename_fields)
         d["keys"] = self.ordered_keys
         d["categories"] = self.ordered_categories
         del d["ordered_keys"]
         del d["ordered_categories"]
-        del d["dual_labeled"]
         return d
 
 

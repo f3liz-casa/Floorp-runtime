@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -37,7 +35,13 @@ class BlockReflowState {
           mHasLineAdjacentToTop(false),
           mBlockNeedsFloatManager(false),
           mIsLineLayoutEmpty(false),
-          mCanHaveOverflowMarkers(false) {}
+          mCanHaveOverflowMarkers(false),
+          mShouldApplyTextBoxTrimStart(false),
+          mShouldApplyTextBoxTrimAtBlockEnd(false),
+          mShouldApplyTextBoxTrimAtFragmentEnd(false),
+          mShouldApplyLineClampAuto(false),
+          mIsCurrentLineAdjacentToBStart(false),
+          mShouldTrimInheritedBEndMargins(false) {}
 
     // Set in the BlockReflowState constructor when reflowing a "block margin
     // root" frame (i.e. a frame with any of the NS_BLOCK_BFC flag set, for
@@ -87,6 +91,29 @@ class BlockReflowState {
 
     // Set when we need text-overflow or -webkit-line-clamp processing.
     bool mCanHaveOverflowMarkers : 1;
+
+    // Set when the block or one of its ancestors requests text-box-trim
+    // on the trim-start/trim-end side and should be applied to the
+    // first/last formatted line of this block/fragment. See the corresponding
+    // ReflowInput::Flags for additional details about the two trim-end flags.
+    bool mShouldApplyTextBoxTrimStart : 1;
+    bool mShouldApplyTextBoxTrimAtBlockEnd : 1;
+    bool mShouldApplyTextBoxTrimAtFragmentEnd : 1;
+
+    // Automatic line-clamp relies on certain dimensions, such as margins and
+    // BStart being available, so it should only be applied after the first
+    // reflow.
+    bool mShouldApplyLineClampAuto : 1;
+
+    // Whether the current line can still adjoin the block-start content edge.
+    // Initially true only for the first fragment; cleared when a preceding
+    // line is nonempty or has clearance.
+    bool mIsCurrentLineAdjacentToBStart : 1;
+
+    // Trim child margins at the block-end edge because they collapse through
+    // this block to an ancestor's trimmed edge. Enabled after a completed
+    // untrimmed reflow confirms that collapse.
+    bool mShouldTrimInheritedBEndMargins : 1;
   };
 
  public:
@@ -96,6 +123,27 @@ class BlockReflowState {
                    const nscoord aConsumedBSize,
                    const nscoord aEffectiveContentBoxBSize,
                    const nscoord aInset = 0);
+
+  /**
+   * Computes which of the block-axis margins of aBlock's block-level child on
+   * aLine are discarded by `margin-trim`, in the form of the InitFlags to build
+   * the child's ReflowInput with.
+   *
+   * aTrimChildBStartMargins and aTrimChildBEndMargins indicate which content
+   * edges aBlock's style trims.
+   *
+   * aIsAdjacentToBStart says whether aLine's margins adjoin aBlock's
+   * block-start content edge; the block-end adjacency is determined here.
+   *
+   * https://drafts.csswg.org/css-box-4/#margin-trim-block
+   */
+  static ReflowInput::InitFlags ComputeChildMarginTrim(
+      nsBlockFrame* aBlock, bool aTrimChildBStartMargins,
+      bool aTrimChildBEndMargins, nsLineList::iterator aLine,
+      bool aIsAdjacentToBStart);
+
+  bool ShouldTrimChildBStartMargins() const;
+  bool ShouldTrimChildBEndMargins() const;
 
   /**
    * Unshifts coords, restores availableBSize to reality.
@@ -329,7 +377,7 @@ class BlockReflowState {
    * pushed floats list. aFloatCont should not be on any child list when making
    * this call. Its next-in-flows will be removed from mBlock using StealFrame()
    * before being added to mBlock's pushed floats list. All appended frames will
-   * be marked NS_FRAME_IS_PUSHED_FLOAT.
+   * be marked NS_FRAME_IS_PUSHED_OUT_OF_FLOW.
    */
   void AppendPushedFloatChain(nsIFrame* aFloatCont);
 
@@ -398,6 +446,12 @@ class BlockReflowState {
   const nscoord mMinLineHeight;
 
   int32_t mLineNumber;
+
+  // Signals that this block should be reflowed again in order to apply
+  // text-box-trim on the trim-end side of a specific line. Used by
+  // fragmented boxes when a line overflows into another fragment, and
+  // text-box-trim may affect which lines fit in the current fragment.
+  bool mNeedsTextBoxTrimAtFragmentEndRetry = false;
 
   Flags mFlags;
 

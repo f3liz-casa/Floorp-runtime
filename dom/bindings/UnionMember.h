@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -22,13 +20,13 @@ template <class T>
 class UnionMember {
   AlignedStorage2<T> mStorage;
 
-  // Copy construction can't be supported because C++ requires that any enclosed
-  // T be initialized in a way C++ knows about -- that is, by |new| or similar.
-  UnionMember(const UnionMember&) = delete;
-
  public:
   UnionMember() = default;
   ~UnionMember() = default;
+
+  // Copy construction can't be supported because C++ requires that any enclosed
+  // T be initialized in a way C++ knows about -- that is, by |new| or similar.
+  UnionMember(const UnionMember&) = delete;
 
   template <typename... Args>
   T& SetValue(Args&&... args) {

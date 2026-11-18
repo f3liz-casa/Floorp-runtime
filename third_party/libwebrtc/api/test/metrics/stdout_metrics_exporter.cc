@@ -9,16 +9,19 @@
  */
 #include "api/test/metrics/stdout_metrics_exporter.h"
 
-#include <stdio.h>
-
 #include <cmath>
 #include <cstdint>
+#include <cstdio>
 #include <optional>
+#include <span>
 #include <string>
 
-#include "api/array_view.h"
+#include "absl/flags/flag.h"
+#include "absl/strings/str_cat.h"
 #include "api/test/metrics/metric.h"
+#include "rtc_base/numerics/safe_conversions.h"
 #include "rtc_base/strings/string_builder.h"
+#include "test/test_flags.h"
 
 namespace webrtc {
 namespace test {
@@ -32,6 +35,10 @@ int64_t IntegralPart(double value) {
 void AppendWithPrecision(double value,
                          int digits_after_comma,
                          StringBuilder& out) {
+  if (!IsValueInRangeForNumericType<int64_t>(value)) {
+    out << value;
+    return;
+  }
   int64_t multiplier = std::lround(std::pow(10, digits_after_comma));
   int64_t integral_part = IntegralPart(value);
   double decimal_part = std::abs(value) - integral_part;
@@ -67,11 +74,27 @@ void AppendWithPrecision(double value,
   }
 }
 
+std::string TestCaseAndMetadata(const Metric& metric) {
+  if (absl::GetFlag(FLAGS_isolated_script_test_perf_output).empty()) {
+    if (metric.metric_metadata.contains("video_stream")) {
+      return absl::StrCat(metric.test_case, "/",
+                          metric.metric_metadata.at("video_stream"), "_",
+                          metric.metric_metadata.at("sender"), "_",
+                          metric.metric_metadata.at("receiver"));
+    }
+    if (metric.metric_metadata.contains("peer")) {
+      return absl::StrCat(metric.test_case, "/",
+                          metric.metric_metadata.at("peer"));
+    }
+  }
+  return metric.test_case;
+}
+
 }  // namespace
 
-StdoutMetricsExporter::StdoutMetricsExporter() : output_(stdout) {}
+StdoutMetricsExporter::StdoutMetricsExporter(FILE* output) : output_(output) {}
 
-bool StdoutMetricsExporter::Export(ArrayView<const Metric> metrics) {
+bool StdoutMetricsExporter::Export(std::span<const Metric> metrics) {
   for (const Metric& metric : metrics) {
     PrintMetric(metric);
   }
@@ -80,7 +103,8 @@ bool StdoutMetricsExporter::Export(ArrayView<const Metric> metrics) {
 
 void StdoutMetricsExporter::PrintMetric(const Metric& metric) {
   StringBuilder value_stream;
-  value_stream << metric.test_case << " / " << metric.name << "= {mean=";
+  value_stream << TestCaseAndMetadata(metric) << " / " << metric.name
+               << "= {mean=";
   if (metric.stats.mean.has_value()) {
     AppendWithPrecision(*metric.stats.mean, 8, value_stream);
   } else {

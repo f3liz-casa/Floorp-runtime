@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -7,11 +5,11 @@
 #include "RenderTextureHost.h"
 
 #include "GLContext.h"
+#include "RenderThread.h"
+#include "mozilla/ProfilerMarkers.h"
 #include "mozilla/layers/CompositorThread.h"
 #include "mozilla/layers/TextureHost.h"
-#include "mozilla/ProfilerMarkers.h"
 #include "mozilla/webrender/RenderThread.h"
-#include "RenderThread.h"
 
 namespace mozilla {
 namespace wr {
@@ -29,7 +27,7 @@ void ActivateBindAndTexParameteri(gl::GLContext* aGL, GLenum aActiveTexture,
 
 void RenderTextureHostUsageInfo::OnVideoPresent(int aFrameId,
                                                 uint32_t aDurationMs) {
-  MOZ_ASSERT(RenderThread::IsInRenderThread());
+  MOZ_RELEASE_ASSERT(RenderThread::IsInRenderThread());
 
   const auto maxPresentWaitDurationMs = 2;
   const auto maxSlowPresentCount = 5;
@@ -57,7 +55,7 @@ void RenderTextureHostUsageInfo::OnVideoPresent(int aFrameId,
 
 void RenderTextureHostUsageInfo::OnCompositorEndFrame(int aFrameId,
                                                       uint32_t aDurationMs) {
-  MOZ_ASSERT(RenderThread::IsInRenderThread());
+  MOZ_RELEASE_ASSERT(RenderThread::IsInRenderThread());
 
   const auto maxCommitWaitDurationMs = 20;
   const auto maxSlowCommitCount = 5;
@@ -89,8 +87,11 @@ RenderTextureHost::RenderTextureHost() : mIsFromDRMSource(false) {
 }
 
 RenderTextureHost::~RenderTextureHost() {
-  MOZ_ASSERT(RenderThread::IsInRenderThread());
+  MOZ_RELEASE_ASSERT(RenderThread::IsInRenderThread());
   MOZ_COUNT_DTOR(RenderTextureHost);
+  if (mDestroyedCallback) {
+    mDestroyedCallback();
+  }
 }
 
 wr::WrExternalImage RenderTextureHost::Lock(uint8_t aChannelIndex,
@@ -116,7 +117,7 @@ void RenderTextureHost::Destroy() {
 RefPtr<RenderTextureHostUsageInfo> RenderTextureHost::GetOrMergeUsageInfo(
     const MutexAutoLock& aProofOfMapLock,
     RefPtr<RenderTextureHostUsageInfo> aUsageInfo) {
-  MOZ_ASSERT(layers::CompositorThreadHolder::IsInCompositorThread());
+  MOZ_RELEASE_ASSERT(layers::CompositorThreadHolder::IsInCompositorThread());
 
   if (mRenderTextureHostUsageInfo && aUsageInfo) {
     if (mRenderTextureHostUsageInfo == aUsageInfo) {
@@ -162,7 +163,7 @@ RefPtr<RenderTextureHostUsageInfo> RenderTextureHost::GetOrMergeUsageInfo(
 
 RefPtr<RenderTextureHostUsageInfo> RenderTextureHost::GetTextureHostUsageInfo(
     const MutexAutoLock& aProofOfMapLock) {
-  MOZ_ASSERT(RenderThread::IsInRenderThread());
+  MOZ_RELEASE_ASSERT(RenderThread::IsInRenderThread());
 
   return mRenderTextureHostUsageInfo;
 }

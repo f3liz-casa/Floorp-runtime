@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 4 -*- */
-/* vim: set ts=8 sts=4 et sw=4 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -220,7 +218,7 @@ bool MiniTransceiver::Recv(UniquePtr<IPC::Message>& aMsg) {
   mState = STATE_RECEIVING;
 #endif
 
-  UniquePtr<char[]> databuf = MakeUnique<char[]>(kMaxDataSize);
+  auto databuf = std::make_unique<char[]>(kMaxDataSize);
   uint32_t msgsz = 0;
   int all_fds[kMaxNumFds];
   unsigned num_all_fds = 0;
@@ -231,7 +229,7 @@ bool MiniTransceiver::Recv(UniquePtr<IPC::Message>& aMsg) {
   }
 
   // Create Message from databuf & all_fds.
-  UniquePtr<IPC::Message> msg = MakeUnique<IPC::Message>(databuf.get(), msgsz);
+  auto msg = std::make_unique<IPC::Message>(databuf.get(), msgsz);
   nsTArray<UniqueFileHandle> handles(num_all_fds);
   for (unsigned i = 0; i < num_all_fds; ++i) {
     handles.AppendElement(UniqueFileHandle(all_fds[i]));

@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
@@ -91,7 +89,7 @@ class WindowsDllNopSpacePatcher final : public WindowsDllPatcherBase<VMPolicy> {
       mozilla::UniquePtr<wchar_t[]> data;
       if (!status) {
         // Allocate the buffer and query for the actual data
-        data = mozilla::MakeUnique<wchar_t[]>((numBytes + 1) / sizeof(wchar_t));
+        data = std::make_unique<wchar_t[]>((numBytes + 1) / sizeof(wchar_t));
         status = RegQueryValueExW(hkey, kAppInitDLLs, nullptr, nullptr,
                                   (LPBYTE)data.get(), &numBytes);
       }

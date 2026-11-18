@@ -1,6 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim:expandtab:shiftwidth=2:tabstop=2:
- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -11,13 +8,12 @@
 #include "nsAppRunner.h"
 #include "mozilla/XREAppData.h"
 #include "mozilla/Base64.h"
-#include "mozilla/ScopeExit.h"
 #include "mozilla/GUniquePtr.h"
 #include "MainThreadUtils.h"
 #include "nsPrintfCString.h"
 #include "nsGTKToolkit.h"
 
-#include <dlfcn.h>
+#include <dbus/dbus.h>
 
 using namespace mozilla;
 
@@ -51,8 +47,8 @@ bool nsDBusRemoteServer::HandleOpenURL(const gchar* aInterfaceName,
   return true;
 }
 
-static void HandleMethodCall(GDBusConnection* aConnection, const gchar* aSender,
-                             const gchar* aObjectPath,
+static void HandleMethodCall(GDBusConnection* /*aConnection*/,
+                             const gchar* /*aSender*/, const gchar* aObjectPath,
                              const gchar* aInterfaceName,
                              const gchar* aMethodName, GVariant* aParameters,
                              GDBusMethodInvocation* aInvocation,
@@ -102,9 +98,9 @@ static void HandleMethodCall(GDBusConnection* aConnection, const gchar* aSender,
   g_dbus_method_invocation_return_value(aInvocation, nullptr);
 }
 
-static GVariant* HandleGetProperty(GDBusConnection* aConnection,
-                                   const gchar* aSender,
-                                   const gchar* aObjectPath,
+static GVariant* HandleGetProperty(GDBusConnection* /*aConnection*/,
+                                   const gchar* /*aSender*/,
+                                   const gchar* /*aObjectPath*/,
                                    const gchar* aInterfaceName,
                                    const gchar* aPropertyName, GError** aError,
                                    gpointer aUserData) {
@@ -115,12 +111,13 @@ static GVariant* HandleGetProperty(GDBusConnection* aConnection,
   return nullptr;
 }
 
-static gboolean HandleSetProperty(GDBusConnection* aConnection,
-                                  const gchar* aSender,
-                                  const gchar* aObjectPath,
+static gboolean HandleSetProperty(GDBusConnection* /*aConnection*/,
+                                  const gchar* /*aSender*/,
+                                  const gchar* /*aObjectPath*/,
                                   const gchar* aInterfaceName,
-                                  const gchar* aPropertyName, GVariant* aValue,
-                                  GError** aError, gpointer aUserData) {
+                                  const gchar* aPropertyName,
+                                  GVariant* /*aValue*/, GError** aError,
+                                  gpointer aUserData) {
   MOZ_ASSERT(aUserData);
   MOZ_ASSERT(NS_IsMainThread());
   g_set_error(aError, G_IO_ERROR, G_IO_ERROR_FAILED,
@@ -133,11 +130,8 @@ static const GDBusInterfaceVTable gInterfaceVTable = {
 
 void nsDBusRemoteServer::OnBusAcquired(GDBusConnection* aConnection) {
   mPathName = nsPrintfCString("/org/mozilla/%s/Remote", mAppName.get());
-  static auto sDBusValidatePathName = (bool (*)(const char*, DBusError*))dlsym(
-      RTLD_DEFAULT, "dbus_validate_path");
-  if (!sDBusValidatePathName ||
-      !sDBusValidatePathName(mPathName.get(), nullptr)) {
-    g_warning("nsDBusRemoteServer: dbus_validate_path() failed!");
+  if (!g_variant_is_object_path(mPathName.get())) {
+    g_warning("nsDBusRemoteServer: object path is not valid");
     return;
   }
 
@@ -163,31 +157,13 @@ void nsDBusRemoteServer::OnBusAcquired(GDBusConnection* aConnection) {
         error->message);
     return;
   }
-}
 
-void nsDBusRemoteServer::OnNameAcquired(GDBusConnection* aConnection) {
+  // The object can receive calls from now on, whether or not we get the bus
+  // name, so keep the connection until Shutdown() unregisters it.
   mConnection = aConnection;
 }
 
-void nsDBusRemoteServer::OnNameLost(GDBusConnection* aConnection) {
-  mConnection = nullptr;
-  if (!mRegistrationId) {
-    return;
-  }
-
-  if (g_dbus_connection_unregister_object(aConnection, mRegistrationId)) {
-    mRegistrationId = 0;
-  } else {
-    // Note: Most code examples in the internet probably dont't even check the
-    // result here, but
-    // according to the spec it _can_ return false.
-    g_warning(
-        "nsDBusRemoteServer: Unable to unregister root object from within "
-        "onNameLost!");
-  }
-}
-
-nsresult nsDBusRemoteServer::Startup(const char* aAppName,
+nsresult nsDBusRemoteServer::Startup(const char* /*aAppName*/,
                                      const char* aProfileName) {
   MOZ_DIAGNOSTIC_ASSERT(!mDBusID);
 
@@ -212,20 +188,12 @@ nsresult nsDBusRemoteServer::Startup(const char* aAppName,
     busName.Truncate(DBUS_MAXIMUM_NAME_LENGTH);
   }
 
-  static auto sDBusValidateBusName = (bool (*)(const char*, DBusError*))dlsym(
-      RTLD_DEFAULT, "dbus_validate_bus_name");
-  if (!sDBusValidateBusName) {
-    g_warning("nsDBusRemoteServer: dbus_validate_bus_name() is missing!");
-    return NS_ERROR_FAILURE;
-  }
-
   // We don't have a valid busName yet - try to create a default one.
-  if (!sDBusValidateBusName(busName.get(), nullptr)) {
+  if (!g_dbus_is_name(busName.get())) {
     busName = nsPrintfCString("org.mozilla.%s.%s", mAppName.get(), "default");
-    if (!sDBusValidateBusName(busName.get(), nullptr)) {
-      // We failed completelly to get a valid bus name - just quit
-      // to prevent crash at dbus_bus_request_name().
-      g_warning("nsDBusRemoteServer: dbus_validate_bus_name() failed!");
+    if (!g_dbus_is_name(busName.get())) {
+      // We failed completely to get a valid bus name - just quit.
+      g_warning("nsDBusRemoteServer: couldn't get a valid bus name!");
       return NS_ERROR_FAILURE;
     }
   }
@@ -236,15 +204,8 @@ nsresult nsDBusRemoteServer::Startup(const char* aAppName,
          gpointer aUserData) -> void {
         static_cast<nsDBusRemoteServer*>(aUserData)->OnBusAcquired(aConnection);
       },
-      [](GDBusConnection* aConnection, const gchar*,
-         gpointer aUserData) -> void {
-        static_cast<nsDBusRemoteServer*>(aUserData)->OnNameAcquired(
-            aConnection);
-      },
-      [](GDBusConnection* aConnection, const gchar*,
-         gpointer aUserData) -> void {
-        static_cast<nsDBusRemoteServer*>(aUserData)->OnNameLost(aConnection);
-      },
+      nullptr, /* name_acquired_handler */
+      nullptr, /* name_lost_handler */
       this, nullptr);
   if (!mDBusID) {
     g_warning("nsDBusRemoteServer: g_bus_own_name() failed!");
@@ -255,7 +216,16 @@ nsresult nsDBusRemoteServer::Startup(const char* aAppName,
 }
 
 void nsDBusRemoteServer::Shutdown() {
-  OnNameLost(mConnection);
+  if (mRegistrationId) {
+    if (g_dbus_connection_unregister_object(mConnection, mRegistrationId)) {
+      mRegistrationId = 0;
+    } else {
+      // Note: Most code examples in the internet probably don't even check
+      // the result here, but according to the spec it _can_ return false.
+      g_warning("nsDBusRemoteServer: Unable to unregister root object!");
+    }
+  }
+  mConnection = nullptr;
   if (mDBusID) {
     g_bus_unown_name(mDBusID);
   }

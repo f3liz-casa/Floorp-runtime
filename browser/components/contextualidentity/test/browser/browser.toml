@@ -19,6 +19,8 @@ prefs = [
 
 ["browser_broadcastchannel.js"]
 
+["browser_container_definitions_in_sync.js"]
+
 ["browser_count_and_remove.js"]
 
 ["browser_eme.js"]
@@ -33,22 +35,18 @@ prefs = [
 https_first_disabled = true
 
 ["browser_forgetaboutsite.js"]
-skip-if = ["true"] # Bug 1924563
+skip-if = [
+  "true", # Bug 1924563
+]
 
 ["browser_guessusercontext.js"]
 
 ["browser_imageCache.js"]
 
 ["browser_middleClick.js"]
-skip-if = ["os == 'mac' && os_version == '11.20' && arch == 'aarch64'"] # Disabled due to bleedover with other tests when run in regular suites; passes in "failures" jobs
 tags = "bleedover"
 
 ["browser_newtabButton.js"]
-skip-if = [
-  "os == 'mac' && os_version == '10.15' && processor == 'x86_64' && opt", # Bug 1775706
-  "os == 'mac' && os_version == '11.20' && arch == 'aarch64' && opt", # Bug 1775706
-  "os == 'mac' && os_version == '15.30' && arch == 'aarch64' && opt", # Bug 1775706
-]
 
 ["browser_originattrs_reopenin.js"]
 https_first_disabled = true
@@ -57,10 +55,6 @@ https_first_disabled = true
 
 ["browser_reopenIn.js"]
 https_first_disabled = true
-skip-if = [
-  "os == 'mac' && os_version == '11.20' && arch == 'aarch64'", # Bug 1783491
-  "os == 'mac' && os_version == '15.30' && arch == 'aarch64'", # Bug 1783491
-]
 
 ["browser_restore_getCookiesWithOriginAttributes.js"]
 
@@ -72,16 +66,35 @@ support-files = [
 
 ["browser_serviceworkers.js"]
 
+["browser_siteContainer_eligibility.js"]
+support-files = ["head_siteContainer.js"]
+
+["browser_siteContainer_redirect.js"]
+support-files = [
+  "head_siteContainer.js",
+  "siteContainer_redirect.sjs",
+]
+
+["browser_siteContainer_retarget.js"]
+support-files = ["head_siteContainer.js"]
+
+["browser_siteContainer_serviceworker.js"]
+support-files = [
+  "head_siteContainer.js",
+  "siteContainer_sw_intercept.js",
+]
+
+["browser_siteContainer_webext.js"]
+support-files = ["head_siteContainer.js"]
+
 ["browser_switchTab_across_user_context.js"]
 
 ["browser_tab_color_update.js"]
 
 ["browser_telemetry.js"]
 https_first_disabled = true
-skip-if = [
-  "os == 'mac' && os_version == '11.20' && arch == 'aarch64'", # Bug 1783491
-  "os == 'mac' && os_version == '15.30' && arch == 'aarch64'", # Bug 1783491
-]
+
+["browser_urlbarContainerMenu.js"]
 
 ["browser_usercontext.js"]
 
@@ -89,11 +102,6 @@ skip-if = [
 
 ["browser_usercontextid_tabdrop.js"]
 https_first_disabled = true
-skip-if = [
-  "os == 'mac' && os_version == '10.15' && processor == 'x86_64'", # Intermittent failure - bug 1268276
-  "os == 'mac' && os_version == '11.20' && arch == 'aarch64'", # Intermittent failure - bug 1268276
-  "os == 'win'", # Intermittent failure - bug 1268276
-]
 
 ["browser_windowName.js"]
 tags = "openwindow"

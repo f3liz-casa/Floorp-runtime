@@ -1,6 +1,4 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- * vim: set ts=8 sts=2 et sw=2 tw=80:
- * This Source Code Form is subject to the terms of the Mozilla Public
+/* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
@@ -14,6 +12,7 @@
 #include "js/ColumnNumber.h"  // JS::TaggedColumnNumberOneOrigin
 #include "js/HashTable.h"
 #include "js/Stack.h"
+#include "vm/JSScript.h"
 #include "vm/SavedFrame.h"
 
 namespace JS {
@@ -188,15 +187,10 @@ class SavedStacks {
 
   size_t sizeOfExcludingThis(mozilla::MallocSizeOf mallocSizeOf);
 
-  // An alloction metadata builder that marks cells with the JavaScript stack
-  // at which they were allocated.
-  struct MetadataBuilder : public AllocationMetadataBuilder {
-    MetadataBuilder() = default;
-    virtual JSObject* build(JSContext* cx, HandleObject obj,
-                            AutoEnterOOMUnsafeRegion& oomUnsafe) const override;
-  };
-
-  static const MetadataBuilder metadataBuilder;
+  // Return the allocation metadata for a new object: the JavaScript stack at
+  // which it was allocated, or nullptr if this allocation wasn't sampled.
+  static SavedFrame* buildAllocationMetadata(
+      JSContext* cx, HandleObject obj, AutoEnterOOMUnsafeRegion& oomUnsafe);
 
  private:
   SavedFrame::Set frames;
@@ -254,7 +248,7 @@ class SavedStacks {
         : source(source), sourceId(sourceId), line(line), column(column) {}
 
     void trace(JSTracer* trc) {
-      TraceNullableEdge(trc, &source, "SavedStacks::LocationValue::source");
+      TraceEdge(trc, &source, "SavedStacks::LocationValue::source");
     }
 
     bool traceWeak(JSTracer* trc) {

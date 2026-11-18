@@ -1,4 +1,3 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -6,8 +5,11 @@
 #ifndef WIDGET_WINDOWS_NSWINDOWTASKBARCONCEALER_H_
 #define WIDGET_WINDOWS_NSWINDOWTASKBARCONCEALER_H_
 
-#include "nsWindow.h"
 #include "mozilla/Maybe.h"
+#include "nsTArray.h"
+#include "nsWindow.h"
+
+class TaskbarConcealerTest;
 
 /**
  * nsWindow::TaskbarConcealer
@@ -26,7 +28,18 @@ class nsWindow::TaskbarConcealer {
 
   // To be called when a window is maximized. Harmlessly redundant with
   // OnFullscreenChanged.
-  static void OnWindowMaximized(nsWindow* aWin);
+  static void OnWindowMaximized(nsWindow* aWin, bool aForce = false);
+
+  // To be called when a window becomes visible. Windows decides whether a
+  // window is fullscreen when it is shown, so a maximized window needs its
+  // state re-asserted at that point.
+  static void OnWindowShown(nsWindow* aWin);
+
+  // To be called immediately before a window is resized to cover its monitor
+  // on entering Gecko-fullscreen. Windows decides whether a window is
+  // fullscreen at that resize, so any not-fullscreen marking has to be gone
+  // beforehand.
+  static void OnFullscreenWillBeEntered(nsWindow* aWin);
 
   // To be called when the Gecko-fullscreen state of a window changes.
   static void OnFullscreenChanged(nsWindow* aWin, bool enteredFullscreen);
@@ -43,6 +56,8 @@ class nsWindow::TaskbarConcealer {
   static void OnAsyncStateUpdateRequest(HWND);
 
  private:
+  friend class ::TaskbarConcealerTest;
+
   static void UpdateAllState(HWND destroyedHwnd = nullptr);
 
   struct WindowState {
@@ -50,6 +65,20 @@ class nsWindow::TaskbarConcealer {
     bool isGkFullscreen;
   };
   static mozilla::Maybe<WindowState> GetWindowState(HWND);
+
+  struct WindowInfo {
+    HWND hwnd;
+    HMONITOR monitor;
+    bool isGkFullscreen;
+    bool isAlwaysOnTop;
+  };
+
+  // Given all relevant windows in Z-order (topmost first), returns the windows
+  // that should be marked as hiding the taskbar: on each monitor, the uppermost
+  // window that is not a non-fullscreen always-on-top window, if that window is
+  // fullscreen.
+  static nsTArray<HWND> GetWindowsHidingTaskbar(
+      const nsTArray<WindowInfo>& aWindows);
 
   static nsTHashMap<HWND, HMONITOR> sKnownWindows;
 };

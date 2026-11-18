@@ -60,7 +60,7 @@ add_task(async function () {
 
   await waitForAllNetworkUpdateEvents();
   // Page reload should auto-resume
-  await reloadBrowser();
+  await reloadSelectedTab();
   await waitForPauseButtonToChange(document, false);
   await performRequestAndWait(tab, monitor, SIMPLE_URL + "?id=3");
 
@@ -115,7 +115,7 @@ function assertRequestCount(store, count) {
  * Execute simple GET request and wait till it's done.
  */
 async function performRequestAndWait(tab, monitor, requestURL) {
-  const wait = waitForRequest(monitor.panelWin.document, requestURL);
+  const onRequest = waitForRequest(monitor.panelWin.document, requestURL);
   await SpecialPowers.spawn(
     tab.linkedBrowser,
     [requestURL],
@@ -123,7 +123,7 @@ async function performRequestAndWait(tab, monitor, requestURL) {
       await content.wrappedJSObject.performRequests(url);
     }
   );
-  await wait;
+  await onRequest;
 }
 
 /**
@@ -132,8 +132,8 @@ async function performRequestAndWait(tab, monitor, requestURL) {
  */
 async function performPausedRequest(tab, monitor, toolbox) {
   const { onResource: waitForEventWhenPaused } =
-    await toolbox.resourceCommand.waitForNextResource(
-      toolbox.resourceCommand.TYPES.NETWORK_EVENT,
+    await toolbox.commands.resourceCommand.waitForNextResource(
+      toolbox.commands.resourceCommand.TYPES.NETWORK_EVENT,
       {
         ignoreExistingResources: true,
       }

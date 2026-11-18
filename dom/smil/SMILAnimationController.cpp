@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -7,6 +5,8 @@
 #include "SMILAnimationController.h"
 
 #include <algorithm>
+#include <memory>
+#include <utility>
 
 #include "SMILCSSProperty.h"
 #include "SMILCompositor.h"
@@ -57,7 +57,7 @@ void SMILAnimationController::Disconnect() {
   MOZ_ASSERT(mDocument, "disconnecting when we weren't connected...?");
   MOZ_ASSERT(mRefCnt.get() == 1,
              "Expecting to disconnect when doc is sole remaining owner");
-  NS_ASSERTION(mPauseState & SMILTimeContainer::PAUSE_PAGEHIDE,
+  NS_ASSERTION(IsPausedByType(PauseType::PageHide),
                "Expecting to be paused for pagehide before disconnect");
   mDocument = nullptr;  // (raw pointer)
 }
@@ -65,20 +65,20 @@ void SMILAnimationController::Disconnect() {
 //----------------------------------------------------------------------
 // SMILTimeContainer methods:
 
-void SMILAnimationController::Pause(uint32_t aType) {
+void SMILAnimationController::Pause(PauseType aType) {
   SMILTimeContainer::Pause(aType);
   UpdateSampling();
 }
 
-void SMILAnimationController::Resume(uint32_t aType) {
-  bool wasPaused = !!mPauseState;
+void SMILAnimationController::Resume(PauseType aType) {
+  bool wasPaused = IsPaused();
   // Update mCurrentSampleTime so that calls to GetParentTime--used for
   // calculating parent offsets--are accurate
   mCurrentSampleTime = mozilla::TimeStamp::Now();
 
   SMILTimeContainer::Resume(aType);
 
-  if (wasPaused && !mPauseState) {
+  if (wasPaused && !IsPaused()) {
     UpdateSampling();
   }
 }
@@ -162,13 +162,9 @@ void SMILAnimationController::UnregisterAnimationElement(
 //----------------------------------------------------------------------
 // Page show/hide
 
-void SMILAnimationController::OnPageShow() {
-  Resume(SMILTimeContainer::PAUSE_PAGEHIDE);
-}
+void SMILAnimationController::OnPageShow() { Resume(PauseType::PageHide); }
 
-void SMILAnimationController::OnPageHide() {
-  Pause(SMILTimeContainer::PAUSE_PAGEHIDE);
-}
+void SMILAnimationController::OnPageHide() { Pause(PauseType::PageHide); }
 
 //----------------------------------------------------------------------
 // Cycle-collection support
@@ -189,7 +185,7 @@ void SMILAnimationController::Unlink() { mLastCompositorTable = nullptr; }
 // Timer-related implementation helpers
 
 bool SMILAnimationController::ShouldSample() const {
-  return !mPauseState && !mAnimationElementTable.IsEmpty() &&
+  return !IsPaused() && !mAnimationElementTable.IsEmpty() &&
          !mChildContainerTable.IsEmpty();
 }
 
@@ -237,6 +233,9 @@ void SMILAnimationController::DoSample(bool aSkipUnchangedContainers) {
   AutoRestore<bool> autoRestoreRunningSample(mRunningSample);
   mRunningSample = true;
 
+  nsCOMPtr<dom::Document> kungFuDeathGrip(mDocument);
+  (void)kungFuDeathGrip;
+
   // STEP 1: Bring model up to date
   // (i)  Rewind elements where necessary
   // (ii) Run milestone samples
@@ -253,7 +252,7 @@ void SMILAnimationController::DoSample(bool aSkipUnchangedContainers) {
       continue;
     }
 
-    if (!container->IsPausedByType(SMILTimeContainer::PAUSE_BEGIN) &&
+    if (!container->IsPausedByType(PauseType::Begin) &&
         (container->NeedsSample() || !aSkipUnchangedContainers)) {
       container->ClearMilestones();
       container->Sample();
@@ -283,15 +282,31 @@ void SMILAnimationController::DoSample(bool aSkipUnchangedContainers) {
   // save iterating over the animation elements twice.
 
   // Create the compositor table
-  UniquePtr<SMILCompositorTable> currentCompositorTable(
-      new SMILCompositorTable(0));
-  nsTArray<RefPtr<SVGAnimationElement>> animElems(
-      mAnimationElementTable.Count());
+  auto currentCompositorTable = std::make_unique<SMILCompositorTable>(0);
+
+  // Compositors hold raw pointers to animation functions owned by their
+  // animation elements, and composing can run script, so keep those elements
+  // alive for as long as the table refers to them (bug 1347168). Elements that
+  // didn't contribute an entry aren't referenced by the table, so there's no
+  // need to hold those: a document full of animation elements with no target
+  // produces no entries and so does no refcounting here at all.
+  nsTArray<RefPtr<SVGAnimationElement>> animElems;
 
   for (SVGAnimationElement* animElem : mAnimationElementTable.Keys()) {
+    const auto key = GetTargetIdentifierForAnimation(animElem);
+    // An animation with nothing to animate only needs sampling when its timing
+    // model can advance (to fire events, notify dependents and so on), and
+    // that only happens at milestones or when finishing a seek. Skipping it
+    // otherwise avoids walking up to its time container on every tick. If it
+    // later gains a target, the attribute change requests a resample.
+    if (!key && animElem->TimedElement().IsTimingSettled()) {
+      continue;
+    }
     SampleTimedElement(animElem, &activeContainers);
-    AddAnimationToCompositorTable(animElem, currentCompositorTable.get());
-    animElems.AppendElement(animElem);
+    if (key && AddAnimationToCompositorTable(animElem, *key,
+                                             currentCompositorTable.get())) {
+      animElems.AppendElement(animElem);
+    }
   }
   activeContainers.Clear();
 
@@ -401,7 +416,7 @@ void SMILAnimationController::DoMilestoneSamples() {
     // sample.
     SMILMilestone nextMilestone(GetCurrentTimeAsSMILTime() + 1, true);
     for (SMILTimeContainer* container : mChildContainerTable.Keys()) {
-      if (container->IsPausedByType(SMILTimeContainer::PAUSE_BEGIN)) {
+      if (container->IsPausedByType(PauseType::Begin)) {
         continue;
       }
       SMILMilestone thisMilestone;
@@ -418,7 +433,7 @@ void SMILAnimationController::DoMilestoneSamples() {
 
     nsTArray<RefPtr<dom::SVGAnimationElement>> elements;
     for (SMILTimeContainer* container : mChildContainerTable.Keys()) {
-      if (container->IsPausedByType(SMILTimeContainer::PAUSE_BEGIN)) {
+      if (container->IsPausedByType(PauseType::Begin)) {
         continue;
       }
       container->PopMilestoneElementsAtMilestone(nextMilestone, elements);
@@ -485,14 +500,9 @@ void SMILAnimationController::SampleTimedElement(
 }
 
 /*static*/
-void SMILAnimationController::AddAnimationToCompositorTable(
-    SVGAnimationElement* aElement, SMILCompositorTable* aCompositorTable) {
-  // Add a compositor to the hash table if there's not already one there
-  SMILTargetIdentifier key;
-  if (!GetTargetIdentifierForAnimation(aElement, key))
-    // Something's wrong/missing about animation's target; skip this animation
-    return;
-
+bool SMILAnimationController::AddAnimationToCompositorTable(
+    SVGAnimationElement* aElement, const SMILTargetIdentifier& aKey,
+    SMILCompositorTable* aCompositorTable) {
   SMILAnimationFunction& func = aElement->AnimationFunction();
 
   // Only add active animation functions. If there are no active animations
@@ -501,44 +511,54 @@ void SMILAnimationController::AddAnimationToCompositorTable(
   if (func.IsActiveOrFrozen()) {
     // Look up the compositor for our target, & add our animation function
     // to its list of animation functions.
-    SMILCompositor* result = aCompositorTable->PutEntry(key);
+    SMILCompositor* result = aCompositorTable->PutEntry(aKey);
     result->AddAnimationFunction(&func);
-
-  } else if (func.HasChanged()) {
-    // Look up the compositor for our target, and force it to skip the
-    // "nothing's changed so don't bother compositing" optimization for this
-    // sample. |func| is inactive, but it's probably *newly* inactive (since
-    // it's got HasChanged() == true), so we need to make sure to recompose
-    // its target.
-    SMILCompositor* result = aCompositorTable->PutEntry(key);
-    result->ToggleForceCompositing();
-
-    // We've now made sure that |func|'s inactivity will be reflected as of
-    // this sample. We need to clear its HasChanged() flag so that it won't
-    // trigger this same clause in future samples (until it changes again).
-    func.ClearHasChanged();
+    return true;
   }
+
+  if (!func.HasChanged()) {
+    return false;
+  }
+
+  // Look up the compositor for our target, and force it to skip the
+  // "nothing's changed so don't bother compositing" optimization for this
+  // sample. |func| is inactive, but it's probably *newly* inactive (since
+  // it's got HasChanged() == true), so we need to make sure to recompose
+  // its target.
+  SMILCompositor* result = aCompositorTable->PutEntry(aKey);
+  result->ToggleForceCompositing();
+
+  // We've now made sure that |func|'s inactivity will be reflected as of
+  // this sample. We need to clear its HasChanged() flag so that it won't
+  // trigger this same clause in future samples (until it changes again).
+  func.ClearHasChanged();
+  return true;
 }
 
-static inline bool IsTransformAttribute(int32_t aNamespaceID,
-                                        nsAtom* aAttributeName) {
-  return aNamespaceID == kNameSpaceID_None &&
-         (aAttributeName == nsGkAtoms::transform ||
-          aAttributeName == nsGkAtoms::patternTransform ||
-          aAttributeName == nsGkAtoms::gradientTransform);
+static inline bool IsTransformAttribute(const Element* aElement,
+                                        int32_t aNamespaceID,
+                                        const nsAtom* aAttributeName) {
+  if (aNamespaceID != kNameSpaceID_None) {
+    return false;
+  }
+  if (auto* svgElement = SVGElement::FromNode(aElement)) {
+    return svgElement->GetTransformListAttrName() == aAttributeName;
+  }
+  return false;
 }
 
 // Helper function that, given a SVGAnimationElement, looks up its target
-// element & target attribute and populates a SMILTargetIdentifier
+// element & target attribute and returns a SMILTargetIdentifier
 // for this target.
 /*static*/
-bool SMILAnimationController::GetTargetIdentifierForAnimation(
-    SVGAnimationElement* aAnimElem, SMILTargetIdentifier& aResult) {
+Maybe<SMILTargetIdentifier>
+SMILAnimationController::GetTargetIdentifierForAnimation(
+    SVGAnimationElement* aAnimElem) {
   // Look up target (animated) element
   Element* targetElem = aAnimElem->GetTargetElementContent();
   if (!targetElem)
     // Animation has no target elem -- skip it.
-    return false;
+    return Nothing();
 
   // Look up target (animated) attribute
   // SMILANIM section 3.1, attributeName may
@@ -548,20 +568,21 @@ bool SMILAnimationController::GetTargetIdentifierForAnimation(
   if (!aAnimElem->GetTargetAttributeName(&attributeNamespaceID,
                                          getter_AddRefs(attributeName)))
     // Animation has no target attr -- skip it.
-    return false;
+    return Nothing();
 
   // animateTransform can only animate transforms, conversely transforms
   // can only be animated by animateTransform
-  if (IsTransformAttribute(attributeNamespaceID, attributeName) !=
-      (aAnimElem->IsSVGElement(nsGkAtoms::animateTransform)))
-    return false;
+  if (IsTransformAttribute(targetElem, attributeNamespaceID, attributeName) !=
+      aAnimElem->IsSVGElement(nsGkAtoms::animateTransform))
+    return Nothing();
 
   // Construct the key
-  aResult.mElement = targetElem;
-  aResult.mAttributeName = attributeName;
-  aResult.mAttributeNamespaceID = attributeNamespaceID;
+  SMILTargetIdentifier result;
+  result.mElement = targetElem;
+  result.mAttributeName = std::move(attributeName);
+  result.mAttributeNamespaceID = attributeNamespaceID;
 
-  return true;
+  return Some(std::move(result));
 }
 
 void SMILAnimationController::PreTraverse() { PreTraverseInSubtree(nullptr); }
@@ -579,8 +600,8 @@ void SMILAnimationController::PreTraverseInSubtree(Element* aRoot) {
   }
 
   for (SVGAnimationElement* animElement : mAnimationElementTable.Keys()) {
-    SMILTargetIdentifier key;
-    if (!GetTargetIdentifierForAnimation(animElement, key)) {
+    const auto key = GetTargetIdentifierForAnimation(animElement);
+    if (!key) {
       // Something's wrong/missing about animation's target; skip this animation
       continue;
     }
@@ -588,12 +609,12 @@ void SMILAnimationController::PreTraverseInSubtree(Element* aRoot) {
     // Ignore restyles that aren't in the flattened tree subtree rooted at
     // aRoot.
     if (aRoot && !nsContentUtils::ContentIsFlattenedTreeDescendantOf(
-                     key.mElement, aRoot)) {
+                     key->mElement, aRoot)) {
       continue;
     }
 
     context->RestyleManager()->PostRestyleEventForAnimations(
-        key.mElement, PseudoStyleRequest::NotPseudo(),
+        key->mElement, PseudoStyleRequest::NotPseudo(),
         RestyleHint::RESTYLE_SMIL);
   }
 

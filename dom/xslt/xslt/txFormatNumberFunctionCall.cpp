@@ -1,4 +1,3 @@
-/* -*- Mode: C++; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -252,7 +251,7 @@ nsresult txFormatNumberFunctionCall::evaluate(txIEvalContext* aContext,
   else
     bufsize = 1 + 30;
 
-  auto buf = mozilla::MakeUnique<char[]>(bufsize);
+  auto buf = std::make_unique<char[]>(bufsize);
   int bufIntDigits, sign;
   char* endp;
   PR_dtoa(value, 0, 0, &bufIntDigits, &sign, &endp, buf.get(), bufsize - 1);

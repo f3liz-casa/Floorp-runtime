@@ -9,6 +9,7 @@
  */
 
 #include <cmath>
+#include <cstdio>
 #include <cstdint>
 #include <cstdlib>
 #include <string>
@@ -19,6 +20,7 @@
 #include "./vpx_config.h"
 #include "./vpx_dsp_rtcd.h"
 #include "test/acm_random.h"
+#include "test/bench.h"
 #include "test/clear_system_state.h"
 #include "test/register_state_check.h"
 #include "test/util.h"
@@ -34,10 +36,11 @@ using ::testing::ValuesIn;
 namespace {
 const int kNumIterations = 10000;
 
-typedef uint64_t (*SSI16Func)(const int16_t *src, int stride, int size);
-typedef std::tuple<SSI16Func, SSI16Func> SumSquaresParam;
+using SSI16Func = uint64_t (*)(const int16_t *src, int stride, int size);
+using SumSquaresParam = std::tuple<SSI16Func, SSI16Func>;
 
-class SumSquaresTest : public ::testing::TestWithParam<SumSquaresParam> {
+class SumSquaresTest : public AbstractBench,
+                       public ::testing::TestWithParam<SumSquaresParam> {
  public:
   ~SumSquaresTest() override = default;
   void SetUp() override {
@@ -48,10 +51,40 @@ class SumSquaresTest : public ::testing::TestWithParam<SumSquaresParam> {
   void TearDown() override { libvpx_test::ClearSystemState(); }
 
  protected:
+  void Run() override {
+    bench_result_ = tst_func_(bench_src_, bench_stride_, bench_size_);
+  }
+
   SSI16Func ref_func_;
   SSI16Func tst_func_;
+  DECLARE_ALIGNED(16, int16_t, bench_src_[128 * 256]);
+  int bench_stride_ = 0;
+  int bench_size_ = 0;
+  uint64_t bench_result_ = 0;
 };
 GTEST_ALLOW_UNINSTANTIATED_PARAMETERIZED_TEST(SumSquaresTest);
+
+TEST_P(SumSquaresTest, DISABLED_Speed) {
+  ACMRandom rnd(ACMRandom::DeterministicSeed());
+  const int msb = 11;  // Up to 12 bit input
+  const int limit = 1 << (msb + 1);
+  for (int i = 0; i < 128 * 256; ++i) {
+    bench_src_[i] = rnd(2) ? rnd(limit) : -rnd(limit);
+  }
+
+  for (int size = 4; size <= 128; size *= 2) {
+    for (int stride : { size, 2 * size }) {
+      bench_size_ = size;
+      bench_stride_ = stride;
+      const uint64_t expected = ref_func_(bench_src_, stride, size);
+      RunNTimes(100000000 / (size * size));
+      ASSERT_EQ(expected, bench_result_);
+      char title[64];
+      snprintf(title, sizeof(title), "%3dx%-3d stride=%3d", size, size, stride);
+      PrintMedian(title);
+    }
+  }
+}
 
 TEST_P(SumSquaresTest, OperationCheck) {
   ACMRandom rnd(ACMRandom::DeterministicSeed());
@@ -140,18 +173,17 @@ INSTANTIATE_TEST_SUITE_P(
                                  &vpx_sum_squares_2d_i16_msa)));
 #endif  // HAVE_MSA
 
-typedef int64_t (*SSEFunc)(const uint8_t *a, int a_stride, const uint8_t *b,
-                           int b_stride, int width, int height);
+using SSEFunc = int64_t (*)(const uint8_t *a, int a_stride, const uint8_t *b,
+                            int b_stride, int width, int height);
 
 struct TestSSEFuncs {
-  TestSSEFuncs(SSEFunc ref = nullptr, SSEFunc tst = nullptr, int depth = 0)
-      : ref_func(ref), tst_func(tst), bit_depth(depth) {}
+  TestSSEFuncs(SSEFunc ref = nullptr, SSEFunc tst = nullptr)
+      : ref_func(ref), tst_func(tst) {}
   SSEFunc ref_func;  // Pointer to reference function
   SSEFunc tst_func;  // Pointer to tested function
-  int bit_depth;
 };
 
-typedef std::tuple<TestSSEFuncs, int> SSETestParam;
+using SSETestParam = std::tuple<TestSSEFuncs, int>;
 
 class SSETest : public ::testing::TestWithParam<SSETestParam> {
  public:

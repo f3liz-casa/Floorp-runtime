@@ -1,21 +1,17 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "Compatibility.h"
-
-#include "mozilla/a11y/Platform.h"
-#include "mozilla/UniquePtrExtensions.h"
+#include "NtUndoc.h"
 #include "mozilla/UniquePtr.h"
+#include "mozilla/UniquePtrExtensions.h"
 #include "mozilla/WindowsVersion.h"
+#include "mozilla/a11y/Platform.h"
 #include "nsReadableUtils.h"
 #include "nsString.h"
 #include "nsTHashSet.h"
 #include "nsWindowsHelpers.h"
-
-#include "NtUndoc.h"
 
 using namespace mozilla;
 
@@ -257,7 +253,7 @@ void GetUiaClientPidsWin11::Run(nsTArray<DWORD>& aPids) {
     if (ntStatus != STATUS_INFO_LENGTH_MISMATCH) {
       continue;
     }
-    auto objNameBuf = MakeUnique<std::byte[]>(objNameBufLen);
+    auto objNameBuf = std::make_unique<std::byte[]>(objNameBufLen);
     ntStatus = ::NtQueryObject(entry.mHandle,
                                (OBJECT_INFORMATION_CLASS)ObjectNameInformation,
                                objNameBuf.get(), objNameBufLen, &objNameBufLen);
@@ -345,7 +341,7 @@ static DWORD GetUiaClientPidWin10() {
       if (ntStatus != STATUS_INFO_LENGTH_MISMATCH) {
         return true;
       }
-      auto objTypeBuf = MakeUnique<std::byte[]>(objTypeBufLen);
+      auto objTypeBuf = std::make_unique<std::byte[]>(objTypeBufLen);
       ntStatus =
           ::NtQueryObject(aHandle, ObjectTypeInformation, objTypeBuf.get(),
                           objTypeBufLen, &objTypeBufLen);

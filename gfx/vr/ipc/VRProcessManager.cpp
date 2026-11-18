@@ -1,20 +1,18 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "VRProcessManager.h"
 
-#include "VRProcessParent.h"
 #include "VRChild.h"
 #include "VRGPUChild.h"
 #include "VRGPUParent.h"
+#include "VRProcessParent.h"
+#include "mozilla/MemoryReportingProcess.h"
+#include "mozilla/Preferences.h"
 #include "mozilla/dom/ContentParent.h"
 #include "mozilla/gfx/Logging.h"
 #include "mozilla/ipc/Endpoint.h"
-#include "mozilla/MemoryReportingProcess.h"
-#include "mozilla/Preferences.h"
 
 namespace mozilla {
 namespace gfx {
@@ -26,7 +24,7 @@ VRProcessManager* VRProcessManager::Get() { return sSingleton; }
 
 /* static */
 void VRProcessManager::Initialize() {
-  MOZ_ASSERT(XRE_IsParentProcess());
+  MOZ_RELEASE_ASSERT(XRE_IsParentProcess());
   if (sSingleton == nullptr) {
     sSingleton = new VRProcessManager();
   }
@@ -54,7 +52,7 @@ VRProcessManager::~VRProcessManager() {
 
   DestroyProcess();
   // The VR process should have already been shut down.
-  MOZ_ASSERT(!mProcess);
+  MOZ_RELEASE_ASSERT(!mProcess);
 }
 
 void VRProcessManager::LaunchVRProcess() {
@@ -118,7 +116,7 @@ bool VRProcessManager::EnsureVRReady() {
 }
 
 void VRProcessManager::OnProcessLaunchComplete(VRProcessParent* aParent) {
-  MOZ_ASSERT(mProcess && mProcess == aParent);
+  MOZ_RELEASE_ASSERT(mProcess && mProcess == aParent);
 
   mVRChild = mProcess->GetActor();
 
@@ -130,7 +128,7 @@ void VRProcessManager::OnProcessLaunchComplete(VRProcessParent* aParent) {
   // Flush any pref updates that happened during launch and weren't
   // included in the blobs set up in LaunchGPUProcess.
   for (const mozilla::dom::Pref& pref : mQueuedPrefs) {
-    Unused << NS_WARN_IF(!mVRChild->SendPreferenceUpdate(pref));
+    (void)NS_WARN_IF(!mVRChild->SendPreferenceUpdate(pref));
   }
   mQueuedPrefs.Clear();
 
@@ -139,7 +137,7 @@ void VRProcessManager::OnProcessLaunchComplete(VRProcessParent* aParent) {
 }
 
 void VRProcessManager::OnProcessUnexpectedShutdown(VRProcessParent* aParent) {
-  MOZ_ASSERT(mProcess && mProcess == aParent);
+  MOZ_RELEASE_ASSERT(mProcess && mProcess == aParent);
 
   DestroyProcess();
 }
@@ -220,9 +218,9 @@ void VRProcessManager::OnPreferenceChange(const char16_t* aData) {
                           /* isSanitized */ false, Nothing(), Nothing());
 
   Preferences::GetPreference(&pref, GeckoProcessType_VR,
-                             /* remoteType */ ""_ns);
+                             /* remoteType */ {});
   if (!!mVRChild) {
-    MOZ_ASSERT(mQueuedPrefs.IsEmpty());
+    MOZ_RELEASE_ASSERT(mQueuedPrefs.IsEmpty());
     mVRChild->SendPreferenceUpdate(pref);
   } else {
     mQueuedPrefs.AppendElement(pref);

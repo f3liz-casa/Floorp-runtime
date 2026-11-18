@@ -10,6 +10,7 @@ import time
 
 import mozunit
 from buildconfig import topobjdir, topsrcdir
+from support import firefox_binary
 
 here = os.path.dirname(__file__)
 
@@ -37,15 +38,13 @@ def _install_package(virtualenv_manager, package):
             # already installed in this venv, we can skip
             return
 
-    subprocess.check_call(
-        [
-            virtualenv_manager.python_path,
-            "-m",
-            "pip",
-            "install",
-            package,
-        ]
-    )
+    subprocess.check_call([
+        virtualenv_manager.python_path,
+        "-m",
+        "pip",
+        "install",
+        package,
+    ])
 
 
 def _kill_mozproxy(pid):
@@ -84,11 +83,11 @@ class OutputHandler:
 
 
 def test_help():
-    p = subprocess.run([sys.executable, "-m", "mozproxy", "--help"])
+    p = subprocess.run([sys.executable, "-m", "mozproxy", "--help"], check=False)
     assert p.returncode == 0
 
 
-def test_run_record_no_files():
+def test_run_record_no_files(tmp_path):
     output_handler = OutputHandler()
     p = subprocess.Popen(
         [
@@ -97,7 +96,7 @@ def test_run_record_no_files():
             "mozproxy",
             "--local",
             "--mode=record",
-            "--binary=firefox",
+            "--binary=" + firefox_binary(str(tmp_path)),
             "--topsrcdir=" + topsrcdir,
             "--objdir=" + topobjdir,
         ],
@@ -125,7 +124,7 @@ def test_run_record_no_files():
     assert output_handler.port is None
 
 
-def test_run_record_multiple_files():
+def test_run_record_multiple_files(tmp_path):
     output_handler = OutputHandler()
     p = subprocess.Popen(
         [
@@ -134,7 +133,7 @@ def test_run_record_multiple_files():
             "mozproxy",
             "--local",
             "--mode=record",
-            "--binary=firefox",
+            "--binary=" + firefox_binary(str(tmp_path)),
             "--topsrcdir=" + topsrcdir,
             "--objdir=" + topobjdir,
             os.path.join(here, "files", "new_record.zip"),
@@ -163,7 +162,7 @@ def test_run_record_multiple_files():
     assert output_handler.port is None
 
 
-def test_run_record():
+def test_run_record(tmp_path):
     output_handler = OutputHandler()
     p = subprocess.Popen(
         [
@@ -172,7 +171,7 @@ def test_run_record():
             "mozproxy",
             "--local",
             "--mode=record",
-            "--binary=firefox",
+            "--binary=" + firefox_binary(str(tmp_path)),
             "--topsrcdir=" + topsrcdir,
             "--objdir=" + topobjdir,
             os.path.join(here, "files", "record.zip"),
@@ -200,10 +199,12 @@ def test_run_record():
         assert p.wait(10) == 0
         assert output_handler.port is not None
     finally:
-        os.remove(os.path.join(here, "files", "record.zip"))
+        record_file = os.path.join(here, "files", "record.zip")
+        if os.path.exists(record_file):
+            os.remove(record_file)
 
 
-def test_run_playback():
+def test_run_playback(tmp_path):
     output_handler = OutputHandler()
     p = subprocess.Popen(
         [
@@ -211,7 +212,7 @@ def test_run_playback():
             "-m",
             "mozproxy",
             "--local",
-            "--binary=firefox",
+            "--binary=" + firefox_binary(str(tmp_path)),
             "--topsrcdir=" + topsrcdir,
             "--objdir=" + topobjdir,
             os.path.join(here, "files", "mitm5-linux-firefox-amazon.zip"),

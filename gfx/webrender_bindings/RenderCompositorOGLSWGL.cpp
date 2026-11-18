@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  *
  * License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -10,26 +8,29 @@
 
 #include "GLContext.h"
 #include "GLContextEGL.h"
+#include "OGLShaderProgram.h"
+#include "ScopedGLHelpers.h"
 #include "mozilla/layers/BuildConstants.h"
 #include "mozilla/layers/CompositorOGL.h"
 #include "mozilla/layers/Effects.h"
 #include "mozilla/layers/TextureHostOGL.h"
 #include "mozilla/widget/CompositorWidget.h"
-#include "OGLShaderProgram.h"
 
 #ifdef MOZ_WIDGET_ANDROID
+#  include <android/native_window.h>
+#  include <android/native_window_jni.h>
+
 #  include "mozilla/java/GeckoSurfaceTextureWrappers.h"
 #  include "mozilla/layers/AndroidHardwareBuffer.h"
 #  include "mozilla/webrender/RenderAndroidHardwareBufferTextureHost.h"
 #  include "mozilla/webrender/RenderAndroidSurfaceTextureHost.h"
 #  include "mozilla/widget/AndroidCompositorWidget.h"
-#  include <android/native_window.h>
-#  include <android/native_window_jni.h>
 #endif
 
 #ifdef MOZ_WIDGET_GTK
-#  include "mozilla/widget/GtkCompositorWidget.h"
 #  include <gdk/gdk.h>
+
+#  include "mozilla/widget/GtkCompositorWidget.h"
 #  ifdef MOZ_X11
 #    include <gdk/gdkx.h>
 #  endif
@@ -96,7 +97,7 @@ UniquePtr<RenderCompositor> RenderCompositorOGLSWGL::Create(
     return nullptr;
   }
 
-  return MakeUnique<RenderCompositorOGLSWGL>(compositor, aWidget, ctx);
+  return std::make_unique<RenderCompositorOGLSWGL>(compositor, aWidget, ctx);
 }
 
 RenderCompositorOGLSWGL::RenderCompositorOGLSWGL(
@@ -133,8 +134,10 @@ EGLSurface RenderCompositorOGLSWGL::CreateEGLSurface() {
   MOZ_ASSERT(GetGLContext()->GetContextType() == gl::GLContextType::EGL);
 
   EGLSurface surface = EGL_NO_SURFACE;
-  surface = gl::GLContextEGL::CreateEGLSurfaceForCompositorWidget(
-      mWidget, gl::GLContextEGL::Cast(GetGLContext())->mSurfaceConfig);
+  surface =
+      gl::GLContextEGL::Cast(GetGLContext())
+          ->CreateEGLSurfaceForCompositorWidget(
+              mWidget, gl::GLContextEGL::Cast(GetGLContext())->mSurfaceConfig);
   if (surface == EGL_NO_SURFACE) {
     const auto* renderThread = RenderThread::Get();
     gfxCriticalNote << "Failed to create EGLSurface. "
@@ -274,8 +277,9 @@ bool RenderCompositorOGLSWGL::Resume() {
 bool RenderCompositorOGLSWGL::IsPaused() {
 #ifdef MOZ_WIDGET_ANDROID
   return mEGLSurface == EGL_NO_SURFACE;
-#endif
+#else
   return false;
+#endif
 }
 
 LayoutDeviceIntSize RenderCompositorOGLSWGL::GetBufferSize() {
@@ -287,7 +291,7 @@ RenderCompositorOGLSWGL::DoCreateTile(Surface* aSurface) {
   auto source = MakeRefPtr<TextureImageTextureSourceOGL>(
       mCompositor->AsCompositorOGL(), layers::TextureFlags::NO_FLAGS);
 
-  return MakeUnique<TileOGL>(std::move(source), aSurface->TileSize());
+  return std::make_unique<TileOGL>(std::move(source), aSurface->TileSize());
 }
 
 bool RenderCompositorOGLSWGL::MaybeReadback(
@@ -311,6 +315,18 @@ bool RenderCompositorOGLSWGL::MaybeReadback(
 
   return true;
 }
+
+#ifdef MOZ_WIDGET_ANDROID
+bool RenderCompositorOGLSWGL::CaptureScreenPixels(
+    const gfx::IntRect& aSourceRect,
+    layers::AndroidHardwareBuffer* aHardwareBuffer) {
+  return CaptureScreenPixelsFromGL(
+      gl::GLContextEGL::Cast(GetGLContext()), aSourceRect, GetBufferSize(),
+      SurfaceOriginIsTopLeft() ? gl::OriginPos::TopLeft
+                               : gl::OriginPos::BottomLeft,
+      aHardwareBuffer);
+}
+#endif
 
 // This is a DataSourceSurface that represents a 0-based PBO for GLTextureImage.
 class PBOUnpackSurface : public gfx::DataSourceSurface {
@@ -414,7 +430,7 @@ bool RenderCompositorOGLSWGL::TileOGL::Map(wr::DeviceIntRect aDirtyRect,
       return false;
     }
     // Verify that we're not somehow using a PBOUnpackSurface.
-    MOZ_ASSERT(map.mData != nullptr);
+    MOZ_RELEASE_ASSERT(map.mData != nullptr);
     // glTex(Sub)Image on ES doesn't support arbitrary strides without
     // the EXT_unpack_subimage extension. To avoid needing to make a
     // copy of the data we'll always draw it with stride = bpp*width

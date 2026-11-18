@@ -18,7 +18,7 @@ const {
   getAllPrefs,
 } = require("resource://devtools/client/webconsole/selectors/prefs.js");
 const ResourceCommand = require("resource://devtools/shared/commands/resource/resource-command.js");
-const l10n = require("resource://devtools/client/webconsole/utils/l10n.js");
+const l10n = require("resource://devtools/shared/webconsole/l10n.js");
 
 loader.lazyServiceGetter(
   this,
@@ -160,7 +160,7 @@ function evaluateExpression(expression, from = "input") {
  * The JavaScript evaluation response handler.
  *
  * @private
- * @param {Object} response
+ * @param {object} response
  *        The message received from the server.
  */
 function onExpressionEvaluated(response) {
@@ -211,7 +211,7 @@ function handleHelperResult(response) {
         case "clearHistory":
           dispatch(historyActions.clearHistory());
           break;
-        case "historyOutput":
+        case "historyOutput": {
           const history = getState().history.entries || [];
           const columns = new Map([
             ["_index", "(index)"],
@@ -230,6 +230,7 @@ function handleHelperResult(response) {
             ])
           );
           break;
+        }
         case "inspectObject": {
           const objectActor = helperResult.object;
           if (hud.toolbox && !helperResult.forceExpandInConsole) {
@@ -255,34 +256,19 @@ function handleHelperResult(response) {
             ])
           );
           break;
-        case "screenshotOutput":
-          const { args, value } = helperResult;
+        case "screenshotOutput": {
+          const { args } = helperResult;
           const targetFront =
             getSelectedTarget(hud.commands.targetCommand.store.getState()) ||
             hud.currentTarget;
-          let screenshotMessages;
 
-          // @backward-compat { version 87 } The screenshot-content actor isn't available
-          // in older server.
-          // With an old server, the console actor captures the screenshot when handling
-          // the command, and send it to the client which only needs to save it to a file.
-          // With a new server, the server simply acknowledges the command,
-          // and the client will drive the whole screenshot process (capture and save).
-          if (targetFront.hasActor("screenshotContent")) {
-            screenshotMessages = await captureAndSaveScreenshot(
-              targetFront,
-              webConsoleUI.getPanelWindow(),
-              args
-            );
-          } else {
-            screenshotMessages = await saveScreenshot(
-              webConsoleUI.getPanelWindow(),
-              args,
-              value
-            );
-          }
+          const screenshotMessages = await captureAndSaveScreenshot(
+            targetFront,
+            webConsoleUI.getPanelWindow(),
+            args
+          );
 
-          if (screenshotMessages && screenshotMessages.length) {
+          if (screenshotMessages?.length) {
             dispatch(
               messagesActions.messagesAdd(
                 screenshotMessages.map(message => ({
@@ -295,7 +281,8 @@ function handleHelperResult(response) {
             );
           }
           break;
-        case "blockURL":
+        }
+        case "blockURL": {
           const blockURL = helperResult.args.url;
           // The console actor isn't able to block the request as the console actor runs in the content
           // process, while the request has to be blocked from the parent process.
@@ -320,7 +307,8 @@ function handleHelperResult(response) {
             ])
           );
           break;
-        case "unblockURL":
+        }
+        case "unblockURL": {
           const unblockURL = helperResult.args.url;
           await hud.commands.networkCommand.unblockRequestForUrl(unblockURL);
           toolbox
@@ -342,6 +330,7 @@ function handleHelperResult(response) {
           );
           // early return as we already dispatched necessary messages.
           return;
+        }
 
         // Sent when using ":command --help or :command --usage"
         // to help discover command arguments.
@@ -395,8 +384,8 @@ function setInputValue(value) {
 /**
  * Request an eager evaluation from the server.
  *
- * @param {String} expression: The expression to evaluate.
- * @param {Boolean} force: When true, will request an eager evaluation again, even if
+ * @param {string} expression: The expression to evaluate.
+ * @param {boolean} force: When true, will request an eager evaluation again, even if
  *                         the expression is the same one than the one that was used in
  *                         the previous evaluation.
  */
@@ -455,6 +444,13 @@ function terminalInputChanged(expression, force = false) {
       mapped,
       eager: true,
     });
+
+    // If the terminal input changed while the expression was evaluated, don't render
+    // the results of the eager evaluation, it will be handled by the last call to
+    // terminalInputChanged
+    if (expression.trim() !== getState().history?.terminalInput) {
+      return null;
+    }
 
     return dispatch({
       type: SET_TERMINAL_EAGER_RESULT,

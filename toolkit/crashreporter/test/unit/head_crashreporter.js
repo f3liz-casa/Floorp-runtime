@@ -15,7 +15,7 @@ function sendCommandAsync(command) {
   });
 }
 
-/*
+/**
  * Run an xpcshell subprocess and crash it.
  *
  * @param setup
@@ -41,7 +41,6 @@ function sendCommandAsync(command) {
  *       If true, the subprocess may return with a zero exit code.
  *       Certain types of crashes may not cause the process to
  *       exit with an error.
- *
  */
 async function do_crash(setup, callback, canReturnZero) {
   // get current process filename (xpcshell)
@@ -158,12 +157,37 @@ async function handleMinidump(callback) {
 
   Assert.ok(extrafile.exists());
   let extra = await IOUtils.readJSON(extrafile.path);
+  // No matter how we crash, there should always be a non-nil crash id and crash time
+  Assert.ok("CrashEventID" in extra);
+  Assert.ok(checkUUID(extra.CrashEventID));
+  Assert.ok("CrashTime" in extra);
 
   if (callback) {
     await callback(minidump, extra, extrafile, memoryfile);
   }
 
   await cleanup();
+}
+
+function checkUUID(uuid) {
+  for (let i = 0; i < 36; i++) {
+    const c = uuid[i];
+    // Check the version field to determine a nil UUID (it should always be non-'0'
+    // otherwise).
+    if (i == 14 && c === "0") {
+      return false;
+    }
+    // Check for dashes
+    if ([8, 13, 18, 23].includes(i)) {
+      if (c !== "-") {
+        return false;
+      }
+      // Check for hex characters
+    } else if (!"0123456789abcdefABCDEF".includes(c)) {
+      return false;
+    }
+  }
+  return true;
 }
 
 function spinEventLoop() {
@@ -254,7 +278,7 @@ async function do_triggered_content_crash(trigger, callback) {
   }
 }
 
-/*
+/**
  * Run the `crash` backgroundtask subprocess, crashing it in the
  * specified manner.
  *
@@ -274,7 +298,6 @@ async function do_triggered_content_crash(trigger, callback) {
  *       If true, the subprocess may return with a zero exit code.
  *       Certain types of crashes may not cause the process to
  *       exit with an error.
- *
  */
 async function do_backgroundtask_crash(
   crashType,

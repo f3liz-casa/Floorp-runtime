@@ -22,12 +22,12 @@ add_task(async function () {
 
   // Execute two XHRs (the same URL) and wait till it's finished.
   const URL = HTTPS_SEARCH_SJS + "?value=test";
-  const wait = waitForNetworkEvents(monitor, 2);
+  const onNetworkEvents = waitForNetworkEvents(monitor, 2);
 
   await SpecialPowers.spawn(tab.linkedBrowser, [URL], async function (url) {
     content.wrappedJSObject.performRequests(2, url);
   });
-  await wait;
+  await onNetworkEvents;
 
   const searchButton = document.querySelector(".devtools-search-icon");
   is(
@@ -40,7 +40,7 @@ add_task(async function () {
   searchButton.click();
 
   // Wait till the panel opens.
-  await waitForDOMIfNeeded(document, ".search-panel");
+  await waitForDOM(document, ".search-panel");
 
   is(
     searchButton.getAttribute("aria-pressed"),
@@ -68,11 +68,7 @@ add_task(async function () {
   EventUtils.synthesizeKey("KEY_Enter");
 
   // Wait till there are two resources rendered in the results.
-  await waitForDOMIfNeeded(
-    document,
-    ".search-panel-content .treeRow.resourceRow",
-    2
-  );
+  await waitForDOM(document, ".search-panel-content .treeRow.resourceRow", 2);
 
   // Click on the first resource to expand it
   AccessibilityUtils.setEnv({

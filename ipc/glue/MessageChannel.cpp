@@ -1,6 +1,3 @@
-/* -*- Mode: C++; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- * vim: sw=2 ts=4 et :
- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -15,20 +12,16 @@
 #include "base/waitable_event.h"
 #include "mozilla/Assertions.h"
 #include "mozilla/CycleCollectedJSContext.h"
-#include "mozilla/DebugOnly.h"
-#include "mozilla/Fuzzing.h"
 #include "mozilla/FlowMarkers.h"
 #include "mozilla/IntentionalCrash.h"
 #include "mozilla/Logging.h"
 #include "mozilla/Monitor.h"
 #include "mozilla/Mutex.h"
 #include "mozilla/ProfilerMarkers.h"
-#include "mozilla/ScopeExit.h"
 #include "mozilla/Sprintf.h"
 #include "mozilla/StaticMutex.h"
 #include "mozilla/glean/IpcMetrics.h"
 #include "mozilla/TimeStamp.h"
-#include "mozilla/UniquePtrExtensions.h"
 #include "mozilla/dom/ScriptSettings.h"
 #include "mozilla/ipc/NodeController.h"
 #include "mozilla/ipc/ProcessChild.h"
@@ -340,7 +333,7 @@ class ChannelCountReporter final : public nsIMemoryReporter {
 
   NS_IMETHOD
   CollectReports(nsIHandleReportCallback* aHandleReport, nsISupports* aData,
-                 bool aAnonymize) override {
+                 bool /*aAnonymize*/) override {
     AutoTArray<std::pair<const char*, ChannelCounts>, 16> counts;
     {
       StaticMutexAutoLock countLock(sChannelCountMutex);
@@ -401,8 +394,7 @@ template <class Reporter>
 static void TryRegisterStrongMemoryReporter() {
   static Atomic<bool> registered;
   if (registered.compareExchange(false, true)) {
-    RefPtr<Reporter> reporter = new Reporter();
-    if (NS_FAILED(RegisterStrongMemoryReporter(reporter))) {
+    if (NS_FAILED(RegisterStrongMemoryReporter(MakeAndAddRef<Reporter>()))) {
       registered = false;
     }
   }
@@ -634,9 +626,9 @@ bool MessageChannel::Open(ScopedPort aPort, Side aSide,
     MOZ_ASSERT(mSide == UnknownSide);
 
     mMessageChannelId = aMessageChannelId;
-    mWorkerThread = eventTarget;
+    mWorkerThread = std::move(eventTarget);
     mShutdownTask = shutdownTask;
-    mLink = MakeUnique<PortLink>(this, std::move(aPort));
+    mLink = std::make_unique<PortLink>(this, std::move(aPort));
     mChannelState = ChannelConnected;
     mSide = aSide;
   }
@@ -786,7 +778,7 @@ class BuildIDsMatchMessage : public IPC::Message {
  public:
   BuildIDsMatchMessage()
       : IPC::Message(MSG_ROUTING_NONE, BUILD_IDS_MATCH_MESSAGE_TYPE) {}
-  void Log(const std::string& aPrefix, FILE* aOutf) const {
+  void Log(const std::string& /*aPrefix*/, FILE* aOutf) const {
     fputs("(special `Build IDs match' message)", aOutf);
   }
 };
@@ -807,7 +799,7 @@ bool MessageChannel::SendBuildIDsMatchMessage(const char* aParentBuildID) {
     return false;
   }
 
-  auto msg = MakeUnique<BuildIDsMatchMessage>();
+  auto msg = std::make_unique<BuildIDsMatchMessage>();
 
   MOZ_RELEASE_ASSERT(!msg->is_sync());
   MOZ_RELEASE_ASSERT(msg->nested_level() != IPC::Message::NESTED_INSIDE_SYNC);
@@ -848,8 +840,8 @@ class CancelMessage : public IPC::Message {
       : IPC::Message(MSG_ROUTING_NONE, CANCEL_MESSAGE_TYPE) {
     set_transaction_id(transaction);
   }
-  static bool Read(const Message* msg) { return true; }
-  void Log(const std::string& aPrefix, FILE* aOutf) const {
+  static bool Read(const Message* /*msg*/) { return true; }
+  void Log(const std::string& /*aPrefix*/, FILE* aOutf) const {
     fputs("(special `Cancel' message)", aOutf);
   }
 };
@@ -954,15 +946,23 @@ class IPCFlowMarker : public BaseMarkerType<IPCFlowMarker> {
 
   using MS = MarkerSchema;
   static constexpr MS::PayloadField PayloadFields[] = {
-      {"name", MS::InputType::CString, "Details", MS::Format::String,
-       MS::PayloadFlags::Searchable},
-      {"flow", MS::InputType::Uint64, "Flow", MS::Format::Flow,
-       MS::PayloadFlags::Searchable}};
+      {
+          "name",
+          MS::InputType::CString,
+          "Details",
+          MS::Format::String,
+      },
+      {
+          "flow",
+          MS::InputType::Uint64,
+          "Flow",
+          MS::Format::Flow,
+      }};
 
   static constexpr MS::Location Locations[] = {MS::Location::MarkerChart,
                                                MS::Location::MarkerTable};
   static constexpr const char* TableLabel =
-      "{marker.name} - {marker.data.name}(flow={marker.data.flow})";
+      "{marker.data.name}(flow={marker.data.flow})";
   static constexpr const char* ChartLabel = "{marker.name}";
 
   static constexpr MS::ETWMarkerGroup Group = MS::ETWMarkerGroup::Generic;
@@ -1109,7 +1109,7 @@ void MessageChannel::OnMessageReceivedFromLink(UniquePtr<Message> aMsg) {
   // blocked. This is okay, since we always check for pending events before
   // blocking again.
 
-  RefPtr<MessageTask> task = new MessageTask(this, std::move(aMsg));
+  RefPtr task = MakeRefPtr<MessageTask>(this, std::move(aMsg));
   mPending.insertBack(task);
 
   if (!alwaysDeferred) {
@@ -1267,7 +1267,7 @@ bool MessageChannel::Send(UniquePtr<Message> aMsg, UniquePtr<Message>* aReply) {
     MOZ_RELEASE_ASSERT(DispatchingSyncMessage() || DispatchingAsyncMessage());
     IPC_LOG("Cancel from Send");
     auto cancel =
-        MakeUnique<CancelMessage>(CurrentNestedInsideSyncTransaction());
+        std::make_unique<CancelMessage>(CurrentNestedInsideSyncTransaction());
     CancelTransaction(CurrentNestedInsideSyncTransaction());
     SendMessageToLink(std::move(cancel));
   }
@@ -2068,6 +2068,97 @@ void MessageChannel::OnNotifyMaybeChannelError() {
   NotifyMaybeChannelError(lock);
 }
 
+class MessageChannel::ErrorNotifyBatcher::BatchTask
+    : public CancelableRunnable {
+ public:
+  explicit BatchTask(nsIEventTarget* aEventTarget)
+      : CancelableRunnable("MessageChannel::ErrorNotifyBatcher"),
+        mEventTarget(aEventTarget) {}
+
+  NS_IMETHOD Run() override {
+    // NOTE: This is running all error notify tasks within a single runnable. If
+    // this ends up causing latency issues, we can change this logic to
+    // re-dispatch between tasks.
+    AUTO_PROFILER_LABEL("MessageChannel::ErrorNotifyBatchTask", IPC);
+    for (auto& task : mTasks) {
+      task->Run();
+    }
+    mTasks.Clear();
+    return NS_OK;
+  }
+
+  nsresult Cancel() override {
+    for (auto& task : mTasks) {
+      task->Cancel();
+    }
+    mTasks.Clear();
+    return NS_OK;
+  }
+
+  nsCOMPtr<nsIEventTarget> mEventTarget;
+  AutoTArray<RefPtr<CancelableRunnable>, 1> mTasks;
+};
+
+MessageChannel::ErrorNotifyBatcher*
+    MessageChannel::ErrorNotifyBatcher::sCurrent = nullptr;
+
+MessageChannel::ErrorNotifyBatcher::ErrorNotifyBatcher() {
+  AssertIOThread();
+  if (sCurrent == nullptr) {
+    sCurrent = this;
+  }
+}
+
+MessageChannel::ErrorNotifyBatcher::~ErrorNotifyBatcher() {
+  AssertIOThread();
+  if (sCurrent == this) {
+    sCurrent = nullptr;
+  }
+
+  for (auto& task : mToNotify) {
+    nsCOMPtr<nsIEventTarget> target = task->mEventTarget.forget();
+    target->Dispatch(task.forget());
+  }
+}
+
+/* static */
+void MessageChannel::ErrorNotifyBatcher::BatchDispatch(
+    nsIEventTarget* aTarget, already_AddRefed<CancelableRunnable> aRunnable) {
+  RefPtr<CancelableRunnable> runnable(std::move(aRunnable));
+  if (!ErrorNotifyBatcher::TryBatchDispatch(aTarget, runnable)) {
+    aTarget->Dispatch(runnable.forget());
+  }
+}
+
+/* static */
+bool MessageChannel::ErrorNotifyBatcher::TryBatchDispatch(
+    nsIEventTarget* aTarget, RefPtr<CancelableRunnable>& aRunnable) {
+  MessageLoop* curLoop = MessageLoop::current();
+  if (!curLoop || curLoop->type() != MessageLoop::TYPE_IO) {
+    return false;
+  }
+
+  AssertIOThread();
+  if (!ErrorNotifyBatcher::sCurrent) {
+    return false;
+  }
+
+  RefPtr<BatchTask> batchTask;
+  for (auto& task : ErrorNotifyBatcher::sCurrent->mToNotify) {
+    if (task->mEventTarget == aTarget) {
+      batchTask = task;
+      break;
+    }
+  }
+  if (!batchTask) {
+    batchTask = new BatchTask(aTarget);
+    ErrorNotifyBatcher::sCurrent->mToNotify.AppendElement(batchTask);
+  }
+
+  batchTask->mTasks.AppendElement(aRunnable.forget());
+  return true;
+}
+
 void MessageChannel::PostErrorNotifyTask() {
   mMonitor->AssertCurrentThreadOwns();
 
@@ -2079,15 +2170,20 @@ void MessageChannel::PostErrorNotifyTask() {
   mChannelErrorTask = NewNonOwningCancelableRunnableMethod(
       "ipc::MessageChannel::OnNotifyMaybeChannelError", this,
       &MessageChannel::OnNotifyMaybeChannelError);
-  mWorkerThread->Dispatch(do_AddRef(mChannelErrorTask));
+
+  // Check if we have a notify batcher which we want to use. This will only ever
+  // be the case on the IPC I/O thread. If we do, we'll queue up the task to be
+  // notified by it instead of directly dispatching.
+  ErrorNotifyBatcher::BatchDispatch(mWorkerThread,
+                                    do_AddRef(mChannelErrorTask));
 }
 
 // Special async message.
 class GoodbyeMessage : public IPC::Message {
  public:
   GoodbyeMessage() : IPC::Message(MSG_ROUTING_NONE, GOODBYE_MESSAGE_TYPE) {}
-  static bool Read(const Message* msg) { return true; }
-  void Log(const std::string& aPrefix, FILE* aOutf) const {
+  static bool Read(const Message* /*msg*/) { return true; }
+  void Log(const std::string& /*aPrefix*/, FILE* aOutf) const {
     fputs("(special `Goodbye' message)", aOutf);
   }
 };
@@ -2124,8 +2220,8 @@ void MessageChannel::InduceConnectionError() {
 }
 
 void MessageChannel::NotifyImpendingShutdown() {
-  UniquePtr<Message> msg =
-      MakeUnique<Message>(MSG_ROUTING_NONE, IMPENDING_SHUTDOWN_MESSAGE_TYPE);
+  auto msg = std::make_unique<Message>(MSG_ROUTING_NONE,
+                                       IMPENDING_SHUTDOWN_MESSAGE_TYPE);
   MonitorAutoLock lock(*mMonitor);
   if (Connected()) {
     SendMessageToLink(std::move(msg));
@@ -2158,7 +2254,7 @@ void MessageChannel::Close() {
       // already received a Goodbye from the other side (and our state is
       // ChannelClosing), there's no reason to send one.
       if (ChannelConnected == mChannelState) {
-        SendMessageToLink(MakeUnique<GoodbyeMessage>());
+        SendMessageToLink(std::make_unique<GoodbyeMessage>());
       }
       mLink->Close();
       mChannelState = ChannelClosed;
@@ -2302,7 +2398,7 @@ void MessageChannel::RepostAllMessages() {
   MessageQueue queue = std::move(mPending);
   while (RefPtr<MessageTask> task = queue.popFirst()) {
     task->AssertMonitorHeld(*mMonitor);
-    RefPtr<MessageTask> newTask = new MessageTask(this, std::move(task->Msg()));
+    RefPtr newTask = MakeRefPtr<MessageTask>(this, std::move(task->Msg()));
     newTask->AssertMonitorHeld(*mMonitor);
     mPending.insertBack(newTask);
     newTask->Post();
@@ -2391,7 +2487,7 @@ void MessageChannel::CancelCurrentTransaction() {
             CurrentNestedInsideSyncTransaction());
     MOZ_RELEASE_ASSERT(DispatchingSyncMessage());
     auto cancel =
-        MakeUnique<CancelMessage>(CurrentNestedInsideSyncTransaction());
+        std::make_unique<CancelMessage>(CurrentNestedInsideSyncTransaction());
     CancelTransaction(CurrentNestedInsideSyncTransaction());
     SendMessageToLink(std::move(cancel));
   }

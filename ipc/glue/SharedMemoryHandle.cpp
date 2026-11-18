@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -31,7 +29,7 @@ class AllocationReporter final : public nsIMemoryReporter {
 
   NS_IMETHOD
   CollectReports(nsIHandleReportCallback* aHandleReport, nsISupports* aData,
-                 bool aAnonymize) override {
+                 bool /*aAnonymize*/) override {
     MOZ_COLLECT_REPORT(
         "shmem-allocated", KIND_OTHER, UNITS_BYTES, allocated,
         "Memory shared with other processes that is accessible (but not "
@@ -45,11 +43,9 @@ Atomic<uint64_t> AllocationReporter::allocated;
 
 NS_IMPL_ISUPPORTS(AllocationReporter, nsIMemoryReporter)
 
-static void RegisterAllocationMemoryReporter() {
-  static Atomic<bool> registered;
-  if (registered.compareExchange(false, true)) {
-    RegisterStrongMemoryReporter(new AllocationReporter());
-  }
+// Used in IPCModule.cpp
+nsresult RegisterHandleMemoryReporter() {
+  return RegisterStrongMemoryReporter(MakeAndAddRef<AllocationReporter>());
 }
 
 HandleBase::HandleBase() = default;
@@ -65,7 +61,9 @@ HandleBase::~HandleBase() {
 
 HandleBase& HandleBase::operator=(HandleBase&& aOther) {
   mHandle = std::move(aOther.mHandle);
-  SetSize(std::exchange(aOther.mSize, 0));
+  const auto otherSize = aOther.mSize;
+  aOther.SetSize(0);
+  SetSize(otherSize);
   return *this;
 }
 
@@ -92,10 +90,6 @@ bool HandleBase::FromMessageReader(IPC::MessageReader* aReader) {
     aReader->FatalError("Failed to read shared memory PlatformHandle");
     return false;
   }
-  if (handle && !Platform::IsSafeToMap(handle)) {
-    aReader->FatalError("Shared memory PlatformHandle is not safe to map");
-    return false;
-  }
   uint64_t size = 0;
   if (!ReadParam(aReader, &size)) {
     aReader->FatalError("Failed to read shared memory handle size");
@@ -106,13 +100,16 @@ bool HandleBase::FromMessageReader(IPC::MessageReader* aReader) {
         "Unexpected PlatformHandle for zero-sized shared memory handle");
     return false;
   }
+  if (handle && !Platform::IsSafeToMap(handle, size)) {
+    aReader->FatalError("Shared memory PlatformHandle is not safe to map");
+    return false;
+  }
   mHandle = std::move(handle);
   SetSize(size);
   return true;
 }
 
 void HandleBase::SetSize(uint64_t aSize) {
-  RegisterAllocationMemoryReporter();
   mozilla::ipc::shared_memory::AllocationReporter::allocated -= mSize;
   mSize = aSize;
   mozilla::ipc::shared_memory::AllocationReporter::allocated += mSize;

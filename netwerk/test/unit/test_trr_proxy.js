@@ -20,7 +20,6 @@ const { MockRegistrar } = ChromeUtils.importESModule(
 
 registerCleanupFunction(async () => {
   Services.prefs.clearUserPref("network.proxy.type");
-  Services.prefs.clearUserPref("network.proxy.parse_pac_on_socket_process");
   trr_clear_prefs();
 });
 
@@ -97,14 +96,19 @@ async function do_test_pac_dnsResolve() {
   await new Promise(resolve => chan.asyncOpen(new ChannelListener(resolve)));
   await consolePromise;
 
-  let h2Port = Services.env.get("MOZHTTP2_PORT");
-  Assert.notEqual(h2Port, null);
-  Assert.notEqual(h2Port, "");
+  let trrServer = new TRRServer();
+  await trrServer.start();
+
+  registerCleanupFunction(async () => {
+    if (trrServer) {
+      await trrServer.stop();
+    }
+  });
 
   override.addIPOverride("foo.example.com", "127.0.0.1");
   Services.prefs.setCharPref(
     "network.trr.uri",
-    `https://foo.example.com:${h2Port}/doh?responseIP=127.0.0.1`
+    `https://foo.example.com:${trrServer.port()}/doh?responseIP=127.0.0.1`
   );
 
   trr_test_setup();
@@ -125,26 +129,12 @@ async function do_test_pac_dnsResolve() {
   await test_with("test1.com", 2);
   await test_with("test2.com", 3);
   await httpserv.stop();
+  if (trrServer) {
+    await trrServer.stop();
+    trrServer = null;
+  }
 }
 
 add_task(async function test_pac_dnsResolve() {
-  Services.prefs.setBoolPref(
-    "network.proxy.parse_pac_on_socket_process",
-    false
-  );
-
   await do_test_pac_dnsResolve();
-
-  if (mozinfo.socketprocess_networking) {
-    info("run test again");
-    Services.prefs.clearUserPref("network.proxy.type");
-    trr_clear_prefs();
-    Services.prefs.setBoolPref(
-      "network.proxy.parse_pac_on_socket_process",
-      true
-    );
-    Services.prefs.setIntPref("network.proxy.type", 2);
-    Services.prefs.setIntPref("network.proxy.type", 0);
-    await do_test_pac_dnsResolve();
-  }
 });

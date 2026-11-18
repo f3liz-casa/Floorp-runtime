@@ -11,17 +11,18 @@
  * on machines with several LSPs.
  */
 
+#include <rpc.h>
+#include <ws2spi.h>
+
 #include "nsExceptionHandler.h"
 #include "nsISupportsImpl.h"
 #include "nsThreadUtils.h"
-#include <rpc.h>
-#include <ws2spi.h>
 
 namespace mozilla {
 namespace crashreporter {
 
 class LSPAnnotationGatherer : public Runnable {
-  ~LSPAnnotationGatherer() {}
+  ~LSPAnnotationGatherer() = default;
 
  public:
   LSPAnnotationGatherer() : Runnable("crashreporter::LSPAnnotationGatherer") {}
@@ -32,7 +33,7 @@ class LSPAnnotationGatherer : public Runnable {
 };
 
 void LSPAnnotationGatherer::Annotate() {
-  Unused << CrashReporter::RecordAnnotationNSCString(
+  (void)CrashReporter::RecordAnnotationNSCString(
       CrashReporter::Annotation::Winsock_LSP, mString);
 }
 
@@ -50,7 +51,7 @@ LSPAnnotationGatherer::Run() {
     return NS_ERROR_FAILURE;
   }
 
-  auto byteArray = MakeUnique<char[]>(size);
+  auto byteArray = std::make_unique<char[]>(size);
   WSAPROTOCOL_INFOW* providers =
       reinterpret_cast<WSAPROTOCOL_INFOW*>(byteArray.get());
 
@@ -119,6 +120,7 @@ LSPAnnotationGatherer::Run() {
 }
 
 void LSPAnnotate() {
+  MOZ_ASSERT(XRE_IsParentProcess());
   nsCOMPtr<nsIRunnable> runnable(new LSPAnnotationGatherer());
   NS_DispatchBackgroundTask(runnable.forget());
 }

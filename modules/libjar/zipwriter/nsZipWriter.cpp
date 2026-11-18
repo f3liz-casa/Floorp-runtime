@@ -149,7 +149,7 @@ nsresult nsZipWriter::ReadFile(nsIFile* aFile) {
             inputStream->Close();
             return NS_ERROR_FILE_CORRUPTED;
           }
-          auto field = MakeUnique<char[]>(commentlen);
+          auto field = std::make_unique<char[]>(commentlen);
           NS_ENSURE_TRUE(field, NS_ERROR_OUT_OF_MEMORY);
           rv = seekable->Seek(nsISeekableStream::NS_SEEK_SET, seek + pos);
           if (NS_FAILED(rv)) {
@@ -550,7 +550,9 @@ NS_IMETHODIMP nsZipWriter::ProcessQueue(nsIRequestObserver* aObserver,
   mProcessContext = aContext;
   mInQueue = true;
 
-  if (mProcessObserver) mProcessObserver->OnStartRequest(nullptr);
+  if (nsCOMPtr<nsIRequestObserver> processObserver = mProcessObserver) {
+    processObserver->OnStartRequest(nullptr);
+  }
 
   BeginProcessingNextItem();
 

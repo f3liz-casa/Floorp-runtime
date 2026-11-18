@@ -1,6 +1,4 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- * vim: set ts=8 sts=2 et sw=2 tw=80:
- * This Source Code Form is subject to the terms of the Mozilla Public
+/* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
@@ -31,6 +29,9 @@ enum class SetSlotOptimizable { Yes, No, NotYet };
 // - Invalidating the MegamorphicCache, a property lookup cache for megamorphic
 //   property accesses. See the SMDOC comment in vm/Caches.h.
 //
+// - Popping realm fuses and object fuses. See the SMDOC comments in
+//   vm/GuardFuse.h and vm/ObjectFuse.h.
+//
 // There's also a testing mechanism that lets us write tests for Watchtower
 // hooks. See setWatchtowerCallback and addWatchtowerTarget defined in
 // TestingFunctions.cpp.
@@ -38,7 +39,8 @@ class Watchtower {
   static bool watchPropertyAddSlow(JSContext* cx, Handle<NativeObject*> obj,
                                    HandleId id);
   static bool watchPropertyRemoveSlow(JSContext* cx, Handle<NativeObject*> obj,
-                                      HandleId id, PropertyInfo propInfo);
+                                      HandleId id, PropertyInfo propInfo,
+                                      bool* wasTrackedObjectFuseProp);
   static bool watchPropertyFlagsChangeSlow(JSContext* cx,
                                            Handle<NativeObject*> obj,
                                            HandleId id, PropertyInfo propInfo,
@@ -53,16 +55,18 @@ class Watchtower {
   static bool watchFreezeOrSealSlow(JSContext* cx, Handle<NativeObject*> obj,
                                     IntegrityLevel level);
   static bool watchProtoChangeSlow(JSContext* cx, HandleObject obj);
-  static bool watchObjectSwapSlow(JSContext* cx, HandleObject a,
-                                  HandleObject b);
+  static bool watchesFirstDenseElementAddSlow(NativeObject* obj);
+  static void watchFirstDenseElementAddSlow(JSContext* cx, NativeObject* obj);
   static SetSlotOptimizable canOptimizeSetSlotSlow(JSContext* cx,
                                                    NativeObject* obj,
+                                                   PropertyKey key,
                                                    PropertyInfo prop);
 
  public:
   static bool watchesPropertyAdd(NativeObject* obj) {
-    return obj->hasAnyFlag(
-        {ObjectFlag::IsUsedAsPrototype, ObjectFlag::UseWatchtowerTestingLog});
+    return obj->hasAnyFlag({ObjectFlag::IsUsedAsPrototype,
+                            ObjectFlag::UseWatchtowerTestingLog,
+                            ObjectFlag::HasRealmFuseProperty});
   }
   static bool watchesPropertyRemove(NativeObject* obj) {
     return obj->hasAnyFlag(
@@ -85,18 +89,15 @@ class Watchtower {
         {ObjectFlag::IsUsedAsPrototype, ObjectFlag::UseWatchtowerTestingLog});
   }
   static bool watchesProtoChange(JSObject* obj) {
-    return obj->hasAnyFlag(
-        {ObjectFlag::IsUsedAsPrototype, ObjectFlag::UseWatchtowerTestingLog});
+    return obj->hasAnyFlag({ObjectFlag::IsUsedAsPrototype,
+                            ObjectFlag::UseWatchtowerTestingLog,
+                            ObjectFlag::HasRealmFuseProperty});
   }
-  static bool watchesObjectSwap(JSObject* a, JSObject* b) {
-    auto watches = [](JSObject* obj) {
-      return obj->hasAnyFlag({ObjectFlag::IsUsedAsPrototype,
-                              ObjectFlag::UseWatchtowerTestingLog,
-                              ObjectFlag::HasObjectFuse});
-    };
-    return watches(a) || watches(b);
+  static bool watchesFirstDenseElementAdd(NativeObject* obj) {
+    return obj->hasRealmFuseProperty() && watchesFirstDenseElementAddSlow(obj);
   }
   static SetSlotOptimizable canOptimizeSetSlot(JSContext* cx, NativeObject* obj,
+                                               PropertyKey key,
                                                PropertyInfo prop) {
     if (obj->hasAnyFlag({ObjectFlag::HasRealmFuseProperty,
                          ObjectFlag::UseWatchtowerTestingLog})) {
@@ -105,7 +106,7 @@ class Watchtower {
     if (!obj->hasObjectFuse()) {
       return SetSlotOptimizable::Yes;
     }
-    return canOptimizeSetSlotSlow(cx, obj, prop);
+    return canOptimizeSetSlotSlow(cx, obj, key, prop);
   }
 
   static bool watchPropertyAdd(JSContext* cx, Handle<NativeObject*> obj,
@@ -116,12 +117,17 @@ class Watchtower {
     return watchPropertyAddSlow(cx, obj, id);
   }
   static bool watchPropertyRemove(JSContext* cx, Handle<NativeObject*> obj,
-                                  HandleId id, PropertyInfo propInfo) {
+                                  HandleId id, PropertyInfo propInfo,
+                                  bool* wasTrackedObjectFuseProp) {
+    MOZ_ASSERT(!*wasTrackedObjectFuseProp);
     if (MOZ_LIKELY(!watchesPropertyRemove(obj))) {
       return true;
     }
-    return watchPropertyRemoveSlow(cx, obj, id, propInfo);
+    return watchPropertyRemoveSlow(cx, obj, id, propInfo,
+                                   wasTrackedObjectFuseProp);
   }
+  static void finishPropertyRemove(JSContext* cx, NativeObject* obj,
+                                   PropertyInfo propInfo);
   static bool watchPropertyFlagsChange(JSContext* cx, Handle<NativeObject*> obj,
                                        HandleId id, PropertyInfo propInfo,
                                        PropertyFlags newFlags) {
@@ -159,12 +165,20 @@ class Watchtower {
     return watchProtoChangeSlow(cx, obj);
   }
 
-  static bool watchObjectSwap(JSContext* cx, HandleObject a, HandleObject b) {
-    if (MOZ_LIKELY(!watchesObjectSwap(a, b))) {
-      return true;
+  // Called when a dense element is added to an object with a dense elements
+  // capacity of zero, before allocating the elements.
+  static void watchFirstDenseElementAdd(JSContext* cx, NativeObject* obj) {
+    MOZ_ASSERT(obj->getDenseCapacity() == 0);
+    if (MOZ_LIKELY(!watchesFirstDenseElementAdd(obj))) {
+      return;
     }
-    return watchObjectSwapSlow(cx, a, b);
+    watchFirstDenseElementAddSlow(cx, obj);
   }
+
+  // Invalidating Ion scripts that bake in values from the global lexical
+  // environment when a REPL-mode redeclaration changes them.
+  static void watchGlobalLexicalRedeclaration(JSContext* cx,
+                                              Handle<NativeObject*> obj);
 };
 
 }  // namespace js

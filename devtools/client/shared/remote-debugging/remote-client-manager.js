@@ -22,12 +22,12 @@ class RemoteClientManager {
   /**
    * Store a remote client that is already connected.
    *
-   * @param {String} id
+   * @param {string} id
    *        Remote runtime id (see devtools/client/aboutdebugging/src/types).
-   * @param {String} type
+   * @param {string} type
    *        Remote runtime type (see devtools/client/aboutdebugging/src/types).
    * @param {DevToolsClient} client
-   * @param {Object} runtimeInfo
+   * @param {object} runtimeInfo
    *        See runtimeInfo type from client/aboutdebugging/src/types/runtime.js
    */
   setClient(id, type, client, runtimeInfo) {
@@ -130,12 +130,10 @@ class RemoteClientManager {
    * Cleanup all closed clients when a "closed" notification is received from a client.
    */
   _onClientClosed() {
-    const closedClientKeys = [...this._clients.keys()].filter(key => {
-      return this._clients.get(key)._transportClosed;
-    });
-
-    for (const key of closedClientKeys) {
-      this._removeClientByKey(key);
+    for (const key of this._clients.keys()) {
+      if (this._clients.get(key)._transportClosed) {
+        this._removeClientByKey(key);
+      }
     }
   }
 }

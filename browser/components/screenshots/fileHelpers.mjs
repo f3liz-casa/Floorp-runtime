@@ -25,7 +25,8 @@ ChromeUtils.defineESModuleGetters(lazy, {
   DownloadLastDir: "resource://gre/modules/DownloadLastDir.sys.mjs",
   DownloadPaths: "resource://gre/modules/DownloadPaths.sys.mjs",
   FileUtils: "resource://gre/modules/FileUtils.sys.mjs",
-  ScreenshotsUtils: "resource:///modules/ScreenshotsUtils.sys.mjs",
+  ScreenshotsUtils:
+    "moz-src:///browser/components/screenshots/ScreenshotsUtils.sys.mjs",
 });
 
 XPCOMUtils.defineLazyPreferenceGetter(
@@ -70,6 +71,7 @@ function checkFilenameLength(filename, maxFilenameLength) {
 
 /**
  * Gets the filename automatically or by a file picker depending on "browser.download.useDownloadDir"
+ *
  * @param filenameTitle The title of the current page
  * @param browser The current browser
  * @returns Path of the chosen filename
@@ -98,7 +100,10 @@ export async function getFilename(filenameTitle, browser) {
   ).toISOString();
   const filenameDate = currentDateTime.substring(0, 10);
   const filenameTime = currentDateTime.substring(11, 19).replace(/:/g, "-");
-  let clipFilename = `Screenshot ${filenameDate} at ${filenameTime} ${filenameTitle}`;
+  let clipFilename = `Screenshot ${filenameDate} at ${filenameTime}`;
+  if (filenameTitle.length) {
+    clipFilename += " " + filenameTitle;
+  }
 
   // allow space for a potential ellipsis and the extension
   let maxNameStemLength = maxFilenameLength - "[...].png".length;
@@ -138,7 +143,7 @@ export async function getFilename(filenameTitle, browser) {
       saveAsType: 0,
       file,
     };
-    let accepted = await promiseTargetFile(fpParams, browser.ownerGlobal);
+    let accepted = await promiseTargetFile(fpParams, browser.documentGlobal);
     if (!accepted) {
       return { filename: null, accepted };
     }
@@ -149,6 +154,7 @@ export async function getFilename(filenameTitle, browser) {
 
 /**
  * Gets the path to the preferred screenshots directory if "browser.download.useDownloadDir" is true
+ *
  * @returns Path to preferred screenshots directory or null if not available
  */
 export async function getDownloadDirectory() {
@@ -166,6 +172,7 @@ export async function getDownloadDirectory() {
 /**
  * Structure for holding info about a URL and the target filename it should be
  * saved to.
+ *
  * @param aFileName The target filename
  */
 class FileInfo {
@@ -265,14 +272,15 @@ function appendFiltersForContentType(
 /**
  * Given the Filepicker Parameters (aFpP), show the file picker dialog,
  * prompting the user to confirm (or change) the fileName.
+ *
  * @param aFpP
  *        A structure (see definition in internalSave(...) method)
  *        containing all the data used within this method.
  * @param win
  *        The window used for opening the file picker
- * @return Promise
- * @resolve a boolean. When true, it indicates that the file picker dialog
- *          is accepted.
+ * @returns {Promise<boolean>}
+ *   Resolves when the dialog is closed. When resolved to true, it indicates that
+ *   the file picker dialog is accepted.
  */
 function promiseTargetFile(aFpP, win) {
   return (async function () {

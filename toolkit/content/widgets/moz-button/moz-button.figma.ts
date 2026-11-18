@@ -1,118 +1,42 @@
-import figma, { html } from "@figma/code-connect/html";
+// url=https://www.figma.com/design/PqfaOcMGbX5liEXTTUzeYX/Nova-Components--Experimental-?node-id=8849-25406
+// Nova Components - Button
 
-const example = props => html`
-  <moz-button
-    type=${props.type}
-    disabled=${props.disabled}
-    size=${props.size}
-    iconsrc=${props.iconSrc}
-    >${props.label}</moz-button
-  >
-`;
+import figma from "figma";
 
-// Desktop V3 (newest)
-figma.connect(
-  "https://www.figma.com/design/3WoKOSGtaSjhUHKldHCXbc/Desktop-Components-3?node-id=1-255",
-  {
-    props: {
-      iconSrc: figma.boolean("Show icon", {
-        true: "chrome://example.svg",
-        false: undefined,
-      }),
-      label: figma.string("Label"),
-      type: figma.enum("Type", {
-        Primary: "primary",
-        Destructive: "destructive",
-        Ghost: "ghost",
-      }),
-      disabled: figma.enum("State", {
-        Disabled: true,
-      }),
-      size: figma.enum("Size", {
-        Small: "small",
-      }),
-    },
-    example,
-  }
-);
+const label = figma.selectedInstance.getString("Label");
+const showIcon = figma.selectedInstance.getBoolean("Show icon");
+const showIconEnd = figma.selectedInstance.getBoolean("Show icon end");
+const iconSrc = showIcon || showIconEnd ? "chrome://example.svg" : undefined;
+const iconPosition = showIconEnd ? "end" : undefined;
+const type = figma.selectedInstance.getEnum("Type", {
+  Default: "default",
+  Primary: "primary",
+  Destructive: "destructive",
+  Ghost: "ghost",
+  Muted: "muted",
+  Neutral: "neutral",
+});
+const disabled = figma.selectedInstance.getEnum("State", {
+  Disabled: true,
+});
+const size = figma.selectedInstance.getEnum("Size", {
+  Default: "default",
+  Small: "small",
+  Large: "large",
+});
+const attention = figma.selectedInstance.getBoolean("Show attention dot");
 
-// Icon Button
-figma.connect(
-  "https://www.figma.com/design/3WoKOSGtaSjhUHKldHCXbc/Desktop-Components-3?node-id=1-589",
-  {
-    props: {
-      iconSrc: "chrome://example.svg",
-      type: figma.boolean("Ghost", {
-        true: "icon ghost",
-        false: "icon",
-      }),
-      attention: figma.boolean("Show attention dot"),
-      disabled: figma.enum("State", {
-        Disabled: true,
-      }),
-      size: figma.enum("Size", {
-        Small: "small",
-      }),
-    },
-    example: props => html`
-      <moz-button
-        type=${props.type}
-        disabled=${props.disabled}
-        size=${props.size}
-        iconsrc=${props.iconSrc}
-        title="the hidden label"
-        attention=${props.attention}
-      ></moz-button>
-    `,
-  }
-);
-
-// Desktop Components text only (deprecated)
-figma.connect(
-  "https://www.figma.com/design/2ruSnPauajQGprFy6K333u/Desktop-Components?node-id=800-5099",
-  {
-    props: {
-      type: figma.enum("Type", {
-        Primary: "primary",
-        Destructive: "destructive",
-      }),
-      size: figma.enum("Size", {
-        Small: "small",
-      }),
-      disabled: figma.boolean("Disabled"),
-      label: "Label",
-      // This is a horrible hack to share the template...
-      iconSrc: figma.boolean("Disabled", {
-        true: undefined,
-        false: undefined,
-      }),
-    },
-    example,
-  }
-);
-
-// Desktop Components icon only (deprecated)
-figma.connect(
-  "https://www.figma.com/design/2ruSnPauajQGprFy6K333u/Desktop-Components?node-id=1103-14274&m=dev",
-  {
-    props: {
-      disabled: figma.enum("State", {
-        Disabled: true,
-      }),
-      size: figma.enum("Size", {
-        Small: "small",
-      }),
-      type: figma.boolean("Background", {
-        true: "icon",
-        false: "ghost icon",
-      }),
-      iconSrc: "chrome://example.svg",
-      // This is a horrible hack to share the template...
-      label: figma.boolean("Background", {
-        true: undefined,
-        false: undefined,
-      }),
-    },
-    example,
-  }
-);
+export default {
+  id: "moz-button",
+  example: figma.code`
+    <moz-button
+      type="${type}"
+      size="${size}"
+      ${disabled ? "disabled" : ""}
+      ${iconSrc ? `iconsrc="${iconSrc}"` : ""}
+      ${iconPosition ? `iconposition="${iconPosition}"` : ""}
+      ${attention ? "attention" : ""}
+      label="${label}"
+    ></moz-button>
+  `,
+};

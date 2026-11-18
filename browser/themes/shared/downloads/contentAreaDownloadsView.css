@@ -5,7 +5,7 @@
 @import url("chrome://global/skin/in-content/common.css");
 
 #contentAreaDownloadsView {
-  padding: 18px;
+  padding: var(--space-xlarge);
 }
 
 #downloadsListBox:empty {
@@ -13,8 +13,7 @@
   background-color: transparent;
 }
 
-.downloadButton:not([disabled="true"]):hover,
-.downloadButton:not([disabled="true"]):hover:active,
+.downloadButton:not([disabled]):hover,
 .downloadButton:not([disabled]):hover:active {
   background: transparent;
   border: none;

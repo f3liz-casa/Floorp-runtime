@@ -1,16 +1,14 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set sw=2 ts=8 et tw=80 : */
-
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "EarlyHintsService.h"
+
 #include "EarlyHintPreconnect.h"
 #include "EarlyHintPreloader.h"
-#include "mozilla/dom/LinkStyle.h"
 #include "mozilla/PreloadHashKey.h"
 #include "mozilla/StoragePrincipalHelper.h"
+#include "mozilla/dom/LinkStyle.h"
 #include "nsContentUtils.h"
 #include "nsIChannel.h"
 #include "nsICookieJarSettings.h"
@@ -32,6 +30,7 @@ EarlyHintsService::~EarlyHintsService() = default;
 void EarlyHintsService::EarlyHint(
     const nsACString& aLinkHeader, nsIURI* aBaseURI, nsIChannel* aChannel,
     const nsACString& aReferrerPolicy, const nsACString& aCSPHeader,
+    const nsACString& aConnectionAllowlistHeader,
     dom::CanonicalBrowsingContext* aLoadingBrowsingContext) {
   mEarlyHintsCount++;
   if (mFirstEarlyHint.isNothing()) {
@@ -98,13 +97,23 @@ void EarlyHintsService::EarlyHint(
       EarlyHintPreloader::MaybeCreateAndInsertPreload(
           mOngoingEarlyHints, linkHeader, aBaseURI, principal,
           cookieJarSettings, aReferrerPolicy, aCSPHeader,
-          loadInfo->GetBrowsingContextID(), aLoadingBrowsingContext, false);
+          aConnectionAllowlistHeader, loadInfo->GetBrowsingContextID(),
+          aLoadingBrowsingContext, false);
     } else if (linkHeader.mRel.LowerCaseEqualsLiteral("modulepreload")) {
       mLinkType |= dom::LinkStyle::eMODULE_PRELOAD;
       EarlyHintPreloader::MaybeCreateAndInsertPreload(
           mOngoingEarlyHints, linkHeader, aBaseURI, principal,
           cookieJarSettings, aReferrerPolicy, aCSPHeader,
-          loadInfo->GetBrowsingContextID(), aLoadingBrowsingContext, true);
+          aConnectionAllowlistHeader, loadInfo->GetBrowsingContextID(),
+          aLoadingBrowsingContext, true);
+    } else if (linkHeader.mRel.LowerCaseEqualsLiteral(
+                   "compression-dictionary")) {
+      mLinkType |= dom::LinkStyle::eCOMPRESSION_DICTIONARY;
+      EarlyHintPreloader::MaybeCreateAndInsertPreload(
+          mOngoingEarlyHints, linkHeader, aBaseURI, principal,
+          cookieJarSettings, aReferrerPolicy, aCSPHeader,
+          aConnectionAllowlistHeader, loadInfo->GetBrowsingContextID(),
+          aLoadingBrowsingContext, true);
     }
   }
 }

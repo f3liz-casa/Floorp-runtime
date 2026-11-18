@@ -6,4 +6,3 @@ support-files = ["dummy.html"]
 ["browser_test_powerMetrics.js"]
 
 ["browser_test_procinfo.js"]
-skip-if = ["ccov && os == 'linux'"] # Bug 1608080

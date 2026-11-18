@@ -1,4 +1,3 @@
-// -*- indent-tabs-mode: nil; js-indent-level: 2 -*-
 // Any copyright is dedicated to the Public Domain.
 // http://creativecommons.org/publicdomain/zero/1.0/
 
@@ -177,11 +176,8 @@ function startClient(port, beConservative, expectSuccess) {
       );
       equal(req.responseText, "OK", "response text should be 'OK'");
 
-      // Only check telemetry if network process is disabled.
-      if (!mozinfo.socketprocess_networking) {
-        HandshakeTelemetryHelpers.checkSuccess(flavors);
-        HandshakeTelemetryHelpers.checkEmpty(nonflavors);
-      }
+      HandshakeTelemetryHelpers.checkSuccess(flavors);
+      HandshakeTelemetryHelpers.checkEmpty(nonflavors);
 
       resolve();
     };
@@ -191,12 +187,12 @@ function startClient(port, beConservative, expectSuccess) {
         `should ${!expectSuccess ? "" : "not "}have gotten an error`
       );
 
-      // Only check telemetry if network process is disabled.
-      if (!mozinfo.socketprocess_networking) {
-        // 98 is SSL_ERROR_PROTOCOL_VERSION_ALERT (see sslerr.h)
-        HandshakeTelemetryHelpers.checkEntry(flavors, 98, 1);
-        HandshakeTelemetryHelpers.checkEmpty(nonflavors);
-      }
+      HandshakeTelemetryHelpers.checkEntry(
+        flavors,
+        "SSL_ERROR_PROTOCOL_VERSION_ALERT",
+        1
+      );
+      HandshakeTelemetryHelpers.checkEmpty(nonflavors);
 
       resolve();
     };
@@ -209,7 +205,7 @@ add_task(async function () {
   Services.prefs.setIntPref("security.tls.version.max", 4);
   Services.prefs.setCharPref("network.dns.localDomains", hostname);
   Services.prefs.setIntPref("network.http.speculative-parallel-limit", 0);
-  let cert = getTestServerCertificate();
+  let cert = await getTestServerCertificate();
 
   // First run a server that accepts TLS 1.2 and 1.3. A conservative client
   // should succeed in connecting.

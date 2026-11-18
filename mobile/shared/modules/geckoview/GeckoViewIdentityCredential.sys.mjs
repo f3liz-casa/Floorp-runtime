@@ -7,12 +7,13 @@ import { GeckoViewUtils } from "resource://gre/modules/GeckoViewUtils.sys.mjs";
 const lazy = {};
 
 ChromeUtils.defineESModuleGetters(lazy, {
-  GeckoViewPrompter: "resource://gre/modules/GeckoViewPrompter.sys.mjs",
+  GeckoViewPrompter:
+    "moz-src:///mobile/shared/components/geckoview/GeckoViewPrompter.sys.mjs",
 });
 
 export const GeckoViewIdentityCredential = {
   async onShowProviderPrompt(aBrowser, providers, resolve, reject) {
-    const prompt = new lazy.GeckoViewPrompter(aBrowser.ownerGlobal);
+    const prompt = new lazy.GeckoViewPrompter(aBrowser.documentGlobal);
     debug`onShowProviderPrompt`;
 
     prompt.asyncShowPrompt(
@@ -32,7 +33,7 @@ export const GeckoViewIdentityCredential = {
     );
   },
   async onShowAccountsPrompt(aBrowser, accounts, resolve, reject) {
-    const prompt = new lazy.GeckoViewPrompter(aBrowser.ownerGlobal);
+    const prompt = new lazy.GeckoViewPrompter(aBrowser.documentGlobal);
     debug`onShowAccountsPrompt`;
 
     prompt.asyncShowPrompt(
@@ -61,7 +62,7 @@ export const GeckoViewIdentityCredential = {
     resolve,
     reject
   ) {
-    const prompt = new lazy.GeckoViewPrompter(aBrowser.ownerGlobal);
+    const prompt = new lazy.GeckoViewPrompter(aBrowser.documentGlobal);
     debug`onShowPolicyPrompt`;
 
     prompt.asyncShowPrompt(

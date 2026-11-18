@@ -1,4 +1,7 @@
 [DEFAULT]
+run-if = [
+  "os != 'android'",
+]
 head = "head_history.js"
 
 ["test_async_history_api.js"]
@@ -18,6 +21,8 @@ head = "head_history.js"
 ["test_insertMany.js"]
 
 ["test_insert_null_title.js"]
+
+["test_insert_userContextId.js"]
 
 ["test_remove.js"]
 

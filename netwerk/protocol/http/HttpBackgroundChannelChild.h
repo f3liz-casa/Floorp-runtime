@@ -1,6 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set sw=2 ts=8 et tw=80 : */
-
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -8,8 +5,8 @@
 #ifndef mozilla_net_HttpBackgroundChannelChild_h
 #define mozilla_net_HttpBackgroundChannelChild_h
 
-#include "mozilla/net/PHttpBackgroundChannelChild.h"
 #include "mozilla/ipc/Endpoint.h"
+#include "mozilla/net/PHttpBackgroundChannelChild.h"
 #include "nsIRunnable.h"
 #include "nsTArray.h"
 
@@ -18,15 +15,12 @@ using mozilla::ipc::IPCResult;
 namespace mozilla {
 namespace net {
 
-class PBackgroundDataBridgeChild;
-class BackgroundDataBridgeChild;
 class HttpChannelChild;
 
 class HttpBackgroundChannelChild final : public PHttpBackgroundChannelChild {
   friend class BackgroundChannelCreateCallback;
   friend class PHttpBackgroundChannelChild;
   friend class HttpChannelChild;
-  friend class BackgroundDataBridgeChild;
 
  public:
   explicit HttpBackgroundChannelChild();
@@ -40,9 +34,6 @@ class HttpBackgroundChannelChild final : public PHttpBackgroundChannelChild {
   // Callback while the associated HttpChannelChild is not going to
   // handle any incoming messages over background channel.
   void OnChannelClosed();
-
-  // Return true if OnChannelClosed has been called.
-  bool ChannelClosed();
 
   // Callback when OnStartRequest is received and handled by HttpChannelChild.
   // Enqueued messages in background channel will be flushed.
@@ -63,9 +54,7 @@ class HttpBackgroundChannelChild final : public PHttpBackgroundChannelChild {
   IPCResult RecvOnTransportAndData(const nsresult& aChannelStatus,
                                    const nsresult& aTransportStatus,
                                    const uint64_t& aOffset,
-                                   const uint32_t& aCount,
                                    const nsACString& aData,
-                                   const bool& aDataFromSocketProcess,
                                    const TimeStamp& aOnDataAvailableStart);
 
   IPCResult RecvOnStopRequest(
@@ -73,10 +62,7 @@ class HttpBackgroundChannelChild final : public PHttpBackgroundChannelChild {
       const TimeStamp& aLastActiveTabOptHit,
       const nsHttpHeaderArray& aResponseTrailers,
       nsTArray<ConsoleReportCollected>&& aConsoleReports,
-      const bool& aFromSocketProcess, const TimeStamp& aOnStopRequestStart);
-
-  IPCResult RecvOnConsoleReport(
-      nsTArray<ConsoleReportCollected>&& aConsoleReports);
+      const TimeStamp& aOnStopRequestStart);
 
   IPCResult RecvOnAfterLastPart(const nsresult& aStatus);
 
@@ -98,8 +84,6 @@ class HttpBackgroundChannelChild final : public PHttpBackgroundChannelChild {
   IPCResult RecvDetachStreamFilters();
 
   void ActorDestroy(ActorDestroyReason aWhy) override;
-
-  void CreateDataBridge(Endpoint<PBackgroundDataBridgeChild>&& aEndpoint);
 
  private:
   virtual ~HttpBackgroundChannelChild();
@@ -131,23 +115,6 @@ class HttpBackgroundChannelChild final : public PHttpBackgroundChannelChild {
   // Should be flushed after OnStartRequest is received and handled.
   // Should only access on STS thread.
   nsTArray<nsCOMPtr<nsIRunnable>> mQueuedRunnables;
-
-  enum ODASource {
-    ODA_PENDING = 0,      // ODA is pending
-    ODA_FROM_PARENT = 1,  // ODA from parent process.
-    ODA_FROM_SOCKET = 2   // response coming from the network
-  };
-  // We need to know the first ODA will be from socket process or parent
-  // process. This information is from OnStartRequest message from parent
-  // process.
-  ODASource mFirstODASource;
-
-  // Indicate whether HttpChannelChild::ProcessOnStopRequest is called.
-  bool mOnStopRequestCalled = false;
-
-  // This is used when we receive the console report from parent process, but
-  // still not get the OnStopRequest from socket process.
-  std::function<void()> mConsoleReportTask;
 };
 
 }  // namespace net

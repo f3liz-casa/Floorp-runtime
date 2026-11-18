@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -34,8 +32,8 @@ ChannelMach::ChannelMach(mozilla::UniqueMachReceiveRight receive,
                          base::ProcessId other_pid)
     : receive_port_(std::move(receive)),
       send_port_(std::move(send)),
-      send_buffer_(mozilla::MakeUnique<char[]>(Channel::kReadBufferSize)),
-      receive_buffer_(mozilla::MakeUnique<char[]>(Channel::kReadBufferSize)),
+      send_buffer_(std::make_unique<char[]>(Channel::kReadBufferSize)),
+      receive_buffer_(std::make_unique<char[]>(Channel::kReadBufferSize)),
       other_pid_(other_pid) {
   EnqueueHelloMessage();
 }
@@ -358,8 +356,7 @@ bool ChannelMach::ProcessIncomingMessage() {
     return false;
   }
 
-  mozilla::UniquePtr<Message> message =
-      mozilla::MakeUnique<Message>(payload.data(), payload.size());
+  auto message = std::make_unique<Message>(payload.data(), payload.size());
 
   // Transfer ownership of the voucher port into the IPC::Message.
   if (MACH_MSGH_BITS_VOUCHER(header->msgh_bits) == MACH_MSG_TYPE_MOVE_SEND) {
@@ -393,7 +390,7 @@ bool ChannelMach::ProcessIncomingMessage() {
 
 #ifdef IPC_MESSAGE_DEBUG_EXTRA
   DLOG(INFO) << "received message on channel @" << this << " with type "
-             << m.type();
+             << message->type();
 #endif
 
   if (message->routing_id() == MSG_ROUTING_NONE &&
@@ -758,8 +755,7 @@ bool ChannelMach::IsValidHandle(const ChannelHandle& handle) {
           std::get_if<mozilla::UniqueMachReceiveRight>(&handle)) {
     return !!*server;
   }
-  if (const auto* client =
-          std::get_if<mozilla::UniqueMachReceiveRight>(&handle)) {
+  if (const auto* client = std::get_if<mozilla::UniqueMachSendRight>(&handle)) {
     return !!*client;
   }
   return false;

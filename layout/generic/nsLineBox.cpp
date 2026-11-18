@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -73,14 +71,13 @@ nsLineBox::~nsLineBox() {
   Cleanup();
 }
 
-nsLineBox* NS_NewLineBox(PresShell* aPresShell, nsIFrame* aFrame,
-                         bool aIsBlock) {
-  return new (aPresShell) nsLineBox(aFrame, 1, aIsBlock);
+nsLineBox* NS_NewLineBox(nsIFrame* aFrame, bool aIsBlock) {
+  return new nsLineBox(aFrame, 1, aIsBlock);
 }
 
-nsLineBox* NS_NewLineBox(PresShell* aPresShell, nsLineBox* aFromLine,
-                         nsIFrame* aFrame, int32_t aCount) {
-  nsLineBox* newLine = new (aPresShell) nsLineBox(aFrame, aCount, false);
+nsLineBox* NS_NewLineBox(nsLineBox* aFromLine, nsIFrame* aFrame,
+                         int32_t aCount) {
+  nsLineBox* newLine = new nsLineBox(aFrame, aCount, false);
   newLine->NoteFramesMovedFrom(aFromLine);
   newLine->mContainerSize = aFromLine->mContainerSize;
   return newLine;
@@ -98,8 +95,8 @@ void nsLineBox::StealHashTableFrom(nsLineBox* aFromLine,
   MOZ_ASSERT(!mFlags.mHasHashedFrames);
   MOZ_ASSERT(GetChildCount() >= int32_t(aFromLineNewCount));
   mFrames = aFromLine->mFrames;
-  mFlags.mHasHashedFrames = 1;
-  aFromLine->mFlags.mHasHashedFrames = 0;
+  mFlags.mHasHashedFrames = true;
+  aFromLine->mFlags.mHasHashedFrames = false;
   aFromLine->mChildCount = aFromLineNewCount;
   // remove aFromLine's frames that aren't on this line
   nsIFrame* f = aFromLine->mFirstChild;
@@ -123,7 +120,7 @@ void nsLineBox::NoteFramesMovedFrom(nsLineBox* aFromLine) {
       StealHashTableFrom(aFromLine, fromNewCount);
     } else {
       delete aFromLine->mFrames;
-      aFromLine->mFlags.mHasHashedFrames = 0;
+      aFromLine->mFlags.mHasHashedFrames = false;
       aFromLine->mChildCount = fromNewCount;
     }
   } else {
@@ -151,13 +148,13 @@ void nsLineBox::NoteFramesMovedFrom(nsLineBox* aFromLine) {
   }
 }
 
-void* nsLineBox::operator new(size_t sz, PresShell* aPresShell) {
-  return aPresShell->AllocateByObjectID(eArenaObjectID_nsLineBox, sz);
+void* nsLineBox::operator new(size_t sz) {
+  return FrameArena::Allocate(eArenaObjectID_nsLineBox, sz);
 }
 
-void nsLineBox::Destroy(PresShell* aPresShell) {
+void nsLineBox::Destroy() {
   this->nsLineBox::~nsLineBox();
-  aPresShell->FreeByObjectID(eArenaObjectID_nsLineBox, this);
+  FrameArena::Free(eArenaObjectID_nsLineBox, this);
 }
 
 void nsLineBox::Cleanup() {
@@ -215,13 +212,15 @@ void nsLineBox::List(FILE* out, const char* aPrefix,
   str += "line";
   nsIFrame::ListPtr(str, aFlags, this, "@");
   str += nsPrintfCString(
-      " count=%d state=%s,%s,%s,%s,%s,%s,clear-before:%s,clear-after:%s ",
+      " count=%d state=%s,%s,%s,%s,%s,%s,%s,%s,clear-before:%s,clear-after:%s ",
       GetChildCount(), IsBlock() ? "block" : "inline",
       IsDirty() ? "dirty" : "clean",
       IsPreviousMarginDirty() ? "prevmargindirty" : "prevmarginclean",
       IsImpactedByFloat() ? "impacted" : "not-impacted",
       IsLineWrapped() ? "wrapped" : "not-wrapped",
       HasForcedLineBreakAfter() ? "forced-break-after" : "no-break",
+      TextBoxTrimStartApplied() ? "trim-start" : "no-trim-start",
+      TextBoxTrimEndApplied() ? "trim-end" : "no-trim-end",
       UsedClearToString(FloatClearTypeBefore()),
       UsedClearToString(FloatClearTypeAfter()));
 
@@ -256,13 +255,10 @@ void nsLineBox::List(FILE* out, const char* aPrefix,
   }
   fprintf_stderr(out, "%s<\n", str.get());
 
-  nsIFrame* frame = mFirstChild;
-  int32_t n = GetChildCount();
   nsCString pfx(aPrefix);
   pfx += "  ";
-  while (--n >= 0) {
+  for (nsIFrame* frame : ChildFrames()) {
     frame->List(out, pfx.get(), aFlags);
-    frame = frame->GetNextSibling();
   }
 
   if (HasFloats()) {
@@ -329,8 +325,7 @@ bool nsLineBox::IsEmpty() const {
     return mFirstChild->IsEmpty();
   }
 
-  nsIFrame* kid = mFirstChild;
-  for (int32_t n = GetChildCount(); n > 0; --n, kid = kid->GetNextSibling()) {
+  for (nsIFrame* kid : ChildFrames()) {
     if (!kid->IsEmpty()) {
       return false;
     }
@@ -354,9 +349,8 @@ bool nsLineBox::CachedIsEmpty() {
   if (IsBlock()) {
     result = mFirstChild->CachedIsEmpty();
   } else {
-    nsIFrame* kid = mFirstChild;
     result = true;
-    for (int32_t n = GetChildCount(); n > 0; --n, kid = kid->GetNextSibling()) {
+    for (nsIFrame* kid : ChildFrames()) {
       if (!kid->CachedIsEmpty()) {
         result = false;
         break;
@@ -374,8 +368,6 @@ bool nsLineBox::CachedIsEmpty() {
 
 void nsLineBox::DeleteLineList(nsPresContext* aPresContext, nsLineList& aLines,
                                nsFrameList* aFrames, DestroyContext& aContext) {
-  PresShell* presShell = aPresContext->PresShell();
-
   // Keep our line list and frame list up to date as we remove frames, in case
   // something wants to traverse the frame tree while we're destroying.
   //
@@ -397,7 +389,7 @@ void nsLineBox::DeleteLineList(nsPresContext* aPresContext, nsLineList& aLines,
     MOZ_DIAGNOSTIC_ASSERT(line == aLines.back(),
                           "destroying child frames messed up our lines!");
     aLines.pop_back();
-    line->Destroy(presShell);
+    line->Destroy();
   }
 }
 
@@ -600,7 +592,7 @@ Result<nsILineIterator::LineInfo, nsresult> nsLineIterator::GetLine(
   return structure;
 }
 
-int32_t nsLineIterator::FindLineContaining(nsIFrame* aFrame,
+int32_t nsLineIterator::FindLineContaining(const nsIFrame* aFrame,
                                            int32_t aStartLine) {
   const nsLineBox* line = GetLineAt(aStartLine);
   MOZ_ASSERT(line, "aStartLine out of range");
@@ -666,14 +658,11 @@ nsLineIterator::FindFrameAt(int32_t aLineNumber, nsPoint aPos,
 
   LineFrameFinder finder(aPos, line->mContainerSize, line->mWritingMode,
                          mRightToLeft);
-  int32_t n = line->GetChildCount();
-  nsIFrame* frame = line->mFirstChild;
-  while (n--) {
+  for (nsIFrame* frame : line->ChildFrames()) {
     finder.Scan(frame);
     if (finder.IsDone()) {
       break;
     }
-    frame = frame->GetNextSibling();
   }
   finder.Finish(aFrameFound, aPosIsBeforeFirstFrame, aPosIsAfterLastFrame);
   return NS_OK;

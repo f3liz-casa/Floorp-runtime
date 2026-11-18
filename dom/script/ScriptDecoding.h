@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -19,13 +17,14 @@
 #include "mozilla/Encoding.h"    // mozilla::Decoder
 #include "mozilla/Span.h"        // mozilla::Span
 #include "mozilla/UniquePtr.h"   // mozilla::UniquePtr
+#include "mozilla/Utf8.h"
 
 namespace mozilla::dom {
 
 template <typename Unit>
 struct ScriptDecoding {
-  static_assert(std::is_same<Unit, char16_t>::value ||
-                    std::is_same<Unit, Utf8Unit>::value,
+  static_assert(std::is_same_v<Unit, char16_t> ||
+                    std::is_same_v<Unit, Utf8Unit>,
                 "must be either UTF-8 or UTF-16");
 };
 

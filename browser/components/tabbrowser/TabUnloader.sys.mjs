@@ -1,4 +1,3 @@
-/* -*- mode: js; indent-tabs-mode: nil; js-indent-level: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -9,9 +8,9 @@
  * accounts for when the tab was last used, how many resources the tab uses,
  * and whether the tab is likely to affect the user if it is closed.
  */
-const lazy = {};
+import { XPCOMUtils } from "resource://gre/modules/XPCOMUtils.sys.mjs";
 
-ChromeUtils.defineESModuleGetters(lazy, {
+const lazy = XPCOMUtils.declareLazy({
   PrivateBrowsingUtils: "resource://gre/modules/PrivateBrowsingUtils.sys.mjs",
   webrtcUI: "resource:///modules/webrtcUI.sys.mjs",
 });
@@ -317,6 +316,7 @@ export var TabUnloader = {
 
   /**
    * Select and discard one tab.
+   *
    * @returns true if a tab was unloaded, otherwise false.
    */
   async unloadLeastRecentlyUsedTab(
@@ -350,8 +350,9 @@ export var TabUnloader = {
   ]),
 };
 
-/** Determine the base weight of the tab without accounting for
- *  resource use
+/**
+ * Determine the base weight of the tab without accounting for resource use.
+ *
  * @param tab tab to use
  * @returns the tab's base weight
  */

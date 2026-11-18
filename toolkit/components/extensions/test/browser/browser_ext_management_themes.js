@@ -1,5 +1,3 @@
-/* -*- Mode: indent-tabs-mode: nil; js-indent-level: 2 -*- */
-/* vim: set sts=2 sw=2 et tw=80: */
 "use strict";
 
 const { PromiseTestUtils } = ChromeUtils.importESModule(
@@ -11,6 +9,8 @@ const { BuiltInThemes } = ChromeUtils.importESModule(
 PromiseTestUtils.allowMatchingRejectionsGlobally(
   /Message manager disconnected/
 );
+
+const EXPECTED_DEFAULT_THEME_NAME = "Default";
 
 add_task(async function test_management_themes() {
   await BuiltInThemes.ensureBuiltInThemes();
@@ -139,14 +139,14 @@ add_task(async function test_management_themes() {
   );
   is(
     await extension.awaitMessage("onDisabled"),
-    "System theme — auto",
+    EXPECTED_DEFAULT_THEME_NAME,
     "default disabled"
   );
 
   extension.sendMessage("test");
   is(
     await extension.awaitMessage("onEnabled"),
-    "System theme — auto",
+    EXPECTED_DEFAULT_THEME_NAME,
     "default enabled"
   );
   is(
@@ -161,7 +161,7 @@ add_task(async function test_management_themes() {
   );
   is(
     await extension.awaitMessage("onDisabled"),
-    "System theme — auto",
+    EXPECTED_DEFAULT_THEME_NAME,
     "default disabled"
   );
   await extension.awaitMessage("done");
@@ -170,7 +170,7 @@ add_task(async function test_management_themes() {
 
   is(
     await extension.awaitMessage("onEnabled"),
-    "System theme — auto",
+    EXPECTED_DEFAULT_THEME_NAME,
     "default enabled"
   );
   await extension.unload();

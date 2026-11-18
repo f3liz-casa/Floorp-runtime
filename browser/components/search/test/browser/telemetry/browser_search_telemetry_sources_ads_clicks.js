@@ -18,7 +18,10 @@ const TEST_PROVIDER_INFO = [
     codeParamName: "abc",
     taggedCodes: ["ff"],
     followOnParamNames: ["a"],
-    extraAdServersRegexps: [/^https:\/\/example\.com\/ad2?/],
+    extraAdServersRegexps: [
+      /^https:\/\/example\.com\/ad2?/,
+      /^https:\/\/example\.com\/browser\/browser\/components\/search\/test\/browser\/telemetry\/redirect_ad\.sjs/,
+    ],
     components: [
       {
         type: SearchSERPTelemetryUtils.COMPONENTS.AD_LINK,
@@ -72,14 +75,8 @@ async function track_ad_click(testOrganic) {
   assertSERPTelemetry([
     {
       impression: {
-        provider: "example",
         tagged,
         partner_code: partnerCode,
-        source: "unknown",
-        is_shopping_page: "false",
-        is_private: "false",
-        shopping_tab_displayed: "false",
-        is_signed_in: "false",
       },
       adImpressions: [
         {
@@ -109,14 +106,8 @@ async function track_ad_click(testOrganic) {
   assertSERPTelemetry([
     {
       impression: {
-        provider: "example",
         tagged,
         partner_code: partnerCode,
-        source: "unknown",
-        is_shopping_page: "false",
-        is_private: "false",
-        shopping_tab_displayed: "false",
-        is_signed_in: "false",
       },
       engagements: [
         {
@@ -156,14 +147,8 @@ async function track_ad_click(testOrganic) {
   assertSERPTelemetry([
     {
       impression: {
-        provider: "example",
         tagged,
         partner_code: partnerCode,
-        source: "unknown",
-        is_shopping_page: "false",
-        is_private: "false",
-        shopping_tab_displayed: "false",
-        is_signed_in: "false",
       },
       engagements: [
         {
@@ -182,14 +167,9 @@ async function track_ad_click(testOrganic) {
     },
     {
       impression: {
-        provider: "example",
         tagged,
         partner_code: partnerCode,
         source: "tabhistory",
-        is_shopping_page: "false",
-        is_private: "false",
-        shopping_tab_displayed: "false",
-        is_signed_in: "false",
       },
       adImpressions: [
         {
@@ -222,14 +202,8 @@ async function track_ad_click(testOrganic) {
   assertSERPTelemetry([
     {
       impression: {
-        provider: "example",
         tagged,
         partner_code: partnerCode,
-        source: "unknown",
-        is_shopping_page: "false",
-        is_private: "false",
-        shopping_tab_displayed: "false",
-        is_signed_in: "false",
       },
       engagements: [
         {
@@ -248,14 +222,9 @@ async function track_ad_click(testOrganic) {
     },
     {
       impression: {
-        provider: "example",
         tagged,
         partner_code: partnerCode,
         source: "tabhistory",
-        is_shopping_page: "false",
-        is_private: "false",
-        shopping_tab_displayed: "false",
-        is_signed_in: "false",
       },
       engagements: [
         {
@@ -302,16 +271,6 @@ add_task(async function test_track_ad_click_with_location_change_other_tab() {
 
   assertSERPTelemetry([
     {
-      impression: {
-        provider: "example",
-        tagged: "true",
-        partner_code: "ff",
-        source: "unknown",
-        is_shopping_page: "false",
-        is_private: "false",
-        shopping_tab_displayed: "false",
-        is_signed_in: "false",
-      },
       adImpressions: [
         {
           component: SearchSERPTelemetryUtils.COMPONENTS.AD_LINK,
@@ -346,16 +305,6 @@ add_task(async function test_track_ad_click_with_location_change_other_tab() {
 
   assertSERPTelemetry([
     {
-      impression: {
-        provider: "example",
-        tagged: "true",
-        partner_code: "ff",
-        source: "unknown",
-        is_shopping_page: "false",
-        is_private: "false",
-        shopping_tab_displayed: "false",
-        is_signed_in: "false",
-      },
       engagements: [
         {
           action: SearchSERPTelemetryUtils.ACTIONS.CLICKED,
@@ -376,3 +325,112 @@ add_task(async function test_track_ad_click_with_location_change_other_tab() {
   BrowserTestUtils.removeTab(newTab);
   BrowserTestUtils.removeTab(tab);
 });
+
+// Simulates a tracking pixel sent to the ad server on hover. Image requests
+// are only associated with the SERP browser when they are redirected.
+async function loadTrackingPixel(tab) {
+  await SpecialPowers.spawn(tab.linkedBrowser, [], async () => {
+    await new Promise(resolve => {
+      let img = new content.Image();
+      img.onload = img.onerror = resolve;
+      img.src =
+        "https://example.com/browser/browser/components/search/test/browser/telemetry/redirect_ad.sjs";
+    });
+  });
+  await promiseWaitForAdLinkCheck();
+}
+
+add_task(async function test_non_document_ad_server_request_not_counted() {
+  SearchSERPTelemetry.overrideSearchTelemetryForTests([
+    { ...TEST_PROVIDER_INFO[0], requireDocumentLoadForAdClick: true },
+  ]);
+  resetTelemetry();
+  let tab = await BrowserTestUtils.openNewForegroundTab(
+    gBrowser,
+    getSERPUrl("searchTelemetryAd.html")
+  );
+  await waitForPageWithAdImpressions();
+
+  await loadTrackingPixel(tab);
+
+  await assertSearchSourcesTelemetry(
+    {},
+    {
+      "browser.search.content.unknown": { "example:tagged:ff": 1 },
+      "browser.search.withads.unknown": { "example:tagged": 1 },
+    }
+  );
+
+  assertSERPTelemetry([
+    {
+      adImpressions: [
+        {
+          component: SearchSERPTelemetryUtils.COMPONENTS.AD_LINK,
+          ads_loaded: "2",
+          ads_visible: "2",
+          ads_hidden: "0",
+        },
+      ],
+    },
+  ]);
+
+  let pageLoadPromise = BrowserTestUtils.waitForLocationChange(gBrowser);
+  BrowserTestUtils.synthesizeMouseAtCenter("#ad1", {}, tab.linkedBrowser);
+  await pageLoadPromise;
+  await promiseWaitForAdLinkCheck();
+
+  await assertSearchSourcesTelemetry(
+    {},
+    {
+      "browser.search.content.unknown": { "example:tagged:ff": 1 },
+      "browser.search.withads.unknown": { "example:tagged": 1 },
+      "browser.search.adclicks.unknown": { "example:tagged": 1 },
+    }
+  );
+
+  assertSERPTelemetry([
+    {
+      engagements: [
+        {
+          action: SearchSERPTelemetryUtils.ACTIONS.CLICKED,
+          target: SearchSERPTelemetryUtils.COMPONENTS.AD_LINK,
+        },
+      ],
+      adImpressions: [
+        {
+          component: SearchSERPTelemetryUtils.COMPONENTS.AD_LINK,
+          ads_loaded: "2",
+          ads_visible: "2",
+          ads_hidden: "0",
+        },
+      ],
+    },
+  ]);
+
+  BrowserTestUtils.removeTab(tab);
+  SearchSERPTelemetry.overrideSearchTelemetryForTests(TEST_PROVIDER_INFO);
+});
+
+add_task(
+  async function test_non_document_ad_server_request_counted_by_default() {
+    resetTelemetry();
+    let tab = await BrowserTestUtils.openNewForegroundTab(
+      gBrowser,
+      getSERPUrl("searchTelemetryAd.html")
+    );
+    await waitForPageWithAdImpressions();
+
+    await loadTrackingPixel(tab);
+
+    await assertSearchSourcesTelemetry(
+      {},
+      {
+        "browser.search.content.unknown": { "example:tagged:ff": 1 },
+        "browser.search.withads.unknown": { "example:tagged": 1 },
+        "browser.search.adclicks.unknown": { "example:tagged": 1 },
+      }
+    );
+
+    BrowserTestUtils.removeTab(tab);
+  }
+);

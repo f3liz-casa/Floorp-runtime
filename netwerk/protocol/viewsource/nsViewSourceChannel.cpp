@@ -1,11 +1,9 @@
-/* -*- Mode: C++; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim:set ts=4 sw=2 sts=2 et: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "nsViewSourceChannel.h"
-#include "mozilla/DebugOnly.h"
+
 #include "mozilla/NullPrincipal.h"
 #include "nsContentSecurityManager.h"
 #include "nsContentUtils.h"
@@ -14,6 +12,7 @@
 #include "nsIHttpHeaderVisitor.h"
 #include "nsIIOService.h"
 #include "nsIInputStreamChannel.h"
+#include "nsINestedURI.h"
 #include "nsIReferrerInfo.h"
 #include "nsMimeTypes.h"
 #include "nsNetUtil.h"
@@ -110,6 +109,14 @@ nsresult nsViewSourceChannel::InitSrcdoc(nsIURI* aURI, nsIURI* aBaseURI,
                                          const nsAString& aSrcdoc,
                                          nsILoadInfo* aLoadInfo) {
   nsresult rv;
+
+  MOZ_ASSERT(aURI->SchemeIs("view-source"));
+  nsCOMPtr<nsINestedURI> nestedURI(do_QueryInterface(aURI));
+  NS_ENSURE_TRUE(nestedURI, NS_ERROR_INVALID_ARG);
+  nsCOMPtr<nsIURI> innerURI;
+  rv = nestedURI->GetInnerURI(getter_AddRefs(innerURI));
+  NS_ENSURE_SUCCESS(rv, rv);
+  MOZ_RELEASE_ASSERT(NS_IsAboutSrcdoc(innerURI));
 
   nsCOMPtr<nsIURI> inStreamURI;
   // Need to strip view-source: from the URI.  Hardcoded to
@@ -346,11 +353,11 @@ nsViewSourceChannel::AsyncOpen(nsIStreamListener* aListener) {
 
   mListener = aListener;
 
-  /*
-   * We want to add ourselves to the loadgroup before opening
-   * mChannel, since we want to make sure we're in the loadgroup
-   * when mChannel finishes and fires OnStopRequest()
-   */
+  nsresult rv = mChannel->AsyncOpen(this);
+  if (NS_FAILED(rv)) {
+    ReleaseListeners();
+    return rv;
+  }
 
   nsCOMPtr<nsILoadGroup> loadGroup;
   mChannel->GetLoadGroup(getter_AddRefs(loadGroup));
@@ -358,30 +365,16 @@ nsViewSourceChannel::AsyncOpen(nsIStreamListener* aListener) {
     loadGroup->AddRequest(static_cast<nsIViewSourceChannel*>(this), nullptr);
   }
 
-  nsresult rv = NS_OK;
-  rv = mChannel->AsyncOpen(this);
+  // We do this here to make sure all notification callbacks changes have been
+  // made first before we inject this view-source channel.
+  mChannel->GetNotificationCallbacks(getter_AddRefs(mCallbacks));
+  mChannel->SetNotificationCallbacks(this);
 
-  if (NS_FAILED(rv) && loadGroup) {
-    loadGroup->RemoveRequest(static_cast<nsIViewSourceChannel*>(this), nullptr,
-                             rv);
-  }
+  MOZ_ASSERT(mCallbacks != this, "We have a cycle");
 
-  if (NS_SUCCEEDED(rv)) {
-    // We do this here to make sure all notification callbacks changes have been
-    // made first before we inject this view-source channel.
-    mChannel->GetNotificationCallbacks(getter_AddRefs(mCallbacks));
-    mChannel->SetNotificationCallbacks(this);
+  mOpened = true;
 
-    MOZ_ASSERT(mCallbacks != this, "We have a cycle");
-
-    mOpened = true;
-  }
-
-  if (NS_FAILED(rv)) {
-    ReleaseListeners();
-  }
-
-  return rv;
+  return NS_OK;
 }
 
 /*
@@ -474,7 +467,7 @@ nsViewSourceChannel::GetContentType(nsACString& aContentType) {
       contentType = VIEWSOURCE_CONTENT_TYPE;
     }
 
-    mContentType = contentType;
+    mContentType = std::move(contentType);
   }
 
   aContentType = mContentType;
@@ -611,6 +604,22 @@ nsViewSourceChannel::SetLoadInfo(nsILoadInfo* aLoadInfo) {
 }
 
 NS_IMETHODIMP
+nsViewSourceChannel::GetParentProcessChannelHandle(
+    mozilla::dom::ParentProcessChannelHandle** aValue) {
+  NS_ENSURE_TRUE(mChannel, NS_ERROR_FAILURE);
+
+  return mChannel->GetParentProcessChannelHandle(aValue);
+}
+
+NS_IMETHODIMP
+nsViewSourceChannel::SetParentProcessChannelHandle(
+    mozilla::dom::ParentProcessChannelHandle* aValue) {
+  NS_ENSURE_TRUE(mChannel, NS_ERROR_FAILURE);
+
+  return mChannel->SetParentProcessChannelHandle(aValue);
+}
+
+NS_IMETHODIMP
 nsViewSourceChannel::GetIsDocument(bool* aIsDocument) {
   NS_ENSURE_TRUE(mChannel, NS_ERROR_FAILURE);
 
@@ -702,7 +711,8 @@ nsViewSourceChannel::OnStartRequest(nsIRequest* aRequest) {
     Cancel(rv);
   }
 
-  return mListener->OnStartRequest(static_cast<nsIViewSourceChannel*>(this));
+  nsCOMPtr<nsIStreamListener> listener = mListener;
+  return listener->OnStartRequest(static_cast<nsIViewSourceChannel*>(this));
 }
 
 NS_IMETHODIMP
@@ -717,7 +727,8 @@ nsViewSourceChannel::OnStopRequest(nsIRequest* aRequest, nsresult aStatus) {
     }
   }
 
-  nsresult rv = mListener->OnStopRequest(
+  nsCOMPtr<nsIStreamListener> listener = mListener;
+  nsresult rv = listener->OnStopRequest(
       static_cast<nsIViewSourceChannel*>(this), aStatus);
 
   ReleaseListeners();
@@ -731,8 +742,9 @@ nsViewSourceChannel::OnDataAvailable(nsIRequest* aRequest,
                                      nsIInputStream* aInputStream,
                                      uint64_t aSourceOffset, uint32_t aLength) {
   NS_ENSURE_TRUE(mListener, NS_ERROR_FAILURE);
-  return mListener->OnDataAvailable(static_cast<nsIViewSourceChannel*>(this),
-                                    aInputStream, aSourceOffset, aLength);
+  nsCOMPtr<nsIStreamListener> listener = mListener;
+  return listener->OnDataAvailable(static_cast<nsIViewSourceChannel*>(this),
+                                   aInputStream, aSourceOffset, aLength);
 }
 
 // nsIHttpChannel methods
@@ -976,12 +988,6 @@ nsViewSourceChannel::IsNoCacheResponse(bool* _retval) {
 }
 
 NS_IMETHODIMP
-nsViewSourceChannel::IsPrivateResponse(bool* _retval) {
-  return !mHttpChannel ? NS_ERROR_NULL_POINTER
-                       : mHttpChannel->IsPrivateResponse(_retval);
-}
-
-NS_IMETHODIMP
 nsViewSourceChannel::RedirectTo(nsIURI* uri) {
   return !mHttpChannel ? NS_ERROR_NULL_POINTER : mHttpChannel->RedirectTo(uri);
 }
@@ -1014,6 +1020,18 @@ NS_IMETHODIMP
 nsViewSourceChannel::SetRequestContextID(uint64_t rcid) {
   return !mHttpChannel ? NS_ERROR_NULL_POINTER
                        : mHttpChannel->SetRequestContextID(rcid);
+}
+
+NS_IMETHODIMP
+nsViewSourceChannel::GetIsUserAgentHeaderOutdated(bool* aValue) {
+  return !mHttpChannel ? NS_ERROR_NULL_POINTER
+                       : mHttpChannel->GetIsUserAgentHeaderOutdated(aValue);
+}
+
+NS_IMETHODIMP
+nsViewSourceChannel::SetIsUserAgentHeaderOutdated(bool aValue) {
+  return !mHttpChannel ? NS_ERROR_NULL_POINTER
+                       : mHttpChannel->SetIsUserAgentHeaderOutdated(aValue);
 }
 
 NS_IMETHODIMP
@@ -1209,6 +1227,19 @@ nsViewSourceChannel::AsyncOnChannelRedirect(
   }
 
   callback->OnRedirectVerifyCallback(NS_OK);
+  return NS_OK;
+}
+
+NS_IMETHODIMP
+nsViewSourceChannel::GetDecompressDictionary(
+    mozilla::net::DictionaryCacheEntry** aDictionary) {
+  *aDictionary = nullptr;
+  return NS_OK;
+}
+
+NS_IMETHODIMP
+nsViewSourceChannel::SetDecompressDictionary(
+    mozilla::net::DictionaryCacheEntry* aDictionary) {
   return NS_OK;
 }
 

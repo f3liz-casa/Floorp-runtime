@@ -1,4 +1,3 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -6,20 +5,20 @@
 #ifndef mozilla_image_Decoder_h
 #define mozilla_image_Decoder_h
 
-#include "FrameAnimator.h"
-#include "RasterImage.h"
-#include "mozilla/glean/ImageDecodersMetrics.h"
-#include "mozilla/Maybe.h"
-#include "mozilla/NotNull.h"
-#include "mozilla/RefPtr.h"
 #include "AnimationParams.h"
 #include "DecoderFlags.h"
+#include "FrameAnimator.h"
 #include "ImageMetadata.h"
 #include "Orientation.h"
+#include "RasterImage.h"
 #include "Resolution.h"
 #include "SourceBuffer.h"
 #include "StreamingLexer.h"
 #include "SurfaceFlags.h"
+#include "mozilla/Maybe.h"
+#include "mozilla/NotNull.h"
+#include "mozilla/RefPtr.h"
+#include "mozilla/glean/ImageDecodersMetrics.h"
 #include "qcms.h"
 
 enum class CMSMode : int32_t;
@@ -512,6 +511,10 @@ class Decoder {
   // Called by decoders if they determine the expected frame count.
   // @param aFrameCount The expected frame count.
   void PostFrameCount(uint32_t aFrameCount);
+
+  // Called by the JPEG decoder if its data can be embedded as-is in other
+  // formats.
+  void PostEmbeddableJPEGColorSpace(EmbeddableJPEGColorSpace aColorSpace);
 
   // Called by decoders when they end a frame. Informs the image, sends
   // notifications, and does internal book-keeping.

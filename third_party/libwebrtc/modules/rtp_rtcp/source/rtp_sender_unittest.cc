@@ -20,7 +20,8 @@
 
 #include "absl/strings/string_view.h"
 #include "api/environment/environment.h"
-#include "api/environment/environment_factory.h"
+#include "api/frame_transformer_interface.h"
+#include "api/rtp_header_extension_id.h"
 #include "api/rtp_packet_sender.h"
 #include "api/rtp_parameters.h"
 #include "api/units/frequency.h"
@@ -40,6 +41,7 @@
 #include "modules/rtp_rtcp/source/rtp_sender_video.h"
 #include "modules/rtp_rtcp/source/video_fec_generator.h"
 #include "rtc_base/rate_limiter.h"
+#include "test/create_test_environment.h"
 #include "test/gmock.h"
 #include "test/gtest.h"
 #include "test/time_controller/simulated_time_controller.h"
@@ -47,28 +49,24 @@
 namespace webrtc {
 
 namespace {
-enum : int {  // The first valid value is 1.
-  kAbsoluteSendTimeExtensionId = 1,
-  kAudioLevelExtensionId,
-  kGenericDescriptorId,
-  kMidExtensionId,
-  kRepairedRidExtensionId,
-  kRidExtensionId,
-  kTransmissionTimeOffsetExtensionId,
-  kTransportSequenceNumberExtensionId,
-  kVideoRotationExtensionId,
-  kVideoTimingExtensionId,
-};
+constexpr RtpHeaderExtensionId kAbsoluteSendTimeExtensionId(1);
+constexpr RtpHeaderExtensionId kAudioLevelExtensionId(2);
+constexpr RtpHeaderExtensionId kMidExtensionId(4);
+constexpr RtpHeaderExtensionId kRepairedRidExtensionId(5);
+constexpr RtpHeaderExtensionId kRidExtensionId(6);
+constexpr RtpHeaderExtensionId kTransmissionTimeOffsetExtensionId(7);
+constexpr RtpHeaderExtensionId kTransportSequenceNumberExtensionId(8);
+constexpr RtpHeaderExtensionId kVideoRotationExtensionId(9);
 
-const int kPayload = 100;
-const int kRtxPayload = 98;
-const uint32_t kTimestamp = 10;
-const uint16_t kSeqNum = 33;
-const uint32_t kSsrc = 725242;
-const uint32_t kRtxSsrc = 12345;
-const uint32_t kFlexFecSsrc = 45678;
-const uint64_t kStartTime = 123456789;
-const uint8_t kPayloadData[] = {47, 11, 32, 93, 89};
+constexpr int kPayload = 100;
+constexpr int kRtxPayload = 98;
+constexpr uint32_t kTimestamp = 10;
+constexpr uint16_t kSeqNum = 33;
+constexpr uint32_t kSsrc = 725242;
+constexpr uint32_t kRtxSsrc = 12345;
+constexpr uint32_t kFlexFecSsrc = 45678;
+constexpr uint64_t kStartTime = 123456789;
+constexpr uint8_t kPayloadData[] = {47, 11, 32, 93, 89};
 constexpr TimeDelta kDefaultExpectedRetransmissionTime = TimeDelta::Millis(125);
 constexpr Frequency kRtpClockRate = Frequency::Hertz(90'000);
 constexpr absl::string_view kMid = "mid";
@@ -92,7 +90,7 @@ using ::testing::SizeIs;
 class MockRtpPacketPacer : public RtpPacketSender {
  public:
   MockRtpPacketPacer() {}
-  virtual ~MockRtpPacketPacer() {}
+  ~MockRtpPacketPacer() override {}
 
   MOCK_METHOD(void,
               EnqueuePackets,
@@ -112,7 +110,7 @@ class RtpSenderTest : public ::testing::Test {
  protected:
   RtpSenderTest()
       : time_controller_(Timestamp::Millis(kStartTime)),
-        env_(CreateEnvironment(time_controller_.GetClock())),
+        env_(CreateTestEnvironment({.time = &time_controller_})),
         retransmission_rate_limiter_(&env_.clock(), 1000),
         flexfec_sender_(env_,
                         0,
@@ -144,10 +142,13 @@ class RtpSenderTest : public ::testing::Test {
     // Configure rid unconditionally, it has effect only if
     // corresponding header extension is enabled.
     config.rid = std::string(kRid);
+    // Use a fixed start timestamp instead of a random one.
+    config.rtp_state = RtpState{.start_timestamp = 0};
     return config;
   }
 
   void CreateSender(const RtpRtcpInterface::Configuration& config) {
+    config_ = config;
     packet_history_ = std::make_unique<RtpPacketHistory>(
         env_, RtpPacketHistory::PaddingMode::kRecentLargePacket);
     sequencer_.emplace(kSsrc, kRtxSsrc,
@@ -156,7 +157,13 @@ class RtpSenderTest : public ::testing::Test {
     rtp_sender_ = std::make_unique<RTPSender>(
         env_, config, packet_history_.get(), config.paced_sender);
     sequencer_->set_media_sequence_number(kSeqNum);
-    rtp_sender_->SetTimestampOffset(0);
+  }
+
+  // Recreates `rtp_sender_` from `config_`. The packet history and the
+  // sequencer are kept.
+  void RecreateSender() {
+    rtp_sender_ = std::make_unique<RTPSender>(
+        env_, config_, packet_history_.get(), config_.paced_sender);
   }
 
   GlobalSimulatedTimeController time_controller_;
@@ -165,6 +172,8 @@ class RtpSenderTest : public ::testing::Test {
   RateLimiter retransmission_rate_limiter_;
   FlexfecSender flexfec_sender_;
 
+  // The configuration that `rtp_sender_` was created with.
+  RtpRtcpInterface::Configuration config_;
   std::optional<PacketSequencer> sequencer_;
   std::unique_ptr<RtpPacketHistory> packet_history_;
   std::unique_ptr<RTPSender> rtp_sender_;
@@ -235,22 +244,27 @@ class RtpSenderTest : public ::testing::Test {
   // The following are helpers for configuring the RTPSender. They must be
   // called before sending any packets.
 
-  // Enable the retransmission stream with sizable packet storage.
+  // Enable the retransmission stream with sizable packet storage. Since this
+  // recreates the sender, it must be called before any other configuration of
+  // the sender, such as registering header extensions.
   void EnableRtx() {
+    config_.rtx_mode = kRtxRetransmitted | kRtxRedundantPayloads;
+    config_.rtx_payload_types = {{kPayload, kRtxPayload}};
+    RecreateSender();
     // RTX needs to be able to read the source packets from the packet store.
     // Pick a number of packets to store big enough for any unit test.
     constexpr uint16_t kNumberOfPacketsToStore = 100;
     packet_history_->SetStorePacketsStatus(
         RtpPacketHistory::StorageMode::kStoreAndCull, kNumberOfPacketsToStore);
-    rtp_sender_->SetRtxPayloadType(kRtxPayload, kPayload);
-    rtp_sender_->SetRtxStatus(kRtxRetransmitted | kRtxRedundantPayloads);
   }
 
   // Enable sending of the MID header extension for both the primary SSRC and
-  // the RTX SSRC.
+  // the RTX SSRC. Since this recreates the sender, it must be called before
+  // any other configuration of the sender except for `EnableRtx()`.
   void EnableMidSending(absl::string_view mid) {
+    config_.mid = std::string(mid);
+    RecreateSender();
     rtp_sender_->RegisterRtpHeaderExtension(RtpMid::Uri(), kMidExtensionId);
-    rtp_sender_->SetMid(mid);
   }
 
   // Enable sending of the RSID header extension for the primary SSRC and the
@@ -426,11 +440,10 @@ TEST_F(RtpSenderTest, NoPaddingAsFirstPacketWithoutBweExtensions) {
 TEST_F(RtpSenderTest, RequiresRtxSsrcToEnableRtx) {
   RtpRtcpInterface::Configuration config = GetDefaultConfig();
   config.rtx_send_ssrc = std::nullopt;
+  config.rtx_mode = kRtxRetransmitted;
+  config.rtx_payload_types = {{kPayload, kRtxPayload}};
   RTPSender rtp_sender(env_, config, packet_history_.get(),
                        config.paced_sender);
-  rtp_sender.SetRtxPayloadType(kRtxPayload, kPayload);
-
-  rtp_sender.SetRtxStatus(kRtxRetransmitted);
 
   EXPECT_EQ(rtp_sender.RtxStatus(), kRtxOff);
 }
@@ -438,10 +451,35 @@ TEST_F(RtpSenderTest, RequiresRtxSsrcToEnableRtx) {
 TEST_F(RtpSenderTest, RequiresRtxPayloadTypesToEnableRtx) {
   RtpRtcpInterface::Configuration config = GetDefaultConfig();
   config.rtx_send_ssrc = kRtxSsrc;
+  config.rtx_mode = kRtxRetransmitted;
   RTPSender rtp_sender(env_, config, packet_history_.get(),
                        config.paced_sender);
 
-  rtp_sender.SetRtxStatus(kRtxRetransmitted);
+  EXPECT_EQ(rtp_sender.RtxStatus(), kRtxOff);
+}
+
+TEST_F(RtpSenderTest, RequiresValidRtxPayloadTypesToEnableRtx) {
+  constexpr int kOtherPayload = kPayload + 1;
+  RtpRtcpInterface::Configuration config = GetDefaultConfig();
+  config.rtx_send_ssrc = kRtxSsrc;
+  config.rtx_mode = kRtxRetransmitted;
+  config.rtx_payload_types = {{kPayload, kRtxPayload}, {kOtherPayload, -1}};
+  RTPSender rtp_sender(env_, config, packet_history_.get(),
+                       config.paced_sender);
+
+  EXPECT_EQ(rtp_sender.RtxStatus(), kRtxOff);
+}
+
+TEST_F(RtpSenderTest, RequiresValidAssociatedPayloadTypesToEnableRtx) {
+  constexpr int kInvalidPayload = 128;
+  constexpr int kOtherRtxPayload = kRtxPayload + 1;
+  RtpRtcpInterface::Configuration config = GetDefaultConfig();
+  config.rtx_send_ssrc = kRtxSsrc;
+  config.rtx_mode = kRtxRetransmitted;
+  config.rtx_payload_types = {{kPayload, kRtxPayload},
+                              {kInvalidPayload, kOtherRtxPayload}};
+  RTPSender rtp_sender(env_, config, packet_history_.get(),
+                       config.paced_sender);
 
   EXPECT_EQ(rtp_sender.RtxStatus(), kRtxOff);
 }
@@ -449,12 +487,10 @@ TEST_F(RtpSenderTest, RequiresRtxPayloadTypesToEnableRtx) {
 TEST_F(RtpSenderTest, CanEnableRtxWhenRtxSsrcAndPayloadTypeAreConfigured) {
   RtpRtcpInterface::Configuration config = GetDefaultConfig();
   config.rtx_send_ssrc = kRtxSsrc;
+  config.rtx_mode = kRtxRetransmitted;
+  config.rtx_payload_types = {{kPayload, kRtxPayload}};
   RTPSender rtp_sender(env_, config, packet_history_.get(),
                        config.paced_sender);
-  rtp_sender.SetRtxPayloadType(kRtxPayload, kPayload);
-
-  ASSERT_EQ(rtp_sender.RtxStatus(), kRtxOff);
-  rtp_sender.SetRtxStatus(kRtxRetransmitted);
 
   EXPECT_EQ(rtp_sender.RtxStatus(), kRtxRetransmitted);
 }
@@ -473,6 +509,8 @@ TEST_F(RtpSenderTest, AllowPaddingAsFirstPacketOnRtxWithTransportCc) {
 
   // With transportcc padding can be sent as first packet on the RTX SSRC.
   EnableRtx();
+  ASSERT_TRUE(rtp_sender_->RegisterRtpHeaderExtension(
+      TransportSequenceNumber::Uri(), kTransportSequenceNumberExtensionId));
   EXPECT_THAT(rtp_sender_->GeneratePadding(
                   /*target_size_bytes=*/100,
                   /*media_has_been_sent=*/false,
@@ -494,6 +532,8 @@ TEST_F(RtpSenderTest, AllowPaddingAsFirstPacketOnRtxWithAbsSendTime) {
 
   // With abs send time, padding can be sent as first packet on the RTX SSRC.
   EnableRtx();
+  ASSERT_TRUE(rtp_sender_->RegisterRtpHeaderExtension(
+      AbsoluteSendTime::Uri(), kAbsoluteSendTimeExtensionId));
   EXPECT_THAT(rtp_sender_->GeneratePadding(
                   /*target_size_bytes=*/100,
                   /*media_has_been_sent=*/false,
@@ -533,9 +573,9 @@ TEST_F(RtpSenderTest, UpdatesTimestampsOnPlainRtxPadding) {
 }
 
 TEST_F(RtpSenderTest, KeepsTimestampsOnPayloadPadding) {
+  EnableRtx();
   ASSERT_TRUE(rtp_sender_->RegisterRtpHeaderExtension(
       TransportSequenceNumber::Uri(), kTransportSequenceNumberExtensionId));
-  EnableRtx();
   // Timestamps as set based on capture time in RtpSenderTest.
   const Timestamp start_time = env_.clock().CurrentTime();
   const uint32_t start_timestamp = ToRtpTimestamp(start_time);
@@ -775,13 +815,14 @@ TEST_F(RtpSenderTest, MidAndRidAlwaysIncludedOnRtxPacketsWhenConfigured) {
 // Test that if the RtpState indicates an ACK has been received on that SSRC
 // then neither the MID nor RID header extensions will be sent.
 TEST_F(RtpSenderTest, MidAndRidNotIncludedOnSentPacketsAfterRtpStateRestored) {
-  EnableMidSending(kMid);
-  EnableRidSending();
-
   RtpState state = rtp_sender_->GetRtpState();
   EXPECT_FALSE(state.ssrc_has_acked);
   state.ssrc_has_acked = true;
-  rtp_sender_->SetRtpState(state);
+  RtpRtcpInterface::Configuration config = GetDefaultConfig();
+  config.rtp_state = state;
+  CreateSender(config);
+  EnableMidSending(kMid);
+  EnableRidSending();
 
   EXPECT_CALL(
       mock_paced_sender_,
@@ -795,14 +836,15 @@ TEST_F(RtpSenderTest, MidAndRidNotIncludedOnSentPacketsAfterRtpStateRestored) {
 // RTX SSRC then neither the MID nor RRID header extensions will be sent on
 // RTX packets.
 TEST_F(RtpSenderTest, MidAndRridNotIncludedOnRtxPacketsAfterRtpStateRestored) {
-  EnableRtx();
-  EnableMidSending(kMid);
-  EnableRidSending();
-
   RtpState rtx_state = rtp_sender_->GetRtxRtpState();
   EXPECT_FALSE(rtx_state.ssrc_has_acked);
   rtx_state.ssrc_has_acked = true;
-  rtp_sender_->SetRtxRtpState(rtx_state);
+  RtpRtcpInterface::Configuration config = GetDefaultConfig();
+  config.rtx_rtp_state = rtx_state;
+  CreateSender(config);
+  EnableRtx();
+  EnableMidSending(kMid);
+  EnableRidSending();
 
   EXPECT_CALL(mock_paced_sender_, EnqueuePackets(SizeIs(1)))
       .WillOnce([&](std::vector<std::unique_ptr<RtpPacketToSend>> packets) {
@@ -817,6 +859,21 @@ TEST_F(RtpSenderTest, MidAndRridNotIncludedOnRtxPacketsAfterRtpStateRestored) {
           Property(&RtpPacketToSend::HasExtension<RtpMid>, false),
           Property(&RtpPacketToSend::HasExtension<RtpStreamId>, false))))));
   ASSERT_LT(0, rtp_sender_->ReSendPacket(built_packet->SequenceNumber()));
+}
+
+TEST_F(RtpSenderTest, UsesInitialRtpStatesFromConfig) {
+  constexpr uint32_t kStartTimestamp = 0x1234'5678;
+  RtpRtcpInterface::Configuration config = GetDefaultConfig();
+  config.rtp_state =
+      RtpState{.start_timestamp = kStartTimestamp, .ssrc_has_acked = true};
+  config.rtx_rtp_state = RtpState{.ssrc_has_acked = true};
+  CreateSender(config);
+
+  EXPECT_EQ(rtp_sender_->TimestampOffset(), kStartTimestamp);
+  RtpState state = rtp_sender_->GetRtpState();
+  EXPECT_EQ(state.start_timestamp, kStartTimestamp);
+  EXPECT_TRUE(state.ssrc_has_acked);
+  EXPECT_TRUE(rtp_sender_->GetRtxRtpState().ssrc_has_acked);
 }
 
 TEST_F(RtpSenderTest, RespectsNackBitrateLimit) {
@@ -906,7 +963,7 @@ TEST_F(RtpSenderTest, CountMidOnlyUntilAcked) {
 
   // Counted only if set.
   EXPECT_EQ(rtp_sender_->ExpectedPerPacketOverhead(), 12u);
-  rtp_sender_->SetMid("foo");
+  EnableMidSending("foo");
   EXPECT_EQ(rtp_sender_->ExpectedPerPacketOverhead(), 36u);
   rtp_sender_->RegisterRtpHeaderExtension(RtpStreamId::Uri(), kRidExtensionId);
   EXPECT_EQ(rtp_sender_->ExpectedPerPacketOverhead(), 52u);
@@ -928,7 +985,7 @@ TEST_F(RtpSenderTest, CountMidRidRridUntilAcked) {
 
   // Counted only if set.
   EXPECT_EQ(rtp_sender_->ExpectedPerPacketOverhead(), 14u);
-  rtp_sender_->SetMid("foo");
+  EnableMidSending("foo");
   EXPECT_EQ(rtp_sender_->ExpectedPerPacketOverhead(), 38u);
 
   rtp_sender_->RegisterRtpHeaderExtension(RtpStreamId::Uri(), kRidExtensionId);
@@ -958,15 +1015,21 @@ TEST_F(RtpSenderTest, DontCountVolatileExtensionsIntoOverhead) {
   EXPECT_EQ(rtp_sender_->ExpectedPerPacketOverhead(), 12u);
 
   rtp_sender_->RegisterRtpHeaderExtension(InbandComfortNoiseExtension::Uri(),
-                                          1);
+                                          RtpHeaderExtensionId(1));
   rtp_sender_->RegisterRtpHeaderExtension(AbsoluteCaptureTimeExtension::Uri(),
-                                          2);
-  rtp_sender_->RegisterRtpHeaderExtension(VideoOrientation::Uri(), 3);
-  rtp_sender_->RegisterRtpHeaderExtension(PlayoutDelayLimits::Uri(), 4);
-  rtp_sender_->RegisterRtpHeaderExtension(VideoContentTypeExtension::Uri(), 5);
-  rtp_sender_->RegisterRtpHeaderExtension(VideoTimingExtension::Uri(), 6);
-  rtp_sender_->RegisterRtpHeaderExtension(RepairedRtpStreamId::Uri(), 7);
-  rtp_sender_->RegisterRtpHeaderExtension(ColorSpaceExtension::Uri(), 8);
+                                          RtpHeaderExtensionId(2));
+  rtp_sender_->RegisterRtpHeaderExtension(VideoOrientation::Uri(),
+                                          RtpHeaderExtensionId(3));
+  rtp_sender_->RegisterRtpHeaderExtension(PlayoutDelayLimits::Uri(),
+                                          RtpHeaderExtensionId(4));
+  rtp_sender_->RegisterRtpHeaderExtension(VideoContentTypeExtension::Uri(),
+                                          RtpHeaderExtensionId(5));
+  rtp_sender_->RegisterRtpHeaderExtension(VideoTimingExtension::Uri(),
+                                          RtpHeaderExtensionId(6));
+  rtp_sender_->RegisterRtpHeaderExtension(RepairedRtpStreamId::Uri(),
+                                          RtpHeaderExtensionId(7));
+  rtp_sender_->RegisterRtpHeaderExtension(ColorSpaceExtension::Uri(),
+                                          RtpHeaderExtensionId(8));
 
   // Still only 12B counted since can't count on above being sent.
   EXPECT_EQ(rtp_sender_->ExpectedPerPacketOverhead(), 12u);
@@ -1112,10 +1175,7 @@ TEST_F(RtpSenderTest, GeneratePaddingResendsOldPacketsWithRtx) {
   // Min requested size in order to use RTX payload.
   const size_t kMinPaddingSize = 50;
 
-  rtp_sender_->SetRtxPayloadType(kRtxPayload, kPayload);
-  rtp_sender_->SetRtxStatus(kRtxRetransmitted | kRtxRedundantPayloads);
-  packet_history_->SetStorePacketsStatus(
-      RtpPacketHistory::StorageMode::kStoreAndCull, 1);
+  EnableRtx();
 
   ASSERT_TRUE(rtp_sender_->RegisterRtpHeaderExtension(
       TransportSequenceNumber::Uri(), kTransportSequenceNumberExtensionId));
@@ -1160,10 +1220,7 @@ TEST_F(RtpSenderTest, LimitsPayloadPaddingSize) {
   // RTX payload padding is limited to 3x target size.
   const double kFactor = 3.0;
   SetUpRtpSender(false, false, nullptr);
-  rtp_sender_->SetRtxPayloadType(kRtxPayload, kPayload);
-  rtp_sender_->SetRtxStatus(kRtxRetransmitted | kRtxRedundantPayloads);
-  packet_history_->SetStorePacketsStatus(
-      RtpPacketHistory::StorageMode::kStoreAndCull, 1);
+  EnableRtx();
 
   ASSERT_TRUE(rtp_sender_->RegisterRtpHeaderExtension(
       TransportSequenceNumber::Uri(), kTransportSequenceNumberExtensionId));
@@ -1251,17 +1308,20 @@ TEST_F(RtpSenderTest, SupportsPadding) {
   absl::string_view kBweExtensionUris[] = {
       TransportSequenceNumber::Uri(), TransportSequenceNumberV2::Uri(),
       AbsoluteSendTime::Uri(), TransmissionOffset::Uri()};
-  const int kExtensionsId = 7;
+  constexpr RtpHeaderExtensionId kExtensionsId(7);
 
   for (bool sending_media : kSendingMediaStats) {
-    rtp_sender_->SetSendingMediaStatus(sending_media);
     for (bool redundant_payloads : kEnableRedundantPayloads) {
       int rtx_mode = kRtxRetransmitted;
       if (redundant_payloads) {
         rtx_mode |= kRtxRedundantPayloads;
       }
-      rtp_sender_->SetRtxPayloadType(kRtxPayload, kPayload);
-      rtp_sender_->SetRtxStatus(rtx_mode);
+      // The RTX mode is set at construction, so use one sender per mode.
+      RtpRtcpInterface::Configuration config = GetDefaultConfig();
+      config.rtx_mode = rtx_mode;
+      config.rtx_payload_types = {{kPayload, kRtxPayload}};
+      CreateSender(config);
+      rtp_sender_->SetSendingMediaStatus(sending_media);
 
       for (auto extension_uri : kBweExtensionUris) {
         EXPECT_FALSE(rtp_sender_->SupportsPadding());
@@ -1330,7 +1390,7 @@ TEST_F(RtpSenderTest, DoesntFecProtectRetransmissions) {
   // re-sent instead.
   const TimeDelta kRtt = TimeDelta::Millis(10);
   rtp_sender_->SetSendingMediaStatus(true);
-  rtp_sender_->SetRtxStatus(kRtxOff);
+  ASSERT_EQ(rtp_sender_->RtxStatus(), kRtxOff);
   packet_history_->SetStorePacketsStatus(
       RtpPacketHistory::StorageMode::kStoreAndCull, 10);
   packet_history_->SetRtt(kRtt);
@@ -1362,8 +1422,7 @@ TEST_F(RtpSenderTest, MarksPacketsWithKeyframeStatus) {
   RTPSenderVideo rtp_sender_video(video_config);
 
   const uint8_t kPayloadType = 127;
-  const std::optional<VideoCodecType> kCodecType =
-      VideoCodecType::kVideoCodecGeneric;
+  const VideoCodecType kCodecType = VideoCodecType::kVideoCodecGeneric;
 
   const uint32_t kCaptureTimeMsToRtpTimestamp = 90;  // 90 kHz clock
 
@@ -1375,10 +1434,11 @@ TEST_F(RtpSenderTest, MarksPacketsWithKeyframeStatus) {
     RTPVideoHeader video_header;
     video_header.frame_type = VideoFrameType::kVideoFrameKey;
     Timestamp capture_time = env_.clock().CurrentTime();
-    EXPECT_TRUE(rtp_sender_video.SendVideo(
+    EXPECT_TRUE(rtp_sender_video.SendVideoFrame(
         kPayloadType, kCodecType,
-        capture_time.ms() * kCaptureTimeMsToRtpTimestamp, capture_time,
-        kPayloadData, sizeof(kPayloadData), video_header,
+        RtpTimestampWithOffset{static_cast<uint32_t>(
+            capture_time.ms() * kCaptureTimeMsToRtpTimestamp)},
+        capture_time, kPayloadData, sizeof(kPayloadData), video_header,
         kDefaultExpectedRetransmissionTime, {}));
 
     time_controller_.AdvanceTime(TimeDelta::Millis(33));
@@ -1392,10 +1452,11 @@ TEST_F(RtpSenderTest, MarksPacketsWithKeyframeStatus) {
     RTPVideoHeader video_header;
     video_header.frame_type = VideoFrameType::kVideoFrameDelta;
     Timestamp capture_time = env_.clock().CurrentTime();
-    EXPECT_TRUE(rtp_sender_video.SendVideo(
+    EXPECT_TRUE(rtp_sender_video.SendVideoFrame(
         kPayloadType, kCodecType,
-        capture_time.ms() * kCaptureTimeMsToRtpTimestamp, capture_time,
-        kPayloadData, sizeof(kPayloadData), video_header,
+        RtpTimestampWithOffset{static_cast<uint32_t>(
+            capture_time.ms() * kCaptureTimeMsToRtpTimestamp)},
+        capture_time, kPayloadData, sizeof(kPayloadData), video_header,
         kDefaultExpectedRetransmissionTime, {}));
 
     time_controller_.AdvanceTime(TimeDelta::Millis(33));

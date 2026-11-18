@@ -64,6 +64,21 @@ EXPORTS.bob.carol = [
 ]
 """
 
+SAMPLE_SINGLE_SOURCE_MOZBUILD = """
+UNIFIED_SOURCES += [
+    "stub.cpp",
+]
+"""
+
+SAMPLE_SOURCE_HEADERS_MOZBUILD = """
+UNIFIED_SOURCES += [
+    "stub.cpp",
+]
+SOURCE_HEADERS += [
+    "config.h",
+]
+"""
+
 
 def _make_mozbuild_directory_structure(mozbuild_path, contents):
     d = tempfile.TemporaryDirectory()
@@ -508,6 +523,54 @@ class TestUtils(unittest.TestCase):
                 print(expected_output)
                 print("-------------------")
             self.assertEqual(contents, expected_output)
+
+    def test_mozbuild_adding_already_present(self):
+        mozbuild_path = "third_party/somelib/megazords/full/moz.build"
+        file_to_add = "third_party/somelib/megazords/full/stub.cpp"
+
+        startdir = os.getcwd()
+        try:
+            mozbuild_dir = _make_mozbuild_directory_structure(
+                mozbuild_path, SAMPLE_SINGLE_SOURCE_MOZBUILD
+            )
+            os.chdir(mozbuild_dir.name)
+
+            mu.add_file_to_moz_build_file(file_to_add)
+
+            with open(os.path.join(mozbuild_dir.name, mozbuild_path)) as f:
+                contents = f.read()
+
+            self.assertEqual(contents, SAMPLE_SINGLE_SOURCE_MOZBUILD)
+        finally:
+            os.chdir(startdir)
+
+    def test_mozbuild_removing_unlisted(self):
+        mozbuild_path = "third_party/somelib/moz.build"
+
+        startdir = os.getcwd()
+        try:
+            mozbuild_dir = _make_mozbuild_directory_structure(
+                mozbuild_path, SAMPLE_SOURCE_HEADERS_MOZBUILD
+            )
+            os.chdir(mozbuild_dir.name)
+
+            for file_to_remove in (
+                "third_party/somelib/unlisted.h",
+                "third_party/somelib/unlisted.c",
+            ):
+                with self.assertRaises(mu.MozBuildFileNotListedException):
+                    mu.remove_file_from_moz_build_file(file_to_remove)
+
+            # Mentioned, but in a list we can't edit.
+            with self.assertRaises(mu.MozBuildRewriteException) as cm:
+                mu.remove_file_from_moz_build_file("third_party/somelib/config.h")
+            self.assertNotIsInstance(cm.exception, mu.MozBuildFileNotListedException)
+
+            with open(os.path.join(mozbuild_dir.name, mozbuild_path)) as f:
+                contents = f.read()
+            self.assertEqual(contents, SAMPLE_SOURCE_HEADERS_MOZBUILD)
+        finally:
+            os.chdir(startdir)
 
 
 if __name__ == "__main__":

@@ -13,9 +13,9 @@ add_task(async function () {
     requestCount: 2,
   });
 
-  const wait = waitForNetworkEvents(monitor, 2);
-  await reloadBrowser();
-  await wait;
+  const onNetworkEvents = waitForNetworkEvents(monitor, 2);
+  await reloadSelectedTab();
+  await onNetworkEvents;
 
   const { store } = monitor.panelWin;
   const requests = store.getState().requests.requests;

@@ -1,6 +1,8 @@
 [DEFAULT]
 subsuite = "mach"
 
+["test_batch_paths.py"]
+
 ["test_commands.py"]
 
 ["test_conditions.py"]
@@ -17,6 +19,8 @@ subsuite = "mach"
 
 ["test_error_output.py"]
 
+["test_func_cache.py"]
+
 ["test_logger.py"]
 
 ["test_mach.py"]
@@ -27,3 +31,7 @@ subsuite = "mach"
 skip-if = ["automation == false"]
 
 ["test_site_compatibility.py"]
+
+["test_telemetry_instrumentation.py"]
+
+["test_util.py"]

@@ -26,9 +26,9 @@ add_task(async function () {
 
   store.dispatch(Actions.batchEnable(false));
 
-  const wait = waitForNetworkEvents(monitor, 1);
-  await reloadBrowser();
-  await wait;
+  const onNetworkEvents = waitForNetworkEvents(monitor, 1);
+  await reloadSelectedTab();
+  await onNetworkEvents;
 
   is(
     getSelectedRequest(store.getState()),
@@ -137,8 +137,8 @@ add_task(async function () {
 
     is(
       tabpanel.querySelectorAll(".accordion .treeLabelCell").length,
-      24,
-      "There should be 24 header values displayed in this tabpanel."
+      25,
+      "There should be 25 header values displayed in this tabpanel."
     );
 
     const headersTable = tabpanel.querySelector(".accordion");

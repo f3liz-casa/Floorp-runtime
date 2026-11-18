@@ -13,8 +13,12 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <iterator>
+#include <optional>
 #include <string>
 
+#include "api/video/video_codec_type.h"
+#include "rtc_base/checks.h"
 #include "rtc_base/logging.h"
 #include "rtc_base/strings/string_builder.h"
 #include "system_wrappers/include/metrics.h"
@@ -62,8 +66,7 @@ void VideoQualityObserver::UpdateHistograms(bool screenshare) {
     return;
   }
 
-  char log_stream_buf[2 * 1024];
-  SimpleStringBuilder log_stream(log_stream_buf);
+  StringBuilder log_stream;
 
   if (last_frame_rendered_ms_ > last_unfreeze_time_ms_) {
     smooth_playback_durations_.Add(last_frame_rendered_ms_ -
@@ -249,8 +252,6 @@ void VideoQualityObserver::OnDecodedFrame(uint32_t rtp_frame_timestamp,
       qp_blocky_threshold = std::nullopt;
   }
 
-  RTC_DCHECK(blocky_frames_.find(rtp_frame_timestamp) == blocky_frames_.end());
-
   if (qp_blocky_threshold && *qp > *qp_blocky_threshold) {
     // Cache blocky frame. Its duration will be calculated in render callback.
     if (blocky_frames_.size() > kMaxNumCachedBlockyFrames) {
@@ -260,6 +261,8 @@ void VideoQualityObserver::OnDecodedFrame(uint32_t rtp_frame_timestamp,
           std::next(blocky_frames_.begin(), kMaxNumCachedBlockyFrames / 2));
     }
 
+    // The RTP timestamp is set by the remote sender, so it may already be
+    // cached if more than one frame with this timestamp has been decoded.
     blocky_frames_.insert(rtp_frame_timestamp);
   }
 }

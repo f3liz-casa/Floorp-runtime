@@ -71,8 +71,8 @@
 #ifndef HASHMGR_HXX_
 #define HASHMGR_HXX_
 
-#include <stdio.h>
-#include <stdint.h>
+#include <cstdio>
+#include <cstdint>
 #include <memory>
 #include <string>
 #include <vector>
@@ -90,8 +90,7 @@ enum flag { FLAG_CHAR, FLAG_LONG, FLAG_NUM, FLAG_UNI };
 #define MORPH_PHON_RATIO 500
 
 class HashMgr {
-  int tablesize;
-  struct hentry** tableptr;
+  std::vector<struct hentry*> tableptr;
   flag flag_mode;
   int complexprefixes;
   int utf8;
@@ -99,84 +98,78 @@ class HashMgr {
   int langnum;
   std::string enc;
   std::string lang;
-  struct cs_info* csconv;
+  const struct cs_info* csconv;
   std::string ignorechars;
   std::vector<w_char> ignorechars_utf16;
-  int numaliasf;  // flag vector `compression' with aliases
-  unsigned short** aliasf;
-  unsigned short* aliasflen;
-  int numaliasm;  // morphological desciption `compression' with aliases
-  char** aliasm;
+  std::vector<unsigned short*> aliasf; // flag vector `compression' with aliases
+  std::vector<size_t> aliasflen;
+  std::vector<char*> aliasm; // morphological desciption `compression' with aliases
   // reptable created from REP table of aff file and from "ph:" fields
   // of the dic file. It contains phonetic and other common misspellings
   // (letters, letter groups and words) for better suggestions
   std::vector<replentry> reptable;
 
  public:
-  HashMgr(const char* tpath, const char* apath, const char* key = NULL);
+  HashMgr(const char* tpath, const char* apath, const char* key = nullptr);
   ~HashMgr();
 
-  struct hentry* lookup(const char*) const;
-  int hash(const char*) const;
+  struct hentry* lookup(const char* word, size_t len) const;
+  size_t hash(const char* word, size_t len) const;
   struct hentry* walk_hashtable(int& col, struct hentry* hp) const;
 
   int add(const std::string& word);
+  int add_with_flags(const std::string& word, const std::string& flags, const std::string& desc = "");
   int add_with_affix(const std::string& word, const std::string& pattern);
   int remove(const std::string& word);
-private:
-  // Only internal consumers are allowed to arena-allocate.
-  int decode_flags(unsigned short** result, const std::string& flags, FileMgr* af, bool arena) const;
-public:
-  int decode_flags(unsigned short** result, const std::string& flags, FileMgr* af) const {
-    return decode_flags(result, flags, af, /* arena = */ false);
-  }
+  size_t decode_flags(unsigned short** result, const std::string& flags, FileMgr* af) const;
   bool decode_flags(std::vector<unsigned short>& result, const std::string& flags, FileMgr* af) const;
-  unsigned short decode_flag(const char* flag) const;
-  char* encode_flag(unsigned short flag) const;
+  unsigned short decode_flag(const std::string& flag) const;
+  std::string encode_flag(unsigned short flag) const;
   int is_aliasf() const;
-  int get_aliasf(int index, unsigned short** fvec, FileMgr* af) const;
+  size_t get_aliasf(int index, unsigned short** fvec, FileMgr* af) const;
   int is_aliasm() const;
   char* get_aliasm(int index) const;
   const std::vector<replentry>& get_reptable() const;
 
  private:
-  int get_clen_and_captype(const std::string& word, int* captype);
-  int get_clen_and_captype(const std::string& word, int* captype, std::vector<w_char> &workbuf);
+  size_t get_clen_and_captype(const std::string& word, int* captype);
+  size_t get_clen_and_captype(const std::string& word, int* captype, std::vector<w_char> &workbuf);
   int load_tables(const char* tpath, const char* key);
   int add_word(const std::string& word,
-               int wcl,
+               size_t wcl,
                unsigned short* ap,
-               int al,
+               size_t al,
                const std::string* desc,
                bool onlyupcase,
-               int captype);
+               int captype,
+               bool own_aff);
   int load_config(const char* affpath, const char* key);
   bool parse_aliasf(const std::string& line, FileMgr* af);
   int add_hidden_capitalized_word(const std::string& word,
-                                  int wcl,
+                                  size_t wcl,
                                   unsigned short* flags,
-                                  int al,
+                                  size_t al,
                                   const std::string* dp,
                                   int captype);
   bool parse_aliasm(const std::string& line, FileMgr* af);
   bool parse_reptable(const std::string& line, FileMgr* af);
-  int remove_forbidden_flag(const std::string& word);
+  void remove_forbidden_flag(const std::string& word);
+  void free_table();
+  void release_flags(unsigned short* astr, bool owned);
 
-  // Our Mozilla fork uses a simple arena allocator for certain strings which
-  // persist for the lifetime of the HashMgr in order to avoid heap fragmentation.
-  // It's a simple bump-allocator, so we can't actually free() memory midway
-  // through the lifecycle, but we have a dummy free() implementation to ensure
-  // that our calls to arena_alloc() and arena_free() are balanced.
-  void* arena_alloc(int num_bytes);
-  void* arena_alloc(int num_bytes) const {
-    return const_cast<HashMgr*>(this)->arena_alloc(num_bytes);
-  }
-  void arena_free(void* ptr);
+  // Only internal consumers are allowed to arena-allocate.
+  size_t decode_flags(unsigned short** result, const std::string& flags, FileMgr* af, bool use_arena) const;
 
-  std::vector<std::unique_ptr<uint8_t[]>> arena;
-  int current_chunk_size = 0;
-  int current_chunk_offset = 0;
-  int outstanding_arena_allocations = 0;
+  // Bump-pointer arena for load-time hentry/flag/aliasm allocations. Freed in
+  // bulk at destruction. arena_free is a no-op that tracks outstanding allocs
+  // and aborts on underflow. Mutable so const decode_flags can arena-allocate.
+  void* arena_alloc(size_t num_bytes, size_t alignment) const;
+  void arena_free(void* ptr) const;
+
+  mutable std::vector<std::unique_ptr<uint8_t[]>> arena;
+  mutable size_t current_chunk_size = 0;
+  mutable size_t current_chunk_offset = 0;
+  mutable size_t outstanding_arena_allocations = 0;
 };
 
 #endif

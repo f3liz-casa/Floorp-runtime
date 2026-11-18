@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
@@ -135,7 +133,7 @@ struct UnwindInfo {
   //       UNW_FLAG_EHANDLER, UNW_FLAG_UHANDLER, and UNW_FLAG_CHAININFO.
   UniquePtr<uint8_t[]> Copy() const {
     auto s = Size();
-    auto result = MakeUnique<uint8_t[]>(s);
+    auto result = std::make_unique<uint8_t[]>(s);
     std::memcpy(result.get(), reinterpret_cast<const void*>(this), s);
     return result;
   }

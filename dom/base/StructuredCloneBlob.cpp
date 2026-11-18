@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -15,10 +13,9 @@
 #include "js/Value.h"
 #include "js/Wrapper.h"
 #include "jsapi.h"
-#include "mozilla/Assertions.h"
 #include "mozilla/ErrorResult.h"
 #include "mozilla/Maybe.h"
-#include "mozilla/UniquePtr.h"
+#include "mozilla/Span.h"
 #include "mozilla/dom/BindingDeclarations.h"
 #include "mozilla/dom/BlobImpl.h"
 #include "mozilla/dom/StructuredCloneHolderBinding.h"
@@ -111,7 +108,7 @@ void StructuredCloneBlob::Deserialize(JSContext* aCx,
   {
     JSAutoRealm ar(aCx, scope);
 
-    mHolder->Read(xpc::NativeGlobal(scope), aCx, aResult, aRv);
+    mHolder->Read(aCx, aResult, aRv);
     if (aRv.Failed()) {
       return;
     }
@@ -122,7 +119,7 @@ void StructuredCloneBlob::Deserialize(JSContext* aCx,
   }
 
   if (!JS_WrapValue(aCx, aResult)) {
-    aResult.set(JS::UndefinedValue());
+    aResult.setUndefined();
     aRv.NoteJSContextException(aCx);
   }
 }
@@ -155,6 +152,8 @@ bool StructuredCloneBlob::Holder::ReadStructuredCloneInternal(
     JSContext* aCx, JSStructuredCloneReader* aReader,
     StructuredCloneHolder* aHolder) {
   uint32_t length;
+  // The written version is no longer used, but is still read to preserve the
+  // on-wire format of already-persisted data.
   uint32_t version;
   if (!JS_ReadUint32Pair(aReader, &length, &version)) {
     return false;
@@ -174,7 +173,8 @@ bool StructuredCloneBlob::Holder::ReadStructuredCloneInternal(
       return false;
     }
 #endif
-    BlobImpls().AppendElements(&aHolder->BlobImpls()[blobOffset], blobCount);
+    BlobImpls().AppendElements(
+        Span(aHolder->BlobImpls()).Subspan(blobOffset, blobCount));
   }
 
   JSStructuredCloneData data(mStructuredCloneScope);
@@ -187,9 +187,9 @@ bool StructuredCloneBlob::Holder::ReadStructuredCloneInternal(
     length -= size;
   }
 
-  mBuffer = MakeUnique<JSAutoStructuredCloneBuffer>(
-      mStructuredCloneScope, &StructuredCloneHolder::sCallbacks, this);
-  mBuffer->adopt(std::move(data), version, &StructuredCloneHolder::sCallbacks);
+  mData.emplace(std::move(data));
+  mData->setCallbacks(&StructuredCloneHolder::sCallbacks, nullptr,
+                      OwnTransferablePolicy::OwnsTransferablesIfAny);
 
   return true;
 }
@@ -213,8 +213,8 @@ bool StructuredCloneBlob::WriteStructuredClone(JSContext* aCx,
 bool StructuredCloneBlob::Holder::WriteStructuredClone(
     JSContext* aCx, JSStructuredCloneWriter* aWriter,
     StructuredCloneHolder* aHolder) {
-  auto& data = mBuffer->data();
-  if (!JS_WriteUint32Pair(aWriter, data.Size(), JS_STRUCTURED_CLONE_VERSION) ||
+  if (!JS_WriteUint32Pair(aWriter, mData->Size(),
+                          JS_STRUCTURED_CLONE_VERSION) ||
       !JS_WriteUint32Pair(aWriter, aHolder->BlobImpls().Length(),
                           BlobImpls().Length())) {
     return false;
@@ -222,7 +222,7 @@ bool StructuredCloneBlob::Holder::WriteStructuredClone(
 
   aHolder->BlobImpls().AppendElements(BlobImpls());
 
-  return data.ForEachDataChunk([&](const char* aData, size_t aSize) {
+  return mData->ForEachDataChunk([&](const char* aData, size_t aSize) {
     return JS_WriteBytes(aWriter, aData, aSize);
   });
 }

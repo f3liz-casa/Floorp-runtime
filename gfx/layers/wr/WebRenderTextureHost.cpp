@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -24,11 +22,11 @@ namespace mozilla::layers {
 
 class ScheduleHandleRenderTextureOps : public wr::NotificationHandler {
  public:
-  explicit ScheduleHandleRenderTextureOps() {}
+  explicit ScheduleHandleRenderTextureOps() = default;
 
   virtual void Notify(wr::Checkpoint aCheckpoint) override {
     if (aCheckpoint == wr::Checkpoint::FrameTexturesUpdated) {
-      MOZ_ASSERT(wr::RenderThread::IsInRenderThread());
+      MOZ_RELEASE_ASSERT(wr::RenderThread::IsInRenderThread());
       wr::RenderThread::Get()->HandleRenderTextureOps();
     } else {
       MOZ_ASSERT(aCheckpoint == wr::Checkpoint::TransactionDropped);
@@ -96,6 +94,10 @@ gfx::ColorRange WebRenderTextureHost::GetColorRange() const {
   return mWrappedTextureHost->GetColorRange();
 }
 
+gfx::TransferFunction WebRenderTextureHost::GetTransferFunction() const {
+  return mWrappedTextureHost->GetTransferFunction();
+}
+
 gfx::IntSize WebRenderTextureHost::GetSize() const {
   return mWrappedTextureHost->GetSize();
 }
@@ -123,15 +125,7 @@ void WebRenderTextureHost::NotifyNotUsed() {
     wr::RenderThread::Get()->NotifyNotUsed(GetExternalImageKey());
   }
 #endif
-  if (mWrappedTextureHost->AsRemoteTextureHostWrapper() ||
-      mWrappedTextureHost->AsTextureHostWrapperD3D11()) {
-    mWrappedTextureHost->NotifyNotUsed();
-  }
-#ifdef XP_WIN
-  if (auto* host = AsDXGIYCbCrTextureHostD3D11()) {
-    host->NotifyNotUsed();
-  }
-#endif
+  mWrappedTextureHost->NotifyNotUsed();
   TextureHost::NotifyNotUsed();
 }
 
@@ -141,7 +135,7 @@ void WebRenderTextureHost::MaybeNotifyForUse(wr::TransactionBuilder& aTxn) {
       !mWrappedTextureHost->AsRemoteTextureHostWrapper()) {
     wr::RenderThread::Get()->NotifyForUse(GetExternalImageKey());
     aTxn.Notify(wr::Checkpoint::FrameTexturesUpdated,
-                MakeUnique<ScheduleHandleRenderTextureOps>());
+                std::make_unique<ScheduleHandleRenderTextureOps>());
   }
 #endif
 }
@@ -164,17 +158,6 @@ void WebRenderTextureHost::PrepareForUse() {
 
 gfx::SurfaceFormat WebRenderTextureHost::GetReadFormat() const {
   return mWrappedTextureHost->GetReadFormat();
-}
-
-int32_t WebRenderTextureHost::GetRGBStride() {
-  gfx::SurfaceFormat format = GetFormat();
-  if (GetFormat() == gfx::SurfaceFormat::YUV420) {
-    // XXX this stride is used until yuv image rendering by webrender is used.
-    // Software converted RGB buffers strides are aliened to 16
-    return gfx::GetAlignedStride<16>(
-        GetSize().width, BytesPerPixel(gfx::SurfaceFormat::B8G8R8A8));
-  }
-  return ImageDataSerializer::ComputeRGBStride(format, GetSize().width);
 }
 
 bool WebRenderTextureHost::NeedsDeferredDeletion() const {
@@ -208,16 +191,8 @@ bool WebRenderTextureHost::SupportsExternalCompositing(
   return mWrappedTextureHost->SupportsExternalCompositing(aBackend);
 }
 
-void WebRenderTextureHost::SetAcquireFence(UniqueFileHandle&& aFenceFd) {
-  mWrappedTextureHost->SetAcquireFence(std::move(aFenceFd));
-}
-
-void WebRenderTextureHost::SetReleaseFence(UniqueFileHandle&& aFenceFd) {
-  mWrappedTextureHost->SetReleaseFence(std::move(aFenceFd));
-}
-
-UniqueFileHandle WebRenderTextureHost::GetAndResetReleaseFence() {
-  return mWrappedTextureHost->GetAndResetReleaseFence();
+void WebRenderTextureHost::SetReadFence(Fence* aReadFence) {
+  return mWrappedTextureHost->SetReadFence(aReadFence);
 }
 
 AndroidHardwareBuffer* WebRenderTextureHost::GetAndroidHardwareBuffer() const {

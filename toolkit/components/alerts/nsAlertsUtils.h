@@ -9,10 +9,8 @@
 #include "nsString.h"
 
 class nsAlertsUtils final {
- private:
-  nsAlertsUtils() = delete;
-
  public:
+  nsAlertsUtils() = delete;
   /**
    * Indicates whether an alert from |aPrincipal| should include the source
    * string and action buttons. Returns false if |aPrincipal| is |nullptr|, or
@@ -31,5 +29,10 @@ class nsAlertsUtils final {
    * is not actionable.
    */
   static nsresult GetOrigin(nsIPrincipal* aPrincipal, nsACString& aOrigin);
+
+  /**
+   * Returns whether the application has any browser windows open.
+   */
+  static bool HasOpenBrowserWindows();
 };
 #endif /* nsAlertsUtils_h */

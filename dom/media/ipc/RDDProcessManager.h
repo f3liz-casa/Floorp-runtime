@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -74,9 +72,8 @@ class RDDProcessManager final : public RDDProcessHost::Listener {
   RefPtr<PRDDChild::TestTriggerMetricsPromise> TestTriggerMetrics();
 
  private:
-  bool IsRDDProcessLaunching();
-  bool IsRDDProcessDestroyed() const;
-  bool CreateVideoBridge();
+  bool IsRDDProcessLaunching() const;
+  bool IsRDDProcessAlive() const;
 
   // Called from our xpcom-shutdown observer.
   void OnXPCOMShutdown();
@@ -114,7 +111,7 @@ class RDDProcessManager final : public RDDProcessHost::Listener {
   uint32_t mNumUnexpectedCrashes = 0;
 
   // Fields that are associated with the current RDD process.
-  RDDProcessHost* mProcess = nullptr;
+  RefPtr<RDDProcessHost> mProcess;
   uint64_t mProcessToken = 0;
   RDDChild* mRDDChild = nullptr;
   // Collects any pref changes that occur during process launch (after

@@ -11,7 +11,7 @@ const EXPECTED_SNAPSHOTS_DATA = [
   // header data
   {
     lineIndex: 0,
-    value: { total: 3, alerts: 0, count: 3 },
+    value: { total: 3, alerts: 0, count: 3, perDeviceSyncEnabled: false },
     field: undefined,
   },
 
@@ -56,7 +56,7 @@ add_task(async function test_viewmodel_rebuildSnapshots() {
 
   await addMockPasswords();
 
-  await BrowserTestUtils.waitForCondition(
+  await TestUtils.waitForCondition(
     () => view.snapshots.length === EXPECTED_SNAPSHOTS_DATA.length,
     "Received expected number of snapshots"
   );

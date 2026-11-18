@@ -1,21 +1,20 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "CanvasShutdownManager.h"
+
 #include "mozilla/AppShutdown.h"
-#include "mozilla/dom/CanvasRenderingContext2D.h"
 #include "mozilla/dom/WorkerPrivate.h"
 #include "mozilla/dom/WorkerRef.h"
 #include "mozilla/dom/WorkerRunnable.h"
 #include "mozilla/gfx/CanvasManagerChild.h"
-#include "mozilla/layers/PersistentBufferProvider.h"
-
-using namespace mozilla::dom;
+#include "nsICanvasRenderingContextInternal.h"
 
 namespace mozilla::gfx {
+
+using dom::StrongWorkerRef;
+using dom::WorkerPrivate;
 
 StaticMutex CanvasShutdownManager::sManagersMutex;
 MOZ_RUNINIT std::set<CanvasShutdownManager*> CanvasShutdownManager::sManagers;
@@ -26,15 +25,26 @@ MOZ_RUNINIT std::set<CanvasShutdownManager*> CanvasShutdownManager::sManagers;
 MOZ_THREAD_LOCAL(CanvasShutdownManager*) CanvasShutdownManager::sLocalManager;
 
 CanvasShutdownManager::CanvasShutdownManager(StrongWorkerRef* aWorkerRef)
-    : mWorkerRef(new ThreadSafeWorkerRef(aWorkerRef)) {}
+    : mWorkerRef(new dom::ThreadSafeWorkerRef(aWorkerRef)) {}
 
 CanvasShutdownManager::CanvasShutdownManager() = default;
 CanvasShutdownManager::~CanvasShutdownManager() = default;
 
+std::vector<RefPtr<nsICanvasRenderingContextInternal>>
+CanvasShutdownManager::RefActiveCanvas() const {
+  std::vector<RefPtr<nsICanvasRenderingContextInternal>> activeCanvas;
+  activeCanvas.reserve(mActiveCanvas.size());
+  for (const auto& canvas : mActiveCanvas) {
+    activeCanvas.emplace_back(canvas);
+  }
+  return activeCanvas;
+}
+
 void CanvasShutdownManager::Destroy() {
-  std::set<CanvasRenderingContext2D*> activeCanvas = std::move(mActiveCanvas);
-  for (const auto& i : activeCanvas) {
-    i->OnShutdown();
+  auto activeCanvas = RefActiveCanvas();
+  mActiveCanvas.clear();
+  for (const auto& canvas : activeCanvas) {
+    canvas->OnShutdown();
   }
 
   CanvasManagerChild::Shutdown();
@@ -75,7 +85,7 @@ void CanvasShutdownManager::Destroy() {
     return managerWeak;
   }
 
-  if (WorkerPrivate* worker = GetCurrentThreadWorkerPrivate()) {
+  if (WorkerPrivate* worker = dom::GetCurrentThreadWorkerPrivate()) {
     // The ThreadSafeWorkerRef will let us know when the worker is shutting
     // down. This will let us clear our threadlocal reference and close the
     // actor. We rely upon an explicit shutdown for the main thread.
@@ -111,27 +121,23 @@ void CanvasShutdownManager::Destroy() {
 }
 
 void CanvasShutdownManager::AddShutdownObserver(
-    dom::CanvasRenderingContext2D* aCanvas) {
+    nsICanvasRenderingContextInternal* aCanvas) {
   mActiveCanvas.insert(aCanvas);
 }
 
 void CanvasShutdownManager::RemoveShutdownObserver(
-    dom::CanvasRenderingContext2D* aCanvas) {
+    nsICanvasRenderingContextInternal* aCanvas) {
   mActiveCanvas.erase(aCanvas);
 }
 
 void CanvasShutdownManager::OnRemoteCanvasLost() {
-  // Note that the canvas cannot do anything that mutates our state. It will
-  // dispatch for anything that risks re-entrancy.
-  for (const auto& canvas : mActiveCanvas) {
+  for (const auto& canvas : RefActiveCanvas()) {
     canvas->OnRemoteCanvasLost();
   }
 }
 
 void CanvasShutdownManager::OnRemoteCanvasRestored() {
-  // Note that the canvas cannot do anything that mutates our state. It will
-  // dispatch for anything that risks re-entrancy.
-  for (const auto& canvas : mActiveCanvas) {
+  for (const auto& canvas : RefActiveCanvas()) {
     canvas->OnRemoteCanvasRestored();
   }
 }
@@ -142,22 +148,8 @@ void CanvasShutdownManager::OnRemoteCanvasReset(
     return;
   }
 
-  for (const auto& canvas : mActiveCanvas) {
-    auto* bufferProvider = canvas->GetBufferProvider();
-    if (!bufferProvider) {
-      continue;
-    }
-
-    Maybe<layers::RemoteTextureOwnerId> ownerId =
-        bufferProvider->GetRemoteTextureOwnerId();
-    if (!ownerId) {
-      continue;
-    }
-
-    if (aOwnerIds.Contains(*ownerId)) {
-      canvas->OnRemoteCanvasLost();
-      canvas->OnRemoteCanvasRestored();
-    }
+  for (const auto& canvas : RefActiveCanvas()) {
+    canvas->OnRemoteCanvasReset(aOwnerIds);
   }
 }
 
@@ -174,7 +166,7 @@ void CanvasShutdownManager::OnRemoteCanvasReset(
 /* static */ void CanvasShutdownManager::OnCompositorManagerRestored() {
   MOZ_ASSERT(NS_IsMainThread());
 
-  class RestoreRunnable final : public MainThreadWorkerRunnable {
+  class RestoreRunnable final : public dom::MainThreadWorkerRunnable {
    public:
     RestoreRunnable()
         : MainThreadWorkerRunnable("CanvasShutdownManager::RestoreRunnable") {}

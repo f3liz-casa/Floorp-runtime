@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -7,37 +5,28 @@
 #include "CanvasRenderThread.h"
 
 #include "mozilla/BackgroundHangMonitor.h"
-#include "mozilla/SharedThreadPool.h"
-#include "mozilla/StaticPrefs_gfx.h"
-#include "mozilla/TaskQueue.h"
 #include "mozilla/gfx/CanvasManagerParent.h"
 #include "mozilla/gfx/gfxVars.h"
 #include "mozilla/layers/CanvasTranslator.h"
 #include "mozilla/layers/CompositorThread.h"
 #include "mozilla/webrender/RenderThread.h"
 #include "nsThread.h"
-#include "prsystem.h"
-#include "transport/runnable_utils.h"
 
-bool NS_IsInCanvasThreadOrWorker() {
-  return mozilla::gfx::CanvasRenderThread::IsInCanvasRenderOrWorkerThread();
+bool NS_IsInCanvasThread() {
+  return mozilla::gfx::CanvasRenderThread::IsInCanvasRenderThread();
 }
 
 namespace mozilla::gfx {
 
 static StaticRefPtr<CanvasRenderThread> sCanvasRenderThread;
-static mozilla::BackgroundHangMonitor* sBackgroundHangMonitor;
+[[maybe_unused]] static mozilla::BackgroundHangMonitor* sBackgroundHangMonitor;
 #ifdef DEBUG
 static bool sCanvasRenderThreadEverStarted = false;
 #endif
 
 CanvasRenderThread::CanvasRenderThread(nsCOMPtr<nsIThread>&& aThread,
-                                       nsCOMPtr<nsIThreadPool>&& aWorkers,
                                        bool aCreatedThread)
-    : mMutex("CanvasRenderThread::mMutex"),
-      mThread(std::move(aThread)),
-      mWorkers(std::move(aWorkers)),
-      mCreatedThread(aCreatedThread) {}
+    : mThread(std::move(aThread)), mCreatedThread(aCreatedThread) {}
 
 CanvasRenderThread::~CanvasRenderThread() = default;
 
@@ -53,36 +42,6 @@ void CanvasRenderThread::Start() {
   sCanvasRenderThreadEverStarted = true;
 #endif
 
-  // If remote canvas is disabled, then ignore the worker threads setting so as
-  // not to interfere with Accelerated Canvas2D.
-  int32_t threadPref =
-      gfxVars::RemoteCanvasEnabled()
-          ? StaticPrefs::gfx_canvas_remote_worker_threads_AtStartup()
-          : 0;
-
-  uint32_t threadLimit;
-  if (threadPref < 0) {
-    // Given that the canvas workers are receiving instructions from
-    // content processes, it probably doesn't make sense to have more than
-    // half the number of processors doing canvas drawing. We set the
-    // lower limit to 2, so that even on single processor systems, if
-    // there is more than one window with canvas drawing, the OS can
-    // manage the load between them.
-    threadLimit = std::max(2, PR_GetNumberOfProcessors() / 2);
-  } else {
-    threadLimit = uint32_t(threadPref);
-  }
-
-  // We don't spawn any workers if the user set the limit to 0. Instead we will
-  // use the CanvasRenderThread virtual thread.
-  nsCOMPtr<nsIThreadPool> workers;
-  if (threadLimit > 0) {
-    workers = SharedThreadPool::Get("CanvasWorkers"_ns, threadLimit);
-    if (NS_WARN_IF(!workers)) {
-      return;
-    }
-  }
-
   nsCOMPtr<nsIThread> thread;
   if (!gfxVars::SupportsThreadsafeGL()) {
     thread = wr::RenderThread::GetRenderThread();
@@ -93,8 +52,8 @@ void CanvasRenderThread::Start() {
   }
 
   if (thread) {
-    sCanvasRenderThread = new CanvasRenderThread(
-        std::move(thread), std::move(workers), /* aCreatedThread */ false);
+    sCanvasRenderThread =
+        new CanvasRenderThread(std::move(thread), /* aCreatedThread */ false);
     return;
   }
 
@@ -139,8 +98,8 @@ void CanvasRenderThread::Start() {
     return;
   }
 
-  sCanvasRenderThread = new CanvasRenderThread(
-      std::move(thread), std::move(workers), /* aCreatedThread */ true);
+  sCanvasRenderThread =
+      new CanvasRenderThread(std::move(thread), /* aCreatedThread */ true);
 }
 
 // static
@@ -160,27 +119,8 @@ void CanvasRenderThread::Shutdown() {
   // Queue any remaining global cleanup for CanvasTranslator
   layers::CanvasTranslator::Shutdown();
 
-  // Any task queues that are in the process of shutting down are tracked in
-  // mPendingShutdownTaskQueues. We need to block on each one until all events
-  // are flushed so that we can safely teardown RemoteTextureMap afterwards.
-  while (true) {
-    RefPtr<TaskQueue> taskQueue;
-    {
-      MutexAutoLock lock(sCanvasRenderThread->mMutex);
-
-      auto& pendingQueues = sCanvasRenderThread->mPendingShutdownTaskQueues;
-      if (pendingQueues.IsEmpty()) {
-        break;
-      }
-
-      taskQueue = pendingQueues.PopLastElement();
-    }
-    taskQueue->AwaitShutdownAndIdle();
-  }
-
   bool createdThread = sCanvasRenderThread->mCreatedThread;
   nsCOMPtr<nsIThread> oldThread = sCanvasRenderThread->GetCanvasRenderThread();
-  nsCOMPtr<nsIThreadPool> oldWorkers = sCanvasRenderThread->mWorkers;
 
   // Ensure that we flush the CanvasRenderThread event queue before clearing our
   // singleton.
@@ -191,10 +131,6 @@ void CanvasRenderThread::Shutdown() {
   // Null out sCanvasRenderThread before we enter synchronous Shutdown,
   // from here on we are to be considered shut down for our consumers.
   sCanvasRenderThread = nullptr;
-
-  if (oldWorkers) {
-    oldWorkers->Shutdown();
-  }
 
   // We do a synchronous shutdown here while spinning the MT event loop, but
   // only if we created a dedicated CanvasRender thread.
@@ -209,25 +145,6 @@ bool CanvasRenderThread::IsInCanvasRenderThread() {
          sCanvasRenderThread->mThread == NS_GetCurrentThread();
 }
 
-/* static */ bool CanvasRenderThread::IsInCanvasWorkerThread() {
-  // It is possible there are no worker threads, and the worker is the same as
-  // the CanvasRenderThread itself.
-  return sCanvasRenderThread &&
-         ((sCanvasRenderThread->mWorkers &&
-           sCanvasRenderThread->mWorkers->IsOnCurrentThread()) ||
-          (!sCanvasRenderThread->mWorkers &&
-           sCanvasRenderThread->mThread == NS_GetCurrentThread()));
-}
-
-/* static */ bool CanvasRenderThread::IsInCanvasRenderOrWorkerThread() {
-  // It is possible there are no worker threads, and the worker is the same as
-  // the CanvasRenderThread itself.
-  return sCanvasRenderThread &&
-         (sCanvasRenderThread->mThread == NS_GetCurrentThread() ||
-          (sCanvasRenderThread->mWorkers &&
-           sCanvasRenderThread->mWorkers->IsOnCurrentThread()));
-}
-
 // static
 already_AddRefed<nsIThread> CanvasRenderThread::GetCanvasRenderThread() {
   nsCOMPtr<nsIThread> thread;
@@ -235,43 +152,6 @@ already_AddRefed<nsIThread> CanvasRenderThread::GetCanvasRenderThread() {
     thread = sCanvasRenderThread->mThread;
   }
   return thread.forget();
-}
-
-/* static */ already_AddRefed<TaskQueue>
-CanvasRenderThread::CreateWorkerTaskQueue() {
-  if (!sCanvasRenderThread || !sCanvasRenderThread->mWorkers) {
-    return nullptr;
-  }
-
-  return TaskQueue::Create(do_AddRef(sCanvasRenderThread->mWorkers),
-                           "CanvasWorker")
-      .forget();
-}
-
-/* static */ void CanvasRenderThread::ShutdownWorkerTaskQueue(
-    TaskQueue* aTaskQueue) {
-  MOZ_ASSERT(aTaskQueue);
-
-  aTaskQueue->BeginShutdown();
-
-  if (!sCanvasRenderThread) {
-    MOZ_ASSERT_UNREACHABLE("No CanvasRenderThread!");
-    return;
-  }
-
-  MutexAutoLock lock(sCanvasRenderThread->mMutex);
-  auto& pendingQueues = sCanvasRenderThread->mPendingShutdownTaskQueues;
-  pendingQueues.AppendElement(aTaskQueue);
-}
-
-/* static */ void CanvasRenderThread::FinishShutdownWorkerTaskQueue(
-    TaskQueue* aTaskQueue) {
-  if (!sCanvasRenderThread) {
-    return;
-  }
-
-  MutexAutoLock lock(sCanvasRenderThread->mMutex);
-  sCanvasRenderThread->mPendingShutdownTaskQueues.RemoveElement(aTaskQueue);
 }
 
 /* static */ void CanvasRenderThread::Dispatch(

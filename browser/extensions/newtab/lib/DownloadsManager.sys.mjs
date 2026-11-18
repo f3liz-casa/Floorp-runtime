@@ -8,35 +8,19 @@ const lazy = {};
 
 ChromeUtils.defineESModuleGetters(lazy, {
   BrowserUtils: "resource://gre/modules/BrowserUtils.sys.mjs",
+  DownloadsCommon:
+    "moz-src:///browser/components/downloads/DownloadsCommon.sys.mjs",
+  DownloadsViewUI:
+    "moz-src:///browser/components/downloads/DownloadsViewUI.sys.mjs",
   FileUtils: "resource://gre/modules/FileUtils.sys.mjs",
   NewTabUtils: "resource://gre/modules/NewTabUtils.sys.mjs",
 });
 
-ChromeUtils.defineLazyGetter(lazy, "DownloadsCommon", () => {
-  try {
-    return ChromeUtils.importESModule(
-      "moz-src:///browser/components/downloads/DownloadsCommon.sys.mjs"
-    ).DownloadsCommon;
-  } catch {
-    // Fallback to URI format prior to FF 143.
-    return ChromeUtils.importESModule(
-      "resource:///modules/DownloadsCommon.sys.mjs"
-    ).DownloadsCommon;
-  }
-});
-
-ChromeUtils.defineLazyGetter(lazy, "DownloadsViewUI", () => {
-  try {
-    return ChromeUtils.importESModule(
-      "moz-src:///browser/components/downloads/DownloadsViewUI.sys.mjs"
-    ).DownloadsViewUI;
-  } catch {
-    // Fallback to URI format prior to FF 143.
-    return ChromeUtils.importESModule(
-      "resource:///modules/DownloadsViewUI.sys.mjs"
-    ).DownloadsViewUI;
-  }
-});
+ChromeUtils.defineLazyGetter(
+  lazy,
+  "downloadsL10n",
+  () => new Localization(["browser/downloads.ftl"], true)
+);
 
 const DOWNLOAD_CHANGED_DELAY_TIME = 1000; // time in ms to delay timer for downloads changed events
 
@@ -63,10 +47,23 @@ export class DownloadsManager {
       title: lazy.DownloadsViewUI.getDisplayName(download),
       description:
         lazy.DownloadsViewUI.getSizeWithUnits(download) ||
-        lazy.DownloadsCommon.strings.sizeUnknown,
+        this.getSizeUnknownLabel(),
       referrer,
       date_added: download.endTime,
     };
+  }
+
+  /**
+   * @backward-compat { version 161 }
+   * downloads.properties was migrated to Fluent in 161, removing
+   * DownloadsCommon.strings. Once 161 reaches Release, drop the
+   * DownloadsCommon.strings fallback.
+   */
+  getSizeUnknownLabel() {
+    if (lazy.DownloadsCommon.strings) {
+      return lazy.DownloadsCommon.strings.sizeUnknown;
+    }
+    return lazy.downloadsL10n.formatValueSync("downloads-size-unknown");
   }
 
   init(store) {
@@ -120,7 +117,7 @@ export class DownloadsManager {
     const downloadThreshold = Date.now() - threshold;
     let downloads = [...this._downloadItems.values()]
       .filter(download => download.endTime > downloadThreshold)
-      .sort((download1, download2) => download1.endTime < download2.endTime);
+      .sort((download1, download2) => download2.endTime - download1.endTime);
 
     for (const download of downloads) {
       // Ignore blocked links, but allow long (data:) uris to avoid high CPU

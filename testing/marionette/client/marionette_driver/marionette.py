@@ -386,6 +386,15 @@ class WebElement:
             "WebDriver:GetComputedRole", {"id": self.id}, key="value"
         )
 
+    @property
+    def accessibility_properties(self):
+        """Gets the accessibility properties for the current element"""
+        return self.marionette._send_message(
+            "Marionette:GetAccessibilityPropertiesForElement",
+            {"id": self.id},
+            key="value",
+        )
+
     @classmethod
     def _from_json(cls, json, marionette):
         if isinstance(json, dict):
@@ -604,6 +613,7 @@ class Marionette:
         self.chrome_window = None
         self.baseurl = baseurl
         self._test_name = None
+        self._test_group = None
         self.crashed = 0
         self.is_shutting_down = False
         self.cleanup_ran = False
@@ -626,8 +636,13 @@ class Marionette:
             )
             self.start_binary(self.startup_timeout)
 
-        self.actions = Actions(self)
-        self.timeout = Timeouts(self)
+    @property
+    def actions(self):
+        return Actions(self)
+
+    @property
+    def timeout(self):
+        return Timeouts(self)
 
     @property
     def profile_path(self):
@@ -790,8 +805,9 @@ class Marionette:
         crash_count = 0
 
         if self.instance:
-            name = self.test_name or "marionette.py"
-            crash_count = self.instance.runner.check_for_crashes(test_name=name)
+            crash_count = self.instance.runner.check_for_crashes(
+                test_name=self.test_name or "marionette.py", group=self.test_group
+            )
             self.crashed = self.crashed + crash_count
 
         return crash_count > 0
@@ -1104,7 +1120,7 @@ class Marionette:
         """
         if not self.instance:
             raise errors.MarionetteException(
-                "quit() can only be called " "on Gecko instances launched by Marionette"
+                "quit() can only be called on Gecko instances launched by Marionette"
             )
 
         quit_details = {"cause": "shutdown", "forced": False}
@@ -1164,8 +1180,9 @@ class Marionette:
 
         if quit_details.get("cause") not in (None, "shutdown"):
             raise errors.MarionetteException(
-                "Unexpected shutdown reason '{}' for "
-                "quitting the process.".format(quit_details["cause"])
+                "Unexpected shutdown reason '{}' for quitting the process.".format(
+                    quit_details["cause"]
+                )
             )
 
         return quit_details
@@ -1204,8 +1221,7 @@ class Marionette:
         """
         if not self.instance:
             raise errors.MarionetteException(
-                "restart() can only be called "
-                "on Gecko instances launched by Marionette"
+                "restart() can only be called on Gecko instances launched by Marionette"
             )
 
         context = self._send_message("Marionette:GetContext", key="value")
@@ -1299,8 +1315,9 @@ class Marionette:
 
         if restart_details.get("cause") not in (None, "restart"):
             raise errors.MarionetteException(
-                "Unexpected shutdown reason '{}' for "
-                "restarting the process".format(restart_details["cause"])
+                "Unexpected shutdown reason '{}' for restarting the process".format(
+                    restart_details["cause"]
+                )
             )
 
         return restart_details
@@ -1325,7 +1342,7 @@ class Marionette:
             or requriedCapabilities), and only recognises extension
             capabilities that are specific to Marionette.
         :param process_forked: If True, the existing process forked itself due
-        to an internal restart.
+            to an internal restart.
         :param timeout: Optional timeout in seconds for the server to be ready.
 
         :returns: A dictionary of the capabilities offered.
@@ -1391,6 +1408,15 @@ class Marionette:
     @test_name.setter
     def test_name(self, test_name):
         self._test_name = test_name
+
+    @property
+    def test_group(self):
+        """Group (e.g. manifest) of the tests being run, crashes are attributed to it."""
+        return self._test_group
+
+    @test_group.setter
+    def test_group(self, test_group):
+        self._test_group = test_group
 
     def delete_session(self, send_request=True):
         """Close the current session and disconnect from the server.
@@ -1473,11 +1499,6 @@ class Marionette:
         :param width: The width to resize the window to.
         :param height: The height to resize the window to.
         """
-        if (x is None and y is None) and (height is None and width is None):
-            raise errors.InvalidArgumentException(
-                "x and y or height and width need values"
-            )
-
         body = {"x": x, "y": y, "height": height, "width": width}
         return self._send_message("WebDriver:SetWindowRect", body)
 
@@ -1821,11 +1842,18 @@ class Marionette:
 
         ::
 
-            result = marionette.execute_script("return arguments[0] + arguments[1];",
-                                               script_args=(2, 3,))
+            result = marionette.execute_script(
+                "return arguments[0] + arguments[1];",
+                script_args=(
+                    2,
+                    3,
+                ),
+            )
             assert result == 5
             some_element = marionette.find_element(By.ID, "someElement")
-            sid = marionette.execute_script("return arguments[0].id;", script_args=(some_element,))
+            sid = marionette.execute_script(
+                "return arguments[0].id;", script_args=(some_element,)
+            )
             assert some_element.get_attribute("id") == sid
 
         Scripts wishing to access non-standard properties of the window
@@ -1848,7 +1876,9 @@ class Marionette:
         ::
 
             marionette.execute_script("global.test1 = 'foo';")
-            result = self.marionette.execute_script("return global.test1;", new_sandbox=False)
+            result = self.marionette.execute_script(
+                "return global.test1;", new_sandbox=False
+            )
             assert result == "foo"
 
         """
@@ -2010,6 +2040,18 @@ class Marionette:
 
         return self._send_message("WebDriver:FindElements", body)
 
+    def generate_test_report(self, message, group=None):
+        """Generates a test report to be observed by registered reporting observers
+
+        :param message: The message string to be used as the body of the generated report
+        :param group: The name of the endpoint that will receive the report
+        """
+        body = {"message": message}
+        if group is not None:
+            body["group"] = group
+
+        self._send_message("Reporting:GenerateTestReport", body)
+
     def get_active_element(self):
         el_or_ref = self._send_message("WebDriver:GetActiveElement", key="value")
         return el_or_ref
@@ -2027,8 +2069,12 @@ class Marionette:
 
             driver.add_cookie({"name": "foo", "value": "bar"})
             driver.add_cookie({"name": "foo", "value": "bar", "path": "/"})
-            driver.add_cookie({"name": "foo", "value": "bar", "path": "/",
-                               "secure": True})
+            driver.add_cookie({
+                "name": "foo",
+                "value": "bar",
+                "path": "/",
+                "secure": True,
+            })
         """
         self._send_message("WebDriver:AddCookie", {"cookie": cookie})
 
@@ -2125,7 +2171,7 @@ class Marionette:
 
         data = self._send_message("WebDriver:TakeScreenshot", body, key="value")
 
-        if format == "base64" or format == "hash":
+        if format in {"base64", "hash"}:
             return data
         elif format == "binary":
             return base64.b64decode(data.encode("ascii"))
@@ -2209,3 +2255,11 @@ class Marionette:
             "state": state,
         }
         return self._send_message("WebDriver:SetPermission", body)
+
+    def get_accessibility_properties_for_accessibility_node(self, id):
+        """Gets the properties for the accessibility node with the given id."""
+        return self._send_message(
+            "Marionette:GetAccessibilityPropertiesForAccessibilityNode",
+            {"id": id},
+            key="value",
+        )

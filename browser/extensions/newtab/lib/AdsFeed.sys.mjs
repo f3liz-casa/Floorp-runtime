@@ -2,12 +2,19 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
+/** @import {Store} from "resource://newtab/lib/Store.sys.mjs" */
+
 const lazy = {
   Utils: "resource://services-settings/Utils.sys.mjs",
 };
 
 ChromeUtils.defineESModuleGetters(lazy, {
+  AdsClient: "resource://newtab/lib/AdsClient.sys.mjs",
   ContextId: "moz-src:///browser/modules/ContextId.sys.mjs",
+  MozAdsPlacementRequest:
+    "moz-src:///toolkit/components/uniffi-bindgen-gecko-js/components/generated/RustAdsClient.sys.mjs",
+  MozAdsPlacementRequestWithCount:
+    "moz-src:///toolkit/components/uniffi-bindgen-gecko-js/components/generated/RustAdsClient.sys.mjs",
   ObliviousHTTP: "resource://gre/modules/ObliviousHTTP.sys.mjs",
   PersistentCache: "resource://newtab/lib/PersistentCache.sys.mjs",
 });
@@ -49,6 +56,9 @@ const CACHE_KEY = "ads_feed";
 const ADS_UPDATE_TIME = 30 * 60 * 1000; // 30 minutes
 
 export class AdsFeed {
+  /** @type {Store} */
+  store = null;
+
   constructor() {
     this.enabled = false;
     this.loaded = false;
@@ -56,6 +66,7 @@ export class AdsFeed {
     this.tiles = [];
     this.spocs = [];
     this.spocPlacements = [];
+    this.adsClient = null;
     this.cache = this.PersistentCache(CACHE_KEY, true);
   }
 
@@ -83,7 +94,6 @@ export class AdsFeed {
 
   async deleteUserAdsData() {
     const state = this.store.getState();
-    const headers = new Headers();
     const endpointBaseUrl = state.Prefs.values[PREF_UNIFIED_ADS_ENDPOINT];
 
     if (!endpointBaseUrl) {
@@ -95,11 +105,9 @@ export class AdsFeed {
       context_id: await lazy.ContextId.request(),
     };
 
-    headers.append("content-type", "application/json");
-
     await this.fetch(endpoint, {
       method: "DELETE",
-      headers,
+      headers: { "content-type": "application/json" },
       body: JSON.stringify(body),
     });
   }
@@ -160,6 +168,8 @@ export class AdsFeed {
   /**
    * This thin wrapper around global.fetch makes it easier for us to write
    * automated tests that simulate responses from this fetch.
+   *
+   * @param {Parameters<typeof fetch>} args
    */
   fetch(...args) {
     return fetch(...args);
@@ -168,7 +178,8 @@ export class AdsFeed {
   /**
    * Normalize new Unified Ads API response into
    * previous Contile ads response
-   * @param {array} - Array of UAPI placement objects ("newtab_tile_1", etc.)
+   *
+   * @param {{[placement: string]: Array}} data - UAPI placements keyed by name ("newtab_tile_1", etc.)
    * @returns {object} - Object containing array of formatted UAPI objects to match legacy Contile system
    */
   _normalizeTileData(data) {
@@ -200,6 +211,7 @@ export class AdsFeed {
 
   /**
    * Return object of supported ad types to query from MARS API from the AdsFeed file
+   *
    * @returns {object}
    */
   getSupportedAdTypes() {
@@ -218,13 +230,14 @@ export class AdsFeed {
   /**
    * Get ads data either from cache or from API and
    * broadcast the data via at.ADS_UPDATE_{DATA_TYPE} event
+   *
    * @param {boolean} isStartup=false - This is only used for reporting
    * and is passed to the update functions meta attribute
-   * @returns {void}
+   * @returns {Promise<void>}
    */
   async getAdsData(isStartup = false) {
     const supportedAdTypes = this.getSupportedAdTypes();
-    const cachedData = (await this.cache.get()) || {};
+    const cachedData = this.adsClient ? {} : (await this.cache.get()) || {};
 
     const { ads } = cachedData;
     const adsCacheValid = ads
@@ -266,13 +279,15 @@ export class AdsFeed {
   /**
    * Fetch data from the Mozilla Ad Routing Service (MARS) unified ads API
    * This function is designed to get whichever ads types are needed (tiles, spocs)
-   * @param {array} supportedAdTypes
-   * @returns {object} Response object containing ad information from MARS
+   *
+   * @param {{tiles: boolean, spocs: boolean}} supportedAdTypes
+   * @returns {Promise<object>} Response object containing ad information from MARS
    */
   async fetchData(supportedAdTypes) {
     const state = this.store.getState();
-    const headers = new Headers();
-    headers.append("content-type", "application/json");
+    // A plain object, since ObliviousHTTP.ohttpRequest reads headers with
+    // Object.keys, which finds nothing on a Headers instance.
+    const headers = { "content-type": "application/json" };
 
     const endpointBaseUrl = state.Prefs.values[PREF_UNIFIED_ADS_ENDPOINT];
     const marsOhttpEnabled = Services.prefs.getBoolPref(
@@ -297,6 +312,7 @@ export class AdsFeed {
     // Can include both tile and spoc placement data
     let placements = [];
     let responseData;
+    /** @type {{tiles?: Array, spocs?: Array, spocPlacements?: Array}} */
     let returnData = {};
 
     // Determine which data needs to be fetched
@@ -342,20 +358,33 @@ export class AdsFeed {
       placements.push(...spocPlacements);
     }
 
+    if (this.adsClient) {
+      return this._fetchWithAdsClient(
+        supportedAdTypes,
+        placements,
+        state.Prefs.values,
+        returnData
+      );
+    }
+
+    const adsBackendConfig = state.Prefs.values?.adsBackendConfig || {};
+
     let fetchPromise;
 
     const controller = new AbortController();
     const { signal } = controller;
 
+    /** @type {RequestInit} */
     const options = {
       method: "POST",
       headers,
       body: JSON.stringify({
         context_id: await lazy.ContextId.request(),
+        flags: adsBackendConfig,
         placements,
         blocks: blockedSponsors.split(","),
-        credentials: "omit",
       }),
+      credentials: "omit",
       signal,
     };
 
@@ -408,7 +437,7 @@ export class AdsFeed {
         .reduce((acc, key) => {
           acc[key] = responseData[key];
           return acc;
-        }, {});
+        }, /** @type {{[placement: string]: Array}} */ ({}));
 
       returnData.spocs = filteredRespDataNonTiles.newtab_spocs;
     }
@@ -417,11 +446,98 @@ export class AdsFeed {
   }
 
   /**
+   * Fetch ads through the MozAdsClient. Maps the canonical MozAdsTile/MozAdsSpoc
+   * objects into the shape the rest of New Tab consumes today; the mapping goes
+   * away once consumers read the ads-client types directly.
+   *
+   * @param {{tiles: boolean, spocs: boolean}} supportedAdTypes
+   * @param {Array} placements
+   * @param {object} prefValues
+   * @param {object} returnData
+   * @returns {Promise<object>}
+   */
+  async _fetchWithAdsClient(
+    supportedAdTypes,
+    placements,
+    prefValues,
+    returnData
+  ) {
+    const isTile = p => p.placement?.startsWith("newtab_tile_");
+    const options = lazy.AdsClient.requestOptions(prefValues);
+
+    if (supportedAdTypes.tiles) {
+      const requests = placements.filter(isTile).map(
+        p =>
+          new lazy.MozAdsPlacementRequest({
+            placementId: p.placement,
+            iabContent: null,
+          })
+      );
+      const tiles = await this.adsClient.requestTileAds(requests, options);
+      returnData.tiles = Array.from(tiles.values(), tile => ({
+        id: tile.blockKey,
+        block_key: tile.blockKey,
+        name: tile.name,
+        url: tile.url,
+        click_url: tile.callbacks.click,
+        image_url: tile.imageUrl,
+        impression_url: tile.callbacks.impression,
+        image_size: 200,
+      }));
+    }
+
+    if (supportedAdTypes.spocs) {
+      const requests = placements
+        .filter(p => !isTile(p))
+        .map(
+          p =>
+            new lazy.MozAdsPlacementRequestWithCount({
+              placementId: p.placement,
+              count: p.count,
+              iabContent: null,
+            })
+        );
+      const spocs = await this.adsClient.requestSpocAds(requests, options);
+      returnData.spocs = (spocs.get("newtab_spocs") ?? []).map(spoc => ({
+        format: spoc.format,
+        url: spoc.url,
+        callbacks: spoc.callbacks,
+        image_url: spoc.imageUrl,
+        title: spoc.title,
+        domain: spoc.domain,
+        excerpt: spoc.excerpt,
+        sponsor: spoc.sponsor,
+        sponsored_by_override: spoc.sponsoredByOverride,
+        block_key: spoc.blockKey,
+        caps: spoc.caps
+          ? { cap_key: spoc.caps.capKey, day: spoc.caps.day }
+          : undefined,
+        ranking: spoc.ranking
+          ? {
+              item_score: spoc.ranking.itemScore,
+              personalization_models: Object.fromEntries(
+                spoc.ranking.personalizationModels ?? []
+              ),
+              priority: spoc.ranking.priority,
+            }
+          : undefined,
+      }));
+    }
+
+    return returnData;
+  }
+
+  /**
    * Init function that runs only from onAction at.INIT call.
+   *
    * @param {boolean} isStartup=false
-   * @returns {void}
+   * @returns {Promise<void>}
    */
   async init(isStartup = false) {
+    if (lazy.AdsClient.isEnabled(this.store.getState().Prefs.values)) {
+      this.adsClient = lazy.AdsClient.getClient();
+    }
+
     if (this.isEnabled()) {
       await this.getAdsData(isStartup);
     }
@@ -429,16 +545,21 @@ export class AdsFeed {
 
   /**
    * Sets cached data and dispatches at.ADS_UPDATE_{DATA_TYPE} event to update store with new ads data
+   *
    * @param {boolean} isStartup
-   * @returns {void}
+   * @returns {Promise<void>}
    */
   async update(isStartup) {
-    await this.cache.set("ads", {
-      ...(this.tiles ? { tiles: this.tiles } : {}),
-      ...(this.spocs ? { spocs: this.spocs } : {}),
-      ...(this.spocPlacements ? { spocPlacements: this.spocPlacements } : {}),
-      lastUpdated: this.lastUpdated,
-    });
+    // The ads-client has its own HTTP response cache, so it is the only cache
+    // on that path.
+    if (!this.adsClient) {
+      await this.cache.set("ads", {
+        ...(this.tiles ? { tiles: this.tiles } : {}),
+        ...(this.spocs ? { spocs: this.spocs } : {}),
+        ...(this.spocPlacements ? { spocPlacements: this.spocPlacements } : {}),
+        lastUpdated: this.lastUpdated,
+      });
+    }
 
     if (this.tiles && this.tiles.length) {
       this.store.dispatch(
@@ -530,7 +651,8 @@ export class AdsFeed {
       case at.PREF_CHANGED:
         await this.onPrefChangedAction(action);
         break;
-      case at.DISCOVERY_STREAM_CONFIG_CHANGE: // Event emitted from ASDevTools "Reset Cache" button
+      case at.DISCOVERY_STREAM_CONFIG_CHANGE:
+      case at.DISCOVERY_STREAM_DEV_REFRESH_CACHE: // Event emitted from ASDevTools "Refresh Cache" button
       case at.DISCOVERY_STREAM_DEV_EXPIRE_CACHE: // Event emitted from ASDevTools "Expire Cache" button
         // Clear cache
         await this.resetAdsFeed();

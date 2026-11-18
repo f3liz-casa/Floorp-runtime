@@ -1,15 +1,16 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "WindowRenderer.h"
 
+#include <algorithm>
+
 #include "gfxPlatform.h"
 #include "mozilla/EffectSet.h"
 #include "mozilla/dom/Animation.h"  // for Animation
 #include "mozilla/dom/AnimationEffect.h"
+#include "mozilla/gfx/GPUProcessManager.h"
 #include "mozilla/layers/PersistentBufferProvider.h"  // for PersistentBufferProviderBasic, PersistentBufferProvider (ptr only)
 #include "nsDisplayList.h"
 
@@ -47,12 +48,18 @@ namespace mozilla {
  *   with a start index older than this, it means that some frames were not
  *   recorded, so data is invalid.
  */
-uint32_t FrameRecorder::StartFrameTimeRecording(int32_t aBufferSize) {
+uint32_t FrameRecorder::StartFrameTimeRecording(uint32_t aBufferSize) {
   if (mRecording.mIsPaused) {
     mRecording.mIsPaused = false;
 
     if (!mRecording.mIntervals.Length()) {  // Initialize recording buffers
-      mRecording.mIntervals.SetLength(aBufferSize);
+      // Apply the same bounds as nsDOMWindowUtils, including for direct and
+      // IPC callers. An empty buffer would make RecordFrame divide by zero.
+      constexpr uint32_t kRecordingMinSize = 60 * 10;  // 10 seconds @60 fps.
+      constexpr uint32_t kRecordingMaxSize = 60 * 60 * 60;  // One hour.
+      const uint32_t bufferSize =
+          std::clamp(aBufferSize, kRecordingMinSize, kRecordingMaxSize);
+      mRecording.mIntervals.SetLength(bufferSize);
     }
 
     // After being paused, recent values got invalid. Update them to now.
@@ -222,6 +229,35 @@ void FallbackRenderer::EndTransactionWithList(nsDisplayListBuilder* aBuilder,
     dt->DrawSurface(snapshot, Rect(dest->GetRect()), Rect(dest->GetRect()),
                     DrawSurfaceOptions(),
                     DrawOptions(1.0f, CompositionOp::OP_SOURCE));
+  }
+}
+
+BackgroundedFallbackRenderer::BackgroundedFallbackRenderer(nsIWidget* aWidget)
+    : mWidget(aWidget) {
+  MOZ_ASSERT(mWidget);
+  if (auto* gpm = gfx::GPUProcessManager::Get()) {
+    gpm->AddListener(this);
+  }
+}
+
+BackgroundedFallbackRenderer::~BackgroundedFallbackRenderer() { Destroy(); }
+
+void BackgroundedFallbackRenderer::Destroy() {
+  if (!mWidget) {
+    return;
+  }
+
+  if (auto* gpm = gfx::GPUProcessManager::Get()) {
+    gpm->RemoveListener(this);
+  }
+
+  mWidget = nullptr;
+}
+
+void BackgroundedFallbackRenderer::OnCompositorDestroyBackgrounded() {
+  // We may get freed after this but the caller has a strong reference.
+  if (RefPtr<nsIWidget> widget = mWidget) {
+    widget->NotifyCompositorSessionLost(/* aSession */ nullptr);
   }
 }
 

@@ -25,7 +25,9 @@ function getTestDataFile(aFilename) {
 
 function loadHelperScript(aScriptFile) {
   let scriptSpec = Services.io.newFileURI(aScriptFile).spec;
-  Services.scriptloader.loadSubScript(scriptSpec, this);
+  Services.scriptloader.loadSubScriptWithOptions(scriptSpec, {
+    allowUnsafeURL: true,
+  });
 }
 
 var scriptFile = Cc["@mozilla.org/file/local;1"].createInstance(Ci.nsIFile);
@@ -86,7 +88,7 @@ function handleRequest(aRequest, aResponse) {
     gSlowDownloadTimer = Cc["@mozilla.org/timer;1"].createInstance(Ci.nsITimer);
     gSlowDownloadTimer.initWithCallback(
       function (_aTimer) {
-        let continueFile = getTestDataFile(CONTINUE_DOWNLOAD);
+        let continueFile = getContinueFile(CONTINUE_DOWNLOAD);
         retries++;
         if (continueFile.exists() || retries == MAX_SLOW_RESPONSE_RETRIES) {
           try {
@@ -211,7 +213,7 @@ function respond(aResponse, aParams, aResponseString) {
     gSlowCheckTimer.initWithCallback(
       function (_aTimer) {
         retries++;
-        let continueFile = getTestDataFile(CONTINUE_CHECK);
+        let continueFile = getContinueFile(CONTINUE_CHECK);
         if (continueFile.exists() || retries == MAX_SLOW_RESPONSE_RETRIES) {
           try {
             // If the continue file is in use try again the next time the timer

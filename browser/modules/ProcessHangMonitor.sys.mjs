@@ -1,9 +1,6 @@
-/* -*- mode: js; indent-tabs-mode: nil; js-indent-level: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
-
-import { AppConstants } from "resource://gre/modules/AppConstants.sys.mjs";
 
 /**
  * Elides the middle of a string by replacing it with an elipsis if it is
@@ -68,9 +65,9 @@ export var ProcessHangMonitor = {
    * Collection of hang reports that haven't expired or been dismissed
    * by the user. These are nsIHangReports. They are mapped to objects
    * containing:
-   * - notificationTime: when (Cu.now()) we first showed a notification
+   * - notificationTime: when (ChromeUtils.now()) we first showed a notification
    * - waitCount: how often the user asked to wait for the script to finish
-   * - lastReportFromChild: when (Cu.now()) we last got hang info from the
+   * - lastReportFromChild: when (ChromeUtils.now()) we last got hang info from the
    *   child.
    */
   _activeReports: new Map(),
@@ -100,27 +97,6 @@ export var ProcessHangMonitor = {
    */
   terminateScript(win) {
     this.handleUserInput(win, report => report.terminateScript());
-  },
-
-  /**
-   * Start devtools debugger for JavaScript associated with the hang
-   * being reported for the selected browser in |win|.
-   */
-  debugScript(win) {
-    this.handleUserInput(win, report => {
-      function callback() {
-        report.endStartingDebugger();
-      }
-
-      this._recordTelemetryForReport(report, "debugging");
-      report.beginStartingDebugger();
-
-      let svc = Cc["@mozilla.org/dom/slow-script-debug;1"].getService(
-        Ci.nsISlowScriptDebug
-      );
-      let handler = svc.remoteActivationHandler;
-      handler.handleSlowScriptDebug(report.scriptBrowser, callback);
-    });
   },
 
   /**
@@ -271,7 +247,7 @@ export var ProcessHangMonitor = {
     let maybeStopHang = report => {
       let hungBrowserWindow = null;
       try {
-        hungBrowserWindow = report.scriptBrowser.ownerGlobal;
+        hungBrowserWindow = report.scriptBrowser.documentGlobal;
       } catch (e) {
         // Ignore failures to get the script browser - we'll be
         // conservative, and assume that if we cannot access the
@@ -358,6 +334,14 @@ export var ProcessHangMonitor = {
         uri_type = "extension";
       } else if (report.scriptFileName?.startsWith("debugger")) {
         uri_type = "devtools";
+      } else if (
+        report.scriptFileName?.startsWith(
+          "resource://pdf.js/build/pdf.scripting.mjs"
+        )
+      ) {
+        // PDF scripts are content, but their reported filename is the PDF.js
+        // scripting bundle.
+        uri_type = "content";
       } else {
         try {
           let url = new URL(report.scriptFileName);
@@ -373,7 +357,7 @@ export var ProcessHangMonitor = {
       }
       let uptime = 0;
       if (info.notificationTime) {
-        uptime = Cu.now() - info.notificationTime;
+        uptime = ChromeUtils.now() - info.notificationTime;
       }
       uptime = "" + uptime;
       // We combine the duration of the hang in the content process with the
@@ -383,7 +367,7 @@ export var ProcessHangMonitor = {
       // there is no cross-process monotonically increasing timestamp we can
       // use. :-(
       let hangDuration =
-        report.hangDuration + Cu.now() - info.lastReportFromChild;
+        report.hangDuration + ChromeUtils.now() - info.lastReportFromChild;
       Glean.slowScriptWarning.shownContent.record({
         end_reason: endReason,
         hang_duration: hangDuration,
@@ -454,7 +438,7 @@ export var ProcessHangMonitor = {
     if (report) {
       let info = this._activeReports.get(report);
       if (info && !info.notificationTime) {
-        info.notificationTime = Cu.now();
+        info.notificationTime = ChromeUtils.now();
       }
       this.showNotification(win, report);
     } else {
@@ -466,12 +450,9 @@ export var ProcessHangMonitor = {
    * Show the notification for a hang.
    */
   async showNotification(win, report) {
-    let bundle = win.gNavigatorBundle;
-
     let buttons = [
       {
-        label: bundle.getString("processHang.button_stop2.label"),
-        accessKey: bundle.getString("processHang.button_stop2.accessKey"),
+        "l10n-id": "process-hang-stop-button",
         callback() {
           ProcessHangMonitor.stopIt(win);
         },
@@ -479,10 +460,6 @@ export var ProcessHangMonitor = {
     ];
 
     let message;
-    let doc = win.document;
-    let brandShortName = doc
-      .getElementById("bundle_brand")
-      .getString("brandShortName");
     let notificationTag;
     if (report.addonId) {
       notificationTag = report.addonId;
@@ -490,41 +467,44 @@ export var ProcessHangMonitor = {
         Ci.nsIAddonPolicyService
       );
 
-      let addonName = aps.getExtensionName(report.addonId);
+      let addonName;
+      try {
+        addonName = aps.getExtensionName(report.addonId);
+      } catch (e) {
+        // The extension may have been unloaded while its script is hung.
+        addonName = report.addonId;
+      }
 
-      message = bundle.getFormattedString("processHang.add-on.label2", [
-        addonName,
-        brandShortName,
-      ]);
+      message = {
+        "l10n-id": "process-hang-addon-message",
+        "l10n-args": { addonName },
+      };
 
       buttons.unshift({
-        label: bundle.getString("processHang.add-on.learn-more.text"),
+        "l10n-id": "process-hang-addon-learn-more",
         link: "https://support.mozilla.org/kb/warning-unresponsive-script#w_other-causes",
       });
     } else {
       let scriptBrowser = report.scriptBrowser;
       if (scriptBrowser == win.gBrowser?.selectedBrowser) {
         notificationTag = "selected-tab";
-        message = bundle.getFormattedString("processHang.selected_tab.label", [
-          brandShortName,
-        ]);
+        message = { "l10n-id": "process-hang-selected-tab-message" };
       } else {
         let tab =
-          scriptBrowser?.ownerGlobal.gBrowser?.getTabForBrowser(scriptBrowser);
+          scriptBrowser?.documentGlobal.gBrowser?.getTabForBrowser(
+            scriptBrowser
+          );
         if (!tab) {
           notificationTag = "nonspecific_tab";
-          message = bundle.getFormattedString(
-            "processHang.nonspecific_tab.label",
-            [brandShortName]
-          );
+          message = { "l10n-id": "process-hang-nonspecific-tab-message" };
         } else {
           notificationTag = scriptBrowser.browserId.toString();
           let title = tab.getAttribute("label");
           title = elideMiddleOfString(title, 60);
-          message = bundle.getFormattedString(
-            "processHang.specific_tab.label",
-            [title, brandShortName]
-          );
+          message = {
+            "l10n-id": "process-hang-specific-tab-message",
+            "l10n-args": { title },
+          };
         }
       }
     }
@@ -539,22 +519,6 @@ export var ProcessHangMonitor = {
       notification.label = message;
       notification.setAttribute("notification-tag", notificationTag);
       return;
-    }
-
-    // Show the "debug script" button unconditionally if we are in Developer or Nightly
-    // editions, or if DevTools are opened on the slow tab.
-    if (
-      AppConstants.MOZ_DEV_EDITION ||
-      AppConstants.NIGHTLY_BUILD ||
-      report.scriptBrowser.browsingContext.watchedByDevTools
-    ) {
-      buttons.push({
-        label: bundle.getString("processHang.button_debug.label"),
-        accessKey: bundle.getString("processHang.button_debug.accessKey"),
-        callback() {
-          ProcessHangMonitor.debugScript(win);
-        },
-      });
     }
 
     // Sometimes the window may have closed already, in which case we won't
@@ -614,7 +578,7 @@ export var ProcessHangMonitor = {
   },
 
   handleEvent(event) {
-    let win = event.target.ownerGlobal;
+    let win = event.target.documentGlobal;
 
     // If a new tab is selected or if a tab changes remoteness, then
     // we may need to show or hide a hang notification.
@@ -639,7 +603,7 @@ export var ProcessHangMonitor = {
    * before, show a notification for it in all open XUL windows.
    */
   reportHang(report) {
-    let now = Cu.now();
+    let now = ChromeUtils.now();
     if (this._shuttingDown) {
       this.stopHang(report, "shutdown-in-progress", {
         lastReportFromChild: now,

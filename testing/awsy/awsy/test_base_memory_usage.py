@@ -71,16 +71,10 @@ class TestMemoryUsage(AwsyTestCase):
             self._extra_opts = None
 
         self.logger.info(
-            "areweslimyet run by %d pages, "
-            "%d iterations, %d perTabPause, %d settleWaitTime, "
-            "%d content processes"
-            % (
-                self._pages_to_load,
-                self._iterations,
-                self._perTabPause,
-                self._settleWaitTime,
-                process_count,
-            )
+            f"areweslimyet run by {self._pages_to_load} pages, "
+            f"{self._iterations} iterations, {self._perTabPause} perTabPause, "
+            f"{self._settleWaitTime} settleWaitTime, "
+            f"{process_count} content processes"
         )
         self.logger.info("done setting up!")
 
@@ -130,6 +124,5 @@ class TestMemoryUsage(AwsyTestCase):
         # (If we wanted to do something after the preallocated process has been
         # recreated, we should call self.settle() again to wait for it.)
 
-        # TODO(ER): Temporary hack until bug 1121139 lands
         self.logger.info("setting results")
         self.testvars["results"] = results

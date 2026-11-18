@@ -37,7 +37,7 @@ def test_output_pass(runtests):
 
     test_end = filter_action("test_end", lines)
     assert len(test_end) == 3
-    assert all(t["status"] == "OK" for t in test_end)
+    assert all(t["status"] == "PASS" for t in test_end)
 
 
 def test_output_fail(runtests):
@@ -61,7 +61,7 @@ def test_output_fail(runtests):
 
     test_end = filter_action("test_end", lines)
     assert len(test_end) == 3
-    assert all(t["status"] == "OK" for t in test_end)
+    assert all(t["status"] == "FAIL" for t in test_end)
 
     # ensure screenshots were printed
     formatted = buf.getvalue()
@@ -85,6 +85,13 @@ def test_output_crash(runtests):
     assert crash[0]["action"] == "crash"
     assert crash[0]["signature"]
     assert crash[0]["minidump_path"]
+    assert crash[0]["group"].endswith("reftest-crash.list")
+
+    assert len(filter_action("suite_end", lines)) == 1
+    assert not any(
+        "suite_end message before suite_start" in l["message"]
+        for l in filter_action("log", lines)
+    )
 
     lines = filter_action("test_end", lines)
     assert len(lines) == 0
@@ -123,7 +130,7 @@ def test_output_assertion(runtests):
 
     test_end = filter_action("test_end", lines)
     assert len(test_end) == 1
-    assert test_end[0]["status"] == "OK"
+    assert test_end[0]["status"] == "PASS"
 
     assertions = filter_action("assertion_count", lines)
     assert len(assertions) == 1

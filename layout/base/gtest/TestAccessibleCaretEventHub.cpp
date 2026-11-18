@@ -1,10 +1,7 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#include <iostream>
 #include <string>
 
 #include "AccessibleCaretManager.h"
@@ -55,7 +52,7 @@ class MockAccessibleCaretEventHub : public AccessibleCaretEventHub {
   using AccessibleCaretEventHub::ScrollState;
 
   MockAccessibleCaretEventHub() : AccessibleCaretEventHub(nullptr) {
-    mManager = MakeUnique<MockAccessibleCaretManager>();
+    mManager = std::make_unique<MockAccessibleCaretManager>();
     mInitialized = true;
   }
 
@@ -102,8 +99,8 @@ class AccessibleCaretEventHubTester : public ::testing::Test {
 
   static UniquePtr<WidgetEvent> CreateMouseEvent(EventMessage aMessage,
                                                  nscoord aX, nscoord aY) {
-    auto event = MakeUnique<WidgetMouseEvent>(true, aMessage, nullptr,
-                                              WidgetMouseEvent::eReal);
+    auto event = std::make_unique<WidgetMouseEvent>(true, aMessage, nullptr,
+                                                    WidgetMouseEvent::eReal);
 
     event->mButton = MouseButton::ePrimary;
     event->mRefPoint = LayoutDeviceIntPoint(aX, aY);
@@ -130,7 +127,7 @@ class AccessibleCaretEventHubTester : public ::testing::Test {
 
   static UniquePtr<WidgetEvent> CreateTouchEvent(EventMessage aMessage,
                                                  nscoord aX, nscoord aY) {
-    auto event = MakeUnique<WidgetTouchEvent>(true, aMessage, nullptr);
+    auto event = std::make_unique<WidgetTouchEvent>(true, aMessage, nullptr);
     int32_t identifier = 0;
     LayoutDeviceIntPoint point(aX, aY);
     LayoutDeviceIntPoint radius(19, 19);
@@ -161,7 +158,7 @@ class AccessibleCaretEventHubTester : public ::testing::Test {
   }
 
   static UniquePtr<WidgetEvent> CreateWheelEvent(EventMessage aMessage) {
-    auto event = MakeUnique<WidgetWheelEvent>(true, aMessage, nullptr);
+    auto event = std::make_unique<WidgetWheelEvent>(true, aMessage, nullptr);
 
     return std::move(event);
   }

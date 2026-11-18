@@ -1,15 +1,16 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- * vim: set ts=8 sts=2 et sw=2 tw=80:
- * This Source Code Form is subject to the terms of the Mozilla Public
+/* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #ifndef jit_shared_Assembler_shared_h
 #define jit_shared_Assembler_shared_h
 
-#include "mozilla/CheckedInt.h"
+#if JS_BITS_PER_WORD == 32
+#  include "mozilla/CheckedInt.h"
+#endif
 #include "mozilla/DebugOnly.h"
 
+#include <bit>
 #include <limits.h>
 #include <utility>  // std::pair
 
@@ -18,6 +19,7 @@
 #include "jit/JitAllocPolicy.h"
 #include "jit/JitCode.h"
 #include "jit/JitContext.h"
+#include "jit/JitSpewer.h"
 #include "jit/Label.h"
 #include "jit/Registers.h"
 #include "jit/RegisterSets.h"
@@ -41,7 +43,7 @@
 #  define JS_CODELABEL_LINKMODE
 #endif
 
-using js::wasm::FaultingCodeOffset;
+using js::wasm::FaultingCodeRange;
 
 namespace js {
 namespace jit {
@@ -253,7 +255,7 @@ class ImmGCPtr {
   explicit ImmGCPtr(const JSOffThreadAtom* atom) : ImmGCPtr(atom->raw()) {}
 
  private:
-  ImmGCPtr() : value(0) {}
+  ImmGCPtr() : value(nullptr) {}
 };
 
 // Pointer to trampoline code. Trampoline code is kept alive until the runtime
@@ -519,6 +521,41 @@ class CodeLocationLabel {
   uint8_t* raw() const { return raw_; }
 };
 
+// Specifies how an indirect target may be reached, so that backends can emit
+// the appropriate control-flow integrity landing pad. We distinguish Call from
+// Jump because ARM64 BTI has separate landing pads for each (bti c and bti j).
+enum class TargetKind {
+  // Not reached indirectly, so no landing pad is needed.
+  None,
+
+  // Code entered with a return address in place (on the stack or in the link
+  // register). This includes code reached by indirect tail jumps.
+  Call,
+
+  // All other indirect jump targets.
+  Jump,
+
+// The remaining kinds are aliases for the above target kinds. They are for
+// targets that are reached directly on some architectures but indirectly on
+// others. If in doubt, or if a target is reached in more than one way, just use
+// TargetKind::Call or TargetKind::Jump. Marking a target that is never reached
+// indirectly only costs an unneeded landing pad, but when IBT or BTI is
+// enabled, reaching an unmarked indirect target will fault.
+
+// An ImmCall/ImmJump target is reached by a call or jump to an immediate
+// address given as a TrampolinePtr or ImmPtr, e.g. call(TrampolinePtr) or
+// jump(ImmPtr). On x86/x64, all JIT code is in a single reservation smaller
+// than 2GB, so these are direct rel32 branches. On other architectures, they
+// may be indirect (e.g. BLR, or an extended jump table entry on ARM64).
+#if defined(JS_CODEGEN_X86) || defined(JS_CODEGEN_X64)
+  ImmCall = None,
+  ImmJump = None,
+#else
+  ImmCall = Call,
+  ImmJump = Jump,
+#endif
+};
+
 }  // namespace jit
 
 namespace wasm {
@@ -537,7 +574,7 @@ struct SymbolicAccess {
 
 using SymbolicAccessVector = Vector<SymbolicAccess, 0, SystemAllocPolicy>;
 
-// Describes a single wasm or asm.js memory access for the purpose of generating
+// Describes a single wasm memory access for the purpose of generating
 // code and metadata.
 
 class MemoryAccessDesc {
@@ -566,7 +603,7 @@ class MemoryAccessDesc {
         widenOp_(wasm::SimdOp::Limit),
         loadOp_(Plain),
         hugeMemory_(hugeMemory) {
-    MOZ_ASSERT(mozilla::IsPowerOfTwo(align));
+    MOZ_ASSERT(std::has_single_bit(align));
   }
 
   uint32_t memoryIndex() const {
@@ -638,6 +675,14 @@ class MemoryAccessDesc {
   }
 };
 
+// Zero-extend an index from signed Int32 to Int64.
+//
+// Describes when an index register must be zero-extended to 64-bit before
+// performing memory accesses. Used for architectures which implicitly
+// sign-extend registers to 64-bit when performing 32-bit operations, e.g.
+// MIPS64/LOONG64/RISCV64.
+enum class ZeroExtendIndex : bool { No, Yes };
+
 }  // namespace wasm
 
 namespace jit {
@@ -707,13 +752,19 @@ class AssemblerShared {
     enoughMemory_ &= callSites_.append(desc, retAddr.offset());
     enoughMemory_ &= callSiteTargets_.emplaceBack(std::forward<Args>(args)...);
   }
-  void append(wasm::Trap trap, wasm::TrapMachineInsn insn, uint32_t pcOffset,
-              const wasm::TrapSiteDesc& desc) {
-    enoughMemory_ &= trapSites_.append(trap, insn, pcOffset, desc);
-  }
-  void append(const wasm::MemoryAccessDesc& access, wasm::TrapMachineInsn insn,
-              FaultingCodeOffset pcOffset) {
-    append(wasm::Trap::OutOfBounds, insn, pcOffset.get(), access.trapDesc());
+  // Append the specified trap to our collection thereof; make no attempt to
+  // verify that `fcr` or `insn` is correct.  Don't call this directly; use
+  // MacroAssembler::appendAndVerify instead.
+  void appendNoVerify(wasm::Trap trap, wasm::TrapMachineInsn insn,
+                      FaultingCodeRange fcr, const wasm::TrapSiteDesc& desc) {
+    enoughMemory_ &= trapSites_.append(trap, insn, fcr, desc);
+#ifdef JS_JITSPEW
+    if (JitSpewEnabled(JitSpew_Codegen)) {
+      JitSpew(
+          jit::JitSpew_Codegen, "%06x,%06x  # <-- @ w::TrapSiteDesc, kind = %s",
+          fcr.offsetUnchecked(), fcr.resumeOffsetUnchecked(), NameOfTrap(trap));
+    }
+#endif
   }
   void append(wasm::SymbolicAccess access) {
     enoughMemory_ &= symbolicAccesses_.append(access);
@@ -744,6 +795,7 @@ class AssemblerShared {
   wasm::CallSites& callSites() { return callSites_; }
   wasm::CallSiteTargetVector& callSiteTargets() { return callSiteTargets_; }
   wasm::TrapSites& trapSites() { return trapSites_; }
+  const wasm::TrapSites& trapSites() const { return trapSites_; }
   wasm::SymbolicAccessVector& symbolicAccesses() { return symbolicAccesses_; }
   wasm::TryNoteVector& tryNotes() { return tryNotes_; }
   wasm::CodeRangeUnwindInfoVector& codeRangeUnwindInfos() {
@@ -778,7 +830,7 @@ class MOZ_RAII AutoCreatedBy {
   inline AutoCreatedBy(AssemblerShared& ash, const char* who) {}
   // A user-defined constructor is necessary to stop some compilers from
   // complaining about unused variables.
-  inline ~AutoCreatedBy() {}
+  inline ~AutoCreatedBy() = default;
 };
 #endif
 
@@ -791,8 +843,104 @@ class ABIArgGeneratorShared {
   explicit ABIArgGeneratorShared(ABIKind kind);
 
  public:
+  ABIKind abi() const { return kind_; }
   uint32_t stackBytesConsumedSoFar() const { return stackOffset_; }
 };
+
+// [SMDOC] ABI special registers
+//
+// There are a number of special registers that can be used for different
+// purposes during "ABI calls". These are defined per-architecture in their
+// Assembler-XYZ.h header. The documentation for them is centralized here to
+// keep them all in-sync.
+//
+// The WebAssembly and System ABI's are similar but distinct, and so some of
+// these can be used in both contexts and others only in one. This is
+// unfortunate and should be formalized better. See "The WASM ABIs" in
+// WasmFrame.h for documentation on the Wasm ABI.
+//
+// The relevant similarities/differences for ABI registers are that:
+//   1. Wasm functions have special InstanceReg/HeapReg registers.
+//   2. Wasm functions do not have non-volatile registers.
+//   3. Wasm and System ABI have the same integer argument and return registers.
+//   4. Wasm and System ABI may have different FP argument and return registers.
+//      (notably ARM32 softfp and x87 FP are different).
+//
+// TODO: understand and describe the relationship with the various
+// MacroAssembler scratch registers. It looks like all of these must be
+// distinct from the MacroAssembler scratch registers.
+//
+// # InstanceReg
+//
+// Instance pointer argument register for WebAssembly functions in the
+// WebAssembly ABI.
+//
+// This must not alias any other register used for passing function arguments
+// or return values. Preserved by WebAssembly functions.
+//
+// The register must be non-volatile in the system ABI, as some code relies on
+// this to avoid reloading the register.
+//
+// See "The WASM ABIs" in WasmFrame.h for more information.
+//
+// # HeapReg
+//
+// Pointer to the base of (memory 0) for WebAssembly functions in the
+// WebAssembly ABI.
+//
+// This must not alias any other register used for passing function arguments
+// or return values. Preserved by WebAssembly functions.
+//
+// The register must be non-volatile in the system ABI, as some code relies on
+// this to avoid reloading the register.
+//
+// This register is not available on all architectures. It is notably absent
+// from x86.
+//
+// See "The WASM ABIs" in WasmFrame.h for more information.
+//
+// # ABINonArgReg (4 available)
+//
+// A register that can be clobbered in the prologue of a function.
+//
+// They are each distinct and have the following guarantees:
+//   - Will not be a System/Wasm ABI argument register.
+//   - Will not be the InstanceReg or HeapReg.
+//   - Could be a System/Wasm ABI result register.
+//   - Could be a System ABI non-volatile register.
+//
+// # ABINonArgDoubleReg (1 available)
+//
+// A floating-point register that can be clobbered in the prologue of a
+// function. May be volatile or non-volatile.
+//
+// # ABINonArgReturnReg (2 available)
+//
+// A register that can be clobbered in the prologue or epilogue of a function.
+//
+// They are each distinct and have the following guarantees:
+//   - All the guarantees of ABINonArgReg.
+//   - Will not be a System/Wasm ABI return register.
+//   - Will be distinct from ABINonVolatileReg (see below).
+//
+// There are only two of these, and the constraint is x86.
+//
+// # ABINonVolatileReg (1 available)
+//
+// A register that is:
+//   - Non-volatile in the System ABI
+//   - (implied by above) Not an argument or return register.
+//   - Distinct from the ABINonArgReturnReg.
+//
+// # ABINonArgReturnVolatileReg (1 available)
+//
+// A register that can be clobbered in the prologue or epilogue of a system ABI
+// function.
+//
+// They are each distinct and have the following guarantees:
+//   - All the guarantees of ABINonArgReturnReg.
+//   - Will be a volatile register in the System ABI.
+//
 
 }  // namespace jit
 }  // namespace js

@@ -18,9 +18,9 @@ add_task(async function () {
 
   store.dispatch(Actions.batchEnable(false));
 
-  const wait = waitForNetworkEvents(monitor, 1);
-  await reloadBrowser();
-  await wait;
+  const onNetworkEvents = waitForNetworkEvents(monitor, 1);
+  await reloadSelectedTab();
+  await onNetworkEvents;
 
   const waitForHeaders = waitForDOM(document, ".headers-overview");
   store.dispatch(Actions.toggleNetworkDetails());
@@ -74,8 +74,8 @@ add_task(async function () {
     // The Text-Encoding header is not consistently displayed, exclude it from
     // the assertion. See Bug 1830053.
     headers.filter(cell => cell.textContent != "TE").length,
-    26,
-    "There should be 26 header values displayed in this tabpanel."
+    27,
+    "There should be 27 header values displayed in this tabpanel."
   );
 
   const headersTable = tabpanel.querySelector(".accordion");

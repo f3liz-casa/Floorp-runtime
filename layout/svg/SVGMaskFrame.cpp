@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -26,8 +24,7 @@ using namespace mozilla::image;
 
 nsIFrame* NS_NewSVGMaskFrame(mozilla::PresShell* aPresShell,
                              mozilla::ComputedStyle* aStyle) {
-  return new (aPresShell)
-      mozilla::SVGMaskFrame(aStyle, aPresShell->GetPresContext());
+  return new mozilla::SVGMaskFrame(aStyle, aPresShell->GetPresContext());
 }
 
 namespace mozilla {
@@ -89,7 +86,8 @@ already_AddRefed<SourceSurface> SVGMaskFrame::GetMaskForMaskedFrame(
     // The CTM of each frame referencing us can be different
     ISVGDisplayableFrame* SVGFrame = do_QueryFrame(kid);
     if (SVGFrame) {
-      SVGFrame->NotifySVGChanged(ISVGDisplayableFrame::TRANSFORM_CHANGED);
+      SVGFrame->NotifySVGChanged(
+          ISVGDisplayableFrame::ChangeFlag::TransformChanged);
       m = SVGUtils::GetTransformMatrixInUserSpace(kid) * m;
     }
 
@@ -131,8 +129,8 @@ gfxRect SVGMaskFrame::GetMaskArea(nsIFrame* aMaskedFrame) {
   gfxRect bbox;
   if (units == SVG_UNIT_TYPE_OBJECTBOUNDINGBOX) {
     bbox =
-        SVGUtils::GetBBox(aMaskedFrame, SVGUtils::eUseFrameBoundsForOuterSVG |
-                                            SVGUtils::eBBoxIncludeFillGeometry);
+        SVGUtils::GetBBox(aMaskedFrame, {SVGBBoxFlag::UseFrameBoundsForOuterSVG,
+                                         SVGBBoxFlag::IncludeFillGeometry});
   }
 
   // Bounds in the user space of aMaskedFrame
@@ -144,7 +142,8 @@ gfxRect SVGMaskFrame::GetMaskArea(nsIFrame* aMaskedFrame) {
 }
 
 nsresult SVGMaskFrame::AttributeChanged(int32_t aNameSpaceID,
-                                        nsAtom* aAttribute, int32_t aModType) {
+                                        nsAtom* aAttribute,
+                                        AttrModType aModType) {
   if (aNameSpaceID == kNameSpaceID_None &&
       (aAttribute == nsGkAtoms::x || aAttribute == nsGkAtoms::y ||
        aAttribute == nsGkAtoms::width || aAttribute == nsGkAtoms::height ||
@@ -175,11 +174,11 @@ gfxMatrix SVGMaskFrame::GetMaskTransform(nsIFrame* aMaskedFrame) {
   SVGAnimatedEnumeration* maskContentUnits =
       &content->mEnumAttributes[SVGMaskElement::MASKCONTENTUNITS];
 
-  uint32_t flags = SVGUtils::eBBoxIncludeFillGeometry |
-                   (aMaskedFrame->StyleBorder()->mBoxDecorationBreak ==
-                            StyleBoxDecorationBreak::Clone
-                        ? SVGUtils::eIncludeOnlyCurrentFrameForNonSVGElement
-                        : 0);
+  SVGBBoxFlags flags = SVGBBoxFlag::IncludeFillGeometry;
+  if (aMaskedFrame->StyleBorder()->mBoxDecorationBreak ==
+      StyleBoxDecorationBreak::Clone) {
+    flags += SVGBBoxFlag::IncludeOnlyCurrentFrameForNonSVGElement;
+  }
 
   return SVGUtils::AdjustMatrixForUnits(gfxMatrix(), maskContentUnits,
                                         aMaskedFrame, flags);

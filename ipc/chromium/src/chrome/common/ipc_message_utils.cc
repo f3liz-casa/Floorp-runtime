@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -20,7 +18,7 @@ MessageBufferWriter::MessageBufferWriter(MessageWriter* writer,
     bool shmem_ok = handle.IsValid();
     writer->WriteBool(shmem_ok);
     if (shmem_ok) {
-      shmem_cursor_ = mozilla::MakeUnique<mozilla::ipc::shared_memory::Cursor>(
+      shmem_cursor_ = std::make_unique<mozilla::ipc::shared_memory::Cursor>(
           std::move(handle));
       MOZ_ASSERT(shmem_cursor_->IsValid());
     } else {
@@ -86,7 +84,7 @@ MessageBufferReader::MessageBufferReader(MessageReader* reader,
         reader->FatalError("too small shared memory handle");
         return;
       }
-      shmem_cursor_ = mozilla::MakeUnique<mozilla::ipc::shared_memory::Cursor>(
+      shmem_cursor_ = std::make_unique<mozilla::ipc::shared_memory::Cursor>(
           std::move(handle));
       MOZ_ASSERT(shmem_cursor_->IsValid());
     }

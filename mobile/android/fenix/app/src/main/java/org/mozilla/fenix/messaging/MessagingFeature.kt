@@ -4,24 +4,31 @@
 
 package org.mozilla.fenix.messaging
 
+import androidx.lifecycle.LifecycleOwner
 import mozilla.components.service.nimbus.messaging.MessageSurfaceId
 import mozilla.components.support.base.feature.LifecycleAwareFeature
-import mozilla.components.support.utils.RunWhenReadyQueue
 import org.mozilla.fenix.components.AppStore
 import org.mozilla.fenix.components.appstate.AppAction.MessagingAction
 
 /**
- * A [LifecycleAwareFeature] which tries to evaluate if message is available for the provided [surface].
+ * A [LifecycleAwareFeature] which tries to evaluate if a message is available for each of the provided [surfaces].
+ *
+ * @property appStore [AppStore] to dispatch the evaluation to.
+ * @property surfaces The surfaces to evaluate messages for.
+ * @property makeTriggerContext Return an optional trigger context with which to evaluate the message triggers.
  */
 class MessagingFeature(
     val appStore: AppStore,
-    val surface: MessageSurfaceId,
-    private val runWhenReadyQueue: RunWhenReadyQueue,
+    val surfaces: List<MessageSurfaceId>,
+    val makeTriggerContext: () -> Map<String, Any?>? = { null },
 ) : LifecycleAwareFeature {
 
-    override fun start() {
-        runWhenReadyQueue.runIfReadyOrQueue {
-            appStore.dispatch(MessagingAction.Evaluate(surface))
+    override fun start() = Unit
+
+    override fun onResume(owner: LifecycleOwner) {
+        val triggerContext = makeTriggerContext()
+        surfaces.forEach { surface ->
+            appStore.dispatch(MessagingAction.Evaluate(surface, triggerContext))
         }
     }
 

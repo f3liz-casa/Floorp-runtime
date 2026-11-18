@@ -1,10 +1,9 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef __mozilla_ProcInfo_h
-#define __mozilla_ProcInfo_h
+#ifndef _mozilla_ProcInfo_h
+#define _mozilla_ProcInfo_h
 
 #include <base/process.h>
 #include <stdint.h>
@@ -19,6 +18,15 @@ namespace mozilla {
 namespace ipc {
 class GeckoChildProcessHost;
 }
+
+/**
+ * Returns, in bytes, a platform-normalized estimate of the process's
+ * private physical memory usage, that is, how much RAM the process
+ * alone consumes.
+ *
+ * @return NS_OK on success.
+ */
+nsresult GetCurrentProcessMemoryUsage(uint64_t* aResult);
 
 /**
  * Return the number of milliseconds of CPU time used since process start.
@@ -48,7 +56,7 @@ enum class ProcType {
   WebCOOPCOEP,
   WebServiceWorker,
   Inference,
-// the rest matches GeckoProcessTypes.h
+// the rest matches GeckoProcessTypes.inc
 #define GECKO_PROCESS_TYPE(enum_value, enum_name, string_name, proc_typename, \
                            process_bin_type, procinfo_typename,               \
                            webidl_typename, allcaps_name)                     \
@@ -57,7 +65,7 @@ enum class ProcType {
 #ifndef MOZ_ENABLE_FORKSERVER
 #  define SKIP_PROCESS_TYPE_FORKSERVER
 #endif  // MOZ_ENABLE_FORKSERVER
-#include "mozilla/GeckoProcessTypes.h"
+#include "mozilla/GeckoProcessTypes.inc"
 #undef SKIP_PROCESS_TYPE_CONTENT
 #ifndef MOZ_ENABLE_FORKSERVER
 #  undef SKIP_PROCESS_TYPE_FORKSERVER
@@ -73,10 +81,6 @@ using UtilityActorName = mozilla::dom::WebIDLUtilityActorName;
 
 // String that will be used e.g. to annotate crash reports
 nsCString GetUtilityActorName(const UtilityActorName aActorName);
-
-#ifdef XP_WIN
-int GetCpuFrequencyMHz();
-#endif
 
 /* Get the CPU frequency to use to convert cycle time values to actual time.
  * @returns the TSC (Time Stamp Counter) frequency in MHz, or 0 if converting
@@ -172,7 +176,7 @@ struct ProcInfoRequest {
   ProcInfoRequest(base::ProcessId aPid, ProcType aProcessType,
                   const nsACString& aOrigin, nsTArray<WindowInfo>&& aWindowInfo,
                   nsTArray<UtilityInfo>&& aUtilityInfo, uint32_t aChildId = 0
-#ifdef XP_DARWIN
+#ifdef XP_MACOSX
                   ,
                   mach_port_t aChildTask = 0
 #endif  // XP_DARWIN
@@ -183,7 +187,7 @@ struct ProcInfoRequest {
         windowInfo(std::move(aWindowInfo)),
         utilityInfo(std::move(aUtilityInfo)),
         childId(aChildId)
-#ifdef XP_DARWIN
+#ifdef XP_MACOSX
         ,
         childTask(aChildTask)
 #endif  // XP_DARWIN
@@ -196,13 +200,15 @@ struct ProcInfoRequest {
   const nsTArray<UtilityInfo> utilityInfo;
   // If the process is a child, its child id, otherwise `0`.
   const int32_t childId;
-#ifdef XP_DARWIN
+#ifdef XP_MACOSX
   const mach_port_t childTask;
 #endif  // XP_DARWIN
 };
 
 /**
  * Batch a request for low-level information on Gecko processes.
+ *
+ * This must be called on the main thread.
  *
  * # Request
  *
@@ -217,8 +223,9 @@ struct ProcInfoRequest {
  *
  * # Performance
  *
- * - This call is always executed on a background thread.
- * - This call does NOT wake up children processes.
+ * - Process information is collected on a background thread.
+ * - This call does NOT wake up children processes, except for certain process
+ *   types on Android.
  * - This function is sometimes observably slow to resolve, in particular
  *   under Windows.
  *
@@ -243,6 +250,9 @@ RefPtr<ProcInfoPromise> GetProcInfo(nsTArray<ProcInfoRequest>&& aRequests);
 
 /**
  * Synchronous version of GetProcInfo.
+ *
+ * Note that on Android this is not able to request information about isolated
+ * processes when called from a separate process.
  */
 ProcInfoPromise::ResolveOrRejectValue GetProcInfoSync(
     nsTArray<ProcInfoRequest>&& aRequests);
@@ -277,4 +287,5 @@ nsresult CopySysProcInfoToDOM(const ProcInfo& source, T* dest) {
 }
 
 }  // namespace mozilla
-#endif  // ProcInfo_h
+
+#endif  // _mozilla_ProcInfo_h

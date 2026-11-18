@@ -1,12 +1,11 @@
-//* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "LookupCacheV4.h"
 #include "HashStore.h"
+#include "mozilla/EndianUtils.h"
 #include "mozilla/glean/UrlClassifierMetrics.h"
-#include "mozilla/Unused.h"
 #include "nsCheckSummedOutputStream.h"
 #include "nsUrlClassifierDBService.h"
 #include "crc32c.h"
@@ -519,7 +518,8 @@ VLPrefixSet::VLPrefixSet(const PrefixStringMap& aMap) : mCount(0) {
     uint32_t size = entry.GetKey();
     MOZ_ASSERT(entry.GetData()->Length() % size == 0,
                "PrefixString must be a multiple of the prefix size.");
-    mMap.InsertOrUpdate(size, MakeUnique<PrefixString>(*entry.GetData(), size));
+    mMap.InsertOrUpdate(size,
+                        std::make_unique<PrefixString>(*entry.GetData(), size));
     mCount += entry.GetData()->Length() / size;
   }
 }

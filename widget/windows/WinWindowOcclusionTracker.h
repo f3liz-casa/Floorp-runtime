@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -13,14 +11,14 @@
 #include <unordered_set>
 #include <vector>
 
-#include "nsIWeakReferenceUtils.h"
-#include "mozilla/Monitor.h"
+#include "Units.h"
+#include "mozilla/StaticMonitor.h"
 #include "mozilla/StaticPtr.h"
 #include "mozilla/widget/WindowOcclusionState.h"
-#include "Units.h"
+#include "nsIWeakReferenceUtils.h"
 #include "nsThreadUtils.h"
 
-class nsBaseWidget;
+class nsIWidget;
 struct IVirtualDesktopManager;
 class WinWindowOcclusionTrackerTest;
 class WinWindowOcclusionTrackerInteractiveTest;
@@ -60,14 +58,14 @@ class WinWindowOcclusionTracker final {
 
   // Enables notifying to widget via NotifyOcclusionState() when the occlusion
   // state has been computed.
-  void Enable(nsBaseWidget* aWindow, HWND aHwnd);
+  void Enable(nsIWidget* aWindow, HWND aHwnd);
 
   // Disables notifying to widget via NotifyOcclusionState() when the occlusion
   // state has been computed.
-  void Disable(nsBaseWidget* aWindow, HWND aHwnd);
+  void Disable(nsIWidget* aWindow, HWND aHwnd);
 
   // Called when widget's visibility is changed
-  void OnWindowVisibilityChanged(nsBaseWidget* aWindow, bool aVisible);
+  void OnWindowVisibilityChanged(nsIWidget* aWindow, bool aVisible);
 
   SerializedTaskDispatcher* GetSerializedTaskDispatcher() {
     return mSerializedTaskDispatcher;
@@ -80,6 +78,9 @@ class WinWindowOcclusionTracker final {
  private:
   friend class ::WinWindowOcclusionTrackerTest;
   friend class ::WinWindowOcclusionTrackerInteractiveTest;
+
+  static StaticMonitor sShutdownMonitor;
+  static bool sShutdownComplete MOZ_GUARDED_BY(sShutdownMonitor);
 
   explicit WinWindowOcclusionTracker(UniquePtr<base::Thread> aThread);
   virtual ~WinWindowOcclusionTracker();
@@ -246,10 +247,6 @@ class WinWindowOcclusionTracker final {
     // Used to serialize tasks related to mRootWindowHwndsOcclusionState.
     RefPtr<SerializedTaskDispatcher> mSerializedTaskDispatcher;
 
-    // This is an alias to the singleton WinWindowOcclusionTracker mMonitor,
-    // and is used in ShutDown().
-    Monitor& mMonitor;
-
     friend class OcclusionUpdateRunnable;
   };
 
@@ -290,7 +287,6 @@ class WinWindowOcclusionTracker final {
 
   // "WinWindowOcclusionCalc" thread.
   UniquePtr<base::Thread> mThread;
-  Monitor mMonitor;
 
   // Has ShutDown been called on us? We might have survived if our thread join
   // timed out.

@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -96,19 +94,18 @@ NS_INTERFACE_MAP_END
 NS_IMPL_CYCLE_COLLECTING_ADDREF(nsDOMAttributeMap)
 NS_IMPL_CYCLE_COLLECTING_RELEASE(nsDOMAttributeMap)
 
-nsresult nsDOMAttributeMap::SetOwnerDocument(Document* aDocument) {
+void nsDOMAttributeMap::AdoptCachedAttributes(nsNodeInfoManager* aManager) {
   for (const auto& entry : mAttributeCache.Values()) {
-    nsresult rv = entry->SetOwnerDocument(aDocument);
-    NS_ENSURE_SUCCESS(rv, NS_ERROR_FAILURE);
+    IgnoredErrorResult rv;
+    entry->Adopt(aManager, rv);
   }
-  return NS_OK;
 }
 
-void nsDOMAttributeMap::DropAttribute(int32_t aNamespaceID,
-                                      nsAtom* aLocalName) {
+void nsDOMAttributeMap::DropAttribute(int32_t aNamespaceID, nsAtom* aLocalName,
+                                      const nsAttrValue* aValue) {
   nsAttrKey attr(aNamespaceID, aLocalName);
   if (auto entry = mAttributeCache.Lookup(attr)) {
-    entry.Data()->SetMap(nullptr);  // break link to map
+    entry.Data()->SetMap(nullptr, aValue);  // break link to map
     entry.Remove();
   }
 }
@@ -180,23 +177,6 @@ already_AddRefed<Attr> nsDOMAttributeMap::SetNamedItemNS(
     Attr& aAttr, nsIPrincipal* aSubjectPrincipal, ErrorResult& aError) {
   NS_ENSURE_TRUE(mContent, nullptr);
 
-  // XXX should check same-origin between mContent and aAttr however
-  // nsContentUtils::CheckSameOrigin can't deal with attributenodes yet
-
-  // Check that attribute is not owned by somebody else
-  nsDOMAttributeMap* owner = aAttr.GetMap();
-  if (owner) {
-    if (owner != this) {
-      aError.Throw(NS_ERROR_DOM_INUSE_ATTRIBUTE_ERR);
-      return nullptr;
-    }
-
-    // setting a preexisting attribute is a no-op, just return the same
-    // node.
-    RefPtr<Attr> attribute = &aAttr;
-    return attribute.forget();
-  }
-
   nsAutoString value;
   aAttr.GetValue(value);
 
@@ -212,11 +192,19 @@ already_AddRefed<Attr> nsDOMAttributeMap::SetNamedItemNS(
   if (aError.Failed()) {
     return nullptr;
   }
-  // After the GetTrustedTypesCompliantAttributeValue() call, the attribute may
-  // have been attached to another element.
-  if (aAttr.GetMap() && aAttr.GetMap() != this) {
-    aError.Throw(NS_ERROR_DOM_INUSE_ATTRIBUTE_ERR);
-    return nullptr;
+
+  // Check that attribute is not owned by somebody else
+  nsDOMAttributeMap* owner = aAttr.GetMap();
+  if (owner) {
+    if (owner != this) {
+      aError.Throw(NS_ERROR_DOM_INUSE_ATTRIBUTE_ERR);
+      return nullptr;
+    }
+
+    // setting a preexisting attribute is a no-op, just return the same
+    // node.
+    RefPtr<Attr> attribute = &aAttr;
+    return attribute.forget();
   }
 
   nsresult rv;
@@ -263,7 +251,10 @@ already_AddRefed<Attr> nsDOMAttributeMap::SetNamedItemNS(
       // Attr to the hashtable and do the actual attr set on the element.  This
       // will make the whole thing look like a single attribute mutation (with
       // the new attr node in place) as opposed to a removal and addition.
-      DropAttribute(oldNi->NamespaceID(), oldNi->NameAtom());
+      BorrowedAttrInfo info = mContent->GetAttrInfoAt(i);
+      MOZ_ASSERT(info.mName &&
+                 info.mName->Equals(oldNi->NameAtom(), oldNi->NamespaceID()));
+      DropAttribute(oldNi->NamespaceID(), oldNi->NameAtom(), info.mValue);
     }
   }
 
@@ -274,7 +265,8 @@ already_AddRefed<Attr> nsDOMAttributeMap::SetNamedItemNS(
   aAttr.SetMap(this);
 
   rv = mContent->SetAttr(ni->NamespaceID(), ni->NameAtom(), ni->GetPrefixAtom(),
-                         *compliantString, true);
+                         *compliantString, nullptr, true,
+                         oldNi ? IsKnownNewAttr::No : IsKnownNewAttr::Yes);
   if (NS_FAILED(rv)) {
     DropAttribute(ni->NamespaceID(), ni->NameAtom());
     aError.Throw(rv);

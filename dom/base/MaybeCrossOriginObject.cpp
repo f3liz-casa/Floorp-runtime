@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -16,6 +14,7 @@
 #include "js/WeakMap.h"
 #include "js/Wrapper.h"
 #include "js/friend/WindowProxy.h"  // js::IsWindowProxy
+#include "jsapi.h"
 #include "jsfriendapi.h"
 #include "mozilla/BasePrincipal.h"
 #include "mozilla/dom/BindingUtils.h"
@@ -454,9 +453,12 @@ bool MaybeCrossOriginObject<Base>::defineProperty(
     return false;
   }
 
-  JS_MarkCrossZoneId(cx, id);
+  JS::Rooted<jsid> wrappedId(cx, id);
+  if (!JS_WrapId(cx, &wrappedId)) {
+    return false;
+  }
 
-  return definePropertySameOrigin(cx, proxy, id, descCopy, result);
+  return definePropertySameOrigin(cx, proxy, wrappedId, descCopy, result);
 }
 
 template <typename Base>

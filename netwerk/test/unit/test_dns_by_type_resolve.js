@@ -6,24 +6,16 @@
 
 let h2Port;
 
-const { TestUtils } = ChromeUtils.importESModule(
-  "resource://testing-common/TestUtils.sys.mjs"
-);
-
 add_setup(async function setup() {
-  h2Port = Services.env.get("MOZHTTP2_PORT");
-  Assert.notEqual(h2Port, null);
-  Assert.notEqual(h2Port, "");
+  let trrServer = new TRRServer();
+  await trrServer.start();
+  h2Port = trrServer.port();
 
   trr_test_setup();
-  registerCleanupFunction(() => {
+  registerCleanupFunction(async () => {
     trr_clear_prefs();
+    await trrServer.stop();
   });
-
-  if (mozinfo.socketprocess_networking) {
-    Services.dns; // Needed to trigger socket process.
-    await TestUtils.waitForCondition(() => Services.io.socketProcessLaunched);
-  }
 
   Services.prefs.setIntPref("network.trr.mode", Ci.nsIDNSService.MODE_TRRFIRST);
 });

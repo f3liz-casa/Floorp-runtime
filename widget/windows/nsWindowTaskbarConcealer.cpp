@@ -1,4 +1,3 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -8,9 +7,9 @@
 #include "nsIWinTaskbar.h"
 #define NS_TASKBAR_CONTRACTID "@mozilla.org/windows-taskbar;1"
 
+#include "WinUtils.h"
 #include "mozilla/Logging.h"
 #include "mozilla/StaticPrefs_widget.h"
-#include "WinUtils.h"
 
 using namespace mozilla;
 
@@ -104,8 +103,7 @@ static mozilla::LazyLogModule sTaskbarConcealerLog("TaskbarConcealer");
 // Map of all relevant Gecko windows, along with the monitor on which each
 // window was last known to be located.
 /* static */
-MOZ_RUNINIT nsTHashMap<HWND, HMONITOR>
-    nsWindow::TaskbarConcealer::sKnownWindows;
+constinit nsTHashMap<HWND, HMONITOR> nsWindow::TaskbarConcealer::sKnownWindows;
 
 // Returns Nothing if the window in question is irrelevant (for any reason),
 // or Some(the window's current state) otherwise.
@@ -129,7 +127,7 @@ nsWindow::TaskbarConcealer::GetWindowState(HWND aWnd) {
 
   // nsWindows of other window-classes include tooltips and drop-shadow-bearing
   // menus.
-  if (pWin->mWindowType != WindowType::TopLevel) {
+  if (!pWin->IsTopLevelWidget()) {
     return Nothing();
   }
 
@@ -142,6 +140,37 @@ nsWindow::TaskbarConcealer::GetWindowState(HWND aWnd) {
   return Some(
       WindowState{::MonitorFromWindow(aWnd, MONITOR_DEFAULTTONULL),
                   pWin->mFrameState->GetSizeMode() == nsSizeMode_Fullscreen});
+}
+
+nsTArray<HWND> nsWindow::TaskbarConcealer::GetWindowsHidingTaskbar(
+    const nsTArray<WindowInfo>& aWindows) {
+  nsTArray<HWND> hidingWindows;
+  nsTHashSet<HMONITOR> decidedMonitors;
+
+  for (const auto& window : aWindows) {
+    if (decidedMonitors.Contains(window.monitor)) {
+      continue;
+    }
+
+    // Always-on-top windows (such as PIP windows) that are not themselves
+    // fullscreen float above a fullscreen window without displacing it.
+    if (window.isAlwaysOnTop && !window.isGkFullscreen) {
+      MOZ_LOG(sTaskbarConcealerLog, LogLevel::Debug,
+              ("on monitor %p, skipping always-on-top HWND %p", window.monitor,
+               window.hwnd));
+      continue;
+    }
+
+    MOZ_LOG(sTaskbarConcealerLog, LogLevel::Info,
+            ("on monitor %p, uppermost relevant HWND is %p", window.monitor,
+             window.hwnd));
+    decidedMonitors.Insert(window.monitor);
+    if (window.isGkFullscreen) {
+      hidingWindows.AppendElement(window.hwnd);
+    }
+  }
+
+  return hidingWindows;
 }
 
 /**************************************************************
@@ -180,17 +209,14 @@ void nsWindow::TaskbarConcealer::UpdateAllState(
 
   // Array of all our potentially-relevant HWNDs, in Z-order (topmost first),
   // along with their associated relevant state.
-  struct Item {
-    HWND hwnd;
-    HMONITOR monitor;
-    bool isGkFullscreen;
-  };
-  const nsTArray<Item> windows = [&] {
-    nsTArray<Item> windows;
+  const nsTArray<WindowInfo> windows = [&] {
+    nsTArray<WindowInfo> windows;
 
     // USE OF UNDOCUMENTED BEHAVIOR: The EnumWindows family of functions
     // enumerates windows in Z-order, topmost first. (This has been true since
     // at least Windows 2000, and possibly since Windows 3.0.)
+    // UPDATE: Always-on-top windows like PIP may appear in front of fullscreen
+    // windows, so they are an exception; see GetWindowsHidingTaskbar().
     //
     // It's necessarily unreliable if windows are reordered while being
     // enumerated; but in that case we'll get a message informing us of that
@@ -212,63 +238,32 @@ void nsWindow::TaskbarConcealer::UpdateAllState(
       }
       const WindowState& state = *maybeState;
 
-      windows.AppendElement(Item{.hwnd = hwnd,
-                                 .monitor = state.monitor,
-                                 .isGkFullscreen = state.isGkFullscreen});
+      windows.AppendElement(WindowInfo{
+          .hwnd = hwnd,
+          .monitor = state.monitor,
+          .isGkFullscreen = state.isGkFullscreen,
+          .isAlwaysOnTop =
+              !!(::GetWindowLongPtrW(hwnd, GWL_EXSTYLE) & WS_EX_TOPMOST)});
     });
 
     return windows;
   }();
 
-  // Relevant monitors are exactly those with relevant windows.
-  const nsTHashSet<HMONITOR> relevantMonitors = [&]() {
-    nsTHashSet<HMONITOR> relevantMonitors;
-    for (const Item& item : windows) {
-      relevantMonitors.Insert(item.monitor);
-    }
-    return relevantMonitors;
-  }();
-
   // Update the cached mapping from windows to monitors. (This is only used as
   // an optimization in TaskbarConcealer::OnWindowPosChanged().)
   sKnownWindows.Clear();
-  for (const Item& item : windows) {
-    MOZ_LOG(
-        sTaskbarConcealerLog, LogLevel::Debug,
-        ("Found relevant window %p on monitor %p", item.hwnd, item.monitor));
-    sKnownWindows.InsertOrUpdate(item.hwnd, item.monitor);
+  for (const auto& window : windows) {
+    MOZ_LOG(sTaskbarConcealerLog, LogLevel::Debug,
+            ("Found relevant window %p on monitor %p", window.hwnd,
+             window.monitor));
+    sKnownWindows.InsertOrUpdate(window.hwnd, window.monitor);
   }
 
-  // Auxiliary function. Does what it says on the tin.
-  const auto FindUppermostWindowOn = [&windows](HMONITOR aMonitor) -> HWND {
-    for (const Item& item : windows) {
-      if (item.monitor == aMonitor) {
-        MOZ_LOG(sTaskbarConcealerLog, LogLevel::Info,
-                ("on monitor %p, uppermost relevant HWND is %p", aMonitor,
-                 item.hwnd));
-        return item.hwnd;
-      }
-    }
-
-    // This should never happen, since we're drawing our monitor-set from the
-    // set of relevant windows.
-    MOZ_LOG(sTaskbarConcealerLog, LogLevel::Warning,
-            ("on monitor %p, no relevant windows were found", aMonitor));
-    return nullptr;
-  };
+  const nsTArray<HWND> hidingWindows = GetWindowsHidingTaskbar(windows);
 
   TaskbarConcealerImpl impl;
-
-  // Mark all relevant windows as not hiding the taskbar, unless they're both
-  // Gecko-fullscreen and the uppermost relevant window on their monitor.
-  for (HMONITOR monitor : relevantMonitors) {
-    const HWND topmost = FindUppermostWindowOn(monitor);
-
-    for (const Item& item : windows) {
-      if (item.monitor != monitor) continue;
-      impl.MarkAsHidingTaskbar(item.hwnd,
-                               item.isGkFullscreen && item.hwnd == topmost);
-    }
+  for (const auto& window : windows) {
+    impl.MarkAsHidingTaskbar(window.hwnd, hidingWindows.Contains(window.hwnd));
   }
 }  // nsWindow::TaskbarConcealer::UpdateAllState()
 
@@ -327,7 +322,7 @@ void TaskbarConcealerImpl::MarkAsHidingTaskbar(HWND aWnd, bool aMark) {
   //
   // [0] https://web.archive.org/web/20211223073250/https://docs.microsoft.com/en-us/windows/win32/api/shobjidl_core/nf-shobjidl_core-itaskbarlist2-markfullscreenwindow
 
-  const char* const sMark = aMark ? "true" : "false";
+  const char* const sMark = aMark ? "false" : "true";
 
   bool const useNonRudeHWND = !!(mMarkingMethod & MarkingMethod::NonRudeHwnd);
   bool const usePrepareFullScreen =
@@ -336,9 +331,32 @@ void TaskbarConcealerImpl::MarkAsHidingTaskbar(HWND aWnd, bool aMark) {
   // at least one must be set
   MOZ_ASSERT(useNonRudeHWND || usePrepareFullScreen);
 
-  if (useNonRudeHWND) {
+  // `PrepareFullScreen()` is known to sometimes fail to clear a misdetection,
+  // no matter how many times it is called (bug 1949079 comment 15, bug
+  // 2064534). "NonRudeHWND" is honored by the Shell's automatic detection
+  // where `MarkFullscreenWindow(FALSE)` is not, so set it as well to cover
+  // those cases.
+  //
+  // Only do so once the window is actually on screen. Per the third bullet
+  // point above, a window that had this property before it was shown may
+  // never afterwards be treatable as fullscreen -- which is what bug 1965699
+  // (fullscreen video failing to conceal the taskbar) appeared to be.
+  //
+  // Note that the Shell consults this property only when it makes a
+  // fullscreen decision about the window: when the window is shown, and when
+  // it is resized to cover the screen. Changing the property afterwards has
+  // no effect until the next such decision. [1] So it is not enough to remove
+  // the property here when marking a window as fullscreen, and we do it in
+  // `OnFullscreenWillBeEntered()` instead. (bug 2072895)
+  //
+  // [1] https://devblogs.microsoft.com/oldnewthing/20250522-00/?p=111211
+  bool forceUseNonRudeHWND =
+      !aMark && ::IsWindowVisible(aWnd) &&
+      StaticPrefs::widget_windows_fullscreen_set_nonrudehwnd();
+  if (useNonRudeHWND || forceUseNonRudeHWND) {
     MOZ_LOG(sTaskbarConcealerLog, LogLevel::Info,
-            ("Setting %p[L\"NonRudeHWND\"] to %s", aWnd, sMark));
+            ("Setting %p[L\"NonRudeHWND\"] to %s (forceUseNonRudeHWND is %d)",
+             aWnd, sMark, forceUseNonRudeHWND ? 1 : 0));
 
     // (setting the property to `FALSE` is not known to be functionally distinct
     // from removing it)
@@ -400,21 +418,27 @@ void nsWindow::TaskbarConcealer::OnFocusAcquired(nsWindow* aWin) {
   UpdateAllState();
 }
 
-void nsWindow::TaskbarConcealer::OnWindowMaximized(nsWindow* aWin) {
+void nsWindow::TaskbarConcealer::OnWindowMaximized(nsWindow* aWin,
+                                                   bool aForce) {
   MOZ_LOG(sTaskbarConcealerLog, LogLevel::Info,
           ("==> OnWindowMaximized() for HWND %p on HMONITOR %p", aWin->mWnd,
            ::MonitorFromWindow(aWin->mWnd, MONITOR_DEFAULTTONULL)));
 
   // This is a workaround for a failure of `PrepareFullScreen`, and is only
-  // useful when that's the only marking-mechanism in play.
-  if (MOZ_LIKELY(TaskbarConcealerImpl::GetMarkingMethod() !=
-                 TaskbarConcealerImpl::MarkingMethod::PrepareFullScreen)) {
+  // useful when that's the only marking-mechanism in play. (or the caller
+  // says to force it)
+  const bool isPrepareFullScreenOnly =
+      TaskbarConcealerImpl::GetMarkingMethod() ==
+      TaskbarConcealerImpl::MarkingMethod::PrepareFullScreen;
+  if (!aForce && !isPrepareFullScreenOnly) {
     return;
   }
 
   // If we're not using a custom nonclient area, then it's obvious to Windows
   // that we're not trying to be fullscreen, so the bug won't occur.
   if (!aWin->mCustomNonClient) {
+    MOZ_LOG(sTaskbarConcealerLog, LogLevel::Info,
+            ("... skipped: HWND %p has no custom non-client area", aWin->mWnd));
     return;
   }
 
@@ -426,6 +450,31 @@ void nsWindow::TaskbarConcealer::OnWindowMaximized(nsWindow* aWin) {
   // testing confirms that it sometimes does. See bug 1949079.
   //
   (TaskbarConcealerImpl{}).MarkAsHidingTaskbar(aWin->mWnd, false);
+}
+
+void nsWindow::TaskbarConcealer::OnWindowShown(nsWindow* aWin) {
+  const nsSizeMode sizeMode = aWin->mFrameState->GetSizeMode();
+
+  MOZ_LOG(sTaskbarConcealerLog, LogLevel::Info,
+          ("==> OnWindowShown() for HWND %p: sizeMode %d, customNonClient %d",
+           aWin->mWnd, int(sizeMode), int(aWin->mCustomNonClient)));
+
+  if (sizeMode != nsSizeMode_Maximized) {
+    return;
+  }
+
+  OnWindowMaximized(aWin, /* aForce = */ true);
+}
+
+void nsWindow::TaskbarConcealer::OnFullscreenWillBeEntered(nsWindow* aWin) {
+  MOZ_LOG(sTaskbarConcealerLog, LogLevel::Info,
+          ("==> OnFullscreenWillBeEntered() for HWND %p; removing NonRudeHWND",
+           aWin->mWnd));
+
+  // The Shell decides whether this window is fullscreen when it is resized to
+  // cover the monitor, and won't revisit that decision when the property is
+  // removed later. See the comment in MarkAsHidingTaskbar().
+  ::RemovePropW(aWin->mWnd, L"NonRudeHWND");
 }
 
 void nsWindow::TaskbarConcealer::OnFullscreenChanged(nsWindow* aWin,

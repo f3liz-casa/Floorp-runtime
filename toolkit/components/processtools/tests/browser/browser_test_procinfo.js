@@ -1,5 +1,3 @@
-/* -*- Mode: indent-tabs-mode: nil; js-indent-level: 2 -*- */
-/* vim: set sts=2 sw=2 et tw=80: */
 "use strict";
 
 const DUMMY_URL =
@@ -120,15 +118,11 @@ add_task(async function test_proc_info() {
             "Child proc type should not be browser"
           );
 
-          // We set the `childID` for child processes that have a `ContentParent`/`ContentChild`
-          // actor hierarchy.
-          if (childProc.type.startsWith("web")) {
-            Assert.notEqual(
-              childProc.childID,
-              0,
-              "Child proc should have been set"
-            );
-          }
+          Assert.notEqual(
+            childProc.childID,
+            0,
+            "Child proc childID should have been set"
+          );
           Assert.notEqual(
             childProc.type,
             "unknown",

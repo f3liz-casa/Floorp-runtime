@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -67,6 +65,7 @@ JSObject* ReportingObserver::WrapObject(JSContext* aCx,
 
 void ReportingObserver::Observe() {
   mGlobal->RegisterReportingObserver(this, mBuffered);
+  mBuffered = false;
 }
 
 void ReportingObserver::Disconnect() {
@@ -102,13 +101,9 @@ class ReportRunnable final : public DiscardableRunnable {
 void ReportingObserver::MaybeReport(Report* aReport) {
   MOZ_ASSERT(aReport);
 
-  if (!mTypes.IsEmpty()) {
-    nsAutoString type;
-    aReport->GetType(type);
-
-    if (!mTypes.Contains(type)) {
-      return;
-    }
+  if (!mTypes.IsEmpty() &&
+      !mTypes.Contains(nsDependentAtomString(aReport->Type()))) {
+    return;
   }
 
   bool wasEmpty = mReports.IsEmpty();
@@ -145,7 +140,7 @@ void ReportingObserver::MaybeNotify() {
 
   // We should report if this throws exception. But where?
   RefPtr<ReportingObserverCallback> callback(mCallback);
-  callback->Call(reports, *this);
+  callback->Call(this, reports, *this);
 }
 
 void ReportingObserver::ForgetReports() { mReports.Clear(); }

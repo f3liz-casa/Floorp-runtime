@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -13,7 +11,6 @@
 #include "mozilla/HangAnnotations.h"
 #include "mozilla/HangTypes.h"
 #include "mozilla/ProcessedStack.h"
-#include "mozilla/RefPtr.h"
 #include "mozilla/Result.h"
 #include "mozilla/TimeStamp.h"
 #include "nsIFile.h"
@@ -66,17 +63,21 @@ Result<Ok, nsresult> WriteHangDetailsToFile(HangDetails& aDetails,
  */
 class ProcessHangStackRunnable final : public Runnable {
  public:
+  /**
+   * If aPermahangFile is non-null, the hang details are written to it before
+   * being submitted.
+   */
   explicit ProcessHangStackRunnable(HangDetails&& aHangDetails,
-                                    PersistedToDisk aPersistedToDisk)
+                                    nsCOMPtr<nsIFile>&& aPermahangFile)
       : Runnable("ProcessHangStackRunnable"),
         mHangDetails(std::move(aHangDetails)),
-        mPersistedToDisk(aPersistedToDisk) {}
+        mPermahangFile(std::move(aPermahangFile)) {}
 
   NS_IMETHOD Run() override;
 
  private:
   HangDetails mHangDetails;
-  PersistedToDisk mPersistedToDisk;
+  nsCOMPtr<nsIFile> mPermahangFile;
 };
 
 /**

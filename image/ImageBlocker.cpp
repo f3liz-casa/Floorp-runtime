@@ -3,9 +3,10 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "ImageBlocker.h"
-#include "nsIPermissionManager.h"
-#include "nsContentUtils.h"
+
 #include "mozilla/StaticPrefs_permissions.h"
+#include "nsContentUtils.h"
+#include "nsIPermissionManager.h"
 #include "nsNetUtil.h"
 
 using namespace mozilla;
@@ -25,9 +26,7 @@ ImageBlocker::ShouldLoad(nsIURI* aContentLocation, nsILoadInfo* aLoadInfo,
     return NS_OK;
   }
 
-  ExtContentPolicyType contentType = aLoadInfo->GetExternalContentPolicyType();
-  if (contentType != ExtContentPolicy::TYPE_IMAGE &&
-      contentType != ExtContentPolicy::TYPE_IMAGESET) {
+  if (!nsContentUtils::IsImageType(aLoadInfo->GetExternalContentPolicyType())) {
     return NS_OK;
   }
 
@@ -41,7 +40,8 @@ ImageBlocker::ShouldLoad(nsIURI* aContentLocation, nsILoadInfo* aLoadInfo,
 }
 
 NS_IMETHODIMP
-ImageBlocker::ShouldProcess(nsIURI* aContentLocation, nsILoadInfo* aLoadInfo,
+ImageBlocker::ShouldProcess(nsIURI* /*aContentLocation*/,
+                            nsILoadInfo* /*aLoadInfo*/,
                             int16_t* aShouldProcess) {
   // We block images at load level already, so those should not end up here.
   *aShouldProcess = nsIContentPolicy::ACCEPT;

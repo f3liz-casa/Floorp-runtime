@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -7,22 +5,25 @@
 #ifndef MOZILLA_GFX_RENDERCOMPOSITOR_H
 #define MOZILLA_GFX_RENDERCOMPOSITOR_H
 
+#include "GLContextTypes.h"
+#include "GLTypes.h"
+#include "Units.h"
 #include "mozilla/RefPtr.h"
 #include "mozilla/UniquePtr.h"
-#include "mozilla/UniquePtrExtensions.h"
 #include "mozilla/layers/Fence.h"
 #include "mozilla/webrender/WebRenderTypes.h"
-#include "Units.h"
-
-#include "GLTypes.h"
 
 namespace mozilla {
 
 namespace gl {
 class GLContext;
-}
+#ifdef MOZ_WIDGET_ANDROID
+class GLContextEGL;
+#endif
+}  // namespace gl
 
 namespace layers {
+class AndroidHardwareBuffer;
 class CompositionRecorder;
 class SyncObjectHost;
 }  // namespace layers
@@ -35,6 +36,7 @@ namespace wr {
 
 class RenderCompositorLayersSWGL;
 class RenderCompositorD3D11SWGL;
+class RenderTextureHost;
 
 class RenderCompositor {
  public:
@@ -58,6 +60,12 @@ class RenderCompositor {
   // Returns false when waiting gpu tasks is failed.
   // It might happen when rendering context is lost.
   virtual bool WaitForGPU() { return true; }
+
+  // On platforms where putting the frame onto the screen involves work in other
+  // processes, wait until those other processes have completed that work.
+  // Specifically, on macOS, we have to send surfaces to the parent process and
+  // it will put them into CALayers, and we want to wait until that's done.
+  virtual void WaitUntilPresentationFlushed() {}
 
   // Check for and return the last completed frame.
   // @return the last (highest) completed RenderedFrameId
@@ -101,7 +109,13 @@ class RenderCompositor {
 
   // True if AttachExternalImage supports being used with an external
   // image that maps to a RenderBufferTextureHost
-  virtual bool SupportsExternalBufferTextures() const { return false; }
+  virtual bool SupportsExternalBufferTextures() const {
+#ifdef MOZ_WAYLAND
+    return true;
+#else
+    return false;
+#endif
+  }
 
   virtual LayoutDeviceIntSize GetBufferSize() = 0;
 
@@ -119,13 +133,18 @@ class RenderCompositor {
 
   virtual bool UseLayerCompositor() const { return false; }
 
+  // Request RenderCompositor to enable taking screenshot
+  // In WebRender layer compositor case, taking screenshot will be ready in at
+  // most one WebRender composition.
+  //
+  // @return true if taking screenshot is ready.
   virtual bool EnableAsyncScreenshot() { return false; }
 
   // Interface for wr::Compositor
   virtual void CompositorBeginFrame() {}
   virtual void CompositorEndFrame() {}
   virtual void Bind(wr::NativeTileId aId, wr::DeviceIntPoint* aOffset,
-                    uint32_t* aFboId, wr::DeviceIntRect aDirtyRect,
+                    uint64_t* aSurfaceHandle, wr::DeviceIntRect aDirtyRect,
                     wr::DeviceIntRect aValidRect) {}
   virtual void Unbind() {}
   virtual bool MapTile(wr::NativeTileId aId, wr::DeviceIntRect aDirtyRect,
@@ -135,16 +154,21 @@ class RenderCompositor {
   }
   virtual void UnmapTile() {}
   virtual void CreateSurface(wr::NativeSurfaceId aId,
-                             wr::DeviceIntPoint aVirtualOffset,
                              wr::DeviceIntSize aTileSize, bool aIsOpaque) {}
   virtual void CreateSwapChainSurface(wr::NativeSurfaceId aId,
                                       wr::DeviceIntSize aSize, bool aIsOpaque,
                                       bool aNeedsSyncDcompCommit) {}
   virtual void ResizeSwapChainSurface(wr::NativeSurfaceId aId,
                                       wr::DeviceIntSize aSize) {}
+  // Without OS layers, the only swapchain is the window and the dirty rects
+  // are the region WebRender is about to render to.
   virtual void BindSwapChain(wr::NativeSurfaceId aId,
                              const wr::DeviceIntRect* aDirtyRects,
-                             size_t aNumDirtyRects) {}
+                             size_t aNumDirtyRects) {
+    if (aNumDirtyRects > 0) {
+      SetBufferDamageRegion(aDirtyRects, aNumDirtyRects);
+    }
+  }
   virtual void PresentSwapChain(wr::NativeSurfaceId aId,
                                 const wr::DeviceIntRect* aDirtyRects,
                                 size_t aNumDirtyRects) {}
@@ -169,24 +193,37 @@ class RenderCompositor {
                                 size_t aNumDirtyRects,
                                 const wr::DeviceIntRect* aOpaqueRects,
                                 size_t aNumOpaqueRects) {}
-  virtual void EnableNativeCompositor(bool aEnable) {}
   virtual void DeInit() {}
   // Overrides any of the default compositor capabilities for behavior this
   // compositor might require.
   virtual void GetCompositorCapabilities(CompositorCapabilities* aCaps);
 
   virtual void GetWindowVisibility(WindowVisibility* aVisibility);
+
+  // Called from WebRender Renderer::composite_simple().
+  // WindowProperties is used to control how to composite with WebRender layer
+  // compositor.
+  //
+  // @param WindowProperties::is_opaque Notify if rendering window is opaque.
+  // WebRender might use this to optimize layer allocation.
+  // @param WindowProperties::enable_screenshot Requests to WebRender to use
+  // only one content layer during composite for taking screenshot except debug
+  // layer.
   virtual void GetWindowProperties(WindowProperties* aProperties);
 
   // Interface for partial present
-  virtual bool UsePartialPresent() { return false; }
-  virtual bool RequestFullRender() { return false; }
+  // The maximum number of dirty rects WebRender may pass when presenting a
+  // swapchain, whether it is the window or an OS layer. Zero disables partial
+  // present.
   virtual uint32_t GetMaxPartialPresentRects() { return 0; }
-  virtual bool ShouldDrawPreviousPartialPresentRegions() { return false; }
-  // Returns the age of the current backbuffer., This should be used, if
-  // ShouldDrawPreviousPartialPresentRegions() returns true, to determine the
-  // region which must be rendered in addition to the current frame's dirty
-  // rect.
+  // Whether the window's own swapchain is partially presented.
+  virtual bool UseWindowPartialPresent() { return false; }
+  virtual bool RequestFullRender() { return false; }
+  // Returns the number of frames since the window's current back buffer was
+  // last presented. WebRender uses it to determine the region which must be
+  // rendered in addition to the current frame's dirty rect. 1 means that the
+  // back buffer holds the previous frame. 0 means that its content is unknown,
+  // which forces a full render.
   virtual size_t GetBufferAge() const { return 0; }
   // Allows webrender to specify the total region that will be rendered to this
   // frame, ie the frame's dirty region and some previous frames' dirty regions,
@@ -214,10 +251,22 @@ class RenderCompositor {
     return false;
   }
   virtual bool MaybeProcessScreenshotQueue() { return false; }
+#ifdef MOZ_WIDGET_ANDROID
+  // Copies aSourceRect of the most recently rendered frame into
+  // aHardwareBuffer, flipping and scaling as required. Returns whether the
+  // capture succeeded.
+  virtual bool CaptureScreenPixels(
+      const gfx::IntRect& aSourceRect,
+      layers::AndroidHardwareBuffer* aHardwareBuffer) {
+    return false;
+  }
+#endif
 
-  virtual RefPtr<layers::Fence> GetAndResetReleaseFence() { return nullptr; }
+  virtual RefPtr<layers::Fence> GetAndResetReadFence() { return nullptr; }
 
   virtual bool IsPaused() { return false; }
+
+  virtual void MaybeWaitingForPendingReadFence(RenderTextureHost* aTexture) {}
 
  protected:
   // We default this to 2, so that mLatestRenderFrameId.Prev() is always valid.
@@ -226,6 +275,16 @@ class RenderCompositor {
     mLatestRenderFrameId = mLatestRenderFrameId.Next();
     return mLatestRenderFrameId;
   }
+
+#ifdef MOZ_WIDGET_ANDROID
+  // Copies aSourceRect from aGL's default framebuffer into aHardwareBuffer,
+  // flipping and scaling as required. Returns whether the capture succeeded.
+  static bool CaptureScreenPixelsFromGL(
+      gl::GLContextEGL* aGL, const gfx::IntRect& aSourceRect,
+      const LayoutDeviceIntSize& aFramebufferSize,
+      gl::OriginPos aFramebufferOrigin,
+      layers::AndroidHardwareBuffer* aHardwareBuffer);
+#endif
 
   RefPtr<widget::CompositorWidget> mWidget;
   RefPtr<layers::SyncObjectHost> mSyncObject;

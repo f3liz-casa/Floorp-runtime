@@ -1,20 +1,16 @@
-/* -*- Mode: C++; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
+#include "gtest/gtest.h"
+#include "js/GCAPI.h"
 #include "mozilla/CycleCollectedJSRuntime.h"
 #include "mozilla/HoldDropJSObjects.h"
 #include "mozilla/Maybe.h"
 #include "mozilla/UniquePtr.h"
 #include "mozilla/Vector.h"
-
 #include "nsCycleCollectionParticipant.h"
 #include "nsCycleCollector.h"
-
-#include "js/GCAPI.h"
-
-#include "gtest/gtest.h"
 
 using namespace mozilla;
 
@@ -169,8 +165,7 @@ static void TestIterate(HolderKind kind) {
   Vector<UniquePtr<MyHolder>, 0, InfallibleAllocPolicy> holders;
   bool seen[count] = {};
   for (size_t i = 1; i < count; i++) {
-    MOZ_ALWAYS_TRUE(
-        holders.emplaceBack(mozilla::MakeUnique<MyHolder>(kind, i)));
+    MOZ_ALWAYS_TRUE(holders.emplaceBack(std::make_unique<MyHolder>(kind, i)));
     Put(container, holders.back().get(), ZoneForKind(kind));
   }
   for (iter.emplace(container); !iter->Done(); iter->Next()) {
@@ -201,7 +196,7 @@ static void TestAddRemoveMany(HolderKind kind, size_t count) {
 
   Vector<UniquePtr<MyHolder>, 0, InfallibleAllocPolicy> holders;
   for (size_t i = 0; i < count; i++) {
-    MOZ_ALWAYS_TRUE(holders.emplaceBack(mozilla::MakeUnique<MyHolder>(kind)));
+    MOZ_ALWAYS_TRUE(holders.emplaceBack(std::make_unique<MyHolder>(kind)));
   }
 
   for (size_t i = 0; i < count; i++) {
@@ -236,7 +231,7 @@ static void TestRemoveWhileIterating(HolderKind kind, size_t count) {
   Maybe<typename Container::Iter> iter;
 
   for (size_t i = 0; i < count; i++) {
-    MOZ_ALWAYS_TRUE(holders.emplaceBack(MakeUnique<MyHolder>(kind)));
+    MOZ_ALWAYS_TRUE(holders.emplaceBack(std::make_unique<MyHolder>(kind)));
   }
 
   // Iterate a container with one entry but remove it before we get to it.

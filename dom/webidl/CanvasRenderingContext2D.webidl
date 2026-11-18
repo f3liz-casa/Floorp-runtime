@@ -1,4 +1,3 @@
-/* -*- Mode: IDL; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/.
@@ -56,6 +55,11 @@ dictionary HitRegionOptions {
   Path2D? path = null;
   DOMString id = "";
   Element? control = null;
+};
+
+dictionary ImageDataSettings {
+  [Pref="gfx.canvas.colorspace.enabled"]
+  PredefinedColorSpace colorSpace;
 };
 
 typedef (HTMLImageElement or
@@ -294,11 +298,13 @@ interface mixin CanvasDrawImage {
 interface mixin CanvasImageData {
   // pixel manipulation
   [NewObject, Throws]
-  ImageData createImageData([EnforceRange] long sw, [EnforceRange] long sh);
+  ImageData createImageData([EnforceRange] long sw, [EnforceRange] long sh,
+                            optional ImageDataSettings settings = {});
   [NewObject, Throws]
   ImageData createImageData(ImageData imagedata);
   [NewObject, Throws, NeedsSubjectPrincipal]
-  ImageData getImageData([EnforceRange] long sx, [EnforceRange] long sy, [EnforceRange] long sw, [EnforceRange] long sh);
+  ImageData getImageData([EnforceRange] long sx, [EnforceRange] long sy, [EnforceRange] long sw, [EnforceRange] long sh,
+                         optional ImageDataSettings settings = {});
   [Throws]
   undefined putImageData(ImageData imagedata, [EnforceRange] long dx, [EnforceRange] long dy);
   [Throws]
@@ -322,6 +328,7 @@ interface mixin CanvasPathDrawingStyles {
 
 interface mixin CanvasTextDrawingStyles {
   // text
+  attribute DOMString lang; // default: "inherit"
   [SetterThrows]
   attribute UTF8String font; // (default 10px sans-serif)
   attribute CanvasTextAlign textAlign; // (default: "start")

@@ -1,4 +1,3 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -8,7 +7,6 @@
 #include <shlobj.h>  // for SHChangeNotify and IApplicationAssociationRegistration
 #include <timeapi.h>
 
-#include "mozilla/ArrayUtils.h"
 #include "mozilla/CmdLineAndEnvUtils.h"
 #include "mozilla/RefPtr.h"
 #include "mozilla/Result.h"
@@ -316,7 +314,7 @@ static bool LaunchPowershell(const wchar_t* command,
 }
 
 static bool FindPowershell(mozilla::UniquePtr<wchar_t[]>& powershellPath) {
-  auto exePath = mozilla::MakeUnique<wchar_t[]>(MAX_PATH + 1);
+  auto exePath = std::make_unique<wchar_t[]>(MAX_PATH + 1);
   if (!ConstructSystem32Path(L"WindowsPowershell\\v1.0\\powershell.exe",
                              exePath.get(), MAX_PATH + 1)) {
     LOG_ERROR_MESSAGE(L"Failed to construct path to powershell.exe");

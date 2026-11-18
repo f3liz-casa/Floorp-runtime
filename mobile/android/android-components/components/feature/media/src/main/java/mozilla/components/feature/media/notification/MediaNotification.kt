@@ -8,71 +8,60 @@ import android.app.Notification
 import android.app.PendingIntent
 import android.app.PendingIntent.FLAG_UPDATE_CURRENT
 import android.content.Context
+import android.content.Intent
 import android.graphics.Bitmap
-import android.os.Build
-import android.support.v4.media.session.MediaSessionCompat
 import androidx.annotation.DrawableRes
+import androidx.annotation.OptIn
+import androidx.annotation.StringRes
 import androidx.core.app.NotificationCompat
-import androidx.media.app.NotificationCompat.MediaStyle
+import androidx.media3.common.util.UnstableApi
+import androidx.media3.session.MediaSession
+import androidx.media3.session.MediaStyleNotificationHelper
 import mozilla.components.browser.state.state.CustomTabSessionState
+import mozilla.components.browser.state.state.MediaSessionState
 import mozilla.components.browser.state.state.SessionState
-import mozilla.components.concept.engine.mediasession.MediaSession
+import mozilla.components.concept.engine.mediasession.MediaSession as MozMediaSession
 import mozilla.components.feature.media.R
 import mozilla.components.feature.media.ext.getArtistOrUrl
-import mozilla.components.feature.media.ext.getNonPrivateIcon
 import mozilla.components.feature.media.ext.getTitleOrUrl
 import mozilla.components.feature.media.service.AbstractMediaSessionService
 import mozilla.components.support.base.ids.SharedIdsHelper
-import mozilla.components.support.utils.PendingIntentUtils
-import java.util.Locale
 
-/**
- * Helper to display a notification for web content playing media.
- */
+/** Helper to display a notification for web content playing media. */
+@OptIn(UnstableApi::class)
 internal class MediaNotification(
     private val context: Context,
     private val cls: Class<*>,
 ) {
-    /**
-     * Creates a new [Notification] for the given [sessionState].
-     */
-    suspend fun create(sessionState: SessionState?, mediaSessionCompat: MediaSessionCompat): Notification {
-        val data = sessionState?.toNotificationData(context, cls) ?: NotificationData()
+    /** Creates a new [Notification] for the given [sessionState], showing [artwork] as its large icon. */
+    fun create(sessionState: SessionState?, mediaSession: MediaSession, artwork: Bitmap?): Notification {
+        val data = sessionState?.toNotificationData(context, cls, artwork) ?: NotificationData()
 
-        return buildNotification(data, mediaSessionCompat, sessionState !is CustomTabSessionState)
+        return buildNotification(data, mediaSession, sessionState !is CustomTabSessionState)
     }
 
     private fun buildNotification(
         data: NotificationData,
-        mediaSession: MediaSessionCompat,
-        isCustomTab: Boolean,
+        mediaSession: MediaSession,
+        isNormalTab: Boolean,
     ): Notification {
         val channel = MediaNotificationChannel.ensureChannelExists(context)
-        val style = MediaStyle().setMediaSession(mediaSession.sessionToken)
-        val builder = NotificationCompat.Builder(context, channel)
-            .setSmallIcon(data.icon)
-            .setContentTitle(data.title)
-            .setContentText(data.description)
-            .setLargeIcon(data.largeIcon)
-            .setPriority(NotificationCompat.PRIORITY_LOW)
-            .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+        val style = MediaStyleNotificationHelper.MediaStyle(mediaSession)
+        val builder =
+            NotificationCompat.Builder(context, channel)
+                .setSmallIcon(data.icon)
+                .setContentTitle(data.title)
+                .setContentText(data.description)
+                .setLargeIcon(data.largeIcon)
+                .setPriority(NotificationCompat.PRIORITY_LOW)
+                .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
 
-        if (data.action != null) {
-            builder.addAction(data.action)
-            style.setShowActionsInCompactView(0)
+        data.actions.all.forEach { builder.addAction(it) }
+        if (data.actions.compactIndices.isNotEmpty()) {
+            @Suppress("SpreadOperator") style.setShowActionsInCompactView(*data.actions.compactIndices)
         }
-
-        // There is a known OEM crash with Huawei Devices on lollipop with setting a style
-        // see https://github.com/mozilla-mobile/android-components/issues/7468 and
-        // https://issuetracker.google.com/issues/37078372
-        val huaweiOnLollipop =
-            Build.MANUFACTURER.lowercase(Locale.getDefault()).contains("huawei") &&
-                Build.VERSION.SDK_INT <= Build.VERSION_CODES.LOLLIPOP_MR1
-        if (!huaweiOnLollipop) {
-            builder.setStyle(style)
-        }
-
-        if (isCustomTab) {
+        builder.setStyle(style)
+        if (isNormalTab) {
             // We only set a content intent if this media notification is not for an "external app"
             // like a custom tab. Currently we can't route the user to that particular activity:
             // https://github.com/mozilla-mobile/android-components/issues/3986
@@ -83,73 +72,124 @@ internal class MediaNotification(
     }
 }
 
-private suspend fun SessionState.toNotificationData(
+private fun SessionState.toNotificationData(
     context: Context,
     cls: Class<*>,
+    artwork: Bitmap?,
 ): NotificationData {
-    val intent = context.packageManager.getLaunchIntentForPackage(context.packageName)?.also {
-        it.action = AbstractMediaSessionService.ACTION_SWITCH_TAB
+    val intent =
+        context.packageManager.getLaunchIntentForPackage(context.packageName)?.also {
+            it.action = AbstractMediaSessionService.ACTION_SWITCH_TAB
+        }
+
+    val mediaState = mediaSessionState ?: return NotificationData()
+    val playPauseAction =
+        when (mediaState.playbackState) {
+            MozMediaSession.PlaybackState.PLAYING ->
+                buildAction(
+                    context = context,
+                    iconRes = R.drawable.mozac_feature_media_action_pause,
+                    titleRes = R.string.mozac_feature_media_notification_action_pause,
+                    intent = AbstractMediaSessionService.pauseIntent(context, cls),
+                )
+            MozMediaSession.PlaybackState.PAUSED ->
+                buildAction(
+                    context = context,
+                    iconRes = R.drawable.mozac_feature_media_action_play,
+                    titleRes = R.string.mozac_feature_media_notification_action_play,
+                    intent = AbstractMediaSessionService.playIntent(context, cls),
+                )
+            else -> return NotificationData()
+        }
+
+    val icon =
+        when (mediaState.playbackState) {
+            MozMediaSession.PlaybackState.PLAYING -> R.drawable.mozac_feature_media_playing
+            else -> R.drawable.mozac_feature_media_paused
+        }
+
+    return NotificationData(
+        title = getTitleOrUrl(context, mediaState.metadata?.title),
+        description = getArtistOrUrl(mediaState.metadata?.artist),
+        icon = icon,
+        largeIcon = artwork,
+        actions = mediaState.buildActions(context, cls, playPauseAction),
+        contentIntent =
+            PendingIntent.getActivity(
+                context,
+                SharedIdsHelper.getIdForTag(context, AbstractMediaSessionService.PENDING_INTENT_TAG),
+                intent?.apply { putExtra(AbstractMediaSessionService.EXTRA_TAB_ID, id) },
+                getUpdateNotificationFlag(),
+            ),
+    )
+}
+
+private fun MediaSessionState.buildActions(
+    context: Context,
+    cls: Class<*>,
+    playPauseAction: NotificationCompat.Action,
+): NotificationActions {
+    val actions = mutableListOf<NotificationCompat.Action>()
+    val compactIndices = mutableListOf<Int>()
+
+    if (features.contains(MozMediaSession.Feature.PREVIOUS_TRACK)) {
+        compactIndices += actions.size
+        actions +=
+            buildAction(
+                context = context,
+                iconRes = R.drawable.mozac_feature_media_action_previous,
+                titleRes = R.string.mozac_feature_media_notification_action_previous,
+                intent = AbstractMediaSessionService.previousTrackIntent(context, cls),
+            )
+    }
+    compactIndices += actions.size
+    actions += playPauseAction
+    if (features.contains(MozMediaSession.Feature.NEXT_TRACK)) {
+        compactIndices += actions.size
+        actions +=
+            buildAction(
+                context = context,
+                iconRes = R.drawable.mozac_feature_media_action_next,
+                titleRes = R.string.mozac_feature_media_notification_action_next,
+                intent = AbstractMediaSessionService.nextTrackIntent(context, cls),
+            )
     }
 
-    return when (mediaSessionState?.playbackState) {
-        MediaSession.PlaybackState.PLAYING -> NotificationData(
-            title = getTitleOrUrl(context, mediaSessionState?.metadata?.title),
-            description = getArtistOrUrl(mediaSessionState?.metadata?.artist),
-            icon = R.drawable.mozac_feature_media_playing,
-            largeIcon = getNonPrivateIcon(mediaSessionState?.metadata?.getArtwork),
-            action = NotificationCompat.Action.Builder(
-                R.drawable.mozac_feature_media_action_pause,
-                context.getString(R.string.mozac_feature_media_notification_action_pause),
-                PendingIntent.getService(
-                    context,
-                    0,
-                    AbstractMediaSessionService.pauseIntent(context, cls),
-                    getNotificationFlag(),
-                ),
-            ).build(),
-            contentIntent = PendingIntent.getActivity(
-                context,
-                SharedIdsHelper.getIdForTag(context, AbstractMediaSessionService.PENDING_INTENT_TAG),
-                intent?.apply { putExtra(AbstractMediaSessionService.EXTRA_TAB_ID, id) },
-                getUpdateNotificationFlag(),
-            ),
-        )
-        MediaSession.PlaybackState.PAUSED -> NotificationData(
-            title = getTitleOrUrl(context, mediaSessionState?.metadata?.title),
-            description = getArtistOrUrl(mediaSessionState?.metadata?.artist),
-            icon = R.drawable.mozac_feature_media_paused,
-            largeIcon = getNonPrivateIcon(mediaSessionState?.metadata?.getArtwork),
-            action = NotificationCompat.Action.Builder(
-                R.drawable.mozac_feature_media_action_play,
-                context.getString(R.string.mozac_feature_media_notification_action_play),
-                PendingIntent.getService(
-                    context,
-                    0,
-                    AbstractMediaSessionService.playIntent(context, cls),
-                    getNotificationFlag(),
-                ),
-            ).build(),
-            contentIntent = PendingIntent.getActivity(
-                context,
-                SharedIdsHelper.getIdForTag(context, AbstractMediaSessionService.PENDING_INTENT_TAG),
-                intent?.apply { putExtra(AbstractMediaSessionService.EXTRA_TAB_ID, id) },
-                getUpdateNotificationFlag(),
-            ),
-        )
-        // Dummy notification used of all other media states.
-        else -> NotificationData()
-    }
+    return NotificationActions(actions, compactIndices.toIntArray())
 }
+
+private fun buildAction(
+    context: Context,
+    @DrawableRes iconRes: Int,
+    @StringRes titleRes: Int,
+    intent: Intent,
+): NotificationCompat.Action =
+    NotificationCompat.Action.Builder(
+            iconRes,
+            context.getString(titleRes),
+            PendingIntent.getService(
+                context,
+                0,
+                intent,
+                getNotificationFlag(),
+            ),
+        )
+        .build()
 
 private data class NotificationData(
     val title: String = "",
     val description: String = "",
     @param:DrawableRes val icon: Int = R.drawable.mozac_feature_media_playing,
     val largeIcon: Bitmap? = null,
-    val action: NotificationCompat.Action? = null,
+    val actions: NotificationActions = NotificationActions(),
     val contentIntent: PendingIntent? = null,
 )
 
-private fun getNotificationFlag() = PendingIntentUtils.defaultFlags
+private data class NotificationActions(
+    val all: List<NotificationCompat.Action> = emptyList(),
+    val compactIndices: IntArray = IntArray(0),
+)
 
-private fun getUpdateNotificationFlag() = PendingIntentUtils.defaultFlags or FLAG_UPDATE_CURRENT
+private fun getNotificationFlag() = PendingIntent.FLAG_IMMUTABLE
+
+private fun getUpdateNotificationFlag() = PendingIntent.FLAG_IMMUTABLE or FLAG_UPDATE_CURRENT

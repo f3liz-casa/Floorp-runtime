@@ -3,26 +3,22 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "mozilla/net/ChildDNSService.h"
-#include "nsDNSPrefetch.h"
-#include "nsIDNSListener.h"
-#include "nsIOService.h"
-#include "nsThreadUtils.h"
-#include "nsIXPConnect.h"
-#include "nsIProtocolProxyService.h"
-#include "nsNetCID.h"
-#include "nsQueryObject.h"
-#include "mozilla/ClearOnShutdown.h"
-#include "mozilla/StaticPrefs_network.h"
-#include "mozilla/StaticPtr.h"
-#include "mozilla/SyncRunnable.h"
-#include "mozilla/net/NeckoChild.h"
-#include "mozilla/net/DNSListenerProxy.h"
-#include "mozilla/net/TRRServiceParent.h"
-#include "nsHostResolver.h"
-#include "nsServiceManagerUtils.h"
-#include "prsystem.h"
+
 #include "DNSAdditionalInfo.h"
 #include "TRRService.h"
+#include "mozilla/ClearOnShutdown.h"
+#include "mozilla/StaticPtr.h"
+#include "mozilla/SyncRunnable.h"
+#include "mozilla/net/DNSListenerProxy.h"
+#include "mozilla/net/NeckoChild.h"
+#include "nsHostResolver.h"
+#include "nsIDNSListener.h"
+#include "nsIProtocolProxyService.h"
+#include "nsIXPConnect.h"
+#include "nsNetCID.h"
+#include "nsQueryObject.h"
+#include "nsServiceManagerUtils.h"
+#include "nsThreadUtils.h"
 
 namespace mozilla {
 namespace net {
@@ -34,10 +30,7 @@ namespace net {
 static StaticRefPtr<ChildDNSService> gChildDNSService;
 
 already_AddRefed<ChildDNSService> ChildDNSService::GetSingleton() {
-  MOZ_ASSERT_IF(nsIOService::UseSocketProcess(),
-                XRE_IsContentProcess() || XRE_IsParentProcess());
-  MOZ_ASSERT_IF(!nsIOService::UseSocketProcess(),
-                XRE_IsContentProcess() || XRE_IsSocketProcess());
+  MOZ_ASSERT(XRE_IsContentProcess());
 
   if (!gChildDNSService) {
     if (NS_WARN_IF(!NS_IsMainThread())) {
@@ -54,17 +47,7 @@ already_AddRefed<ChildDNSService> ChildDNSService::GetSingleton() {
 NS_IMPL_ISUPPORTS_INHERITED(ChildDNSService, DNSServiceBase, nsIDNSService,
                             nsPIDNSService)
 
-ChildDNSService::ChildDNSService() {
-  MOZ_ASSERT_IF(nsIOService::UseSocketProcess(),
-                XRE_IsContentProcess() || XRE_IsParentProcess());
-  MOZ_ASSERT_IF(!nsIOService::UseSocketProcess(),
-                XRE_IsContentProcess() || XRE_IsSocketProcess());
-  if (XRE_IsParentProcess() && nsIOService::UseSocketProcess()) {
-    nsDNSPrefetch::Initialize(this);
-    mTRRServiceParent = new TRRServiceParent();
-    mTRRServiceParent->Init();
-  }
-}
+ChildDNSService::ChildDNSService() { MOZ_ASSERT(XRE_IsContentProcess()); }
 
 void ChildDNSService::GetDNSRecordHashKey(
     const nsACString& aHost, const nsACString& aTrrServer, int32_t aPort,
@@ -72,7 +55,7 @@ void ChildDNSService::GetDNSRecordHashKey(
     nsIDNSService::DNSFlags aFlags, uintptr_t aListenerAddr,
     nsACString& aHashKey) {
   aHashKey.Assign(aHost);
-  aHashKey.Assign(aTrrServer);
+  aHashKey.Append(aTrrServer);
   aHashKey.AppendInt(aPort);
   aHashKey.AppendInt(aType);
 
@@ -100,17 +83,6 @@ nsresult ChildDNSService::AsyncResolveInternal(
     return NS_ERROR_UNKNOWN_PROXY_HOST;
   }
 
-  bool resolveDNSInSocketProcess = false;
-  if (XRE_IsParentProcess() && nsIOService::UseSocketProcess()) {
-    resolveDNSInSocketProcess = true;
-    if (type != nsIDNSService::RESOLVE_TYPE_DEFAULT &&
-        (mTRRServiceParent->Mode() != nsIDNSService::MODE_TRRFIRST &&
-         mTRRServiceParent->Mode() != nsIDNSService::MODE_TRRONLY) &&
-        !StaticPrefs::network_dns_native_https_query()) {
-      return NS_ERROR_UNKNOWN_HOST;
-    }
-  }
-
   if (mDisablePrefetch && (flags & RESOLVE_SPECULATE)) {
     return NS_ERROR_DNS_LOOKUP_QUEUE_FULL;
   }
@@ -133,15 +105,7 @@ nsresult ChildDNSService::AsyncResolveInternal(
   RefPtr<DNSRequestSender> sender = new DNSRequestSender(
       hostname, DNSAdditionalInfo::URL(aInfo), DNSAdditionalInfo::Port(aInfo),
       type, aOriginAttributes, flags, listener, target);
-  RefPtr<DNSRequestActor> dnsReq;
-  if (resolveDNSInSocketProcess) {
-    dnsReq = new DNSRequestParent(sender);
-    if (!mTRRServiceParent->TRRConnectionInfoInited()) {
-      mTRRServiceParent->InitTRRConnectionInfo();
-    }
-  } else {
-    dnsReq = new DNSRequestChild(sender);
-  }
+  RefPtr<DNSRequestChild> dnsReq = new DNSRequestChild(sender);
 
   {
     MutexAutoLock lock(mPendingRequestsLock);
@@ -255,15 +219,6 @@ ChildDNSService::CancelAsyncResolveNative(
 }
 
 NS_IMETHODIMP
-ChildDNSService::Resolve(const nsACString& hostname,
-                         nsIDNSService::DNSFlags flags,
-                         JS::Handle<JS::Value> aOriginAttributes,
-                         JSContext* aCx, uint8_t aArgc, nsIDNSRecord** result) {
-  // not planning to ever support this, since sync IPDL is evil.
-  return NS_ERROR_NOT_AVAILABLE;
-}
-
-NS_IMETHODIMP
 ChildDNSService::ResolveNative(const nsACString& hostname,
                                nsIDNSService::DNSFlags flags,
                                const OriginAttributes& aOriginAttributes,
@@ -282,33 +237,16 @@ ChildDNSService::GetDNSCacheEntries(
 }
 
 NS_IMETHODIMP
-ChildDNSService::ClearCache(bool aTrrToo) {
-  if (!mTRRServiceParent || !mTRRServiceParent->CanSend()) {
-    return NS_ERROR_NOT_AVAILABLE;
-  }
-
-  Unused << mTRRServiceParent->SendClearDNSCache(aTrrToo);
-  return NS_OK;
-}
+ChildDNSService::ClearCache(bool aTrrToo) { return NS_ERROR_NOT_AVAILABLE; }
 
 NS_IMETHODIMP
 ChildDNSService::ReloadParentalControlEnabled() {
-  if (!mTRRServiceParent) {
-    return NS_ERROR_NOT_AVAILABLE;
-  }
-
-  mTRRServiceParent->ReloadParentalControlsEnabled();
-  return NS_OK;
+  return NS_ERROR_NOT_AVAILABLE;
 }
 
 NS_IMETHODIMP
 ChildDNSService::SetDetectedTrrURI(const nsACString& aURI) {
-  if (!mTRRServiceParent) {
-    return NS_ERROR_NOT_AVAILABLE;
-  }
-
-  mTRRServiceParent->SetDetectedTrrURI(aURI);
-  return NS_OK;
+  return NS_ERROR_NOT_AVAILABLE;
 }
 
 NS_IMETHODIMP
@@ -329,12 +267,7 @@ ChildDNSService::GetTRRSkipReasonName(nsITRRSkipReason::value aValue,
 
 NS_IMETHODIMP
 ChildDNSService::GetCurrentTrrURI(nsACString& aURI) {
-  if (!mTRRServiceParent) {
-    return NS_ERROR_NOT_AVAILABLE;
-  }
-
-  mTRRServiceParent->GetURI(aURI);
-  return NS_OK;
+  return NS_ERROR_NOT_AVAILABLE;
 }
 
 NS_IMETHODIMP
@@ -343,12 +276,7 @@ ChildDNSService::GetCurrentTrrMode(nsIDNSService::ResolverMode* aMode) {
     *aMode = mTRRMode;
     return NS_OK;
   }
-  if (!mTRRServiceParent) {
-    return NS_ERROR_NOT_AVAILABLE;
-  }
-
-  *aMode = mTRRServiceParent->Mode();
-  return NS_OK;
+  return NS_ERROR_NOT_AVAILABLE;
 }
 
 void ChildDNSService::SetTRRModeInChild(
@@ -364,25 +292,11 @@ void ChildDNSService::SetTRRModeInChild(
 
 NS_IMETHODIMP
 ChildDNSService::GetCurrentTrrConfirmationState(uint32_t* aConfirmationState) {
-  if (!mTRRServiceParent) {
-    return NS_ERROR_NOT_AVAILABLE;
-  }
-
-  *aConfirmationState = mTRRServiceParent->GetConfirmationState();
-  return NS_OK;
+  return NS_ERROR_NOT_AVAILABLE;
 }
 
 NS_IMETHODIMP
 ChildDNSService::GetMyHostName(nsACString& result) {
-  if (XRE_IsParentProcess()) {
-    char name[100];
-    if (PR_GetSystemInfo(PR_SI_HOSTNAME, name, sizeof(name)) == PR_SUCCESS) {
-      result = name;
-      return NS_OK;
-    }
-
-    return NS_ERROR_FAILURE;
-  }
   // TODO: get value from parent during PNecko construction?
   return NS_ERROR_NOT_AVAILABLE;
 }
@@ -498,16 +412,19 @@ ChildDNSService::GetTrrDomain(nsACString& aTRRDomain) {
 
 NS_IMETHODIMP
 ChildDNSService::GetLastConfirmationStatus(nsresult* aConfirmationStatus) {
-  // XXX(valentin): Fix for socket process
   *aConfirmationStatus = NS_OK;
   return NS_OK;
 }
 
 NS_IMETHODIMP ChildDNSService::GetLastConfirmationSkipReason(
     TRRSkippedReason* aSkipReason) {
-  // XXX(valentin): Fix for socket process
   *aSkipReason = nsITRRSkipReason::TRR_UNSET;
   return NS_OK;
+}
+
+NS_IMETHODIMP ChildDNSService::SetHttp3FirstForServer(const nsACString& aServer,
+                                                      bool aEnabled) {
+  return NS_ERROR_NOT_IMPLEMENTED;
 }
 
 }  // namespace net

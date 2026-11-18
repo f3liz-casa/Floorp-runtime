@@ -1,4 +1,5 @@
 use alloc::boxed::Box;
+use core::num::NonZeroU32;
 
 use thiserror::Error;
 
@@ -6,8 +7,11 @@ use wgt::error::{ErrorType, WebGpuError};
 
 use super::bind::BinderError;
 use crate::command::pass;
+use crate::resource::InvalidResourceError;
+use crate::validation::InvalidWorkgroupSizeError;
 use crate::{
-    binding_model::{BindingError, LateMinBufferBindingSizeMismatch, PushConstantUploadError},
+    binding_model::{BindingError, ImmediateUploadError, LateMinBufferBindingSizeMismatch},
+    device::Device,
     resource::{
         DestroyedResourceError, MissingBufferUsageError, MissingTextureUsageError,
         ResourceErrorIdent,
@@ -26,7 +30,7 @@ pub enum DrawError {
     #[error("Currently set {pipeline} requires vertex buffer {index} to be set")]
     MissingVertexBuffer {
         pipeline: ResourceErrorIdent,
-        index: u32,
+        index: usize,
     },
     #[error("Index buffer must be set")]
     MissingIndexBuffer,
@@ -46,31 +50,35 @@ pub enum DrawError {
     },
     #[error("Index {last_index} extends beyond limit {index_limit}. Did you bind the correct index buffer?")]
     IndexBeyondLimit { last_index: u64, index_limit: u64 },
-    #[error(
-        "Index buffer format {buffer_format:?} doesn't match {pipeline}'s index format {pipeline_format:?}"
-    )]
-    UnmatchedIndexFormats {
+    #[error("For indexed drawing with strip topology, {pipeline}'s strip index format {strip_index_format:?} must match index buffer format {buffer_format:?}")]
+    UnmatchedStripIndexFormat {
         pipeline: ResourceErrorIdent,
-        pipeline_format: wgt::IndexFormat,
+        strip_index_format: Option<wgt::IndexFormat>,
         buffer_format: wgt::IndexFormat,
     },
     #[error(transparent)]
     BindingSizeTooSmall(#[from] LateMinBufferBindingSizeMismatch),
-
     #[error(
         "Wrong pipeline type for this draw command. Attempted to call {} draw command on {} pipeline",
         if *wanted_mesh_pipeline {"mesh shader"} else {"standard"},
         if *wanted_mesh_pipeline {"standard"} else {"mesh shader"},
     )]
     WrongPipelineType { wanted_mesh_pipeline: bool },
+    #[error(transparent)]
+    InvalidGroupSize(#[from] InvalidWorkgroupSizeError),
     #[error(
-        "Each current draw group size dimension ({current:?}) must be less or equal to {limit}, and the product must be less or equal to {max_total}"
+        "Mesh shader calls in multiview render passes require enabling the `EXPERIMENTAL_MESH_SHADER_MULTIVIEW` feature, and the highest bit ({highest_view_index}) in the multiview mask must be less than `Limits::max_mesh_multiview_view_count` ({max_multiviews})"
     )]
-    InvalidGroupSize {
-        current: [u32; 3],
-        limit: u32,
-        max_total: u32,
+    MeshPipelineMultiviewLimitsViolated {
+        highest_view_index: u32,
+        max_multiviews: u32,
     },
+    #[error("Not all immediate data required by the pipeline has been set via set_immediates (missing byte ranges: {missing})")]
+    MissingImmediateData {
+        missing: naga::valid::ImmediateSlots,
+    },
+    #[error("The number of bind groups + vertex buffers {given} exceeds the limit {limit}")]
+    TooManyBindGroupsPlusVertexBuffers { given: u32, limit: u32 },
 }
 
 impl WebGpuError for DrawError {
@@ -105,11 +113,13 @@ pub enum RenderCommandError {
     #[error(transparent)]
     DestroyedResource(#[from] DestroyedResourceError),
     #[error(transparent)]
+    InvalidResource(#[from] InvalidResourceError),
+    #[error(transparent)]
     MissingBufferUsage(#[from] MissingBufferUsageError),
     #[error(transparent)]
     MissingTextureUsage(#[from] MissingTextureUsageError),
     #[error(transparent)]
-    PushConstants(#[from] PushConstantUploadError),
+    ImmediateData(#[from] ImmediateUploadError),
     #[error(transparent)]
     BindingError(#[from] BindingError),
     #[error("Viewport size {{ w: {w}, h: {h} }} greater than device's requested `max_texture_dimension_2d` limit {max}, or less than zero")]
@@ -120,20 +130,30 @@ pub enum RenderCommandError {
     InvalidViewportDepth(f32, f32),
     #[error("Scissor {0:?} is not contained in the render target {1:?}")]
     InvalidScissorRect(Rect<u32>, wgt::Extent3d),
+    #[error("Indirect buffer offset {0:?} is not a multiple of 4")]
+    UnalignedIndirectBufferOffset(wgt::BufferAddress),
+    #[error("Indirect draw arguments of {args_size} bytes (count = {count}) starting at {offset} would overrun buffer size of {buffer_size}")]
+    IndirectBufferOverrun {
+        count: u32,
+        offset: u64,
+        args_size: u64,
+        buffer_size: u64,
+    },
     #[error("Support for {0} is not implemented yet")]
     Unimplemented(&'static str),
 }
 
 impl WebGpuError for RenderCommandError {
     fn webgpu_error_type(&self) -> ErrorType {
-        let e: &dyn WebGpuError = match self {
-            Self::IncompatiblePipelineTargets(e) => e,
-            Self::ResourceUsageCompatibility(e) => e,
-            Self::DestroyedResource(e) => e,
-            Self::MissingBufferUsage(e) => e,
-            Self::MissingTextureUsage(e) => e,
-            Self::PushConstants(e) => e,
-            Self::BindingError(e) => e,
+        match self {
+            Self::IncompatiblePipelineTargets(e) => e.webgpu_error_type(),
+            Self::ResourceUsageCompatibility(e) => e.webgpu_error_type(),
+            Self::DestroyedResource(e) => e.webgpu_error_type(),
+            Self::InvalidResource(e) => e.webgpu_error_type(),
+            Self::MissingBufferUsage(e) => e.webgpu_error_type(),
+            Self::MissingTextureUsage(e) => e.webgpu_error_type(),
+            Self::ImmediateData(e) => e.webgpu_error_type(),
+            Self::BindingError(e) => e.webgpu_error_type(),
 
             Self::BindGroupIndexOutOfRange { .. }
             | Self::VertexBufferIndexOutOfRange { .. }
@@ -145,9 +165,10 @@ impl WebGpuError for RenderCommandError {
             | Self::InvalidViewportRectPosition { .. }
             | Self::InvalidViewportDepth(..)
             | Self::InvalidScissorRect(..)
-            | Self::Unimplemented(..) => return ErrorType::Validation,
-        };
-        e.webgpu_error_type()
+            | Self::UnalignedIndirectBufferOffset(..)
+            | Self::IndirectBufferOverrun { .. }
+            | Self::Unimplemented(..) => ErrorType::Validation,
+        }
     }
 }
 
@@ -158,4 +179,27 @@ pub struct Rect<T> {
     pub y: T,
     pub w: T,
     pub h: T,
+}
+
+/// Validates a mesh shader draw against the multiview mask of the render pass or render bundle
+/// it is recorded in.
+pub(crate) fn validate_mesh_draw_multiview(
+    device: &Device,
+    multiview_mask: Option<NonZeroU32>,
+) -> Result<(), DrawError> {
+    if let Some(mv) = multiview_mask {
+        let highest_bit = 31 - mv.leading_zeros();
+
+        if !device
+            .features
+            .contains(wgt::Features::EXPERIMENTAL_MESH_SHADER_MULTIVIEW)
+            || highest_bit >= device.limits.max_mesh_multiview_view_count
+        {
+            return Err(DrawError::MeshPipelineMultiviewLimitsViolated {
+                highest_view_index: highest_bit,
+                max_multiviews: device.limits.max_mesh_multiview_view_count,
+            });
+        }
+    }
+    Ok(())
 }

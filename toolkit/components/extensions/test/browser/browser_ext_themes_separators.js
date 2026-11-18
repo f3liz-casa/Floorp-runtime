@@ -64,11 +64,10 @@ add_task(async function test_support_separator_properties() {
     "No vertical separator on app menu"
   );
 
-  let separatorColor = Services.prefs.getBoolPref("sidebar.revamp", false)
-    ? window.getComputedStyle(document.querySelector("#tabbrowser-tabbox"))
-        .outlineColor
-    : window.getComputedStyle(document.querySelector("#navigator-toolbox"))
-        .borderBottomColor;
+  // only the top border will be shown if the window is maximized.
+  let separatorColor = window.getComputedStyle(
+    document.querySelector("#tabbrowser-tabbox .browserContainer")
+  ).borderTopColor;
   Assert.equal(
     separatorColor,
     `rgb(${hexToRGB(SEPARATOR_BOTTOM_COLOR).join(", ")})`,

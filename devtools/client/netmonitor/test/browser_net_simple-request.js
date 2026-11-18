@@ -92,8 +92,8 @@ add_task(async function () {
   return teardown(monitor);
 
   async function reloadAndWait() {
-    const wait = waitForNetworkEvents(monitor, 1);
-    await reloadBrowser();
-    return wait;
+    const onNetworkEvents = waitForNetworkEvents(monitor, 1);
+    await reloadSelectedTab();
+    return onNetworkEvents;
   }
 });

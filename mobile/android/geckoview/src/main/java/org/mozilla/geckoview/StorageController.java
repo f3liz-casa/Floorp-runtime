@@ -1,6 +1,4 @@
-/* -*- Mode: Java; c-basic-offset: 4; tab-width: 20; indent-tabs-mode: nil; -*-
- * vim: ts=4 sw=4 expandtab:
- * This Source Code Form is subject to the terms of the Mozilla Public
+/* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
@@ -19,6 +17,7 @@ import java.util.List;
 import java.util.Locale;
 import org.mozilla.gecko.EventDispatcher;
 import org.mozilla.gecko.util.GeckoBundle;
+import org.mozilla.gecko.util.ThreadUtils;
 import org.mozilla.geckoview.GeckoSession.PermissionDelegate.ContentPermission;
 
 /**
@@ -27,11 +26,17 @@ import org.mozilla.geckoview.GeckoSession.PermissionDelegate.ContentPermission;
  * <p>Retrieve an instance via {@link GeckoRuntime#getStorageController}.
  */
 public final class StorageController {
+  /** Public constructor for StorageController. */
+  public StorageController() {}
+
   private static final String LOGTAG = "StorageController";
 
   // Keep in sync with GeckoViewStorageController.ClearFlags.
   /** Flags used for data clearing operations. */
   public static class ClearFlags {
+    /** Public constructor for ClearFlags. */
+    public ClearFlags() {}
+
     /** Cookies. */
     public static final long COOKIES = 1 << 0;
 
@@ -64,6 +69,7 @@ public final class StorageController {
     public static final long ALL = 1 << 9;
   }
 
+  /** Clear flags for storage controller operations. */
   @Retention(RetentionPolicy.SOURCE)
   @LongDef(
       flag = true,
@@ -90,8 +96,9 @@ public final class StorageController {
    * @param flags Combination of {@link ClearFlags}.
    * @return A {@link GeckoResult} that will complete when clearing has finished.
    */
-  @AnyThread
+  @HandlerThread
   public @NonNull GeckoResult<Void> clearData(final @StorageControllerClearFlags long flags) {
+    ThreadUtils.warnOnHandlerThread();
     final GeckoBundle bundle = new GeckoBundle(1);
     bundle.putLong("flags", flags);
 
@@ -109,9 +116,10 @@ public final class StorageController {
    * @param flags Combination of {@link ClearFlags}.
    * @return A {@link GeckoResult} that will complete when clearing has finished.
    */
-  @AnyThread
+  @HandlerThread
   public @NonNull GeckoResult<Void> clearDataFromHost(
       final @NonNull String host, final @StorageControllerClearFlags long flags) {
+    ThreadUtils.warnOnHandlerThread();
     final GeckoBundle bundle = new GeckoBundle(2);
     bundle.putString("host", host);
     bundle.putLong("flags", flags);
@@ -131,9 +139,10 @@ public final class StorageController {
    * @param flags Combination of {@link ClearFlags}.
    * @return A {@link GeckoResult} that will complete when clearing has finished.
    */
-  @AnyThread
+  @HandlerThread
   public @NonNull GeckoResult<Void> clearDataFromBaseDomain(
       final @NonNull String baseDomain, final @StorageControllerClearFlags long flags) {
+    ThreadUtils.warnOnHandlerThread();
     final GeckoBundle bundle = new GeckoBundle(2);
     bundle.putString("baseDomain", baseDomain);
     bundle.putLong("flags", flags);
@@ -192,8 +201,9 @@ public final class StorageController {
    * @return A {@link GeckoResult} that will complete with a list of all currently stored {@link
    *     ContentPermission}s.
    */
-  @AnyThread
+  @HandlerThread
   public @NonNull GeckoResult<List<ContentPermission>> getAllPermissions() {
+    ThreadUtils.assertOnHandlerThread();
     return EventDispatcher.getInstance()
         .queryBundle("GeckoView:GetAllPermissions")
         .map(
@@ -212,8 +222,9 @@ public final class StorageController {
    * @return A {@link GeckoResult} that will complete with a list of all currently stored {@link
    *     ContentPermission}s for the URI.
    */
-  @AnyThread
+  @HandlerThread
   public @NonNull GeckoResult<List<ContentPermission>> getPermissions(final @NonNull String uri) {
+    ThreadUtils.assertOnHandlerThread();
     return getPermissions(uri, null, false);
   }
 
@@ -226,9 +237,10 @@ public final class StorageController {
    * @return A {@link GeckoResult} that will complete with a list of all currently stored {@link
    *     ContentPermission}s for the URI.
    */
-  @AnyThread
+  @HandlerThread
   public @NonNull GeckoResult<List<ContentPermission>> getPermissions(
       final @NonNull String uri, final boolean privateMode) {
+    ThreadUtils.assertOnHandlerThread();
     return getPermissions(uri, null, privateMode);
   }
 
@@ -242,9 +254,10 @@ public final class StorageController {
    * @return A {@link GeckoResult} that will complete with a list of all currently stored {@link
    *     ContentPermission}s for the URI.
    */
-  @AnyThread
+  @HandlerThread
   public @NonNull GeckoResult<List<ContentPermission>> getPermissions(
       final @NonNull String uri, final @Nullable String contextId, final boolean privateMode) {
+    ThreadUtils.assertOnHandlerThread();
     final GeckoBundle msg = new GeckoBundle(2);
     final int privateBrowsingId = (privateMode) ? 1 : 0;
     msg.putString("uri", uri);
@@ -256,6 +269,10 @@ public final class StorageController {
             bundle -> {
               final GeckoBundle[] permsArray = bundle.getBundleArray("permissions");
               return ContentPermission.fromBundleArray(permsArray);
+            },
+            exception -> {
+              Log.w(LOGTAG, "An error occurred when getting permissions: " + exception);
+              return exception;
             });
   }
 
@@ -307,99 +324,5 @@ public final class StorageController {
     msg.putInt("newValue", value);
     msg.putBoolean("allowPermanentPrivateBrowsing", allowPermanentPrivateBrowsing);
     EventDispatcher.getInstance().dispatch("GeckoView:SetPermission", msg);
-  }
-
-  /**
-   * Set a permanent {@link ContentBlocking.CBCookieBannerMode} for the given uri and browsing mode.
-   *
-   * @param uri An uri for which you want change the {@link ContentBlocking.CBCookieBannerMode}
-   *     value.
-   * @param mode A new {@link ContentBlocking.CBCookieBannerMode} for the given uri.
-   * @param isPrivateBrowsing Indicates in which browsing mode the given {@link
-   *     ContentBlocking.CBCookieBannerMode} should be applied.
-   * @return A {@link GeckoResult} that will complete when the mode has been set.
-   */
-  @AnyThread
-  public @NonNull GeckoResult<Void> setCookieBannerModeForDomain(
-      final @NonNull String uri,
-      final @ContentBlocking.CBCookieBannerMode int mode,
-      final boolean isPrivateBrowsing) {
-    final GeckoBundle data = new GeckoBundle(3);
-    data.putString("uri", uri);
-    data.putInt("mode", mode);
-    data.putBoolean("allowPermanentPrivateBrowsing", false);
-    data.putBoolean("isPrivateBrowsing", isPrivateBrowsing);
-    return EventDispatcher.getInstance().queryVoid("GeckoView:SetCookieBannerModeForDomain", data);
-  }
-
-  /**
-   * Set a permanent {@link ContentBlocking.CBCookieBannerMode} for the given uri in private mode.
-   *
-   * @param uri for which you want to change the {@link ContentBlocking.CBCookieBannerMode} value.
-   * @param mode A new {@link ContentBlocking.CBCookieBannerMode} for the given uri.
-   * @return A {@link GeckoResult} that will complete when the mode has been set.
-   */
-  @AnyThread
-  public @NonNull GeckoResult<Void> setCookieBannerModeAndPersistInPrivateBrowsingForDomain(
-      final @NonNull String uri, final @ContentBlocking.CBCookieBannerMode int mode) {
-    final GeckoBundle data = new GeckoBundle(3);
-    data.putString("uri", uri);
-    data.putInt("mode", mode);
-    data.putBoolean("allowPermanentPrivateBrowsing", true);
-    return EventDispatcher.getInstance().queryVoid("GeckoView:SetCookieBannerModeForDomain", data);
-  }
-
-  /**
-   * Removes a {@link ContentBlocking.CBCookieBannerMode} for the given uri and and browsing mode.
-   *
-   * @param uri An uri for which you want change the {@link ContentBlocking.CBCookieBannerMode}
-   *     value.
-   * @param isPrivateBrowsing Indicates in which mode the given mode should be applied.
-   * @return A {@link GeckoResult} that will complete when the mode has been removed.
-   */
-  @AnyThread
-  public @NonNull GeckoResult<Void> removeCookieBannerModeForDomain(
-      final @NonNull String uri, final boolean isPrivateBrowsing) {
-
-    final GeckoBundle data = new GeckoBundle(3);
-    data.putString("uri", uri);
-    data.putBoolean("isPrivateBrowsing", isPrivateBrowsing);
-    return EventDispatcher.getInstance()
-        .queryVoid("GeckoView:RemoveCookieBannerModeForDomain", data);
-  }
-
-  /**
-   * Gets the actual {@link ContentBlocking.CBCookieBannerMode} for the given uri and browsing mode.
-   *
-   * @param uri An uri for which you want get the {@link ContentBlocking.CBCookieBannerMode}.
-   * @param isPrivateBrowsing Indicates in which browsing mode the given uri should be.
-   * @return A {@link GeckoResult} that resolves to a {@link ContentBlocking.CBCookieBannerMode} for
-   *     the given uri and browsing mode.
-   */
-  @AnyThread
-  public @NonNull @ContentBlocking.CBCookieBannerMode GeckoResult<Integer>
-      getCookieBannerModeForDomain(final @NonNull String uri, final boolean isPrivateBrowsing) {
-
-    final GeckoBundle data = new GeckoBundle(2);
-    data.putString("uri", uri);
-    data.putBoolean("isPrivateBrowsing", isPrivateBrowsing);
-    return EventDispatcher.getInstance()
-        .queryBundle("GeckoView:GetCookieBannerModeForDomain", data)
-        .map(StorageController::cookieBannerModeFromBundle, StorageController::fromQueryException);
-  }
-
-  private static @ContentBlocking.CBCookieBannerMode int cookieBannerModeFromBundle(
-      final GeckoBundle bundle) throws Exception {
-    if (bundle == null) {
-      throw new Exception("Unable to parse cookie banner mode");
-    }
-    return bundle.getInt("mode");
-  }
-
-  private static Throwable fromQueryException(final Throwable exception) {
-    final EventDispatcher.QueryException queryException =
-        (EventDispatcher.QueryException) exception;
-    final Object response = queryException.data;
-    return new Exception(response.toString());
   }
 }

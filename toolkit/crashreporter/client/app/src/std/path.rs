@@ -92,7 +92,7 @@ impl Path {
         super::fs::ReadDir::new(&self.0)
     }
 
-    delegate!(fn display(&self) -> Display);
+    delegate!(fn display(&self) -> Display<'_>);
     delegate!(fn file_stem(&self) -> Option<&OsStr>);
     delegate!(fn file_name(&self) -> Option<&OsStr>);
     delegate!(fn extension(&self) -> Option<&OsStr>);
@@ -105,7 +105,7 @@ impl Path {
         self.0.parent().map(Path::from_path)
     }
 
-    pub fn ancestors(&self) -> Ancestors {
+    pub fn ancestors(&self) -> Ancestors<'_> {
         Ancestors(self.0.ancestors())
     }
 }
@@ -182,6 +182,12 @@ impl From<std::path::PathBuf> for PathBuf {
     }
 }
 
+impl Into<std::path::PathBuf> for PathBuf {
+    fn into(self) -> std::path::PathBuf {
+        self.0
+    }
+}
+
 impl From<PathBuf> for std::ffi::OsString {
     fn from(pathbuf: PathBuf) -> Self {
         pathbuf.0.into()
@@ -194,6 +200,11 @@ impl From<&str> for PathBuf {
     }
 }
 
+impl From<String> for PathBuf {
+    fn from(s: String) -> Self {
+        PathBuf(s.into())
+    }
+}
 impl super::mock::MockUnwrap for PathBuf {
     type Inner = std::path::PathBuf;
 

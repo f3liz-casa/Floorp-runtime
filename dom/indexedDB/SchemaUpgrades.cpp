@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -21,7 +19,6 @@
 
 #include <algorithm>
 #include <tuple>
-#include <type_traits>
 #include <utility>
 
 #include "ErrorList.h"
@@ -38,14 +35,12 @@
 #include "mozStorageHelper.h"
 #include "mozilla/Assertions.h"
 #include "mozilla/ErrorResult.h"
-#include "mozilla/MacroForEach.h"
 #include "mozilla/Monitor.h"
 #include "mozilla/OriginAttributes.h"
 #include "mozilla/ProfilerLabels.h"
 #include "mozilla/RefPtr.h"
 #include "mozilla/SchedulerGroup.h"
 #include "mozilla/Span.h"
-#include "mozilla/UniquePtr.h"
 #include "mozilla/dom/ScriptSettings.h"
 #include "mozilla/dom/indexedDB/IDBResult.h"
 #include "mozilla/dom/indexedDB/Key.h"
@@ -1403,12 +1398,12 @@ class UpgradeSchemaFrom17_0To18_0Helper final {
   static nsresult DoUpgrade(mozIStorageConnection& aConnection,
                             const nsACString& aOrigin);
 
+  UpgradeSchemaFrom17_0To18_0Helper() = delete;
+  ~UpgradeSchemaFrom17_0To18_0Helper() = delete;
+
  private:
   static nsresult DoUpgradeInternal(mozIStorageConnection& aConnection,
                                     const nsACString& aOrigin);
-
-  UpgradeSchemaFrom17_0To18_0Helper() = delete;
-  ~UpgradeSchemaFrom17_0To18_0Helper() = delete;
 };
 
 class UpgradeSchemaFrom17_0To18_0Helper::InsertIndexDataValuesFunction final
@@ -2729,6 +2724,17 @@ nsresult UpgradeSchemaFrom25_0To26_0(mozIStorageConnection& aConnection) {
   return NS_OK;
 }
 
+nsresult UpgradeSchemaFrom26_0To27_0(mozIStorageConnection& aConnection) {
+  // The only change between 26 and 27 was a different structured clone format,
+  // but it's backwards-compatible.
+  nsresult rv = aConnection.SetSchemaVersion(MakeSchemaVersion(27, 0));
+  if (NS_WARN_IF(NS_FAILED(rv))) {
+    return rv;
+  }
+
+  return NS_OK;
+}
+
 NS_IMPL_ISUPPORTS(CompressDataBlobsFunction, mozIStorageFunction)
 NS_IMPL_ISUPPORTS(EncodeKeysFunction, mozIStorageFunction)
 NS_IMPL_ISUPPORTS(StripObsoleteOriginAttributesFunction, mozIStorageFunction);
@@ -2740,7 +2746,8 @@ class DeserializeUpgradeValueHelper final : public Runnable {
       : Runnable("DeserializeUpgradeValueHelper"),
         mMonitor("DeserializeUpgradeValueHelper::mMonitor"),
         mCloneReadInfo(aCloneReadInfo),
-        mStatus(NS_ERROR_FAILURE) {}
+        mStatus(NS_ERROR_FAILURE),
+        mDone{false} {}
 
   nsresult DispatchAndWait(nsAString& aFileIds) {
     // We don't need to go to the main-thread and use the sandbox.
@@ -2761,7 +2768,9 @@ class DeserializeUpgradeValueHelper final : public Runnable {
       return rv;
     }
 
-    lock.Wait();
+    while (!mDone) {
+      lock.Wait();
+    }
 
     if (NS_FAILED(mStatus)) {
       return mStatus;
@@ -2812,7 +2821,7 @@ class DeserializeUpgradeValueHelper final : public Runnable {
         nullptr};
 
     if (!JS_ReadStructuredClone(
-            aCx, mCloneReadInfo.Data(), JS_STRUCTURED_CLONE_VERSION,
+            aCx, mCloneReadInfo.Data(),
             JS::StructuredCloneScope::DifferentProcessForIndexedDB, aValue,
             JS::CloneDataPolicy(), &callbacks, &mCloneReadInfo)) {
       return NS_ERROR_DOM_DATA_CLONE_ERR;
@@ -2840,12 +2849,14 @@ class DeserializeUpgradeValueHelper final : public Runnable {
     mStatus = aStatus;
 
     MonitorAutoLock lock(mMonitor);
+    mDone = true;
     lock.Notify();
   }
 
-  Monitor mMonitor MOZ_UNANNOTATED;
+  Monitor mMonitor;
   StructuredCloneReadInfoParent& mCloneReadInfo;
   nsresult mStatus;
+  bool mDone MOZ_GUARDED_BY(mMonitor);
 };
 
 nsresult DeserializeUpgradeValueToFileIds(
@@ -2866,7 +2877,8 @@ nsresult UpgradeFileIdsFunction::Init(nsIFile* aFMDirectory,
       PERSISTENCE_TYPE_INVALID, quota::OriginMetadata{},
       /* aDatabaseName */ u""_ns, /* aDatabaseID */ ""_ns,
       /* aDatabaseFilePath */ u""_ns, /* aEnforcingQuota */ false,
-      /* aIsInPrivateBrowsingMode */ false);
+      /* aIsInPrivateBrowsingMode */ false,
+      /* aCipherKeyManager */ nullptr);
 
   nsresult rv =
       fileManager->Init(aFMDirectory, /* aDatabaseVersion */ 0, aConnection);
@@ -2926,7 +2938,7 @@ Result<bool, nsresult> MaybeUpgradeSchema(mozIStorageConnection& aConnection,
   int32_t schemaVersion = aSchemaVersion;
 
   // This logic needs to change next time we change the schema!
-  static_assert(kSQLiteSchemaVersion == int32_t((26 << 4) + 0),
+  static_assert(kSQLiteSchemaVersion == int32_t((27 << 4) + 0),
                 "Upgrade function needed due to schema version increase.");
 
   while (schemaVersion != kSQLiteSchemaVersion) {
@@ -3002,6 +3014,9 @@ Result<bool, nsresult> MaybeUpgradeSchema(mozIStorageConnection& aConnection,
         break;
       case MakeSchemaVersion(25, 0):
         QM_TRY(MOZ_TO_RESULT(UpgradeSchemaFrom25_0To26_0(aConnection)));
+        break;
+      case MakeSchemaVersion(26, 0):
+        QM_TRY(MOZ_TO_RESULT(UpgradeSchemaFrom26_0To27_0(aConnection)));
         break;
       default:
         QM_FAIL(Err(NS_ERROR_DOM_INDEXEDDB_UNKNOWN_ERR), []() {

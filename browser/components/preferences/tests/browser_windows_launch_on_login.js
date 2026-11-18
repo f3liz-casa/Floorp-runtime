@@ -5,9 +5,11 @@
 
 ChromeUtils.defineESModuleGetters(this, {
   BackgroundUpdate: "resource://gre/modules/BackgroundUpdate.sys.mjs",
-  MigrationUtils: "resource:///modules/MigrationUtils.sys.mjs",
+  MigrationUtils:
+    "moz-src:///browser/components/migration/MigrationUtils.sys.mjs",
   PermissionTestUtils: "resource://testing-common/PermissionTestUtils.sys.mjs",
-  WindowsLaunchOnLogin: "resource://gre/modules/WindowsLaunchOnLogin.sys.mjs",
+  WindowsLaunchOnLogin:
+    "resource://gre/modules/launchonlogin/WindowsLaunchOnLogin.sys.mjs",
 });
 
 const { MockRegistry } = ChromeUtils.importESModule(
@@ -19,6 +21,9 @@ let profileService = Cc["@mozilla.org/toolkit/profile-service;1"].getService(
 );
 let startWithLastProfileOriginal = profileService.startWithLastProfile;
 let registry = null;
+
+const STARTUP_PANE = "paneHome";
+
 add_setup(() => {
   registry = new MockRegistry();
   registry.setValue(
@@ -45,23 +50,55 @@ add_task(async function test_check_uncheck_checkbox() {
     value: { enabled: true },
   });
   await WindowsLaunchOnLogin.withLaunchOnLoginRegistryKey(async wrk => {
+    Services.fog.testResetFOG();
+
     // Open preferences to general pane
-    await openPreferencesViaOpenPreferencesAPI("paneGeneral", {
+    await openPreferencesViaOpenPreferencesAPI(STARTUP_PANE, {
       leaveOpen: true,
     });
     let doc = gBrowser.contentDocument;
+    await TestUtils.waitForCondition(
+      () => doc.getElementById("windowsLaunchOnLogin"),
+      "windowsLaunchOnLogin checkbox rendered"
+    );
 
     let launchOnLoginCheckbox = doc.getElementById("windowsLaunchOnLogin");
-    launchOnLoginCheckbox.click();
-    ok(launchOnLoginCheckbox.checked, "Autostart checkbox checked");
+    let launchOnLoginControl = launchOnLoginCheckbox.parentElement;
+
+    ok(!launchOnLoginControl.hidden, "Autostart control is visible");
+
+    ok(
+      !launchOnLoginCheckbox.checked,
+      "Autostart checkbox NOT checked by default"
+    );
+
+    synthesizeClick(launchOnLoginCheckbox);
+
+    ok(launchOnLoginCheckbox.checked, "Autostart checkbox checked after click");
 
     ok(
       wrk.hasValue(WindowsLaunchOnLogin.getLaunchOnLoginRegistryName()),
       "Key exists"
     );
 
-    launchOnLoginCheckbox.click();
+    let toggleEvents = Glean.launchOnLogin.userToggle.testGetValue();
+    Assert.equal(toggleEvents.length, 1, "One toggle event after checking");
+    Assert.equal(
+      toggleEvents[0].extra.enabled,
+      "true",
+      "Toggle event reports enabled=true"
+    );
+
+    synthesizeClick(launchOnLoginCheckbox);
     ok(!launchOnLoginCheckbox.checked, "Autostart checkbox unchecked");
+
+    toggleEvents = Glean.launchOnLogin.userToggle.testGetValue();
+    Assert.equal(toggleEvents.length, 2, "Two toggle events after unchecking");
+    Assert.equal(
+      toggleEvents[1].extra.enabled,
+      "false",
+      "Toggle event reports enabled=false"
+    );
 
     await TestUtils.waitForCondition(
       () => !wrk.hasValue(WindowsLaunchOnLogin.getLaunchOnLoginRegistryName()),
@@ -102,10 +139,14 @@ add_task(async function create_external_regkey() {
     );
 
     // Open preferences to general pane
-    await openPreferencesViaOpenPreferencesAPI("paneGeneral", {
+    await openPreferencesViaOpenPreferencesAPI(STARTUP_PANE, {
       leaveOpen: true,
     });
     let doc = gBrowser.contentDocument;
+    await TestUtils.waitForCondition(
+      () => doc.getElementById("windowsLaunchOnLogin"),
+      "windowsLaunchOnLogin checkbox rendered"
+    );
 
     let launchOnLoginCheckbox = doc.getElementById("windowsLaunchOnLogin");
     ok(
@@ -150,10 +191,14 @@ add_task(async function delete_external_regkey() {
     wrk.removeValue(WindowsLaunchOnLogin.getLaunchOnLoginRegistryName());
 
     // Open preferences to general pane
-    await openPreferencesViaOpenPreferencesAPI("paneGeneral", {
+    await openPreferencesViaOpenPreferencesAPI(STARTUP_PANE, {
       leaveOpen: true,
     });
     let doc = gBrowser.contentDocument;
+    await TestUtils.waitForCondition(
+      () => doc.getElementById("windowsLaunchOnLogin"),
+      "windowsLaunchOnLogin checkbox rendered"
+    );
 
     let launchOnLoginCheckbox = doc.getElementById("windowsLaunchOnLogin");
     ok(
@@ -166,26 +211,47 @@ add_task(async function delete_external_regkey() {
   await doCleanup();
 });
 
-add_task(async function testDisablingLaunchOnLogin() {
-  Cc["@mozilla.org/toolkit/profile-service;1"].getService(
-    Ci.nsIToolkitProfileService
-  ).startWithLastProfile = false;
-
-  await openPreferencesViaOpenPreferencesAPI("paneGeneral", {
-    leaveOpen: true,
-  });
-  let doc = gBrowser.contentDocument;
-
-  let launchOnLoginCheckbox = doc.getElementById("windowsLaunchOnLogin");
-  ok(launchOnLoginCheckbox.disabled, "Autostart checkbox disabled");
-  ok(!launchOnLoginCheckbox.checked, "Autostart checkbox unchecked");
-
-  let launchOnLoginDisabledMessage = doc.getElementById(
-    "windowsLaunchOnLoginDisabledProfileBox"
+add_task(async function test_launch_on_login_with_profile_manager() {
+  profileService.startWithLastProfile = false;
+  registry.setValue(
+    Ci.nsIWindowsRegKey.ROOT_KEY_CURRENT_USER,
+    "Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\StartupApproved\\Run",
+    WindowsLaunchOnLogin.getLaunchOnLoginRegistryName(),
+    null
   );
-  ok(!launchOnLoginDisabledMessage.hidden, "Disabled message is displayed");
+  await ExperimentAPI.ready();
+  let doCleanup = await NimbusTestUtils.enrollWithFeatureConfig({
+    featureId: "windowsLaunchOnLogin",
+    value: { enabled: true },
+  });
+  await WindowsLaunchOnLogin.withLaunchOnLoginRegistryKey(async wrk => {
+    let registryName = WindowsLaunchOnLogin.getLaunchOnLoginRegistryName();
+    if (wrk.hasValue(registryName)) {
+      wrk.removeValue(registryName);
+    }
+    await WindowsLaunchOnLogin._removeLaunchOnLoginShortcuts();
 
-  gBrowser.removeCurrentTab();
+    await openPreferencesViaOpenPreferencesAPI(STARTUP_PANE, {
+      leaveOpen: true,
+    });
+    let doc = gBrowser.contentDocument;
+    await TestUtils.waitForCondition(
+      () => doc.getElementById("windowsLaunchOnLogin"),
+      "windowsLaunchOnLogin checkbox rendered"
+    );
+
+    let launchOnLoginCheckbox = doc.getElementById("windowsLaunchOnLogin");
+    ok(!launchOnLoginCheckbox.disabled, "Autostart checkbox enabled");
+    ok(!launchOnLoginCheckbox.checked, "Autostart checkbox unchecked");
+
+    synthesizeClick(launchOnLoginCheckbox);
+    ok(launchOnLoginCheckbox.checked, "Autostart checkbox checked");
+    ok(wrk.hasValue(registryName), "Key exists");
+
+    gBrowser.removeCurrentTab();
+  });
+  profileService.startWithLastProfile = startWithLastProfileOriginal;
+  await doCleanup();
 });
 
 registerCleanupFunction(async function () {

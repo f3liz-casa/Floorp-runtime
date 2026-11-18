@@ -1,16 +1,15 @@
-/* -*- Mode: C++; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "nsPrintSettingsImpl.h"
 
-#include "prenv.h"
+#include "mozilla/DebugOnly.h"
+#include "mozilla/RefPtr.h"
 #include "nsCoord.h"
 #include "nsPaper.h"
 #include "nsReadableUtils.h"
-#include "mozilla/DebugOnly.h"
-#include "mozilla/RefPtr.h"
+#include "prenv.h"
 
 using namespace mozilla;
 
@@ -696,6 +695,13 @@ nsPrintSettings::GetPageRanges(nsTArray<int32_t>& aPages) {
   return NS_OK;
 }
 
+mozilla::gfx::IntSize nsIPrintSettings::GetEffectiveSheetSizeInPoints() {
+  double width, height;
+  GetEffectiveSheetSize(&width, &height);
+  return mozilla::gfx::IntSize::Ceil(width / TWIPS_PER_POINT_FLOAT,
+                                     height / TWIPS_PER_POINT_FLOAT);
+}
+
 bool nsIPrintSettings::IsPageSkipped(int32_t aPageNum,
                                      const nsTArray<int32_t>& aRanges) {
   MOZ_RELEASE_ASSERT(aRanges.Length() % 2 == 0);
@@ -713,7 +719,7 @@ bool nsIPrintSettings::IsPageSkipped(int32_t aPageNum,
 }
 
 nsresult nsPrintSettings::_Clone(nsIPrintSettings** _retval) {
-  RefPtr<nsPrintSettings> printSettings = new nsPrintSettings(*this);
+  auto printSettings = MakeRefPtr<nsPrintSettings>(*this);
   printSettings.forget(_retval);
   return NS_OK;
 }

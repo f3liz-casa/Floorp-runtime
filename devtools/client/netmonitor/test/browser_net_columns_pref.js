@@ -23,9 +23,9 @@ add_task(async function () {
   const Actions = windowRequire("devtools/client/netmonitor/src/actions/index");
   store.dispatch(Actions.batchEnable(false));
 
-  const wait = waitForNetworkEvents(monitor, 1);
-  await reloadBrowser();
-  await wait;
+  const onNetworkEvents = waitForNetworkEvents(monitor, 1);
+  await reloadSelectedTab();
+  await onNetworkEvents;
 
   ok(
     document.querySelector("#requests-list-status-button"),

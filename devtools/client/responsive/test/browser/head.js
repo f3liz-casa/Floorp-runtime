@@ -274,6 +274,24 @@ var setViewportSize = async function (ui, manager, width, height) {
     const resized = waitForViewportResizeTo(ui, width, height);
     ui.setViewportSize({ width, height });
     await resized;
+    // content-resize is emitted before the content has the new size.
+    await waitFor(async () => {
+      const hasNewSize = await SpecialPowers.spawn(
+        ui.getViewportBrowser(),
+        [width, height],
+        async (w, h) => {
+          const viewerWidth = {};
+          const viewerHeight = {};
+          content.windowUtils.getDocumentViewerSize(viewerWidth, viewerHeight);
+          const ratio = content.devicePixelRatio;
+          return (
+            viewerWidth.value == Math.round(w * ratio) &&
+            viewerHeight.value == Math.round(h * ratio)
+          );
+        }
+      );
+      return hasNewSize;
+    });
   }
 };
 
@@ -343,14 +361,14 @@ function dragElementBy(selector, x, y, ui) {
  *
  * @param {ResponsiveUI} ui
  *        The ResponsiveUI instance.
- * @param {String} selector
+ * @param {string} selector
  *        The css selector of the resize handler, eg .viewport-horizontal-resize-handle.
  * @param {Array<number>} moveBy
  *        Array of 2 integers representing the x,y distance of the resize action.
  * @param {Array<number>} moveBy
  *        Array of 2 integers representing the actual resize performed.
- * @param {Object} options
- * @param {Boolean} options.hasDevice
+ * @param {object} options
+ * @param {boolean} options.hasDevice
  *        Whether a device is currently set and will be overridden by the resize
  */
 async function testViewportResize(
@@ -512,35 +530,21 @@ const selectNetworkThrottling = (ui, value) =>
     selectMenuItem(ui, "#network-throttling", value),
   ]);
 
-function getSessionHistory(browser) {
-  if (Services.appinfo.sessionHistoryInParent) {
-    const browsingContext = browser.browsingContext;
-    const uri = browsingContext.currentWindowGlobal.documentURI.displaySpec;
-    const history = browsingContext.sessionHistory;
-    const body = ContentTask.spawn(
-      browser,
-      browsingContext,
-      function (
-        // eslint-disable-next-line no-shadow
-        browsingContext
-      ) {
-        const docShell = browsingContext.docShell.QueryInterface(
-          Ci.nsIWebNavigation
-        );
-        return docShell.document.body;
-      }
-    );
-    const { SessionHistory } = ChromeUtils.importESModule(
-      "resource://gre/modules/sessionstore/SessionHistory.sys.mjs"
-    );
-    return SessionHistory.collectFromParent(uri, body, history);
-  }
-  return ContentTask.spawn(browser, null, function () {
-    const { SessionHistory } = ChromeUtils.importESModule(
-      "resource://gre/modules/sessionstore/SessionHistory.sys.mjs"
-    );
-    return SessionHistory.collect(docShell);
-  });
+async function getSessionHistory(browser) {
+  const browsingContext = browser.browsingContext;
+  const uri = browsingContext.currentWindowGlobal.documentURI.displaySpec;
+  const history = browsingContext.sessionHistory;
+  const documentHasChildNodes = await SpecialPowers.spawn(
+    browser,
+    [],
+    function () {
+      return !!content.document.body;
+    }
+  );
+  const { SessionHistory } = ChromeUtils.importESModule(
+    "resource://gre/modules/sessionstore/SessionHistory.sys.mjs"
+  );
+  return SessionHistory.collectFromParent(uri, documentHasChildNodes, history);
 }
 
 function getContentSize(ui) {
@@ -869,12 +873,12 @@ function rotateViewport(ui) {
 async function setTouchAndMetaViewportSupport(ui, value) {
   await ui.updateTouchSimulation(value);
   info("Reload so the new configuration applies cleanly to the page");
-  await reloadBrowser();
+  await reloadSelectedTab();
 
   await promiseContentReflow(ui);
 }
 
-// This function checks that zoom, layout viewport width and height
+// This function checks that zoom, the initial containing block width and height
 // are all as expected.
 async function testViewportZoomWidthAndHeight(msg, ui, zoom, width, height) {
   if (typeof zoom !== "undefined") {
@@ -887,8 +891,8 @@ async function testViewportZoomWidthAndHeight(msg, ui, zoom, width, height) {
   if (typeof width !== "undefined" || typeof height !== "undefined") {
     const innerSize = await spawnViewportTask(ui, {}, function () {
       return {
-        width: content.innerWidth,
-        height: content.innerHeight,
+        width: content.document.documentElement.clientWidth,
+        height: content.document.documentElement.clientHeight,
       };
     });
     if (typeof width !== "undefined") {
@@ -927,7 +931,7 @@ async function promiseRDMZoom(ui, browser, zoom) {
   //
   // This also has the side effect of updating layout which ensures that any
   // remote frame dimension update message gets there in time.
-  await BrowserTestUtils.waitForCondition(function () {
+  await TestUtils.waitForCondition(function () {
     return browser.getBoundingClientRect().width != width;
   });
 }
@@ -951,8 +955,8 @@ async function waitForDeviceAndViewportState(ui) {
  *        The ResponsiveUI instance.
  * @param {Integer} expected
  *        The expected dpr for the content page.
- * @param {Object} options
- * @param {Boolean} options.waitForTargetConfiguration
+ * @param {object} options
+ * @param {boolean} options.waitForTargetConfiguration
  *        If set to true, the function will wait for the targetConfigurationCommand configuration
  *        to reflect the ratio that was set. This can be used to prevent pending requests
  *        to the actor.

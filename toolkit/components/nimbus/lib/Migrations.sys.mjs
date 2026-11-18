@@ -2,9 +2,10 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-const lazy = {};
+import { AppConstants } from "resource://gre/modules/AppConstants.sys.mjs";
+import { XPCOMUtils } from "resource://gre/modules/XPCOMUtils.sys.mjs";
 
-ChromeUtils.defineESModuleGetters(lazy, {
+const lazy = XPCOMUtils.declareLazy({
   ExperimentAPI: "resource://nimbus/ExperimentAPI.sys.mjs",
   FirefoxLabs: "resource://nimbus/FirefoxLabs.sys.mjs",
   NimbusEnrollments: "resource://nimbus/lib/Enrollments.sys.mjs",
@@ -12,14 +13,36 @@ ChromeUtils.defineESModuleGetters(lazy, {
   NimbusTelemetry: "resource://nimbus/lib/Telemetry.sys.mjs",
   ProfilesDatastoreService:
     "moz-src:///toolkit/profile/ProfilesDatastoreService.sys.mjs",
+  RemoteSettingsSyncError:
+    "resource://nimbus/lib/RemoteSettingsExperimentLoader.sys.mjs",
+  ShutdownStartedError:
+    "resource://nimbus/lib/RemoteSettingsExperimentLoader.sys.mjs",
+  UnenrollmentCause: "resource://nimbus/lib/ExperimentManager.sys.mjs",
+
+  log: () => {
+    const { Logger } = ChromeUtils.importESModule(
+      "resource://messaging-system/lib/Logger.sys.mjs"
+    );
+    return new Logger("NimbusMigrations");
+  },
 });
 
-ChromeUtils.defineLazyGetter(lazy, "log", () => {
-  const { Logger } = ChromeUtils.importESModule(
-    "resource://messaging-system/lib/Logger.sys.mjs"
+function isBackgroundTaskMode() {
+  const bts = Cc["@mozilla.org/backgroundtasks;1"]?.getService(
+    Ci.nsIBackgroundTasks
   );
-  return new Logger("NimbusMigrations");
-});
+
+  return bts?.isBackgroundTaskMode ?? false;
+}
+
+function getLegacyStorePath() {
+  if (Cu.isInAutomation) {
+    try {
+      return Services.prefs.getStringPref("nimbus.persistence.legacyStorePath");
+    } catch {}
+  }
+  return PathUtils.join(PathUtils.profileDir, "ExperimentDataStore.json");
+}
 
 /**
  * A named migration.
@@ -29,14 +52,14 @@ ChromeUtils.defineLazyGetter(lazy, "log", () => {
  * @property {string} name The name of the migration. This will be reported in
  * telemetry.
  *
- * @property {function(): void} fn The migration implementation.
+ * @property {function(string): void} fn The migration implementation.
  */
 
 /**
  * Construct a {@link Migration} with a specific name.
  *
  * @param {string} name The name of the migration.
- * @param {function(): void} fn The migration function.
+ * @param {function(name: string): void} fn The migration function.
  *
  * @returns {Migration} The migration.
  */
@@ -63,11 +86,13 @@ export const NIMBUS_MIGRATION_PREFS = Object.fromEntries(
   Object.entries(Phase).map(([, v]) => [v, `nimbus.migrations.${v}`])
 );
 
-export const LABS_MIGRATION_FEATURE_MAP = Object.freeze({
-  "auto-pip": "firefox-labs-auto-pip",
-  "urlbar-ime-search": "firefox-labs-urlbar-ime-search",
-  "jpeg-xl": "firefox-labs-jpeg-xl",
-});
+export const LABS_MIGRATION_FEATURE_MAP = (function () {
+  const featureMap = {
+    "urlbar-ime-search": "firefox-labs-urlbar-ime-search",
+  };
+
+  return Object.freeze(featureMap);
+})();
 
 /**
  * Migrate from the legacy migration state to multi-phase migration state.
@@ -89,6 +114,15 @@ function migrateMultiphase() {
   }
 }
 
+/**
+ * Disable rollouts if the user has previously opted out of studies.
+ */
+function migrateSeparateRolloutOptOut() {
+  if (!Services.prefs.getBoolPref("app.shield.optoutstudies.enabled")) {
+    Services.prefs.setBoolPref("nimbus.rollouts.enabled", false);
+  }
+}
+
 function migrateNoop() {
   // This migration intentionally left blank.
   //
@@ -96,13 +130,41 @@ function migrateNoop() {
   // new clients.
 }
 
+/**
+ * Delete the databases, files and preferences left behind by AddonStudies,
+ * AddonRollouts, PreferenceExperiments, PreferenceRollouts and Storage which
+ * were removed in bug 2059778.
+ */
+async function migrateRemoveNormandyDatabases() {
+  function deleteDatabase(name) {
+    return new Promise((resolve, reject) => {
+      const request = indexedDB.deleteDatabase(name);
+      request.onsuccess = () => resolve();
+      request.onblocked = () => reject(new Error(`Cannot delete DB ${name}`));
+      request.onerror = () => reject(request.error);
+    });
+  }
+
+  function deleteProfileFile(name) {
+    return IOUtils.remove(PathUtils.join(PathUtils.profileDir, name));
+  }
+
+  await Promise.allSettled([
+    ...["shield", "normandy-addon-rollout", "normandy-preference-rollout"].map(
+      deleteDatabase
+    ),
+    ...["shield-preference-experiments.json", "shield-recipe-client.json"].map(
+      deleteProfileFile
+    ),
+  ]);
+
+  Services.prefs.deleteBranch("app.normandy.startupExperimentPrefs.");
+  Services.prefs.deleteBranch("app.normandy.startupRolloutPrefs.");
+}
+
 async function migrateEnrollmentsToSql() {
-  if (!lazy.NimbusEnrollments.databaseEnabled) {
-    // We are in an xpcshell test that has not initialized the
-    // ProfilesDatastoreService.
-    //
-    // TODO(bug 1967779): require the ProfilesDatastoreService to be initialized
-    // and remove this check.
+  if (!lazy.NimbusEnrollments.persistenceEnabled) {
+    // We are in a test.
     return;
   }
 
@@ -117,18 +179,39 @@ async function migrateEnrollmentsToSql() {
 
   await lazy.ExperimentAPI.manager.store.ready();
 
+  let legacyStoreData = null;
+
+  try {
+    legacyStoreData = await IOUtils.readJSON(getLegacyStorePath());
+  } catch (e) {
+    if (DOMException.isInstance(e) && e.name === "NotFoundError") {
+      // The legacy store does not exist. There is nothing to migrate.
+      return;
+    }
+  }
+
   // Ensure we are copying the data from the JSONFile explicitly because if the
   // NimbusEnrollments table is the source of truth, then getAll() will return
   // an empty array.
-  const enrollments = Object.values(
-    lazy.ExperimentAPI.manager.store._jsonFile.data
-  );
+  const enrollments = Object.values(legacyStoreData);
 
-  // Likewise, the set of all recipes is
-  const { recipes } =
-    await lazy.ExperimentAPI._rsLoader.getRecipesFromAllCollections({
+  // If there are no enrollments we can skip the rest of the migration.
+  if (enrollments.length === 0) {
+    return;
+  }
+
+  let recipes;
+  try {
+    recipes = await lazy.ExperimentAPI._rsLoader.getRecipesFromAllCollections({
       trigger: "migration",
     });
+  } catch (e) {
+    if (e instanceof lazy.RemoteSettingsSyncError) {
+      throw new MigrationError(e.reason);
+    }
+
+    throw e;
+  }
 
   const recipesBySlug = new Map(recipes.map(r => [r.slug, r]));
 
@@ -216,19 +299,161 @@ async function migrateEnrollmentsToSql() {
     }
   });
 
-  if (lazy.NimbusEnrollments.readFromDatabaseEnabled) {
-    // These now exist in the database and in the ExperimentStore's JSONFile
-    // data. However, the regular ExperimentStore data will not have been
-    // populated yet (because it will have read zero rows from the database
-    // during `SharedDataMap.init()`.
-    const store = lazy.ExperimentAPI.manager.store;
-    store._data = structuredClone(store._jsonFile.data);
-    store._syncToChildren({ flush: true });
+  // These now exist in the database and in the ExperimentStore's JSONFile
+  // data. However, the regular ExperimentStore data will not have been
+  // populated yet (because it will have read zero rows from the database
+  // during `SharedDataMap.init()`.
+  const store = lazy.ExperimentAPI.manager.store;
+  store._data = legacyStoreData;
+  store._syncToChildren({ flush: true });
+}
+
+/**
+ * Graduate a Firefox Labs opt-in! 🎓
+ *
+ * Migrations should use this function when features controlled by labs become
+ * default-enabled. The user will be unenrolled from the rollout while keeping
+ * the prefs set by the enrollment.
+ *
+ * @param {string} migration The name of the migration.
+ * @param {string[]} slugs The slug of the rollout(s) to migrate out of.
+ */
+function graduateLabs(migration, slugs) {
+  if (isBackgroundTaskMode()) {
+    // This migration does not apply to background task mode.
+    lazy.log.debug(`${migration}: skipping (is background task mode)`);
+    return;
   }
 
-  await lazy.ExperimentAPI.manager.store._reportStartupDatabaseConsistency(
-    "migration"
-  );
+  for (const slug of slugs) {
+    const enrollment = lazy.ExperimentAPI.manager.store.get(slug);
+    if (!enrollment?.active) {
+      continue;
+    }
+
+    lazy.ExperimentAPI.manager._unenroll(
+      enrollment,
+      lazy.UnenrollmentCause.Migration(migration),
+      { unsetEnrollmentPrefs: false }
+    );
+  }
+}
+
+/**
+ * Migrate enrollment from the firefox-labs-auto-pip rollout.
+ *
+ * This feature is becoming a regular setting in about:preferences in Firefox
+ * 147. We need to unenroll users without resetting the prefs controlled by the
+ * feature.
+ *
+ * This migration must run before the `ExperimentManager.onStartup` has run
+ * because this feature might be removed and we cannot guarantee that users will
+ * update to exactly 145.
+ */
+function migrateGraduateFirefoxLabsAutoPip(migration) {
+  graduateLabs(migration, ["firefox-labs-auto-pip"]);
+}
+
+/**
+ * Migrate enrollment from the firefox-labs-jpeg-xl rollout.
+ *
+ * This rollout was only available in Nightly and the feature is becoming on by
+ * default in Nightly. We need to unenroll users without resetting the prefs
+ * controlled by the feature.
+ */
+function migrateGraduateFirefoxLabsJPEGXLNightly(migration) {
+  if (!AppConstants.MOZ_JXL) {
+    lazy.log.debug(`${migration}: skipping (MOZ_JXL disabled)`);
+    return;
+  }
+
+  graduateLabs(migration, ["firefox-labs-jpeg-xl"]);
+}
+
+function migrateRestorePrefFlipsBug2054546(migration) {
+  const experimentManager = lazy.ExperimentAPI.manager;
+
+  function unenrollForMigration(enrollment) {
+    // UnenrollmentCause.Migration was added in Firefox 147.
+    experimentManager._unenroll(enrollment, { reason: "migration", migration });
+  }
+
+  {
+    const enrollment = experimentManager.store.get(
+      "detectportal-fastly-testing"
+    );
+    if (enrollment) {
+      const pref = "captivedetect.canonicalURL";
+      if (enrollment.active) {
+        // The prefFlips feature is not fully initialized at this point and
+        // won't reset the pref when we unenroll, so we have to do it ourselves.
+        unenrollForMigration(enrollment);
+        Services.prefs.clearUserPref(pref);
+      } else if (
+        Services.prefs.getStringPref(pref) ===
+        "http://detectportal.firefox.com/canonical.html"
+      ) {
+        Services.prefs.clearUserPref(pref);
+      }
+    }
+  }
+
+  {
+    const originalEnrollment = experimentManager.store.get(
+      "hnt-nova-pref-flip-rollout-content-market-widget-exp-cohort"
+    );
+    if (originalEnrollment) {
+      if (originalEnrollment.active) {
+        unenrollForMigration(originalEnrollment);
+      }
+
+      const fixupEnrollment = lazy.ExperimentAPI.manager.store.get(
+        "hnt-nova-pref-flip-restore"
+      );
+      if (fixupEnrollment?.active) {
+        unenrollForMigration(fixupEnrollment);
+      }
+
+      Services.prefs.clearUserPref(
+        "browser.newtabpage.activity-stream.nova.enabled"
+      );
+    }
+  }
+
+  {
+    // disabling-chips-for-v131 ended 2024-12-17 and thus will no longer be
+    // stored in the enrollment history.
+    const enrollment = experimentManager.store.get("restore-chips-133");
+    if (enrollment) {
+      if (enrollment?.active) {
+        // The prefFlips feature is not fully initialized at this point and
+        // won't reset the pref when we unenroll, so we have to do it ourselves.
+        unenrollForMigration(enrollment);
+      }
+    }
+    // Unfortunately we can't determine if the user was affected, so we must
+    // reset this pref for all users.
+    Services.prefs.clearUserPref("network.cookie.CHIPS.enabled");
+  }
+}
+
+function migrateGraduateFirefoxLabsJPEGXLAllChannels(migration) {
+  if (!AppConstants.MOZ_JXL) {
+    lazy.log.debug(`${migration}: skipping (MOZ_JXL disabled)`);
+    return;
+  }
+
+  graduateLabs(migration, [
+    "firefox-labs-jpeg-xl-beta",
+    "firefox-labs-jpeg-xl-deved",
+    "firefox-labs-jpeg-xl-release",
+  ]);
+}
+
+async function migrateRemoveLegacyStore() {
+  try {
+    await IOUtils.remove(getLegacyStorePath(), { ignoreAbsent: true });
+  } catch {}
 }
 
 /**
@@ -244,11 +469,7 @@ async function migrateEnrollmentsToSql() {
  * replaced with a no-op.
  */
 async function migrateFirefoxLabsEnrollments() {
-  const bts = Cc["@mozilla.org/backgroundtasks;1"]?.getService(
-    Ci.nsIBackgroundTasks
-  );
-
-  if (bts?.isBackgroundTaskMode) {
+  if (isBackgroundTaskMode()) {
     // This migration does not apply to background task mode.
     return;
   }
@@ -257,8 +478,6 @@ async function migrateFirefoxLabsEnrollments() {
   await lazy.ExperimentAPI._rsLoader.withUpdateLock(
     async () => {
       const labs = await lazy.FirefoxLabs.create();
-
-      let didEnroll = false;
 
       for (const [feature, slug] of Object.entries(
         LABS_MIGRATION_FEATURE_MAP
@@ -277,53 +496,42 @@ async function migrateFirefoxLabsEnrollments() {
           continue;
         }
 
-        await labs.enroll(slug, "control");
-
-        // We need to overwrite the original pref value stored in the
-        // ExperimentStore so that unenrolling will disable the feature.
-        const enrollment = lazy.ExperimentAPI.manager.store.get(slug);
-        if (!enrollment) {
-          lazy.log.error(`Enrollment with ${slug} should exist but does not`);
-          continue;
-        }
-        if (!enrollment.active) {
-          lazy.log.error(
-            `Enrollment with slug ${slug} should be active but is not.`
-          );
-          continue;
-        }
-
-        const prefEntry = enrollment.prefs?.find(entry => entry.name === pref);
-        if (!prefEntry) {
-          lazy.log.error(
-            `Enrollment with slug ${slug} does not set pref ${pref}`
-          );
-          continue;
-        }
-
-        didEnroll = true;
-        prefEntry.originalValue = false;
-      }
-
-      if (didEnroll) {
-        // Trigger a save of the ExperimentStore since we've changed some data
-        // structures without using set().
-        // We do not have to sync these changes to child processes because the
-        // data is only used in the parent process.
-        lazy.ExperimentAPI.manager.store._jsonFile.saveSoon();
+        // Set the original value to `null` instead of `false` so that it will
+        // restore by removing the user branch value instead of setting it to
+        // false if the default branch value changes.
+        //
+        // TODO(bug 2086737): Remove support for originalPrefValues in
+        // the entire enrollment pipeline.
+        await labs.enroll(slug, "control", {
+          originalPrefValues: new Map([[pref, null]]),
+        });
       }
     },
     { mode: "shared" }
   );
 }
+
 export class MigrationError extends Error {
   static Reason = Object.freeze({
     UNKNOWN: "unknown",
+    SHUTDOWN_STARTED: "shutdown-started",
   });
 
   constructor(reason) {
     super(`Migration error: ${reason}`);
     this.reason = reason;
+  }
+
+  static getReason(e) {
+    if (e instanceof MigrationError) {
+      return e.reason;
+    }
+
+    if (e instanceof lazy.ShutdownStartedError) {
+      return MigrationError.Reason.SHUTDOWN_STARTED;
+    }
+
+    return MigrationError.Reason.UNKNOWN;
   }
 }
 
@@ -340,7 +548,6 @@ export const NimbusMigrations = {
    * application of further migrations in the phase.
    *
    * @param {Phase} phase The phase of migrations to apply.
-   *
    */
   async applyMigrations(phase) {
     const phasePref = NIMBUS_MIGRATION_PREFS[phase];
@@ -358,19 +565,20 @@ export const NimbusMigrations = {
         `applyMigrations ${phase}: applying migration ${i}: ${migration.name}`
       );
 
+      const migrationStart = ChromeUtils.now();
+      let duration;
       try {
-        await migration.fn();
+        // Not all migrations are async fns, so coerce them.
+        await Promise.try(migration.fn, migration.name).finally(() => {
+          duration = Math.ceil(ChromeUtils.now() - migrationStart);
+        });
       } catch (e) {
         lazy.log.error(
           `applyMigrations: error running migration ${i} (${migration.name}): ${e}`
         );
 
-        let reason = MigrationError.Reason.UNKNOWN;
-        if (e instanceof MigrationError) {
-          reason = e.reason;
-        }
-
-        lazy.NimbusTelemetry.recordMigration(migration.name, reason);
+        const reason = MigrationError.getReason(e);
+        lazy.NimbusTelemetry.recordMigration(migration.name, duration, reason);
 
         break;
       }
@@ -381,7 +589,7 @@ export const NimbusMigrations = {
         `applyMigrations: applied migration ${i}: ${migration.name}`
       );
 
-      lazy.NimbusTelemetry.recordMigration(migration.name);
+      lazy.NimbusTelemetry.recordMigration(migration.name, duration);
     }
 
     if (latestMigration != lastSuccess) {
@@ -425,6 +633,8 @@ export const NimbusMigrations = {
   MIGRATIONS: {
     [Phase.INIT_STARTED]: [
       migration("multi-phase-migrations", migrateMultiphase),
+      migration("separate-rollout-opt-out", migrateSeparateRolloutOptOut),
+      migration("remove-normandy-databases", migrateRemoveNormandyDatabases),
     ],
 
     [Phase.AFTER_STORE_INITIALIZED]: [
@@ -437,6 +647,20 @@ export const NimbusMigrations = {
       // the migration to ensure recipe was never null.
       migration("noop", migrateNoop),
       migration("import-enrollments-to-sql", migrateEnrollmentsToSql),
+      migration(
+        "graduate-firefox-labs-auto-pip",
+        migrateGraduateFirefoxLabsAutoPip
+      ),
+      migration(
+        "graduate-firefox-labs-jpeg-xl",
+        migrateGraduateFirefoxLabsJPEGXLNightly
+      ),
+      migration("bug-2054546-mitigation", migrateRestorePrefFlipsBug2054546),
+      migration(
+        "graduate-firefox-labs-jpeg-xl-all-channels",
+        migrateGraduateFirefoxLabsJPEGXLAllChannels
+      ),
+      migration("remove-legacy-store", migrateRemoveLegacyStore),
     ],
 
     [Phase.AFTER_REMOTE_SETTINGS_UPDATE]: [

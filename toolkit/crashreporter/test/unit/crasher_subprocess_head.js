@@ -15,6 +15,10 @@ Services.appinfo.UpdateCrashEventsDir();
 var processType = Services.appinfo.processType;
 if (processType == Ci.nsIXULRuntime.PROCESS_TYPE_DEFAULT) {
   Services.appinfo.minidumpPath = _tmpd;
+
+  // Disable Nimbus persistence, which requires initializing the
+  // ProfilesDatastoreService and nsIToolkitProfileService.
+  Services.prefs.setBoolPref("nimbus.persistence.enabled", false);
 }
 
 var protocolHandler = Services.io
@@ -27,6 +31,7 @@ const { CrashTestUtils } = ChromeUtils.importESModule(
 );
 var crashType = CrashTestUtils.CRASH_INVALID_POINTER_DEREF;
 var shouldDelay = false;
+var shouldWaitSetup = false;
 
 // Turn PHC on so that the PHC tests work.
 CrashTestUtils.enablePHC();
