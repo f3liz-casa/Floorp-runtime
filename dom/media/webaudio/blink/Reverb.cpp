@@ -30,9 +30,10 @@
 
 #include <math.h>
 
+#include <memory>
+
 #include "ReverbConvolver.h"
 #include "ReverbConvolverStage.h"
-#include "mozilla/FloatingPoint.h"
 
 using namespace mozilla;
 
@@ -151,9 +152,9 @@ bool Reverb::initialize(const nsTArray<const float*>& impulseResponseBuffer,
     size_t length = impulseResponseBufferLength;
 
     bool allocationFailure;
-    UniquePtr<ReverbConvolver> convolver(
-        new ReverbConvolver(channel, length, maxFFTSize, convolverRenderPhase,
-                            useBackgroundThreads, &allocationFailure));
+    auto convolver = std::make_unique<ReverbConvolver>(
+        channel, length, maxFFTSize, convolverRenderPhase, useBackgroundThreads,
+        &allocationFailure);
     if (allocationFailure) {
       return false;
     }

@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -15,7 +13,6 @@
 #include "mozilla/PresShell.h"
 #include "mozilla/ServoBindings.h"
 #include "mozilla/ServoStyleSet.h"
-#include "mozilla/Types.h"
 #include "mozilla/WritingModes.h"
 #include "nsPresContext.h"
 #include "nsPresContextInlines.h"
@@ -435,7 +432,7 @@ static bool HebrewToText(CounterValue aOrdinal, nsAString& aResult) {
     outputSep = true;
   } while (aOrdinal >= 1);
 
-  aResult = allText;
+  aResult = std::move(allText);
   return true;
 }
 
@@ -893,7 +890,7 @@ bool BuiltinCounterStyle::GetInitialCounterText(CounterValue aOrdinal,
 static constexpr BuiltinCounterStyle gBuiltinStyleTable[] = {
 #define BUILTIN_COUNTER_STYLE(value_, atom_) \
   {ListStyle::value_, nsGkAtoms::atom_},
-#include "BuiltinCounterStyleList.h"
+#include "BuiltinCounterStyleList.inc"
 #undef BUILTIN_COUNTER_STYLE
 };
 
@@ -902,7 +899,7 @@ static constexpr BuiltinCounterStyle gBuiltinStyleTable[] = {
       gBuiltinStyleTable[static_cast<size_t>(ListStyle::value_)].GetStyle() == \
           ListStyle::value_,                                                   \
       "Builtin counter style " #atom_ " has unmatched index and value.");
-#include "BuiltinCounterStyleList.h"
+#include "BuiltinCounterStyleList.inc"
 #undef BUILTIN_COUNTER_STYLE
 
 class DependentBuiltinCounterStyle final : public BuiltinCounterStyle {
@@ -916,16 +913,14 @@ class DependentBuiltinCounterStyle final : public BuiltinCounterStyle {
 
   virtual CounterStyle* GetFallback() override;
 
-  void* operator new(size_t sz, nsPresContext* aPresContext) {
-    return aPresContext->PresShell()->AllocateByObjectID(
-        eArenaObjectID_DependentBuiltinCounterStyle, sz);
+  void* operator new(size_t sz) {
+    return FrameArena::Allocate(eArenaObjectID_DependentBuiltinCounterStyle,
+                                sz);
   }
 
   void Destroy() {
-    PresShell* presShell = mManager->PresContext()->PresShell();
     this->~DependentBuiltinCounterStyle();
-    presShell->FreeByObjectID(eArenaObjectID_DependentBuiltinCounterStyle,
-                              this);
+    FrameArena::Free(eArenaObjectID_DependentBuiltinCounterStyle, this);
   }
 
  private:
@@ -1008,15 +1003,13 @@ class CustomCounterStyle final : public CounterStyle {
 
   bool IsExtendsSystem() { return mSystem == StyleCounterSystem::Extends; }
 
-  void* operator new(size_t sz, nsPresContext* aPresContext) {
-    return aPresContext->PresShell()->AllocateByObjectID(
-        eArenaObjectID_CustomCounterStyle, sz);
+  void* operator new(size_t sz) {
+    return FrameArena::Allocate(eArenaObjectID_CustomCounterStyle, sz);
   }
 
   void Destroy() {
-    PresShell* presShell = mManager->PresContext()->PresShell();
     this->~CustomCounterStyle();
-    presShell->FreeByObjectID(eArenaObjectID_CustomCounterStyle, this);
+    FrameArena::Free(eArenaObjectID_CustomCounterStyle, this);
   }
 
  private:
@@ -1804,14 +1797,13 @@ CounterStyle* CounterStyleManager::ResolveCounterStyle(nsAtom* aName) {
   auto* rule = styleSet->CounterStyleRuleForName(aName);
   if (rule) {
     MOZ_ASSERT(Servo_CounterStyleRule_GetName(rule) == aName);
-    data = new (mPresContext) CustomCounterStyle(this, rule);
+    data = new CustomCounterStyle(this, rule);
   } else {
     for (const BuiltinCounterStyle& item : gBuiltinStyleTable) {
       if (item.GetStyleName() == aName) {
         const auto style = item.GetStyle();
         data = item.IsDependentStyle()
-                   ? new (mPresContext)
-                         DependentBuiltinCounterStyle(style, this)
+                   ? new DependentBuiltinCounterStyle(style, this)
                    : GetBuiltinStyle(style);
         break;
       }

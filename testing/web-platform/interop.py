@@ -2,6 +2,8 @@
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
+from __future__ import annotations
+
 import argparse
 import csv
 import math
@@ -33,6 +35,8 @@ default_interop_task_filters = {
 
 def get_parser_fetch_logs() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
+    parser.register("type", "list", lambda s: s.split(","))
+
     parser.add_argument(
         "--log-dir", action="store", help="Directory into which to download logs"
     )
@@ -47,10 +51,18 @@ def get_parser_fetch_logs() -> argparse.Namespace:
         action="store_true",
         help="Only download logs if the task is complete",
     )
-    parser.add_argument(
+    group = parser.add_mutually_exclusive_group(required=True)
+    group.add_argument(
         "commits",
-        nargs="+",
+        nargs="*",
+        default=[],
         help="repo:commit e.g. mozilla-central:fae24810aef1 for the runs to include",
+    )
+    group.add_argument(
+        "--local-logs",
+        action="store",
+        type="list",
+        help="Comma separated list of local log files to use",
     )
     return parser
 
@@ -243,11 +255,11 @@ def get_expected_failures(path: str) -> Mapping[str, set[Optional[str]]]:
                 continue
             if len(entry) > 2:
                 raise ValueError(
-                    f"{path}:{i+1} expected at most two columns, got {len(entry)}"
+                    f"{path}:{i + 1} expected at most two columns, got {len(entry)}"
                 )
             if entry[0][0] != "/":
                 raise ValueError(
-                    f'{path}:{i+1} "{entry[0]}" is not a valid test id (must start with "/")'
+                    f'{path}:{i + 1} "{entry[0]}" is not a valid test id (must start with "/")'
                 )
             test_id = entry[0]
             if test_id not in expected_failures:
@@ -256,7 +268,7 @@ def get_expected_failures(path: str) -> Mapping[str, set[Optional[str]]]:
                 subtest_id = entry[1]
                 if subtest_id == "":
                     print(
-                        f"Warning: {path}:{i+1} got empty string subtest id, remove the trailing comma to make this apply to the full test"
+                        f"Warning: {path}:{i + 1} got empty string subtest id, remove the trailing comma to make this apply to the full test"
                     )
                 expected_failures[test_id].add(subtest_id)
             else:
@@ -266,6 +278,7 @@ def get_expected_failures(path: str) -> Mapping[str, set[Optional[str]]]:
 
 def score_runs(
     commits: list[str],
+    local_logs: list[str],
     task_filters: list[str],
     log_dir: Optional[str],
     year: int,
@@ -304,6 +317,12 @@ def score_runs(
                 print(f"Failed to get any logs for {repo}:{commit}", file=sys.stderr)
             else:
                 run_logs.append([item.path for item in task_data])
+
+        if not run_logs and local_logs:
+            runs = []
+            for log in local_logs:
+                run_logs.append([log])
+                runs.append(("local", log))
 
         if not run_logs:
             print("No logs to process", file=sys.stderr)

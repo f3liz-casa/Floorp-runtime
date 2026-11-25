@@ -1,14 +1,13 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#include "TestCommon.h"
-#include "gtest/gtest.h"
-#include "WebTransportFlowControl.h"
 #include "Capsule.h"
 #include "CapsuleEncoder.h"
 #include "CapsuleParser.h"
+#include "TestCommon.h"
+#include "WebTransportFlowControl.h"
+#include "gtest/gtest.h"
 
 using namespace mozilla;
 using namespace mozilla::net;
@@ -70,7 +69,7 @@ TEST(LocalStreamLimitsTest, StreamIdAllocation)
   auto extractLimitFromEncoder = [](CapsuleEncoder& encoder) -> uint64_t {
     auto buffer = encoder.GetBuffer();
     RefPtr<CapsuleParserListener> listener = new CapsuleParserListener();
-    UniquePtr<CapsuleParser> parser = MakeUnique<CapsuleParser>(listener);
+    auto parser = std::make_unique<CapsuleParser>(listener);
     parser->ProcessCapsuleData(buffer.Elements(), buffer.Length());
     nsTArray<Capsule> parsed = listener->GetParsedCapsules();
     WebTransportStreamsBlockedCapsule blocked =
@@ -205,7 +204,7 @@ TEST(RemoteStreamLimitsTest, HandlesStreamLimitLogicWithRawIds)
   auto extractLimitFromEncoder = [](CapsuleEncoder& encoder) -> uint64_t {
     auto buffer = encoder.GetBuffer();
     RefPtr<CapsuleParserListener> listener = new CapsuleParserListener();
-    UniquePtr<CapsuleParser> parser = MakeUnique<CapsuleParser>(listener);
+    auto parser = std::make_unique<CapsuleParser>(listener);
     parser->ProcessCapsuleData(buffer.Elements(), buffer.Length());
     nsTArray<Capsule> parsed = listener->GetParsedCapsules();
     WebTransportMaxStreamsCapsule maxStreams =

@@ -1,25 +1,25 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- *
+/*
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#include "nsComponentManagerUtils.h"
 #include "nsStreamConverterService.h"
-#include "nsIComponentRegistrar.h"
-#include "nsString.h"
-#include "nsAtom.h"
-#include "nsDeque.h"
-#include "nsIInputStream.h"
-#include "nsIStreamConverter.h"
-#include "nsICategoryManager.h"
-#include "nsXPCOM.h"
-#include "nsISupportsPrimitives.h"
-#include "nsTArray.h"
-#include "nsServiceManagerUtils.h"
-#include "nsISimpleEnumerator.h"
+
 #include "mozilla/Components.h"
 #include "mozilla/UniquePtr.h"
+#include "nsAtom.h"
+#include "nsComponentManagerUtils.h"
+#include "nsDeque.h"
+#include "nsICategoryManager.h"
+#include "nsIComponentRegistrar.h"
+#include "nsIInputStream.h"
+#include "nsISimpleEnumerator.h"
+#include "nsIStreamConverter.h"
+#include "nsISupportsPrimitives.h"
+#include "nsServiceManagerUtils.h"
+#include "nsString.h"
+#include "nsTArray.h"
+#include "nsXPCOM.h"
 
 ///////////////////////////////////////////////////////////////////
 // Breadth-First-Search (BFS) algorithm state classes and types.
@@ -192,7 +192,7 @@ nsresult nsStreamConverterService::FindConverter(
   for (const auto& entry : mAdjacencyList) {
     const nsACString& key = entry.GetKey();
     MOZ_ASSERT(entry.GetWeak(), "no data in the table iteration");
-    lBFSTable.InsertOrUpdate(key, mozilla::MakeUnique<BFSTableData>(key));
+    lBFSTable.InsertOrUpdate(key, std::make_unique<BFSTableData>(key));
   }
 
   NS_ASSERTION(lBFSTable.Count() == vertexCount,
@@ -242,8 +242,7 @@ nsresult nsStreamConverterService::FindConverter(
       if (white == curVertexState->color) {
         curVertexState->color = gray;
         curVertexState->distance = headVertexState->distance + 1;
-        curVertexState->predecessor =
-            mozilla::MakeUnique<nsCString>(*currentHead);
+        curVertexState->predecessor = std::make_unique<nsCString>(*currentHead);
         grayQ.Push(curVertex);
       } else {
         delete curVertex;  // if this vertex has already been discovered, we

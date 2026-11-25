@@ -5,6 +5,7 @@
 """
 Runs the reftest test harness.
 """
+
 import json
 import os
 import platform
@@ -12,6 +13,7 @@ import posixpath
 import re
 import shutil
 import signal
+import socket
 import subprocess
 import sys
 import tempfile
@@ -52,7 +54,7 @@ except ImportError as e:  # noqa
     Marionette = reraise_
 
 import reftestcommandline
-from output import OutputHandler, ReftestFormatter
+from output import OutputHandler
 
 here = os.path.abspath(os.path.dirname(__file__))
 
@@ -64,6 +66,16 @@ try:
 except ImportError:
     build_obj = None
     from multiprocessing import cpu_count
+
+
+def _get_available_port(preferred):
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            s.bind(("127.0.0.1", preferred))
+        except OSError:
+            s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
 
 
 def categoriesToRegex(categoryList):
@@ -296,6 +308,7 @@ class RefTest:
         self.outputHandler = None
         self.testDumpFile = os.path.join(tempfile.gettempdir(), "reftests.json")
         self.currentManifest = "No test started"
+        self.currentManifestID = None
         self.gtkTheme = self.getGtkTheme()
 
         self.run_by_manifest = True
@@ -310,17 +323,8 @@ class RefTest:
         if self.log:
             return
 
-        mozlog.commandline.log_formatters["tbpl"] = (
-            ReftestFormatter,
-            "Reftest specific formatter for the"
-            "benefit of legacy log parsers and"
-            "tools such as the reftest analyzer",
-        )
-        fmt_options = {}
-        if not options.log_tbpl_level and os.environ.get("MOZ_REFTEST_VERBOSE"):
-            options.log_tbpl_level = fmt_options["level"] = "debug"
         self.log = mozlog.commandline.setup_logging(
-            "reftest harness", options, {"tbpl": sys.stdout}, fmt_options
+            "reftest harness", options, {"raw": sys.stdout}
         )
 
     def getGtkTheme(self):
@@ -540,9 +544,6 @@ class RefTest:
             browserEnv["TZ"] = "PST8PDT"
             browserEnv["LC_ALL"] = "en_US.UTF-8"
 
-        # This should help with consistency
-        browserEnv["GTK_THEME"] = "Adwaita"
-
         for v in options.environment:
             ix = v.find("=")
             if ix <= 0:
@@ -709,21 +710,18 @@ class RefTest:
         perProcessArgs = [sys.argv[:] for i in range(0, totalJobs)]
 
         host = "localhost"
-        port = 2828
-        if options.marionette:
-            host, port = options.marionette.split(":")
 
         # First job is only needs-focus tests.  Remaining jobs are
         # non-needs-focus and chunked.
         perProcessArgs[0].insert(-1, "--focus-filter-mode=needs-focus")
         for chunkNumber, jobArgs in enumerate(perProcessArgs[1:], start=1):
+            port = _get_available_port(2828)
             jobArgs[-1:-1] = [
                 "--focus-filter-mode=non-needs-focus",
                 "--total-chunks=%d" % jobsWithoutFocus,
                 "--this-chunk=%d" % chunkNumber,
                 "--marionette=%s:%d" % (host, port),
             ]
-            port += 1
 
         for jobArgs in perProcessArgs:
             try:
@@ -766,12 +764,10 @@ class RefTest:
 
         print("REFTEST INFO | Result summary:")
         for summaryObj, (text, categories) in zip(summaryObjects, summaryLines):
-            details = ", ".join(
-                [
-                    "%d %s" % (summaryObj[attribute], description)
-                    for (attribute, description) in categories
-                ]
-            )
+            details = ", ".join([
+                "%d %s" % (summaryObj[attribute], description)
+                for (attribute, description) in categories
+            ])
             print(
                 "REFTEST INFO | "
                 + text
@@ -937,6 +933,11 @@ class RefTest:
                 host, port = options.marionette.split(":")
                 marionette_args["host"] = host
                 marionette_args["port"] = int(port)
+            else:
+                marionette_port = _get_available_port(preferred=2828)
+                if marionette_port != 2828:
+                    marionette_args["port"] = marionette_port
+                    profile.set_preferences({"marionette.port": marionette_port})
 
             try:
                 marionette = Marionette(**marionette_args)
@@ -966,10 +967,10 @@ class RefTest:
             os.path.join(profile.profile, "minidumps"),
             options.symbolsPath,
             test=self.lastTestSeen,
+            group=self.currentManifestID,
         )
 
         if crashed:
-            # log suite_end to wrap up, this is usually done with in in-browser harness
             if not self.outputHandler.results:
                 # TODO: while .results is a defaultdict(int), it is proxied via log_actions as data, not type
                 self.outputHandler.results = {
@@ -987,7 +988,11 @@ class RefTest:
                     "Skip": 0,
                     "Slow": 0,
                 }
-            self.log.suite_end(extra={"results": self.outputHandler.results})
+            # When running by manifest, runSerialTests logs suite_end after the
+            # last manifest. Logging it here would end the suite early.
+            if not self.run_by_manifest:
+                # log suite_end to wrap up, this is usually done with in in-browser harness
+                self.log.suite_end(extra={"results": self.outputHandler.results})
 
         if not status and crashed:
             status = 1
@@ -1110,10 +1115,15 @@ class RefTest:
                 )
                 return 1
 
+            manifest_id = tests[0]["manifestID"]
+            self.log.group_start(name=manifest_id)
             self.log.info(f"Running tests in {manifest}")
             self.currentManifest = manifest
+            self.currentManifestID = manifest_id
+            self.lastTestSeen = manifest
             status = run(tests=tests)
             overall = overall or status
+            self.log.group_end(name=manifest_id)
         if status == -1:
             # we didn't run anything
             overall = 1

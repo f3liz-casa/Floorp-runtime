@@ -1,4 +1,3 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -118,7 +117,7 @@ class ChunkedJSONWriteFunc final : public JSONWriteFunc, public FailureLatch {
   [[nodiscard]] UniquePtr<char[]> CopyData() const {
     UniquePtr<char[]> c;
     if (!CopyDataIntoLazilyAllocatedBuffer([&](size_t allocationSize) {
-          c = MakeUnique<char[]>(allocationSize);
+          c = std::make_unique<char[]>(allocationSize);
           return c.get();
         })) {
       // Something went wrong, make sure the returned pointer is null even if
@@ -451,8 +450,9 @@ class SpliceableJSONWriter : public JSONWriter, public FailureLatch {
 class SpliceableChunkedJSONWriter final : public SpliceableJSONWriter {
  public:
   explicit SpliceableChunkedJSONWriter(FailureLatch& aFailureLatch)
-      : SpliceableJSONWriter(MakeUnique<ChunkedJSONWriteFunc>(aFailureLatch),
-                             aFailureLatch) {}
+      : SpliceableJSONWriter(
+            std::make_unique<ChunkedJSONWriteFunc>(aFailureLatch),
+            aFailureLatch) {}
 
   // Access the ChunkedJSONWriteFunc as reference-to-const, usually to copy data
   // out.

@@ -1,16 +1,15 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "VRServiceHost.h"
+
 #include "VRGPUChild.h"
+#include "VRManager.h"
 #include "VRPuppetCommandBuffer.h"
 #include "mozilla/ClearOnShutdown.h"
 #include "mozilla/gfx/GPUParent.h"
 #include "service/VRService.h"
-#include "VRManager.h"
 
 namespace mozilla {
 namespace gfx {
@@ -19,7 +18,7 @@ static StaticRefPtr<VRServiceHost> sVRServiceHostSingleton;
 
 /* static */
 void VRServiceHost::Init(bool aEnableVRProcess) {
-  MOZ_ASSERT(NS_IsMainThread());
+  MOZ_RELEASE_ASSERT(NS_IsMainThread());
 
   if (sVRServiceHostSingleton == nullptr) {
     sVRServiceHostSingleton = new VRServiceHost(aEnableVRProcess);
@@ -29,7 +28,7 @@ void VRServiceHost::Init(bool aEnableVRProcess) {
 
 /* static */
 VRServiceHost* VRServiceHost::Get() {
-  MOZ_ASSERT(sVRServiceHostSingleton != nullptr);
+  MOZ_RELEASE_ASSERT(sVRServiceHostSingleton != nullptr);
   return sVRServiceHostSingleton;
 }
 
@@ -45,7 +44,7 @@ VRServiceHost::VRServiceHost(bool aEnableVRProcess)
 }
 
 VRServiceHost::~VRServiceHost() {
-  MOZ_ASSERT(NS_IsMainThread());
+  MOZ_RELEASE_ASSERT(NS_IsMainThread());
   MOZ_COUNT_DTOR(VRServiceHost);
 }
 
@@ -86,7 +85,7 @@ void VRServiceHost::Refresh() {
 }
 
 void VRServiceHost::CreateService(volatile VRExternalShmem* aShmem) {
-  MOZ_ASSERT(!mVRProcessEnabled);
+  MOZ_RELEASE_ASSERT(!mVRProcessEnabled);
   mVRService = VRService::Create(aShmem);
 }
 
@@ -131,13 +130,13 @@ void VRServiceHost::CreateVRProcess() {
   // Using PGPU channel to tell the main process
   // to create the VR process.
   gfx::GPUParent* gpu = GPUParent::GetSingleton();
-  MOZ_ASSERT(gpu);
-  Unused << gpu->SendCreateVRProcess();
+  MOZ_RELEASE_ASSERT(gpu);
+  (void)gpu->SendCreateVRProcess();
 }
 
 void VRServiceHost::NotifyVRProcessStarted() {
-  MOZ_ASSERT(NS_IsMainThread());
-  MOZ_ASSERT(mVRProcessEnabled);
+  MOZ_RELEASE_ASSERT(NS_IsMainThread());
+  MOZ_RELEASE_ASSERT(mVRProcessEnabled);
   if (!mVRProcessStarted) {
     // We have received this after the VR process
     // has been stopped; the VR service is no
@@ -192,8 +191,8 @@ void VRServiceHost::ShutdownVRProcess() {
   // Using PGPU channel to tell the main process
   // to shutdown VR process.
   gfx::GPUParent* gpu = GPUParent::GetSingleton();
-  MOZ_ASSERT(gpu);
-  Unused << gpu->SendShutdownVRProcess();
+  MOZ_RELEASE_ASSERT(gpu);
+  (void)gpu->SendShutdownVRProcess();
   mVRProcessStarted = false;
   mVRServiceReadyInVRProcess = false;
 }

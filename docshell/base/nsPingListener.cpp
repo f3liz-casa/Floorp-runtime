@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -11,6 +9,7 @@
 
 #include "mozilla/dom/DocGroup.h"
 #include "mozilla/dom/Document.h"
+#include "mozilla/StaticPrefs_mathml.h"
 
 #include "nsIHttpChannel.h"
 #include "nsIHttpChannelInternal.h"
@@ -70,7 +69,7 @@ static bool PingsEnabled(int32_t* aMaxPerLink, bool* aRequireSameHost) {
 // We wait this many milliseconds before killing the ping channel...
 #define PING_TIMEOUT 10000
 
-static void OnPingTimeout(nsITimer* aTimer, void* aClosure) {
+static void OnPingTimeout(nsITimer* /*aTimer*/, void* aClosure) {
   nsILoadGroup* loadGroup = static_cast<nsILoadGroup*>(aClosure);
   if (loadGroup) {
     loadGroup->Cancel(NS_ERROR_ABORT);
@@ -118,6 +117,10 @@ static void SendPing(void* aClosure, nsIContent* aContent, nsIURI* aURI,
   nsCOMPtr<nsIHttpChannel> httpChan = do_QueryInterface(chan);
   if (!httpChan) {
     return;
+  }
+
+  if (nsCOMPtr<nsITimedChannel> timedChan = do_QueryInterface(chan)) {
+    timedChan->SetInitiatorType(u"ping"_ns);
   }
 
   // This is needed in order for 3rd-party cookie blocking to work.
@@ -204,7 +207,7 @@ static void SendPing(void* aClosure, nsIContent* aContent, nsIURI* aURI,
   }
 
   uploadChan->ExplicitSetUploadStream(uploadStream, "text/ping"_ns,
-                                      uploadData.Length(), "POST"_ns, false);
+                                      uploadData.Length(), "POST"_ns);
 
   // The channel needs to have a loadgroup associated with it, so that we can
   // cancel the channel and any redirected channels it may create.
@@ -216,7 +219,7 @@ static void SendPing(void* aClosure, nsIContent* aContent, nsIURI* aURI,
   loadGroup->SetNotificationCallbacks(callbacks);
   chan->SetLoadGroup(loadGroup);
 
-  RefPtr<nsPingListener> pingListener = new nsPingListener();
+  RefPtr pingListener = MakeRefPtr<nsPingListener>();
   chan->AsyncOpen(pingListener);
 
   // Even if AsyncOpen failed, we still count this as a successful ping.  It's
@@ -246,9 +249,10 @@ static void ForEachPing(nsIContent* aContent, ForEachPingCallback aCallback,
   //       just parse the raw attribute.  It might be nice if the content node
   //       implemented an interface that exposed an enumeration of nsIURIs.
 
-  // Make sure we are dealing with either an <A> or <AREA> element in the HTML
-  // or XHTML namespace.
-  if (!aContent->IsAnyOfHTMLElements(nsGkAtoms::a, nsGkAtoms::area)) {
+  if (!aContent->IsAnyOfHTMLElements(nsGkAtoms::a, nsGkAtoms::area) &&
+      !aContent->IsSVGElement(nsGkAtoms::a) &&
+      !(aContent->IsMathMLElement(nsGkAtoms::a) &&
+        StaticPrefs::mathml_a_element_enabled())) {
     return;
   }
 
@@ -318,22 +322,23 @@ nsresult nsPingListener::StartTimeout(DocGroup* aDocGroup) {
 
   return NS_NewTimerWithFuncCallback(
       getter_AddRefs(mTimer), OnPingTimeout, mLoadGroup, PING_TIMEOUT,
-      nsITimer::TYPE_ONE_SHOT, "nsPingListener::StartTimeout",
+      nsITimer::TYPE_ONE_SHOT, "nsPingListener::StartTimeout"_ns,
       GetMainThreadSerialEventTarget());
 }
 
 NS_IMETHODIMP
-nsPingListener::OnStartRequest(nsIRequest* aRequest) { return NS_OK; }
+nsPingListener::OnStartRequest(nsIRequest* /*aRequest*/) { return NS_OK; }
 
 NS_IMETHODIMP
-nsPingListener::OnDataAvailable(nsIRequest* aRequest, nsIInputStream* aStream,
-                                uint64_t aOffset, uint32_t aCount) {
+nsPingListener::OnDataAvailable(nsIRequest* /*aRequest*/,
+                                nsIInputStream* aStream, uint64_t /*aOffset*/,
+                                uint32_t aCount) {
   uint32_t result;
   return aStream->ReadSegments(NS_DiscardSegment, nullptr, aCount, &result);
 }
 
 NS_IMETHODIMP
-nsPingListener::OnStopRequest(nsIRequest* aRequest, nsresult aStatus) {
+nsPingListener::OnStopRequest(nsIRequest* /*aRequest*/, nsresult /*aStatus*/) {
   mLoadGroup = nullptr;
 
   if (mTimer) {

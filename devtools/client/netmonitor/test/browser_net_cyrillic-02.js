@@ -22,16 +22,16 @@ add_task(async function () {
 
   store.dispatch(Actions.batchEnable(false));
 
-  let wait = waitForNetworkEvents(monitor, 1);
-  await reloadBrowser();
-  await wait;
+  const onNetworkEvents = waitForNetworkEvents(monitor, 1);
+  await reloadSelectedTab();
+  await onNetworkEvents;
 
   const requestItem = document.querySelectorAll(".request-list-item")[0];
   const requestsListStatus = requestItem.querySelector(".status-code");
   requestItem.scrollIntoView();
   EventUtils.sendMouseEvent({ type: "mouseover" }, requestsListStatus);
   await waitUntil(() => requestsListStatus.title);
-  await waitForDOMIfNeeded(requestItem, ".requests-list-timings-total");
+  await waitForDOM(requestItem, ".requests-list-timings-total");
 
   await verifyRequestItemTarget(
     document,
@@ -45,27 +45,24 @@ add_task(async function () {
     }
   );
 
-  wait = waitForDOM(document, "#headers-panel");
-  EventUtils.sendMouseEvent(
-    { type: "mousedown" },
-    document.querySelectorAll(".request-list-item")[0]
-  );
-  await wait;
+  let onDomUpdated = waitForDOM(document, "#headers-panel");
+  clickOnRequestRow(document.querySelectorAll(".request-list-item")[0]);
+  await onDomUpdated;
 
-  wait = waitForDOM(document, "#response-panel .data-header");
+  onDomUpdated = waitForDOM(document, "#response-panel .data-header");
   clickOnSidebarTab(document, "response");
-  await wait;
+  await onDomUpdated;
 
-  wait = waitForDOM(document, "#response-panel .CodeMirror-code");
+  onDomUpdated = waitForDOM(document, "#response-panel .cm-content");
   const header = document.querySelector(
     "#response-panel .raw-data-toggle-input .devtools-checkbox-toggle"
   );
   clickElement(header, monitor);
-  await wait;
+  await onDomUpdated;
 
   // CodeMirror will only load lines currently in view to the DOM. getValue()
   // retrieves all lines pending render after a user begins scrolling.
-  const text = document.querySelector(".CodeMirror").CodeMirror.getValue();
+  const text = getCodeMirrorValue(monitor);
 
   ok(
     text.includes("\u0411\u0440\u0430\u0442\u0430\u043d"),

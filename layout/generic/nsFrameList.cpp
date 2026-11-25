@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -11,7 +9,6 @@
 #include "mozilla/intl/BidiEmbeddingLevel.h"
 #include "nsBidiPresUtils.h"
 #include "nsContainerFrame.h"
-#include "nsGkAtoms.h"
 #include "nsILineIterator.h"
 #include "nsLayoutUtils.h"
 #include "nsPresContext.h"
@@ -20,15 +17,15 @@ using namespace mozilla;
 
 const nsFrameList nsFrameList::sEmptyList;
 
-void* nsFrameList::operator new(size_t sz, mozilla::PresShell* aPresShell) {
-  return aPresShell->AllocateByObjectID(eArenaObjectID_nsFrameList, sz);
+void* nsFrameList::operator new(size_t sz) {
+  return FrameArena::Allocate(eArenaObjectID_nsFrameList, sz);
 }
 
-void nsFrameList::Delete(mozilla::PresShell* aPresShell) {
+void nsFrameList::Delete() {
   MOZ_ASSERT(this != &EmptyList(), "Shouldn't Delete() this list");
   NS_ASSERTION(IsEmpty(), "Shouldn't Delete() a non-empty list");
 
-  aPresShell->FreeByObjectID(eArenaObjectID_nsFrameList, this);
+  FrameArena::Free(eArenaObjectID_nsFrameList, this);
 }
 
 void nsFrameList::DestroyFrames(FrameDestroyContext& aContext) {
@@ -186,7 +183,7 @@ nsIFrame* nsFrameList::FrameAt(int32_t aIndex) const {
   return frame;
 }
 
-int32_t nsFrameList::IndexOf(nsIFrame* aFrame) const {
+int32_t nsFrameList::IndexOf(const nsIFrame* aFrame) const {
   int32_t count = 0;
   for (nsIFrame* f = mFirstChild; f; f = f->GetNextSibling()) {
     if (f == aFrame) {
@@ -455,28 +452,24 @@ const char* ChildListName(FrameChildListID aListID) {
   switch (aListID) {
     case FrameChildListID::Principal:
       return "";
-    case FrameChildListID::ColGroup:
-      return "ColGroupList";
     case FrameChildListID::Absolute:
       return "AbsoluteList";
-    case FrameChildListID::Fixed:
-      return "FixedList";
+    case FrameChildListID::PushedAbsolute:
+      return "PushedAbsoluteList";
     case FrameChildListID::Overflow:
       return "OverflowList";
     case FrameChildListID::OverflowContainers:
       return "OverflowContainersList";
     case FrameChildListID::ExcessOverflowContainers:
       return "ExcessOverflowContainersList";
-    case FrameChildListID::OverflowOutOfFlow:
-      return "OverflowOutOfFlowList";
+    case FrameChildListID::OverflowFloats:
+      return "OverflowFloatsList";
     case FrameChildListID::Float:
       return "FloatList";
-    case FrameChildListID::Bullet:
-      return "BulletList";
+    case FrameChildListID::Marker:
+      return "MarkerList";
     case FrameChildListID::PushedFloats:
       return "PushedFloatsList";
-    case FrameChildListID::Backdrop:
-      return "BackdropList";
     case FrameChildListID::NoReflowPrincipal:
       return "NoReflowPrincipalList";
   }
@@ -488,7 +481,7 @@ const char* ChildListName(FrameChildListID aListID) {
 
 AutoFrameListPtr::~AutoFrameListPtr() {
   if (mFrameList) {
-    mFrameList->Delete(mPresContext->PresShell());
+    mFrameList->Delete();
   }
 }
 

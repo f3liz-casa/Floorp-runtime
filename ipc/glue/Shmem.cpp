@@ -1,15 +1,13 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "Shmem.h"
 
+#include "mozilla/CheckedInt.h"
 #include "ProtocolUtils.h"
 #include "ShmemMessageUtils.h"
 #include "chrome/common/ipc_message_utils.h"
-#include "mozilla/Unused.h"
 #include "mozilla/ipc/SharedMemoryHandle.h"
 
 namespace mozilla {
@@ -36,7 +34,7 @@ class ShmemCreated : public IPC::Message {
     return IPC::ReadParam(aReader, aIPDLId) && IPC::ReadParam(aReader, aHandle);
   }
 
-  void Log(const std::string& aPrefix, FILE* aOutf) const {
+  void Log(const std::string& /*aPrefix*/, FILE* aOutf) const {
     fputs("(special ShmemCreated msg)", aOutf);
   }
 };
@@ -80,8 +78,8 @@ void Shmem::AssertInvariants() const {
   char checkMappingBack = *(reinterpret_cast<char*>(mData) + mSize - 1);
 
   // avoid "unused" warnings for these variables:
-  Unused << checkMappingFront;
-  Unused << checkMappingBack;
+  (void)checkMappingFront;
+  (void)checkMappingBack;
 }
 
 void Shmem::RevokeRights() {
@@ -132,7 +130,8 @@ std::tuple<UniquePtr<IPC::Message>, Shmem> Shmem::Builder::Build(
   shmem.AssertInvariants();
   MOZ_ASSERT(mHandle, "null shmem handle");
 
-  auto msg = MakeUnique<ShmemCreated>(aRoutingId, aId, std::move(mHandle));
+  auto msg =
+      std::make_unique<ShmemCreated>(aRoutingId, aId, std::move(mHandle));
   return std::make_tuple(std::move(msg), std::move(shmem));
 }
 
@@ -163,49 +162,60 @@ already_AddRefed<Shmem::Segment> Shmem::OpenExisting(
 UniquePtr<IPC::Message> Shmem::MkDestroyedMessage(
     IPC::Message::routeid_t routingId) {
   AssertInvariants();
-  return MakeUnique<ShmemDestroyed>(routingId, mId);
+  return std::make_unique<ShmemDestroyed>(routingId, mId);
 }
 
-void IPDLParamTraits<Shmem>::Write(IPC::MessageWriter* aWriter,
-                                   IProtocol* aActor, Shmem&& aParam) {
-  WriteIPDLParam(aWriter, aActor, aParam.mId);
-  WriteIPDLParam(aWriter, aActor, uint32_t(aParam.mSize));
+}  // namespace ipc
+}  // namespace mozilla
+
+namespace IPC {
+
+void ParamTraits<mozilla::ipc::Shmem>::Write(IPC::MessageWriter* aWriter,
+                                             paramType&& aParam) {
+  WriteParam(aWriter, aParam.mId);
+  WriteParam(aWriter, uint64_t(aParam.mSize));
 #ifdef DEBUG
-  WriteIPDLParam(aWriter, aActor, aParam.mUnsafe);
+  WriteParam(aWriter, aParam.mUnsafe);
 #endif
 
   aParam.RevokeRights();
   aParam.forget();
 }
 
-bool IPDLParamTraits<Shmem>::Read(IPC::MessageReader* aReader,
-                                  IProtocol* aActor, paramType* aResult) {
+bool ParamTraits<mozilla::ipc::Shmem>::Read(IPC::MessageReader* aReader,
+                                            paramType* aResult) {
+  if (!aReader->GetActor()) {
+    return false;
+  }
+
   paramType::id_t id;
-  uint32_t size;
-  if (!ReadIPDLParam(aReader, aActor, &id) ||
-      !ReadIPDLParam(aReader, aActor, &size)) {
+  uint64_t size;
+  if (!ReadParam(aReader, &id) || !ReadParam(aReader, &size)) {
+    return false;
+  }
+  mozilla::CheckedInt<size_t> checkedSize(size);
+  if (!checkedSize.isValid()) {
     return false;
   }
 
   bool unsafe = false;
 #ifdef DEBUG
-  if (!ReadIPDLParam(aReader, aActor, &unsafe)) {
+  if (!ReadParam(aReader, &unsafe)) {
     return false;
   }
 #endif
 
-  auto* segment = aActor->LookupSharedMemory(id);
+  auto* segment = aReader->GetActor()->LookupSharedMemory(id);
   if (segment) {
-    if (size > segment->Size()) {
+    if (checkedSize.value() > segment->Size()) {
       return false;
     }
 
-    *aResult = Shmem(segment, id, size, unsafe);
+    *aResult = mozilla::ipc::Shmem(segment, id, checkedSize.value(), unsafe);
     return true;
   }
-  *aResult = Shmem();
+  *aResult = mozilla::ipc::Shmem();
   return true;
 }
 
-}  // namespace ipc
-}  // namespace mozilla
+}  // namespace IPC

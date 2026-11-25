@@ -1,17 +1,13 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
 
+#include <tuple>
 #include <type_traits>
 
 #include "mozilla/UniquePtr.h"
 #include "mozilla/Variant.h"
 
-#include <tuple>
-
-using mozilla::MakeUnique;
 using mozilla::UniquePtr;
 using mozilla::Variant;
 
@@ -28,13 +24,13 @@ static void testDetails() {
   using mozilla::detail::Nth;
 
   // Test Nth with a list of 1 item.
-  static_assert(std::is_same_v<typename Nth<0, int>::Type, int>,
+  static_assert(std::is_same_v<Nth<0, int>, int>,
                 "Nth<0, int>::Type should be int");
 
   // Test Nth with a list of more than 1 item.
-  static_assert(std::is_same_v<typename Nth<0, int, char>::Type, int>,
+  static_assert(std::is_same_v<Nth<0, int, char>, int>,
                 "Nth<0, int, char>::Type should be int");
-  static_assert(std::is_same_v<typename Nth<1, int, char>::Type, char>,
+  static_assert(std::is_same_v<Nth<1, int, char>, char>,
                 "Nth<1, int, char>::Type should be char");
 
   using mozilla::detail::SelectVariantType;
@@ -342,7 +338,7 @@ static void testEmplaceWithType() {
   MOZ_RELEASE_ASSERT(!v2.as<UniquePtr<int>>().get());
 
   Variant<UniquePtr<int>, char> v3('a');
-  v3.emplace<UniquePtr<int>>(MakeUnique<int>(4));
+  v3.emplace<UniquePtr<int>>(std::make_unique<int>(4));
   MOZ_RELEASE_ASSERT(v3.is<UniquePtr<int>>());
   MOZ_RELEASE_ASSERT(*v3.as<UniquePtr<int>>().get() == 4);
 }
@@ -367,7 +363,7 @@ static void testEmplaceWithIndex() {
   MOZ_RELEASE_ASSERT(!v2.extract<0>().get());
 
   Variant<UniquePtr<int>, char> v3('a');
-  v3.emplace<0>(MakeUnique<int>(4));
+  v3.emplace<0>(std::make_unique<int>(4));
   MOZ_RELEASE_ASSERT(v3.is<UniquePtr<int>>());
   MOZ_RELEASE_ASSERT(!v3.is<1>());
   MOZ_RELEASE_ASSERT(v3.is<0>());
@@ -391,7 +387,7 @@ static void testCopy() {
 
 static void testMove() {
   printf("testMove\n");
-  Variant<UniquePtr<int>, char> v1(MakeUnique<int>(5));
+  Variant<UniquePtr<int>, char> v1(std::make_unique<int>(5));
   Variant<UniquePtr<int>, char> v2(std::move(v1));
 
   MOZ_RELEASE_ASSERT(v2.is<UniquePtr<int>>());
@@ -402,7 +398,7 @@ static void testMove() {
 
   Destroyer::destroyedCount = 0;
   {
-    Variant<char, UniquePtr<Destroyer>> v3(MakeUnique<Destroyer>());
+    Variant<char, UniquePtr<Destroyer>> v3(std::make_unique<Destroyer>());
     Variant<char, UniquePtr<Destroyer>> v4(std::move(v3));
 
     Variant<char, UniquePtr<Destroyer>> v5('a');

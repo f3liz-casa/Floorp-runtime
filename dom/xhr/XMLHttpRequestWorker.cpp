@@ -1,10 +1,10 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "XMLHttpRequestWorker.h"
+
+#include <memory>
 
 #include "GeckoProfiler.h"
 #include "XMLHttpRequestMainThread.h"
@@ -16,7 +16,6 @@
 #include "js/TracingAPI.h"
 #include "js/Value.h"  // JS::{Undefined,}Value
 #include "jsfriendapi.h"
-#include "mozilla/ArrayUtils.h"
 #include "mozilla/HoldDropJSObjects.h"
 #include "mozilla/UniquePtr.h"
 #include "mozilla/dom/Event.h"
@@ -459,7 +458,7 @@ class EventRunnable final : public MainThreadProxyRunnable {
         mReadyState(0),
         mUploadEvent(aUploadEvent),
         mProgressEvent(false),
-        mLengthComputable(0),
+        mLengthComputable(false),
         mStatusResult(NS_OK),
         mErrorDetail(NS_OK),
         mScopeObj(RootingCx(), aScopeObj) {}
@@ -681,8 +680,13 @@ class OpenRunnable final : public WorkerThreadProxySyncRunnable {
 
     MainThreadRunInternal(aRv);
 
-    // Restore the previous activated WorkerRef for send.
-    mProxy->mWorkerRef = std::move(oldWorker);
+    // Restore the previous activated WorkerRef for send, unless Init() failed
+    // or an event listener tore down the proxy.
+    if (mProxy->mXHR) {
+      mProxy->mWorkerRef = std::move(oldWorker);
+    } else {
+      mProxy->mWorkerRef = nullptr;
+    }
   }
 
   void MainThreadRunInternal(ErrorResult& aRv);
@@ -768,6 +772,8 @@ bool Proxy::Init(WorkerPrivate* aWorkerPrivate) {
 
   mXHR->SetParameters(mMozAnon, mMozSystem);
   mXHR->SetClientInfoAndController(mClientInfo, mController);
+  mXHR->SetAssociatedBrowsingContextID(
+      aWorkerPrivate->AssociatedBrowsingContextID());
 
   ErrorResult rv;
   mXHRUpload = mXHR->GetUpload(rv);
@@ -795,8 +801,9 @@ void Proxy::Teardown() {
     // floor.
     AddRemoveEventListeners(false, false);
 
+    RefPtr<XMLHttpRequestMainThread> xhr = mXHR;
     ErrorResult rv;
-    mXHR->Abort(rv);
+    xhr->Abort(rv);
     if (NS_WARN_IF(rv.Failed())) {
       rv.SuppressException();
     }
@@ -1090,8 +1097,7 @@ bool EventRunnable::WorkerRun(JSContext* aCx, WorkerPrivate* aWorkerPrivate) {
     }
   }
 
-  UniquePtr<XMLHttpRequestWorker::StateData> state(
-      new XMLHttpRequestWorker::StateData());
+  auto state = std::make_unique<XMLHttpRequestWorker::StateData>();
 
   state->mStatusResult = mStatusResult;
   state->mStatus = mStatus;
@@ -1199,7 +1205,13 @@ void AbortRunnable::RunOnMainThread(ErrorResult& aRv) {
   // execution completes.
   mProxy->mWorkerRef = mWorkerRef;
 
-  mProxy->mXHR->Abort(aRv);
+  RefPtr<XMLHttpRequestMainThread> xhr = mProxy->mXHR;
+  xhr->Abort(aRv);
+
+  // An event listener may have spun the event loop and torn down the proxy.
+  if (!mProxy->mXHR) {
+    return;
+  }
 
   // Restore the activated WorkerRef to mProxy for the previous Send().
   mProxy->mWorkerRef = std::move(oldWorker);
@@ -1214,33 +1226,36 @@ void OpenRunnable::MainThreadRunInternal(ErrorResult& aRv) {
     return;
   }
 
+  // Open() fires events; keep the XHR alive if a listener tears down the proxy.
+  RefPtr<XMLHttpRequestMainThread> xhr = mProxy->mXHR;
+
   if (mBackgroundRequest) {
-    mProxy->mXHR->SetMozBackgroundRequestExternal(mBackgroundRequest, aRv);
+    xhr->SetMozBackgroundRequestExternal(mBackgroundRequest, aRv);
     if (aRv.Failed()) {
       return;
     }
   }
 
   if (mOriginStack) {
-    mProxy->mXHR->SetOriginStack(std::move(mOriginStack));
+    xhr->SetOriginStack(std::move(mOriginStack));
   }
 
   if (mWithCredentials) {
-    mProxy->mXHR->SetWithCredentials(mWithCredentials, aRv);
+    xhr->SetWithCredentials(mWithCredentials, aRv);
     if (NS_WARN_IF(aRv.Failed())) {
       return;
     }
   }
 
   if (mTimeout) {
-    mProxy->mXHR->SetTimeout(mTimeout, aRv);
+    xhr->SetTimeout(mTimeout, aRv);
     if (NS_WARN_IF(aRv.Failed())) {
       return;
     }
   }
 
   if (!mMimeTypeOverride.IsVoid()) {
-    mProxy->mXHR->OverrideMimeType(mMimeTypeOverride, aRv);
+    xhr->OverrideMimeType(mMimeTypeOverride, aRv);
     if (NS_WARN_IF(aRv.Failed())) {
       return;
     }
@@ -1249,9 +1264,9 @@ void OpenRunnable::MainThreadRunInternal(ErrorResult& aRv) {
   MOZ_ASSERT(!mProxy->mInOpen);
   mProxy->mInOpen = true;
 
-  mProxy->mXHR->Open(
-      mMethod, mURL, true, mUser.WasPassed() ? mUser.Value() : VoidCString(),
-      mPassword.WasPassed() ? mPassword.Value() : VoidCString(), aRv);
+  xhr->Open(mMethod, mURL, true,
+            mUser.WasPassed() ? mUser.Value() : VoidCString(),
+            mPassword.WasPassed() ? mPassword.Value() : VoidCString(), aRv);
 
   MOZ_ASSERT(mProxy->mInOpen);
   mProxy->mInOpen = false;
@@ -1260,16 +1275,24 @@ void OpenRunnable::MainThreadRunInternal(ErrorResult& aRv) {
     return;
   }
 
-  if (mSource) {
-    mProxy->mXHR->SetSource(std::move(mSource));
+  if (!mProxy->mXHR) {
+    aRv.Throw(NS_ERROR_DOM_INVALID_STATE_ERR);
+    return;
   }
 
-  mProxy->mXHR->SetResponseType(mResponseType, aRv);
+  if (mSource) {
+    xhr->SetSource(std::move(mSource));
+  }
+
+  xhr->SetResponseType(mResponseType, aRv);
 }
 
 void SendRunnable::RunOnMainThread(ErrorResult& aRv) {
+  // Send() fires events; keep the XHR alive if a listener tears down the proxy.
+  RefPtr<XMLHttpRequestMainThread> xhr = mProxy->mXHR;
+
   // Before we change any state let's check if we can send.
-  if (!mProxy->mXHR->CanSend(aRv)) {
+  if (!xhr->CanSend(aRv)) {
     return;
   }
 
@@ -1310,7 +1333,6 @@ void SendRunnable::RunOnMainThread(ErrorResult& aRv) {
   mProxy->mWorkerRef = mWorkerRef;
 
   MOZ_ASSERT(!mProxy->mSyncLoopTarget);
-  mProxy->mSyncLoopTarget.swap(mSyncXHRSyncLoopTarget);
 
   if (mHasUploadListeners) {
     // Send() can be called more than once before failure,
@@ -1323,23 +1345,30 @@ void SendRunnable::RunOnMainThread(ErrorResult& aRv) {
 
   mProxy->mInnerChannelId++;
 
-  mProxy->mXHR->Send(payload, aRv);
+  xhr->Send(payload, aRv);
 
-  if (!aRv.Failed()) {
-    mProxy->mOutstandingSendCount++;
-
-    if (!mHasUploadListeners) {
-      // Send() can be called more than once before failure,
-      // so don't attach the upload listeners more than once.
-      if (!mProxy->mUploadEventListenersAttached &&
-          !mProxy->AddRemoveEventListeners(true, true)) {
-        MOZ_ASSERT(false, "This should never fail!");
-      }
-    }
-  } else {
+  if (aRv.Failed() || !mProxy->mXHR) {
     // In case of failure we just break the sync loop
     mProxy->mSyncLoopTarget = nullptr;
     mSyncXHRSyncLoopTarget = nullptr;
+    if (!aRv.Failed()) {
+      aRv.Throw(NS_ERROR_DOM_INVALID_STATE_ERR);
+    }
+    return;
+  }
+
+  // Events fired during Send() go to mSyncEventResponseTarget, so only hand
+  // the sync loop to the proxy once we know it survived.
+  mProxy->mSyncLoopTarget.swap(mSyncXHRSyncLoopTarget);
+  mProxy->mOutstandingSendCount++;
+
+  if (!mHasUploadListeners) {
+    // Send() can be called more than once before failure,
+    // so don't attach the upload listeners more than once.
+    if (!mProxy->mUploadEventListenersAttached &&
+        !mProxy->AddRemoveEventListeners(true, true)) {
+      MOZ_ASSERT(false, "This should never fail!");
+    }
   }
 }
 
@@ -1372,6 +1401,8 @@ XMLHttpRequestWorker::~XMLHttpRequestWorker() {
   mozilla::DropJSObjects(this);
 }
 
+XMLHttpRequestWorker::ResponseData::ResponseData() : mResponseResult(NS_OK) {}
+
 NS_IMPL_ADDREF_INHERITED(XMLHttpRequestWorker, XMLHttpRequestEventTarget)
 NS_IMPL_RELEASE_INHERITED(XMLHttpRequestWorker, XMLHttpRequestEventTarget)
 
@@ -1394,6 +1425,7 @@ NS_IMPL_CYCLE_COLLECTION_UNLINK_BEGIN_INHERITED(XMLHttpRequestWorker,
   tmp->mResponseBlob = nullptr;
   tmp->mResponseArrayBufferValue = nullptr;
   tmp->mResponseJSONValue.setUndefined();
+  NS_IMPL_CYCLE_COLLECTION_UNLINK_WEAK_PTR
 NS_IMPL_CYCLE_COLLECTION_UNLINK_END
 
 NS_IMPL_CYCLE_COLLECTION_TRACE_BEGIN_INHERITED(XMLHttpRequestWorker,
@@ -2098,6 +2130,15 @@ void XMLHttpRequestWorker::Abort(ErrorResult& aRv) {
   WorkerPrivate* workerPrivate = GetCurrentThreadWorkerPrivate();
   RefPtr<AbortRunnable> runnable = new AbortRunnable(workerPrivate, mProxy);
   runnable->Dispatch(workerPrivate, Canceling, aRv);
+  if (aRv.Failed()) {
+    return;
+  }
+
+  // Dispatch() spun the event loop, so we may have been canceled and released.
+  if (!mProxy) {
+    MOZ_LOG(gXMLHttpRequestLog, LogLevel::Debug, ("Abort(no proxy)"));
+    return;
+  }
 
   // Spec step 2
   if ((mStateData->mReadyState == XMLHttpRequest_Binding::OPENED &&
@@ -2142,7 +2183,7 @@ void XMLHttpRequestWorker::GetResponseHeader(const nsACString& aHeader,
   if (aRv.Failed()) {
     return;
   }
-  aResponseHeader = responseHeader;
+  aResponseHeader = std::move(responseHeader);
 }
 
 void XMLHttpRequestWorker::GetAllResponseHeaders(nsACString& aResponseHeaders,
@@ -2169,7 +2210,7 @@ void XMLHttpRequestWorker::GetAllResponseHeaders(nsACString& aResponseHeaders,
     return;
   }
 
-  aResponseHeaders = responseHeaders;
+  aResponseHeaders = std::move(responseHeaders);
 }
 
 void XMLHttpRequestWorker::OverrideMimeType(const nsAString& aMimeType,
@@ -2298,7 +2339,7 @@ void XMLHttpRequestWorker::GetResponse(JSContext* aCx,
 
       if (!mResponseBlob) {
         mResponseBlob =
-            Blob::Create(GetOwnerGlobal(), mResponseData->mResponseBlobImpl);
+            Blob::Create(GetRelevantGlobal(), mResponseData->mResponseBlobImpl);
       }
 
       if (!mResponseBlob ||

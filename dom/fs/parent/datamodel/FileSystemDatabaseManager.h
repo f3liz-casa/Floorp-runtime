@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -218,6 +216,14 @@ class FileSystemDatabaseManager {
    */
   virtual nsresult MergeFileId(const EntryId& aEntryId, const FileId& aFileId,
                                bool aAbort) = 0;
+
+  /**
+   * @brief Removes files which are not the main file of any entry, along with
+   * their file ids and usage. Such files are temporary files left behind by a
+   * crash; they can only be removed safely while nothing can reference them,
+   * i.e. right after the database has been opened.
+   */
+  virtual nsresult RemoveFileIdsWithoutMainFile() = 0;
 
   /**
    * @brief Close database connection.

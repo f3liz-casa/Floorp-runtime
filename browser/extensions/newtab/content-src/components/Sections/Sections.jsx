@@ -16,6 +16,9 @@ const VISIBLE = "visible";
 const VISIBILITY_CHANGE_EVENT = "visibilitychange";
 const CARDS_PER_ROW_DEFAULT = 3;
 const CARDS_PER_ROW_COMPACT_WIDE = 4;
+// @nova-cleanup(remove-pref): Remove PREF_NOVA_ENABLED
+const PREF_NOVA_ENABLED = "nova.enabled";
+const NOVA_HIGHLIGHTS_MAX_CARDS_PER_ROW = 4;
 
 export class Section extends React.PureComponent {
   get numRows() {
@@ -90,17 +93,15 @@ export class Section extends React.PureComponent {
     }
   }
 
-  componentWillMount() {
-    this.sendNewTabRehydrated(this.props.initialized);
-  }
-
   componentDidMount() {
+    this.sendNewTabRehydrated(this.props.initialized);
     if (this.props.rows.length && !this.props.pref.collapsed) {
       this.sendImpressionStatsOrAddListener();
     }
   }
 
   componentDidUpdate(prevProps) {
+    this.sendNewTabRehydrated(this.props.initialized);
     const { props } = this;
     const isCollapsed = props.pref.collapsed;
     const wasCollapsed = prevProps.pref.collapsed;
@@ -115,10 +116,6 @@ export class Section extends React.PureComponent {
     ) {
       this.sendImpressionStatsOrAddListener();
     }
-  }
-
-  componentWillUpdate(nextProps) {
-    this.sendNewTabRehydrated(nextProps.initialized);
   }
 
   componentWillUnmount() {
@@ -184,7 +181,12 @@ export class Section extends React.PureComponent {
       ? CARDS_PER_ROW_COMPACT_WIDE
       : CARDS_PER_ROW_DEFAULT;
     const { numRows } = this;
-    const maxCards = maxCardsPerRow * numRows;
+    // @nova-cleanup(remove-conditional): Keep only the Nova branch for highlights
+    const isNovaHighlights =
+      id === "highlights" && this.props.Prefs.values[PREF_NOVA_ENABLED];
+    const maxCards =
+      (isNovaHighlights ? NOVA_HIGHLIGHTS_MAX_CARDS_PER_ROW : maxCardsPerRow) *
+      numRows;
     const maxCardsOnNarrow = CARDS_PER_ROW_DEFAULT * numRows;
     const shouldShowReadMore = read_more_endpoint;
 
@@ -196,11 +198,23 @@ export class Section extends React.PureComponent {
 
     const cards = [];
     if (!shouldShowEmptyState) {
-      for (let i = 0; i < maxCards; i++) {
+      const cardCount =
+        isNovaHighlights && initialized ? realRows.length : maxCards;
+      for (let i = 0; i < cardCount; i++) {
         const link = realRows[i];
         // On narrow viewports, we only show 3 cards per row. We'll mark the rest as
         // .hide-for-narrow to hide in CSS via @media query.
-        const className = i >= maxCardsOnNarrow ? "hide-for-narrow" : "";
+        let className = i >= maxCardsOnNarrow ? "hide-for-narrow" : "";
+        // Nova shows numRows rows at each width, except 1 column, which
+        // shows the same cards as 2 columns.
+        if (isNovaHighlights) {
+          className = [
+            i >= 2 * numRows && "nova-hide-below-3",
+            i >= 3 * numRows && "nova-hide-below-4",
+          ]
+            .filter(Boolean)
+            .join(" ");
+        }
         let usePlaceholder = !link;
         // If we are in the third card and waiting for spoc,
         // use the placeholder.
@@ -252,11 +266,7 @@ export class Section extends React.PureComponent {
           dispatch={this.props.dispatch}
           isWebExtension={this.props.isWebExtension}
         >
-          {!shouldShowEmptyState && (
-            <ul className="section-list" style={{ padding: 0 }}>
-              {cards}
-            </ul>
-          )}
+          {!shouldShowEmptyState && <ul className="section-list">{cards}</ul>}
           {shouldShowEmptyState && (
             <div className="section-empty-state">
               <div className="empty-state">

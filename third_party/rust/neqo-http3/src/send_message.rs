@@ -10,17 +10,18 @@ use std::{
     fmt::{self, Debug, Display, Formatter},
     num::NonZeroUsize,
     rc::Rc,
+    time::Instant,
 };
 
-use neqo_common::{qdebug, qtrace, Buffer, Encoder, Header, MessageType};
+use neqo_common::{Buffer, Encoder, Header, MessageType, qdebug, qtrace, to_u64};
 use neqo_qpack as qpack;
 use neqo_transport::{Connection, StreamId};
 
 use crate::{
-    frames::HFrame,
-    headers_checks::{headers_valid, is_interim, trailers_valid},
     BufferedStream, CloseType, Error, Http3StreamInfo, Http3StreamType, HttpSendStream, Res,
     SendStream, SendStreamEvents, Stream,
+    frames::{HFrame, HFrameType},
+    headers_checks::{headers_valid, is_interim, trailers_valid},
 };
 
 const MIN_DATA_FRAME_SIZE: usize = 3; // Minimal DATA frame size: 2 (header) + 1 (payload)
@@ -92,7 +93,7 @@ impl MessageState {
         }
     }
 
-    fn fin(&mut self) -> Res<()> {
+    const fn fin(&mut self) -> Res<()> {
         match &self {
             Self::WaitingForHeaders | Self::Done => Err(Error::InvalidInput),
             Self::WaitingForData | Self::TrailersSet => {
@@ -138,6 +139,16 @@ impl SendMessage {
         }
     }
 
+    /// Bytes a `DATA` frame carrying `payload_len` payload bytes takes on the
+    /// stream: the frame's type and length varints plus the payload. Mirrors
+    /// what [`Self::send_data_atomic`] writes.
+    #[must_use]
+    pub(crate) fn data_frame_len(payload_len: usize) -> usize {
+        Encoder::varint_len(u64::from(HFrameType::DATA))
+            + Encoder::varint_len(to_u64(payload_len))
+            + payload_len
+    }
+
     /// # Errors
     ///
     /// `ClosedCriticalStream` if the encoder stream is closed.
@@ -157,8 +168,8 @@ impl SendMessage {
         hframe.encode(encoder);
     }
 
-    fn stream_id(&self) -> StreamId {
-        Option::<StreamId>::from(&self.stream).expect("stream has ID")
+    const fn stream_id(&self) -> StreamId {
+        self.stream_info.stream_id()
     }
 }
 
@@ -168,18 +179,16 @@ impl Stream for SendMessage {
     }
 }
 impl SendStream for SendMessage {
-    fn send_data(&mut self, conn: &mut Connection, buf: &[u8]) -> Res<usize> {
+    fn send_data(&mut self, conn: &mut Connection, buf: &[u8], now: Instant) -> Res<usize> {
         qtrace!("[{self}] send_body: len={}", buf.len());
 
         self.state.new_data()?;
 
-        self.stream.send_buffer(conn)?;
-        if self.stream.has_buffered_data() {
+        self.stream.send_buffer(conn, now)?;
+        if self.has_data_to_send() {
             return Ok(0);
         }
-        let available = conn
-            .stream_avail_send_space(self.stream_id())
-            .map_err(|e| Error::map_stream_send_errors(&e.into()))?;
+        let available = conn.stream_avail_send_space(self.stream_id())?;
         if available < MIN_DATA_FRAME_SIZE {
             // Setting this once, instead of every time the available send space
             // is exhausted, would suffice. That said, function call should be
@@ -206,30 +215,24 @@ impl SendStream for SendMessage {
         qdebug!("[{self}] send_request_body: available={available} to_send={to_send}");
 
         let data_frame = HFrame::Data {
-            len: to_send as u64,
+            len: to_u64(to_send),
         };
-        let mut enc = Encoder::default();
-        data_frame.encode(&mut enc);
         let sent_fh = self
             .stream
-            .send_atomic(conn, enc.as_ref())
-            .map_err(|e| Error::map_stream_send_errors(&e))?;
+            .send_atomic_with(conn, |e| data_frame.encode(e), now)?;
         debug_assert!(sent_fh);
 
-        let sent = self
-            .stream
-            .send_atomic(conn, &buf[..to_send])
-            .map_err(|e| Error::map_stream_send_errors(&e))?;
+        let sent = self.stream.send_atomic(conn, &buf[..to_send], now)?;
         debug_assert!(sent);
         Ok(to_send)
     }
 
     fn done(&self) -> bool {
-        !self.stream.has_buffered_data() && self.state.done()
+        !self.has_data_to_send() && self.state.done()
     }
 
     fn stream_writable(&self) {
-        if !self.stream.has_buffered_data() && !self.state.done() {
+        if !self.has_data_to_send() && !self.state.done() {
             // DataWritable is just a signal for an application to try to write more data,
             // if writing fails it is fine. Therefore we do not need to properly check
             // whether more credits are available on the transport layer.
@@ -239,22 +242,17 @@ impl SendStream for SendMessage {
 
     /// # Errors
     ///
-    /// `InternalError` if an unexpected error occurred.
-    /// `InvalidStreamId` if the stream does not exist,
-    /// `AlreadyClosed` if the stream has already been closed.
     /// `TransportStreamDoesNotExist` if the transport stream does not exist (this may happen if
     /// `process_output` has not been called when needed, and HTTP3 layer has not picked up the
     /// info that the stream has been closed.)
-    fn send(&mut self, conn: &mut Connection) -> Res<()> {
-        let sent = Error::map_error(self.stream.send_buffer(conn), Error::HttpInternal(5))?;
+    /// `InvalidInput` if the underlying transport call rejects the data.
+    fn send(&mut self, conn: &mut Connection, now: Instant) -> Res<()> {
+        let sent = self.stream.send_buffer(conn, now)?;
 
         qtrace!("[{self}] {sent} bytes sent");
-        if !self.stream.has_buffered_data() {
+        if !self.has_data_to_send() {
             if self.state.done() {
-                Error::map_error(
-                    conn.stream_close_send(self.stream_id()),
-                    Error::HttpInternal(6),
-                )?;
+                conn.stream_close_send(self.stream_id())?;
                 qtrace!("[{self}] done sending request");
             } else {
                 // DataWritable is just a signal for an application to try to write more data,
@@ -266,6 +264,18 @@ impl SendStream for SendMessage {
         Ok(())
     }
 
+    fn commit(&mut self, conn: &mut Connection, now: Instant) -> Res<()> {
+        // Flush so the commitment covers everything buffered so far. If it cannot all be flushed
+        // the commitment would fall short, so fail rather than silently under-commit.
+        self.stream.send_buffer(conn, now)?;
+        if self.has_data_to_send() {
+            qdebug!("buffered data at neqo-http3 layer, failing to commit");
+            return Err(Error::FlowControlLimit);
+        }
+        conn.stream_commit(self.stream_id())?;
+        Ok(())
+    }
+
     // SendMessage owns headers and sends them. It may also own data for the server side.
     // This method returns if they're still being sent. Request body (if any) is sent by
     // http client afterwards using `send_request_body` after receiving DataWritable event.
@@ -273,9 +283,9 @@ impl SendStream for SendMessage {
         self.stream.has_buffered_data()
     }
 
-    fn close(&mut self, conn: &mut Connection) -> Res<()> {
+    fn close(&mut self, conn: &mut Connection, _now: Instant) -> Res<()> {
         self.state.fin()?;
-        if !self.stream.has_buffered_data() {
+        if !self.has_data_to_send() {
             conn.stream_close_send(self.stream_id())?;
         }
 
@@ -294,13 +304,13 @@ impl SendStream for SendMessage {
         Some(self)
     }
 
-    fn send_data_atomic(&mut self, conn: &mut Connection, buf: &[u8]) -> Res<()> {
+    fn send_data_atomic(&mut self, conn: &mut Connection, buf: &[u8], now: Instant) -> Res<()> {
         let data_frame = HFrame::Data {
-            len: buf.len() as u64,
+            len: to_u64(buf.len()),
         };
         self.stream.encode_with(|e| data_frame.encode(e));
         self.stream.buffer(buf);
-        _ = self.stream.send_buffer(conn)?;
+        _ = self.stream.send_buffer(conn, now)?;
         Ok(())
     }
 }
@@ -323,6 +333,56 @@ impl HttpSendStream for SendMessage {
 
 impl Display for SendMessage {
     fn fmt(&self, f: &mut Formatter) -> fmt::Result {
-        write!(f, "SendMesage {}", self.stream_id())
+        write!(f, "SendMessage {}", self.stream_id())
+    }
+}
+
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+mod tests {
+    use neqo_transport::StreamType;
+    use test_fixture::{connect, now};
+
+    use super::*;
+
+    #[derive(Debug)]
+    struct NoopEvents;
+    impl SendStreamEvents for NoopEvents {}
+
+    /// Regression test for <https://bugzilla.mozilla.org/show_bug.cgi?id=2071513>.
+    #[test]
+    fn send_after_transport_reset_is_an_error_not_a_panic() {
+        let (mut client, _server) = connect();
+        let stream_id = client.stream_create(StreamType::BiDi).unwrap();
+
+        let encoder = Rc::new(RefCell::new(qpack::Encoder::new(
+            &qpack::Settings::default(),
+            true,
+        )));
+        let mut msg = SendMessage::new(
+            MessageType::Request,
+            Http3StreamType::Http,
+            stream_id,
+            encoder,
+            Box::new(NoopEvents),
+        );
+        msg.send_headers(
+            &[
+                Header::new(":method", "GET"),
+                Header::new(":scheme", "https"),
+                Header::new(":authority", "something.com"),
+                Header::new(":path", "/"),
+            ],
+            &mut client,
+        )
+        .unwrap();
+
+        client.stream_reset_send(stream_id, 0).unwrap();
+
+        assert!(matches!(
+            msg.send(&mut client, now()),
+            Err(Error::TransportStreamDoesNotExist)
+        ));
+        assert!(client.state().connected());
     }
 }

@@ -6,29 +6,16 @@
       {
         "name": "showMessage",
         "type": "function",
-        "description": "Show a message using the browser notification box. Accepts a string or an array of parts to render (with optional strong modifier). Optionally target a specific tab by id.",
+        "description": "Show a localized message using the browser notification box. Optionally target a specific tab by id.",
         "async": true,
         "parameters": [
           {
             "name": "message",
-            "description": "String label or array of {text, modifier} parts.",
-            "choices": [
-              { "type": "string" },
-              {
-                "type": "array",
-                "items": {
-                  "type": "object",
-                  "properties": {
-                    "text": { "type": "string" },
-                    "modifier": {
-                      "type": "array",
-                      "optional": true,
-                      "items": { "type": "string", "enum": ["strong"] }
-                    }
-                  }
-                }
-              }
-            ]
+            "description": "Object with a Fluent l10n ID.",
+            "type": "object",
+            "properties": {
+              "l10nId": { "type": "string" }
+            }
           },
           {
             "name": "tabId",
@@ -67,16 +54,22 @@
         "parameters": [{ "name": "domain", "type": "string" }]
       },
       {
-        "name": "isTesting",
+        "name": "isIPPActiveForTab",
         "type": "function",
-        "description": "Return whether we are running in testing mode.",
+        "description": "Return whether IPP is active and proxying the page currently loaded in the given tab.",
         "async": true,
-        "parameters": []
+        "parameters": [
+          {
+            "name": "tabId",
+            "type": "integer",
+            "description": "The tab to check."
+          }
+        ]
       },
       {
-        "name": "isIPPActive",
+        "name": "getRegion",
         "type": "function",
-        "description": "Return whether IPP connection is active.",
+        "description": "Return the user's home region as an ISO 3166-1 alpha-2 code (uppercase), or null if unknown.",
         "async": true,
         "parameters": []
       },
@@ -95,9 +88,36 @@
         "parameters": []
       },
       {
+        "name": "getTabBreakagesUrl",
+        "type": "function",
+        "description": "Return the URL to fetch the base tab breakages from (pref: extensions.ippactivator.tabBreakagesUrl). Empty string means use the built-in file.",
+        "async": true,
+        "parameters": []
+      },
+      {
+        "name": "getWebRequestBreakagesUrl",
+        "type": "function",
+        "description": "Return the URL to fetch the base webRequest breakages from (pref: extensions.ippactivator.webrequestBreakagesUrl). Empty string means use the built-in file.",
+        "async": true,
+        "parameters": []
+      },
+      {
         "name": "getBaseDomainFromURL",
         "type": "function",
         "description": "Return both the eTLD+1 (baseDomain) and full host for the given URL.",
+        "async": true,
+        "parameters": [
+          {
+            "name": "url",
+            "type": "string",
+            "description": "The URL to analyze."
+          }
+        ]
+      },
+      {
+        "name": "hasExclusion",
+        "type": "function",
+        "description": "Return true if this URL has ipp-vpn permission set to DENY.",
         "async": true,
         "parameters": [
           {
@@ -110,9 +130,9 @@
     ],
     "events": [
       {
-        "name": "onIPPActivated",
+        "name": "onIPPProxyChanged",
         "type": "function",
-        "description": "Fired when IPProtectionService dispatches 'IPProtectionService:Started'.",
+        "description": "Fired when the IPP proxy state, proxy mode or site rules change, any of which can change whether a page is proxied.",
         "parameters": [
           {
             "name": "listener",
@@ -127,15 +147,7 @@
         "parameters": [
           {
             "name": "listener",
-            "type": "function",
-            "parameters": [
-              {
-                "name": "details",
-                "type": "object",
-                "optional": true,
-                "properties": {}
-              }
-            ]
+            "type": "function"
           }
         ]
       },
@@ -146,13 +158,35 @@
         "parameters": [
           {
             "name": "listener",
+            "type": "function"
+          }
+        ]
+      },
+      {
+        "name": "onIPPExceptionsChanged",
+        "type": "function",
+        "description": "Fired when the ipp-vpn permission changes.",
+        "parameters": [
+          {
+            "name": "listener",
+            "type": "function"
+          }
+        ]
+      },
+      {
+        "name": "onRegionChanged",
+        "type": "function",
+        "description": "Fired when the user's home region changes (observer on 'browser-region-updated'). The listener receives the new region.",
+        "parameters": [
+          {
+            "name": "listener",
             "type": "function",
             "parameters": [
               {
-                "name": "details",
-                "type": "object",
+                "name": "region",
+                "type": "string",
                 "optional": true,
-                "properties": {}
+                "description": "The new home region as an ISO 3166-1 alpha-2 code (uppercase), or null if unknown."
               }
             ]
           }

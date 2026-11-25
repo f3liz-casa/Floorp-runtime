@@ -13,20 +13,8 @@ import {
   FxviewTabListBase,
   FxviewTabRowBase,
 } from "chrome://browser/content/firefoxview/fxview-tab-list.mjs";
-// eslint-disable-next-line import/no-unassigned-import
+// eslint-disable-next-line import-x/no-unassigned-import
 import "chrome://global/content/elements/moz-button.mjs";
-
-const lazy = {};
-let XPCOMUtils;
-
-XPCOMUtils = ChromeUtils.importESModule(
-  "resource://gre/modules/XPCOMUtils.sys.mjs"
-).XPCOMUtils;
-XPCOMUtils.defineLazyPreferenceGetter(
-  lazy,
-  "virtualListEnabledPref",
-  "browser.firefox-view.virtual-list.enabled"
-);
 
 /**
  * A list of clickable tab items
@@ -136,9 +124,8 @@ export class OpenTabsTabList extends FxviewTabListBase {
   async focusIndex(index) {
     // Focus link or button of item
     if (
-      ((this.pinnedTabsGridView && index > this.pinnedTabs.length) ||
-        !this.pinnedTabsGridView) &&
-      lazy.virtualListEnabledPref
+      (this.pinnedTabsGridView && index > this.pinnedTabs.length) ||
+      !this.pinnedTabsGridView
     ) {
       let row = this.rootVirtualListEl.getItem(index - this.pinnedTabs.length);
       if (!row) {
@@ -261,25 +248,14 @@ export class OpenTabsTabList extends FxviewTabListBase {
         role="list"
         @keydown=${this.handleFocusElementInRow}
       >
-        ${when(
-          lazy.virtualListEnabledPref,
-          () => html`
-            <virtual-list
-              .activeIndex=${this.activeIndex}
-              .pinnedTabsIndexOffset=${this.pinnedTabsGridView
-                ? this.pinnedTabs.length
-                : 0}
-              .items=${this.pinnedTabsGridView
-                ? this.unpinnedTabs
-                : this.tabItems}
-              .template=${this.itemTemplate}
-            ></virtual-list>
-          `,
-          () =>
-            html`${this.tabItems.map((tabItem, i) =>
-              this.itemTemplate(tabItem, i)
-            )}`
-        )}
+        <virtual-list
+          .activeIndex=${this.activeIndex}
+          .pinnedTabsIndexOffset=${this.pinnedTabsGridView
+            ? this.pinnedTabs.length
+            : 0}
+          .items=${this.pinnedTabsGridView ? this.unpinnedTabs : this.tabItems}
+          .template=${this.itemTemplate}
+        ></virtual-list>
       </div>
       <slot name="menu"></slot>
     `;

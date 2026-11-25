@@ -2,6 +2,8 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
+import { AppConstants } from "resource://gre/modules/AppConstants.sys.mjs";
+
 const TOPIC_WILL_IMPORT_BOOKMARKS =
   "initial-migration-will-import-default-bookmarks";
 const TOPIC_DID_IMPORT_BOOKMARKS =
@@ -13,8 +15,10 @@ const lazy = {};
 ChromeUtils.defineESModuleGetters(lazy, {
   BookmarkHTMLUtils: "resource://gre/modules/BookmarkHTMLUtils.sys.mjs",
   BrowserUtils: "resource://gre/modules/BrowserUtils.sys.mjs",
-  FirefoxProfileMigrator: "resource:///modules/FirefoxProfileMigrator.sys.mjs",
-  MigrationUtils: "resource:///modules/MigrationUtils.sys.mjs",
+  FirefoxProfileMigrator:
+    "moz-src:///browser/components/migration/FirefoxProfileMigrator.sys.mjs",
+  MigrationUtils:
+    "moz-src:///browser/components/migration/MigrationUtils.sys.mjs",
   PlacesUtils: "resource://gre/modules/PlacesUtils.sys.mjs",
 });
 
@@ -29,17 +33,22 @@ ChromeUtils.defineESModuleGetters(lazy, {
  * @property {Function} migrate
  *   A function that will actually perform the migration of this resource's
  *   data into this browser.
+ * @property {number} [available]
+ *   The number of items the other browser has available to migrate for this
+ *   resource. Can be set before or during migrate, and is reported in
+ *   telemetry. Leave unset if the number of items cannot be counted.
  */
 
 /**
  * Shared prototype for migrators.
  *
  * To implement a migrator:
+ *
  * 1. Import this module.
  * 2. Create a subclass of MigratorBase for your new migrator.
- * 3. Override the `key` static getter with a unique identifier for the browser
+ * 3. Override the ``key`` static getter with a unique identifier for the browser
  *    that this migrator migrates from.
- * 4. If the migrator supports multiple profiles, override the sourceProfiles
+ * 4. If the migrator supports multiple profiles, override the sourceProfiles.
  *    Here we default for single-profile migrator.
  * 5. Implement getResources(aProfile) (see below).
  * 6. For startup-only migrators, override ``startupOnlyMigrator``.
@@ -68,6 +77,20 @@ export class MigratorBase {
   }
 
   /**
+   * Returns true if the data of other browsers is only read after the user
+   * has selected its folder in getPermissions. On macOS 27, reading it
+   * without that can show a "Data Access Blocked" notification. macOS 26
+   * reports kernel version 25, and macOS 27 reports kernel version 27.
+   *
+   * This is a static method so that tests can stub it.
+   *
+   * @returns {boolean}
+   */
+  static needsFolderSelectionToReadData() {
+    return AppConstants.isPlatformAndVersionAtLeast("macosx", "26.0.0");
+  }
+
+  /**
    * This method should get overridden to return an icon url of the browser
    * to be imported from. By default, this will just use the default Favicon
    * image.
@@ -83,8 +106,9 @@ export class MigratorBase {
    *
    * Returns array of profile objects from which data may be imported. The object
    * should have the following keys:
-   *   id - a unique string identifier for the profile
-   *   name - a pretty name to display to the user in the UI
+   *
+   * - ``id`` - a unique string identifier for the profile
+   * - ``name`` - a pretty name to display to the user in the UI
    *
    * Only profiles from which data can be imported should be listed.  Otherwise
    * the behavior of the migration wizard isn't well-defined.
@@ -107,6 +131,7 @@ export class MigratorBase {
    * profiles.
    *
    * Each migration resource should provide:
+   *
    * - a ``type`` getter, returning any of the migration resource types (see
    *   MigrationUtils.resourceTypes).
    *
@@ -120,8 +145,8 @@ export class MigratorBase {
    *   migration wizard wants to display the migration state for the
    *   resource.
    *
-   *   Note: In the case of a simple asynchronous implementation, you may find
-   *   MigrationUtils.wrapMigrateFunction handy for handling aCallback easily.
+   * Note: In the case of a simple asynchronous implementation, you may find
+   * MigrationUtils.wrapMigrateFunction handy for handling aCallback easily.
    *
    * For each migration type listed in MigrationUtils.resourceTypes, multiple
    * migration resources may be provided.  This practice is useful when the
@@ -173,6 +198,7 @@ export class MigratorBase {
    * that is just the Firefox migrator, see bug 737381).  Default: false.
    *
    * Startup-only migrators are different in two ways:
+   *
    * - they may only be used during startup.
    * - the user-profile is half baked during migration.  The folder exists,
    *   but it's only accessible through MigrationUtils.profileStartup.
@@ -285,8 +311,9 @@ export class MigratorBase {
    *   An optional callback that will be fired once a resourceType has finished
    *   migrating. The callback will be passed the numeric representation of the
    *   resource type followed by a boolean indicating whether or not the resource
-   *   was migrated successfully and optionally an object containing additional
-   *   details.
+   *   was migrated successfully, optionally an object containing additional
+   *   details, and the number of items that were available to migrate for the
+   *   resource type, or undefined if that number is not known.
    */
   async migrate(aItems, aStartup, aProfile, aProgressCallback = () => {}) {
     let resources = await this.#getMaybeCachedResources(aProfile);
@@ -312,6 +339,9 @@ export class MigratorBase {
         lazy.MigrationUtils._importQuantities
       )) {
         let metricName = resourceType + "Quantity";
+        if (!Glean.browserMigration[metricName]) {
+          continue;
+        }
         try {
           Glean.browserMigration[metricName][browserKey].accumulateSingleSample(
             lazy.MigrationUtils._importQuantities[resourceType]
@@ -353,6 +383,22 @@ export class MigratorBase {
       }
     };
 
+    let getDurationMetricForResourceType = resourceType => {
+      switch (resourceType) {
+        case lazy.MigrationUtils.resourceTypes.BOOKMARKS:
+          return Glean.browserMigration.bookmarksImportDuration[browserKey];
+        case lazy.MigrationUtils.resourceTypes.HISTORY:
+          return Glean.browserMigration.historyImportDuration[browserKey];
+        case lazy.MigrationUtils.resourceTypes.PASSWORDS:
+          return Glean.browserMigration.loginsImportDuration[browserKey];
+        case lazy.MigrationUtils.resourceTypes.PAYMENT_METHODS:
+          return Glean.browserMigration.cardsImportDuration[browserKey];
+        case lazy.MigrationUtils.resourceTypes.EXTENSIONS:
+          return Glean.browserMigration.extensionsImportDuration[browserKey];
+      }
+      return null;
+    };
+
     // Called either directly or through the bookmarks import callback.
     let doMigrate = async function () {
       let resourcesGroupedByItems = new Map();
@@ -381,9 +427,13 @@ export class MigratorBase {
         notify("Migration:ItemBeforeMigrate", migrationType);
 
         let itemSuccess = false;
+        let allItemResources = [...itemResources];
+        let durationMetric = getDurationMetricForResourceType(migrationType);
         for (let res of itemResources) {
+          let timerId = durationMetric?.start();
           let completeDeferred = Promise.withResolvers();
           let resourceDone = function (aSuccess, details) {
+            durationMetric?.stopAndAccumulate(timerId);
             itemResources.delete(res);
             itemSuccess |= aSuccess;
             if (itemResources.size == 0) {
@@ -395,7 +445,17 @@ export class MigratorBase {
               );
               collectMigrationTelemetry(migrationType);
 
-              aProgressCallback(migrationType, itemSuccess, details);
+              let availableQuantity = allItemResources.every(r =>
+                Number.isInteger(r.available)
+              )
+                ? allItemResources.reduce((sum, r) => sum + r.available, 0)
+                : undefined;
+              aProgressCallback(
+                migrationType,
+                itemSuccess,
+                details,
+                availableQuantity
+              );
 
               resourcesGroupedByItems.delete(migrationType);
 

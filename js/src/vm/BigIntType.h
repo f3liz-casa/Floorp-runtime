@@ -1,6 +1,4 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- * vim: set ts=8 sts=2 et sw=2 tw=80:
- * This Source Code Form is subject to the terms of the Mozilla Public
+/* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
@@ -9,7 +7,6 @@
 
 #include "mozilla/Assertions.h"
 #include "mozilla/Maybe.h"
-#include "mozilla/OperatorNewExtensions.h"
 #include "mozilla/Range.h"
 #include "mozilla/Span.h"
 
@@ -94,18 +91,116 @@ class BigInt final : public js::gc::CellWithLengthAndFlags {
   bool hasInlineDigits() const { return digitLength() <= InlineDigitsLength; }
   bool hasHeapDigits() const { return !hasInlineDigits(); }
 
+  // Note: When accessing digits it is strongly preferred to hold on to a
+  // long lived span vs creating on demand, as the hasInlineDigits
+  // call can't be optimized well by C++ compilers. See Bug 2035305
+  // for analysis.
   using Digits = mozilla::Span<Digit>;
-  Digits digits() {
+  using ConstDigits = mozilla::Span<const Digit>;
+
+  // Read a single digit by index. Prefer `digits()` when reading multiple
+  // digits
+  MOZ_ALWAYS_INLINE Digit individualDigit(size_t index) const {
+    MOZ_ASSERT(index < digitLength());
+    return (hasInlineDigits() ? inlineDigits_ : heapDigits_)[index];
+  }
+
+  // Set a single digit by index. Prefer `digits()` when writing multiple
+  // digits
+  MOZ_ALWAYS_INLINE void setIndividualDigit(size_t index, Digit value) {
+    MOZ_ASSERT(index < digitLength());
+    (hasInlineDigits() ? inlineDigits_ : heapDigits_)[index] = value;
+  }
+
+  // RAII wrapper around a Digits span that, in debug builds, asserts on
+  // destruction that the underlying BigInt's digit storage has not moved
+  // (location), been resized (length), or transitioned between inline and
+  // heap storage (identity) since the guard was constructed.
+  template <typename T>
+  class DigitsGuardT {
+    using SpanT = mozilla::Span<T>;
+    SpanT span_;
+#ifdef DEBUG
+    const BigInt* owner_ = nullptr;
+    bool wasInline_ = false;
+#endif
+
+   public:
+    DigitsGuardT() = default;
+
+    MOZ_IMPLICIT DigitsGuardT(SpanT span, const BigInt* owner)
+        : span_(span)
+#ifdef DEBUG
+          ,
+          owner_(owner),
+          wasInline_(owner ? owner->hasInlineDigits() : false)
+#endif
+    {
+#ifndef DEBUG
+      (void)owner;
+#endif
+    }
+
+    // Stop the assertions where the code is not using
+    // the span afterwards.
+    void release() {
+#ifdef DEBUG
+      owner_ = nullptr;
+#endif
+    }
+
+    ~DigitsGuardT() {
+#ifdef DEBUG
+      if (!owner_) {
+        return;
+      }
+      // Re-derive the current span and assert nothing has moved out from
+      // under us.
+      const T* nowData = owner_->hasInlineDigits() ? owner_->inlineDigits_
+                                                   : owner_->heapDigits_;
+      MOZ_ASSERT(owner_->hasInlineDigits() == wasInline_);
+      MOZ_ASSERT(nowData == span_.data());
+      MOZ_ASSERT(owner_->digitLength() == span_.size());
+#endif
+    }
+
+    DigitsGuardT(const DigitsGuardT&) = delete;
+    DigitsGuardT& operator=(const DigitsGuardT&) = delete;
+    DigitsGuardT(DigitsGuardT&&) = default;
+    DigitsGuardT& operator=(DigitsGuardT&&) = default;
+
+    // Forward the small subset of Span operations used in BigIntType.cpp.
+    MOZ_ALWAYS_INLINE T& operator[](size_t i) const { return span_[i]; }
+    MOZ_ALWAYS_INLINE size_t size() const { return span_.size(); }
+    MOZ_ALWAYS_INLINE size_t Length() const { return span_.Length(); }
+    MOZ_ALWAYS_INLINE T* data() const { return span_.data(); }
+    MOZ_ALWAYS_INLINE auto begin() const { return span_.begin(); }
+    MOZ_ALWAYS_INLINE auto end() const { return span_.end(); }
+  };
+
+  using DigitsGuard = DigitsGuardT<Digit>;
+  using ConstDigitsGuard = DigitsGuardT<const Digit>;
+
+ private:
+  // Unguarded digits should be used only internally, and only when
+  // the possibility of reallocation or GC is understood and handled.
+  MOZ_ALWAYS_INLINE Digits unguardedDigits() {
     return Digits(hasInlineDigits() ? inlineDigits_ : heapDigits_,
                   digitLength());
   }
-  using ConstDigits = mozilla::Span<const Digit>;
-  ConstDigits digits() const {
+
+  MOZ_ALWAYS_INLINE ConstDigits unguardedDigits() const {
     return ConstDigits(hasInlineDigits() ? inlineDigits_ : heapDigits_,
                        digitLength());
   }
-  Digit digit(size_t idx) const { return digits()[idx]; }
-  void setDigit(size_t idx, Digit digit) { digits()[idx] = digit; }
+
+ public:
+  MOZ_ALWAYS_INLINE DigitsGuard digits() {
+    return DigitsGuard(unguardedDigits(), this);
+  }
+  MOZ_ALWAYS_INLINE ConstDigitsGuard digits() const {
+    return ConstDigitsGuard(unguardedDigits(), this);
+  }
 
   bool isZero() const { return digitLength() == 0; }
   bool isNegative() const { return headerFlagsField() & SignBit; }
@@ -122,8 +217,11 @@ class BigInt final : public js::gc::CellWithLengthAndFlags {
   }
 
   js::HashNumber hash() const;
-  size_t sizeOfExcludingThis(mozilla::MallocSizeOf mallocSizeOf) const;
-  size_t sizeOfExcludingThisInNursery(mozilla::MallocSizeOf mallocSizeOf) const;
+  size_t sizeOfExcludingThis() const;
+  size_t sizeOfExcludingThisInNursery() const;
+
+  BigInt(const BigInt& other) = delete;
+  void operator=(const BigInt& other) = delete;
 
   static BigInt* createUninitialized(JSContext* cx, size_t digitLength,
                                      bool isNegative,
@@ -254,8 +352,6 @@ class BigInt final : public js::gc::CellWithLengthAndFlags {
   static bool equal(const BigInt* lhs, double rhs);
   static JS::Result<bool> equal(JSContext* cx, Handle<BigInt*> lhs,
                                 HandleString rhs);
-  static JS::Result<bool> looselyEqual(JSContext* cx, Handle<BigInt*> lhs,
-                                       HandleValue rhs);
 
   static bool lessThan(const BigInt* x, const BigInt* y);
   // These methods return Nothing when the non-BigInt operand is NaN
@@ -328,6 +424,20 @@ class BigInt final : public js::gc::CellWithLengthAndFlags {
       const mozilla::Maybe<MutableHandle<BigInt*>>& remainder,
       bool quotientNegative);
 
+  // Store `multiplicand * multiplier` into `product`, which must have one more
+  // digit than `multiplicand`.
+  static void multiplyDigits(ConstDigits multiplicand, Digit multiplier,
+                             Digits product);
+  // Subtract `y` from the low `y.size()` digits of `x`, returning the borrow.
+  static Digit inplaceSubDigits(Digits x, ConstDigits y);
+  // Add `y` to the low `y.size()` digits of `x`, returning the carry.
+  static Digit inplaceAddDigits(Digits x, ConstDigits y);
+  // Knuth's Algorithm D (schoolbook division): compute `<q,u> = <u/v,u%v>`,
+  // using `qhatv` for scratch space. `q` may be empty, if the caller only needs
+  // the remainder. See the definition for full preconditions.
+  static void divideDigitsInPlace(Digits u, ConstDigits v, Digits q,
+                                  Digits qhatv);
+
   enum class LeftShiftMode { SameSizeResult, AlwaysAddOneDigit };
 
   static BigInt* absoluteLeftShiftAlwaysCopy(JSContext* cx, Handle<BigInt*> x,
@@ -341,8 +451,6 @@ class BigInt final : public js::gc::CellWithLengthAndFlags {
                                               uint64_t bits,
                                               bool resultNegative);
 
-  Digit absoluteInplaceAdd(const BigInt* summand, unsigned startIndex);
-  Digit absoluteInplaceSub(const BigInt* subtrahend, unsigned startIndex);
   void inplaceRightShiftLowZeroBits(unsigned shift);
   void inplaceMultiplyAdd(Digit multiplier, Digit part);
 
@@ -383,28 +491,47 @@ class BigInt final : public js::gc::CellWithLengthAndFlags {
   static BigInt* absoluteSubOne(JSContext* cx, Handle<BigInt*> x,
                                 bool resultNegative = false);
 
-  // Return `a + b`, incrementing `*carry` if the addition overflows.
+  // Return `a + b`, setting `*carry` to the carry out of the addition.
   static inline Digit digitAdd(Digit a, Digit b, Digit* carry) {
     Digit result = a + b;
-    *carry += static_cast<Digit>(result < a);
+    *carry = static_cast<Digit>(result < a);
     return result;
   }
 
-  // Return `left - right`, incrementing `*borrow` if the addition overflows.
+  // Return `a + b + c`, setting `*carry` to the carry out of the addition,
+  // which is at most 2.
+  static Digit digitAdd3(Digit a, Digit b, Digit c, Digit* carry);
+
+  // Return `left - right`, setting `*borrow` to the borrow out of the
+  // subtraction.
   static inline Digit digitSub(Digit left, Digit right, Digit* borrow) {
     Digit result = left - right;
-    *borrow += static_cast<Digit>(result > left);
+    *borrow = static_cast<Digit>(result > left);
     return result;
   }
+
+  // Return `a - b - c`, setting `*borrow` to the borrow out of the
+  // subtraction, which is at most 2.
+  static Digit digitSub3(Digit a, Digit b, Digit c, Digit* borrow);
 
   // Compute `a * b`, returning the low half of the result and putting the
   // high half in `*high`.
   static Digit digitMul(Digit a, Digit b, Digit* high);
+  // Return the low digit of `a * b + c + d`, storing the high digit in
+  // `*high`.
+  static Digit digitMulAdd(Digit a, Digit b, Digit c, Digit d, Digit* high);
 
   // Divide `(high << DigitBits) + low` by `divisor`, returning the quotient
   // and storing the remainder in `*remainder`, with the precondition that
   // `high < divisor` so that the result fits in a Digit.
   static Digit digitDiv(Digit high, Digit low, Digit divisor, Digit* remainder);
+
+  // A divide-two-by-one operation that is the same as digitDiv, but faster if
+  // hardware division is unavailable.
+  static inline Digit normalizedDigitInverse(Digit divisor);
+  static inline Digit digitDivByMultiplication(Digit high, Digit low,
+                                               Digit divisor, Digit inverse,
+                                               Digit* remainder);
 
   // Return `(|x| + |y|) * (resultNegative ? -1 : +1)`.
   static BigInt* absoluteAdd(JSContext* cx, Handle<BigInt*> x,
@@ -420,6 +547,7 @@ class BigInt final : public js::gc::CellWithLengthAndFlags {
   static int8_t absoluteCompare(const BigInt* lhs, const BigInt* rhs);
 
  private:
+  static int8_t absoluteCompare(ConstDigits x, ConstDigits y);
   static int8_t compare(const BigInt* lhs, double rhs);
 
   template <js::AllowGC allowGC>
@@ -439,18 +567,15 @@ class BigInt final : public js::gc::CellWithLengthAndFlags {
   uint64_t uint64FromAbsNonZero() const {
     MOZ_ASSERT(!isZero());
 
-    uint64_t val = digit(0);
+    uint64_t val = individualDigit(0);
     if (DigitBits == 32 && digitLength() > 1) {
-      val |= static_cast<uint64_t>(digit(1)) << 32;
+      val |= static_cast<uint64_t>(individualDigit(1)) << 32;
     }
     return val;
   }
 
   friend struct ::JSStructuredCloneReader;
   friend struct ::JSStructuredCloneWriter;
-
-  BigInt(const BigInt& other) = delete;
-  void operator=(const BigInt& other) = delete;
 
  public:
   static constexpr size_t offsetOfFlags() { return offsetOfHeaderFlags(); }

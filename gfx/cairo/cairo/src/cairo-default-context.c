@@ -887,19 +887,24 @@ _cairo_default_context_rectangle (void *abstract_cr,
     cairo_default_context_t *cr = abstract_cr;
     cairo_status_t status;
 
+    /* Use absolute coordinates for the far corner so that the edges of
+     * abutting rectangles convert to identical fixed-point coordinates.
+     * With rel_line_to, the far edge would be fixed(x) + fixed(width),
+     * which can differ from fixed(x + width) by 1/256 and open a gap
+     * between rectangles sharing an edge (issue #976). */
     status = _cairo_default_context_move_to (cr, x, y);
     if (unlikely (status))
 	return status;
 
-    status = _cairo_default_context_rel_line_to (cr, width, 0);
+    status = _cairo_default_context_line_to (cr, x + width, y);
     if (unlikely (status))
 	return status;
 
-    status = _cairo_default_context_rel_line_to (cr, 0, height);
+    status = _cairo_default_context_line_to (cr, x + width, y + height);
     if (unlikely (status))
 	return status;
 
-    status = _cairo_default_context_rel_line_to (cr, -width, 0);
+    status = _cairo_default_context_line_to (cr, x, y + height);
     if (unlikely (status))
 	return status;
 
@@ -1508,7 +1513,7 @@ _cairo_default_context_create (void *target)
 
     cr = _freed_pool_get (&context_pool);
     if (unlikely (cr == NULL)) {
-	cr = _cairo_malloc (sizeof (cairo_default_context_t));
+	cr = _cairo_calloc (sizeof (cairo_default_context_t));
 	if (unlikely (cr == NULL))
 	    return _cairo_create_in_error (_cairo_error (CAIRO_STATUS_NO_MEMORY));
     }

@@ -11,10 +11,13 @@
 #ifndef MODULES_AUDIO_DEVICE_INCLUDE_MOCK_AUDIO_DEVICE_H_
 #define MODULES_AUDIO_DEVICE_INCLUDE_MOCK_AUDIO_DEVICE_H_
 
-#include <string>
+#include <cstdint>
+#include <optional>
 
 #include "api/audio/audio_device.h"
+#include "api/audio/audio_device_defines.h"
 #include "api/make_ref_counted.h"
+#include "api/scoped_refptr.h"
 #include "test/gmock.h"
 
 namespace webrtc {
@@ -138,6 +141,11 @@ class MockAudioDeviceModule : public AudioDeviceModule {
   MOCK_METHOD(int32_t, EnableBuiltInAGC, (bool enable), (override));
   MOCK_METHOD(int32_t, EnableBuiltInNS, (bool enable), (override));
   MOCK_METHOD(int32_t, GetPlayoutUnderrunCount, (), (const, override));
+  MOCK_METHOD(std::optional<Stats>, GetStats, (), (const, override));
+  MOCK_METHOD(std::optional<ProcessingTimeStats>,
+              GetAndResetCaptureProcessingTimeStats,
+              (),
+              (override));
 #if defined(WEBRTC_IOS)
   MOCK_METHOD(int,
               GetPlayoutAudioParameters,

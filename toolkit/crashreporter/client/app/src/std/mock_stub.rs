@@ -5,6 +5,20 @@
 
 //! Stubs used when mocking isn't enabled.
 
+/// A static which can be replaced with mocked values when mocking is enabled.
+///
+/// This is especially useful to avoid statics with interior mutations affecting tests.
+macro_rules! mocked_static {
+    ( $(#[$m:meta])* $vis:vis static $name:ident: $T:ty = $init:expr ;
+      mocked type = $MT:ty ;
+      $($impl:item)*
+    ) => {
+        $(#[$m])* $vis static $name: $T = $init;
+    }
+}
+
+pub(crate) use mocked_static;
+
 /// Create a mock hook with the given name. When mocking isn't enabled, the given value will be
 /// used instead. Panics if the hook isn't set.
 #[inline(always)]

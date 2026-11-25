@@ -2,11 +2,11 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-// eslint-disable-next-line import/no-unresolved
+// eslint-disable-next-line import-x/no-unresolved
 import { html } from "lit.all.mjs";
 import "./backup-settings.mjs";
 
-window.MozXULElement.insertFTLIfNeeded("locales-preview/backupSettings.ftl");
+window.MozXULElement.insertFTLIfNeeded("browser/backupSettings.ftl");
 window.MozXULElement.insertFTLIfNeeded("branding/brand.ftl");
 
 export default {
@@ -28,6 +28,9 @@ ScheduledBackupsDisabled.args = {
       fileName: "Documents",
     },
     scheduledBackupsEnabled: false,
+    backupErrorCode: 0,
+    archiveEnabledStatus: true,
+    restoreEnabledStatus: true,
   },
 };
 
@@ -40,6 +43,9 @@ ScheduledBackupsEnabled.args = {
       fileName: "Documents",
     },
     scheduledBackupsEnabled: true,
+    backupErrorCode: 0,
+    archiveEnabledStatus: true,
+    restoreEnabledStatus: true,
   },
 };
 
@@ -54,6 +60,9 @@ ExistingBackup.args = {
     scheduledBackupsEnabled: true,
     lastBackupDate: 1719625747,
     lastBackupFileName: "FirefoxBackup_default_123123123.html",
+    backupErrorCode: 0,
+    archiveEnabledStatus: true,
+    restoreEnabledStatus: true,
   },
 };
 
@@ -69,5 +78,8 @@ EncryptionEnabled.args = {
     encryptionEnabled: true,
     lastBackupDate: 1719625747,
     lastBackupFileName: "FirefoxBackup_default_123123123.html",
+    backupErrorCode: 0,
+    archiveEnabledStatus: true,
+    restoreEnabledStatus: true,
   },
 };

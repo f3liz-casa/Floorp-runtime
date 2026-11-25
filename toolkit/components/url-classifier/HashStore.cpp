@@ -1,4 +1,3 @@
-//* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 // Originally based on Chrome sources:
 // Copyright (c) 2010 The Chromium Authors. All rights reserved.
 //
@@ -176,7 +175,7 @@ void TableUpdateV4::NewPrefixes(int32_t aSize, const nsACString& aPrefixes) {
          aPrefixes.Length() / aSize));
   }
 
-  mPrefixesMap.InsertOrUpdate(aSize, MakeUnique<nsCString>(aPrefixes));
+  mPrefixesMap.InsertOrUpdate(aSize, std::make_unique<nsCString>(aPrefixes));
 }
 
 nsresult TableUpdateV4::NewRemovalIndices(const uint32_t* aIndices,

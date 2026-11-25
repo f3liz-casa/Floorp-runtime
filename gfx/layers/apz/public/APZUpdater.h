@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -10,20 +8,20 @@
 #include <deque>
 #include <unordered_map>
 
-#include "base/platform_thread.h"  // for PlatformThreadId
 #include "LayersTypes.h"
-#include "mozilla/layers/APZTestData.h"
-#include "mozilla/layers/WebRenderScrollData.h"
+#include "Units.h"
+#include "base/platform_thread.h"  // for PlatformThreadId
 #include "mozilla/StaticMutex.h"
 #include "mozilla/StaticPtr.h"
+#include "mozilla/layers/WebRenderScrollData.h"
 #include "mozilla/webrender/WebRenderTypes.h"
 #include "nsThreadUtils.h"
-#include "Units.h"
 
 namespace mozilla {
 
 namespace layers {
 
+class APZTestData;
 class APZCTreeManager;
 class FocusTarget;
 class WebRenderScrollData;
@@ -106,6 +104,14 @@ class APZUpdater {
    */
   void AssertOnUpdaterThread() const;
 
+  /**
+   * Like AssertOnUpdaterThread, but also accepts being called when the updater
+   * (scene builder) thread never came up. In that case updater-thread work is
+   * run directly on the compositor thread (see APZUpdater::ClearTree).
+   * This does nothing if thread assertions are disabled.
+   */
+  void AssertOnUpdaterThreadOrNotInitialized() const;
+
   enum class DuringShutdown {
     No,
     Yes,
@@ -121,7 +127,9 @@ class APZUpdater {
    * then tasks for the other layer trees can still be processed.
    *
    * In the case of where |aDuringShutdown| is `Yes` this function doesn't
-   * invoke `WebRenderAPI::WakeSceneBuilder` explicitly.
+   * invoke `WebRenderAPI::WakeSceneBuilder` explicitly, and the task doesn't
+   * wait for its layers id to be unblocked, since the scene that would unblock
+   * it may never get built once WebRender is shutting down.
    */
   void RunOnUpdaterThread(LayersId aLayersId, already_AddRefed<Runnable> aTask,
                           DuringShutdown aDuringShutdown = DuringShutdown::No);
@@ -161,6 +169,11 @@ class APZUpdater {
   void ProcessQueue();
 
  private:
+  // Returns true if the updater (scene builder) thread has come up, i.e. its
+  // thread id has been recorded. When this is false, updater-thread work is
+  // run directly on the compositor thread (see APZUpdater::ClearTree).
+  bool HasUpdaterThread() const;
+
   RefPtr<APZCTreeManager> mApz;
   bool mDestroyed;
   bool mConnectedToWebRender;
@@ -225,6 +238,7 @@ class APZUpdater {
   struct QueuedTask {
     LayersId mLayersId;
     RefPtr<Runnable> mRunnable;
+    DuringShutdown mDuringShutdown = DuringShutdown::No;
   };
 
   // Lock used to protect mUpdaterQueue

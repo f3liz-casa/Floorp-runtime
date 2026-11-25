@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -30,14 +28,16 @@ ServiceWorkerRegistrationDescriptor::NewestInternal() const {
 
 ServiceWorkerRegistrationDescriptor::ServiceWorkerRegistrationDescriptor(
     uint64_t aId, uint64_t aVersion, nsIPrincipal* aPrincipal,
-    const nsACString& aScope, ServiceWorkerUpdateViaCache aUpdateViaCache)
-    : mData(MakeUnique<IPCServiceWorkerRegistrationDescriptor>()) {
+    const nsACString& aScope, WorkerType aType,
+    ServiceWorkerUpdateViaCache aUpdateViaCache)
+    : mData(std::make_unique<IPCServiceWorkerRegistrationDescriptor>()) {
   MOZ_ALWAYS_SUCCEEDS(
       PrincipalToPrincipalInfo(aPrincipal, &mData->principalInfo()));
 
   mData->id() = aId;
   mData->version() = aVersion;
   mData->scope() = aScope;
+  mData->type() = aType;
   mData->updateViaCache() = aUpdateViaCache;
   mData->installing() = Nothing();
   mData->waiting() = Nothing();
@@ -47,14 +47,15 @@ ServiceWorkerRegistrationDescriptor::ServiceWorkerRegistrationDescriptor(
 ServiceWorkerRegistrationDescriptor::ServiceWorkerRegistrationDescriptor(
     uint64_t aId, uint64_t aVersion,
     const mozilla::ipc::PrincipalInfo& aPrincipalInfo, const nsACString& aScope,
-    ServiceWorkerUpdateViaCache aUpdateViaCache)
-    : mData(MakeUnique<IPCServiceWorkerRegistrationDescriptor>(
-          aId, aVersion, aPrincipalInfo, nsCString(aScope), aUpdateViaCache,
-          Nothing(), Nothing(), Nothing())) {}
+    WorkerType aType, ServiceWorkerUpdateViaCache aUpdateViaCache)
+    : mData(std::make_unique<IPCServiceWorkerRegistrationDescriptor>(
+          aId, aVersion, aPrincipalInfo, nsCString(aScope), aType,
+          aUpdateViaCache, Nothing(), Nothing(), Nothing())) {}
 
 ServiceWorkerRegistrationDescriptor::ServiceWorkerRegistrationDescriptor(
     const IPCServiceWorkerRegistrationDescriptor& aDescriptor)
-    : mData(MakeUnique<IPCServiceWorkerRegistrationDescriptor>(aDescriptor)) {
+    : mData(std::make_unique<IPCServiceWorkerRegistrationDescriptor>(
+          aDescriptor)) {
 #ifndef FUZZING_SNAPSHOT
   MOZ_DIAGNOSTIC_ASSERT(IsValid());
 #endif
@@ -75,7 +76,8 @@ ServiceWorkerRegistrationDescriptor::operator=(
     return *this;
   }
   mData.reset();
-  mData = MakeUnique<IPCServiceWorkerRegistrationDescriptor>(*aRight.mData);
+  mData =
+      std::make_unique<IPCServiceWorkerRegistrationDescriptor>(*aRight.mData);
   MOZ_DIAGNOSTIC_ASSERT(IsValid());
   return *this;
 }
@@ -95,9 +97,9 @@ ServiceWorkerRegistrationDescriptor::operator=(
   return *this;
 }
 
-ServiceWorkerRegistrationDescriptor::~ServiceWorkerRegistrationDescriptor() {
-  // Non-default destructor to avoid exposing the IPC type in the header.
-}
+// Avoid exposing the IPC type in the header.
+ServiceWorkerRegistrationDescriptor::~ServiceWorkerRegistrationDescriptor() =
+    default;
 
 bool ServiceWorkerRegistrationDescriptor::operator==(
     const ServiceWorkerRegistrationDescriptor& aRight) const {
@@ -128,6 +130,10 @@ ServiceWorkerRegistrationDescriptor::GetPrincipal() const {
 
 const nsCString& ServiceWorkerRegistrationDescriptor::Scope() const {
   return mData->scope();
+}
+
+WorkerType ServiceWorkerRegistrationDescriptor::Type() const {
+  return mData->type();
 }
 
 Maybe<ServiceWorkerDescriptor>
@@ -234,6 +240,10 @@ bool ServiceWorkerRegistrationDescriptor::IsValid() const {
 void ServiceWorkerRegistrationDescriptor::SetUpdateViaCache(
     ServiceWorkerUpdateViaCache aUpdateViaCache) {
   mData->updateViaCache() = aUpdateViaCache;
+}
+
+void ServiceWorkerRegistrationDescriptor::SetWorkerType(WorkerType aType) {
+  mData->type() = aType;
 }
 
 void ServiceWorkerRegistrationDescriptor::SetWorkers(

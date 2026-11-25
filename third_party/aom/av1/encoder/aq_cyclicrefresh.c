@@ -165,7 +165,7 @@ void av1_cyclic_reset_segment_skip(const AV1_COMP *cpi, MACROBLOCK *const x,
 
   assert(cm->seg.enabled);
 
-  if (!cr->skip_over4x4 && !cpi->roi.reference_enabled) {
+  if (!cr->skip_over4x4 && cm->seg.update_map && !cm->seg.segid_preskip) {
     mbmi->segment_id =
         av1_get_spatial_seg_pred(cm, xd, &cdf_num, cr->skip_over4x4);
     if (prev_segment_id != mbmi->segment_id) {
@@ -439,6 +439,8 @@ void av1_cyclic_refresh_update_parameters(AV1_COMP *const cpi) {
   // should we enable cyclic refresh on this frame.
   cr->apply_cyclic_refresh = 1;
   if (frame_is_intra_only(cm) || is_lossless_requested(&cpi->oxcf.rc_cfg) ||
+      (is_one_pass_rt_lag_params(cpi) &&
+       (cpi->refresh_frame.alt_ref_frame || cpi->rc.is_src_frame_alt_ref)) ||
       cpi->roi.enabled || cpi->rc.high_motion_content_screen_rtc ||
       scene_change_detected || svc->temporal_layer_id > 0 ||
       svc->prev_number_spatial_layers != svc->number_spatial_layers ||
@@ -582,6 +584,16 @@ void av1_cyclic_refresh_setup(AV1_COMP *const cpi) {
       unsigned char *const seg_map = cpi->enc_seg.map;
       memset(seg_map, 0, cm->mi_params.mi_rows * cm->mi_params.mi_cols);
       av1_disable_segmentation(&cm->seg);
+    } else if (segfeature_active(seg, CR_SEGMENT_ID_BOOST1, SEG_LVL_ALT_Q) ||
+               segfeature_active(seg, CR_SEGMENT_ID_BOOST2, SEG_LVL_ALT_Q) ||
+               (cm->prev_frame &&
+                (segfeature_active(&cm->prev_frame->seg, CR_SEGMENT_ID_BOOST1,
+                                   SEG_LVL_ALT_Q) ||
+                 segfeature_active(&cm->prev_frame->seg, CR_SEGMENT_ID_BOOST2,
+                                   SEG_LVL_ALT_Q)))) {
+      av1_disable_segfeature(seg, CR_SEGMENT_ID_BOOST1, SEG_LVL_ALT_Q);
+      av1_disable_segfeature(seg, CR_SEGMENT_ID_BOOST2, SEG_LVL_ALT_Q);
+      seg->update_data = 1;
     }
     if (frame_is_intra_only(cm) || scene_change_detected ||
         cpi->ppi->rtc_ref.bias_recovery_frame) {
@@ -645,7 +657,8 @@ void av1_cyclic_refresh_setup(AV1_COMP *const cpi) {
         qindex2, cm->seq_params->bit_depth,
         cpi->ppi->gf_group.update_type[cpi->gf_frame_index], layer_depth,
         boost_index, frame_type, cpi->oxcf.q_cfg.use_fixed_qp_offsets,
-        is_stat_consumption_stage(cpi), cpi->oxcf.tune_cfg.tuning);
+        is_stat_consumption_stage(cpi), cpi->oxcf.tune_cfg.tuning,
+        cpi->oxcf.mode);
 
     av1_set_segdata(seg, CR_SEGMENT_ID_BOOST1, SEG_LVL_ALT_Q, qindex_delta);
 
@@ -666,13 +679,9 @@ int av1_cyclic_refresh_get_rdmult(const CYCLIC_REFRESH *cr) {
   return cr->rdmult;
 }
 
-int av1_cyclic_refresh_disable_lf_cdef(AV1_COMP *const cpi) {
+int av1_cyclic_refresh_disable_lf(AV1_COMP *const cpi) {
   CYCLIC_REFRESH *const cr = cpi->cyclic_refresh;
   const int qindex = cpi->common.quant_params.base_qindex;
-  if (cpi->active_map.enabled &&
-      cpi->rc.percent_blocks_inactive >
-          cpi->sf.rt_sf.thresh_active_maps_skip_lf_cdef)
-    return 1;
   if (cpi->rc.frames_since_key > 30 && cr->percent_refresh > 0 &&
       cr->counter_encode_maxq_scene_change > 300 / cr->percent_refresh &&
       cpi->rc.frame_source_sad < 1000 &&

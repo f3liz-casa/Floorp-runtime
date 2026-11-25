@@ -11,7 +11,6 @@ apt_packages=()
 apt_packages+=('curl')
 apt_packages+=('iproute2')
 apt_packages+=('locales')
-apt_packages+=('m4')
 apt_packages+=('fzf')
 apt_packages+=('graphviz')
 apt_packages+=('python3-pip')
@@ -33,18 +32,6 @@ dpkg-reconfigure locales
 
 su -c 'git config --global user.email "worker@mozilla.test"' worker
 su -c 'git config --global user.name "worker"' worker
-
-cd /build
-
-###
-# ESLint Setup
-###
-
-# install node
-# shellcheck disable=SC1091
-. install-node.sh
-
-npm install -g yarn@1.22.18
 
 cd /
 rm -rf /setup

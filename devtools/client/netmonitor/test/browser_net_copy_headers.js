@@ -18,14 +18,11 @@ add_task(async function () {
     "devtools/client/netmonitor/src/selectors/index"
   );
 
-  const wait = waitForNetworkEvents(monitor, 1);
-  await reloadBrowser();
-  await wait;
+  const onNetworkEvents = waitForNetworkEvents(monitor, 1);
+  await reloadSelectedTab();
+  await onNetworkEvents;
 
-  EventUtils.sendMouseEvent(
-    { type: "mousedown" },
-    document.querySelectorAll(".request-list-item")[0]
-  );
+  clickOnRequestRow(document.querySelectorAll(".request-list-item")[0]);
 
   const requestItem = getSortedRequests(store.getState())[0];
   const { method, httpVersion, status, statusText } = requestItem;
@@ -43,7 +40,7 @@ add_task(async function () {
     "Host: example.com",
     "User-Agent: " + navigator.userAgent + "",
     "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-    "Accept-Language: " + navigator.languages.join(",") + ";q=0.5",
+    "Accept-Language: " + navigator.languages.join(",") + ";q=0.9",
     "Accept-Encoding: gzip, deflate",
     "Connection: keep-alive",
     "Upgrade-Insecure-Requests: 1",

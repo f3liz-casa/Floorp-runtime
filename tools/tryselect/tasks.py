@@ -3,24 +3,57 @@
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
 
+import gc
 import os
 import re
+import shutil
+import subprocess
 import sys
+import tempfile
 from collections import defaultdict
 
 import mozpack.path as mozpath
 import taskgraph
 from mach.util import get_state_dir
 from mozbuild.base import MozbuildObject
+from mozbuild.util import construct_log_filename
 from mozpack.files import FileFinder
+from mozsystemmonitor.resourcemonitor import SystemResourceMonitor
 from moztest.resolve import TestManifestLoader, TestResolver, get_suite_definition
-from taskgraph.generator import TaskGraphGenerator
+from taskgraph.generator import TaskGraphGenerator, load_graph_config
 from taskgraph.parameters import ParameterMismatch, parameters_loader
 from taskgraph.taskgraph import TaskGraph
 from taskgraph.util import json
+from taskgraph.util.vcs import get_repository
+
+from tryselect.util.project import get_project_topsrcdir
 
 here = os.path.abspath(os.path.dirname(__file__))
 build = MozbuildObject.from_environment(cwd=here)
+
+
+def comm_parameter_overrides(comm_topsrcdir):
+    """Parameters required to generate the comm taskgraph locally.
+
+    The comm_* parameters have no defaults (they are normally injected by the
+    decision task), so derive head/base from the comm checkout and hardcode the
+    repositories for try."""
+    repo = get_repository(comm_topsrcdir)
+    rev = repo.head_rev
+    ref = repo.branch or rev
+    src_path = os.path.relpath(comm_topsrcdir, build.topsrcdir).replace(os.sep, "/")
+    return {
+        "project": "try-comm-central",
+        "comm_head_repository": "https://hg.mozilla.org/comm-central",
+        "comm_head_rev": rev,
+        "comm_head_ref": ref,
+        "comm_base_repository": "https://hg.mozilla.org/comm-central",
+        "comm_base_rev": rev,
+        "comm_base_ref": ref,
+        "comm_src_path": f"{src_path}/",
+        "message": "",
+    }
+
 
 PARAMETER_MISMATCH = """
 ERROR - The parameters being used to generate tasks differ from those expected
@@ -51,6 +84,76 @@ def invalidate(cache):
 
     if tmod > cmod:
         os.remove(cache)
+
+
+WATCHMAN_TRIGGER_NAME = "rebuild-taskgraph-cache"
+
+WATCHMAN_HINT = """\
+Tip: this ~20s wait happens whenever a file under taskcluster/ changes (e.g.
+after pulling firefox-main or switching branches). watchman can rebuild the
+taskgraph cache in the background so `mach try` stays fast. Since watchman is
+already watching this checkout, enable it with:
+
+    watchman -j < {watchman_json}
+{powershell}
+See https://firefox-source-docs.mozilla.org/tools/try/tasks.html for details.
+"""
+
+WATCHMAN_HINT_POWERSHELL = """\
+
+PowerShell on Windows does not support the `<` redirection operator. Run it
+through cmd instead:
+
+    cmd /d /c "watchman -j < {watchman_json}"
+"""
+
+
+def suggest_watchman_setup():
+    """On an interactive cache miss, nudge the user toward the watchman trigger
+    that keeps the taskgraph cache warm in the background.
+
+    Only shown when stdout is a terminal (so the background watchman trigger and
+    CI runs stay silent), watchman is installed and already watching the
+    checkout, and the trigger is not already registered."""
+    if not sys.stdout.isatty():
+        return
+
+    watchman = shutil.which("watchman")
+    if not watchman:
+        return
+
+    try:
+        proc = subprocess.run(
+            [watchman, "trigger-list", build.topsrcdir],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return
+
+    # Only suggest when watchman is already watching this checkout (a failed
+    # `trigger-list` means it is not) and our trigger is not registered yet, so
+    # we never provoke inotify-limit issues by watching the firefox checkout here.
+    if proc.returncode != 0 or WATCHMAN_TRIGGER_NAME in proc.stdout:
+        return
+
+    watchman_json = mozpath.normsep(os.path.join(here, "watchman.json"))
+    powershell = ""
+    if sys.platform == "win32":
+        powershell = WATCHMAN_HINT_POWERSHELL.format(watchman_json=watchman_json)
+    print(WATCHMAN_HINT.format(watchman_json=watchman_json, powershell=powershell))
+
+
+def write_profile(monitor):
+    log_subdir = os.path.join("logs", "try")
+    build._ensure_state_subdir_exists(log_subdir)
+    profile_path = build._get_state_filename(
+        construct_log_filename("profile"), subdir=log_subdir
+    )
+    with open(profile_path, "w", encoding="utf-8", newline="\n") as f:
+        json.dump(monitor.as_profile(), f)
 
 
 def cache_key(attr, params, disable_target_task_filter, target_tasks_method):
@@ -114,10 +217,29 @@ def generate_tasks(
         overrides["target_tasks_method"] = target_tasks_method
         overrides["filters"].insert(0, "target_tasks_method")
 
+    project_topsrcdir = get_project_topsrcdir(build)
+    comm = project_topsrcdir != build.topsrcdir
+    if comm:
+        overrides.update(comm_parameter_overrides(project_topsrcdir))
+        root = os.path.join(project_topsrcdir, "taskcluster")
+    else:
+        root = os.path.join(build.topsrcdir, "taskcluster")
+
     params = parameters_loader(param_spec, strict=False, overrides=overrides)
-    root = os.path.join(build.topsrcdir, "taskcluster")
     taskgraph.fast = True
-    generator = TaskGraphGenerator(root_dir=root, parameters=params)
+
+    if comm:
+        # The generator only runs the root graph_config's register hook
+        # (comm_taskgraph:register). Gecko's extensions (try_select_tasks
+        # filter, target task methods, transforms) must be registered first,
+        # mirroring the comm decision task in taskcluster/mach_commands.py.
+        from gecko_taskgraph import register as register_gecko_taskgraph
+
+        register_gecko_taskgraph(load_graph_config(root))
+
+    generator = TaskGraphGenerator(
+        root_dir=root, parameters=params, enable_verifications=False
+    )
 
     cache_dir = os.path.join(
         get_state_dir(specific_to_topsrcdir=True), "cache", "taskgraph"
@@ -136,6 +258,7 @@ def generate_tasks(
         os.makedirs(cache_dir)
 
     print("Task configuration changed, generating {}".format(attr.replace("_", " ")))
+    suggest_watchman_setup()
 
     cwd = os.getcwd()
     os.chdir(build.topsrcdir)
@@ -147,24 +270,40 @@ def generate_tasks(
             print(PARAMETER_MISMATCH.format(e.args[0]))
             sys.exit(1)
 
+        # The generated graph is long-lived and taskgraph collects no garbage
+        # while generating it, so a collection triggered while serializing it
+        # would walk the whole heap for little gain.
+        gc.freeze()
+
         # write cache
         key = cache_key(
             attr, generator.parameters, disable_target_task_filter, target_tasks_method
         )
+        SystemResourceMonitor.begin_marker("Taskgraph", f"write {attr} cache")
         with open(os.path.join(cache_dir, key), "w") as fh:
             json.dump(tg.to_json(), fh)
+        SystemResourceMonitor.end_marker("Taskgraph", f"write {attr} cache")
         return add_chunk_patterns(tg)
 
-    # Cache both full_task_set and target_task_set regardless of whether or not
-    # --full was requested. Caching is cheap and can potentially save a lot of
-    # time.
-    tg_full = generate("full_task_set")
-    tg_target = generate("target_task_set")
+    monitor = None
+    if not SystemResourceMonitor.instance:
+        monitor = SystemResourceMonitor(poll_interval=0.1)
+        monitor.start()
+        fd, forward_path = tempfile.mkstemp(prefix="taskgraph-", suffix=".jsonl")
+        os.close(fd)
+        monitor.accept_forwarded(forward_path)
 
-    # discard results from these, we only need cache.
-    if full:
-        generate("full_task_graph")
-    generate("target_task_graph")
+    try:
+        # Cache both full_task_set and target_task_set regardless of whether or
+        # not --full was requested. Caching is cheap and can potentially save a
+        # lot of time.
+        tg_full = generate("full_task_set")
+        tg_target = generate("target_task_set")
+    finally:
+        if monitor:
+            monitor.stop()
+            os.remove(forward_path)
+            write_profile(monitor)
 
     os.chdir(cwd)
     if full:

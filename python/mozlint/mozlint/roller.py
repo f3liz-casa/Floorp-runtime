@@ -2,6 +2,8 @@
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
+from __future__ import annotations
+
 import atexit
 import copy
 import logging
@@ -10,6 +12,7 @@ import signal
 import sys
 import time
 from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures import wait as futures_wait
 from concurrent.futures.process import _python_exit as futures_atexit
 from itertools import chain
 from math import ceil
@@ -27,7 +30,7 @@ from mozversioncontrol import (
 
 from .errors import LintersNotConfigured, NoValidLinter
 from .parser import Parser
-from .pathutils import findobject
+from .pathutils import filterpaths, findobject
 from .result import ResultSummary
 from .types import supported_types
 
@@ -45,10 +48,22 @@ logger.addHandler(handler)
 log = logging.LoggerAdapter(logger, {"lintname": "mozlint", "pid": os.getpid()})
 
 
+def _setup_logger(log, show_verbose):
+    if show_verbose:
+        formatter = logging.Formatter(
+            "%(asctime)s.%(msecs)03d %(lintname)s (%(pid)s) | %(message)s", "%H:%M:%S"
+        )
+        logger.handlers[0].setFormatter(formatter)
+        log.setLevel(logging.DEBUG)
+    else:
+        log.setLevel(logging.WARNING)
+
+
 def _run_worker(config, paths, **lintargs):
     log = logging.LoggerAdapter(
         logger, {"lintname": config.get("name"), "pid": os.getpid()}
     )
+    _setup_logger(log, lintargs.get("show_verbose"))
     lintargs["log"] = log
     result = ResultSummary(lintargs["root"])
 
@@ -61,11 +76,6 @@ def _run_worker(config, paths, **lintargs):
         "code_review_warnings", True
     ):
         lintargs["show_warnings"] = True
-
-    # Override ignore thirdparty
-    # Only deactivating include_thirdparty is set on a linter.yml in use
-    if config.get("include_thirdparty", False):
-        lintargs["include_thirdparty"] = True
 
     func = supported_types[config["type"]]
     start_time = time.monotonic()
@@ -103,6 +113,34 @@ def _run_worker(config, paths, **lintargs):
             result.issues[r.path].append(r)
 
     return result
+
+
+def _ancestors(path):
+    parent = os.path.dirname(path)
+    while parent != path:
+        yield parent
+        path, parent = parent, os.path.dirname(parent)
+
+
+def _group_jobs(jobs):
+    groups = []  # list of (job_list, path_set, ancestor_set) triples
+    for job in jobs:
+        paths = set(job[1])
+        ancestors = {a for p in paths for a in _ancestors(p)}
+        for group_jobs, group_paths, group_ancestors in groups:
+            if (
+                paths.isdisjoint(group_paths)
+                and paths.isdisjoint(group_ancestors)
+                and ancestors.isdisjoint(group_paths)
+            ):
+                break
+        else:
+            group_jobs, group_paths, group_ancestors = [], set(), set()
+            groups.append((group_jobs, group_paths, group_ancestors))
+        group_jobs.append(job)
+        group_paths |= paths
+        group_ancestors |= ancestors
+    return [group_jobs for group_jobs, _, _ in groups]
 
 
 class InterruptableQueue(Queue):
@@ -166,7 +204,15 @@ class LintRoller:
         50  # set a max size to prevent command lines that are too long on Windows
     )
 
-    def __init__(self, root, exclude=None, setupargs=None, **lintargs):
+    def __init__(
+        self,
+        root,
+        exclude=None,
+        third_party_exclude=None,
+        include_thiry_party=False,
+        setupargs=None,
+        **lintargs,
+    ):
         self.parse = Parser(root)
         try:
             self.vcs = get_repository_object(root)
@@ -174,6 +220,7 @@ class LintRoller:
             self.vcs = None
 
         self.linters = []
+        self._setup_done = set()
         self.lintargs = lintargs
         self.lintargs["root"] = root
         self._setupargs = setupargs or {}
@@ -187,15 +234,10 @@ class LintRoller:
 
         self.root = root
         self.exclude = exclude or []
+        self.third_party_exclude = third_party_exclude or []
+        self.include_third_party = include_thiry_party
 
-        if lintargs.get("show_verbose"):
-            formatter = logging.Formatter(
-                "%(asctime)s.%(msecs)d %(lintname)s (%(pid)s) | %(message)s", "%H:%M:%S"
-            )
-            logger.handlers[0].setFormatter(formatter)
-            logger.setLevel(logging.DEBUG)
-        else:
-            logger.setLevel(logging.WARNING)
+        _setup_logger(log, lintargs.get("show_verbose"))
 
     def read(self, paths):
         """Parse one or more linters and add them to the registry.
@@ -208,31 +250,48 @@ class LintRoller:
         for linter in chain(*[self.parse(p) for p in paths]):
             # Add only the excludes present in paths
             linter["local_exclude"] = linter.get("exclude", [])[:]
+            linter["global_exclude"] = self.exclude[:]
             # Add in our global excludes
-            linter.setdefault("exclude", []).extend(self.exclude)
+            exclude = linter.setdefault("exclude", [])
+            exclude.extend(self.exclude)
+            # Add in third-party excludes if not configured otherwise
+            if not self.include_third_party and not linter.get(
+                "include_third_party", False
+            ):
+                exclude.extend(self.third_party_exclude)
             self.linters.append(linter)
 
-    def setup(self, virtualenv_manager=None):
-        """Run setup for applicable linters"""
+    def setup(self, virtualenv_manager=None, names=None):
+        """Run setup for applicable linters
+
+        :param names: Only set up the linters with these names (optional).
+        """
         if not self.linters:
             raise NoValidLinter
 
         for linter in self.linters:
-            if "setup" not in linter:
+            if "setup" not in linter or linter["name"] in self._setup_done:
                 continue
+            if names is not None and linter["name"] not in names:
+                continue
+            self._setup_done.add(linter["name"])
 
             try:
                 setupargs = copy.deepcopy(self.lintargs)
                 setupargs.update(self._setupargs)
                 setupargs["name"] = linter["name"]
                 setupargs["log"] = logging.LoggerAdapter(
-                    logger, {"lintname": linter["name"]}
+                    logger, {"lintname": linter["name"], "pid": os.getpid()}
                 )
                 if virtualenv_manager is not None:
                     setupargs["virtualenv_manager"] = virtualenv_manager
                 start_time = time.monotonic()
                 res = (
-                    findobject(linter["setup"])(
+                    findobject(
+                        linter["setup"],
+                        linter["path"],
+                        self.lintargs.get("linter_paths"),
+                    )(
                         **setupargs,
                     )
                     or 0
@@ -280,7 +339,11 @@ class LintRoller:
 
         # Lint the whole tree when a `support-file` is modified.
         return any(
-            os.path.isfile(p) and mozpath.match(p, pattern)
+            os.path.isfile(p)
+            and (
+                mozpath.match(p, pattern)
+                or mozpath.match(mozpath.relpath(p, self.root), pattern)
+            )
             for pattern in linter.get("support-files", [])
             for p in vcs_paths
         )
@@ -297,7 +360,7 @@ class LintRoller:
                     "warning: {} support-file modified, linting entire tree "
                     "(press ctrl-c to cancel)".format(linter["name"])
                 )
-            elif paths == {self.root}:
+            elif paths == {os.path.abspath(self.root)}:
                 # If the command line is ".", the path will match with the root
                 # directory. In this case, get all the paths, so that we can
                 # benefit from chunking below.
@@ -306,6 +369,22 @@ class LintRoller:
                 lpaths = paths.union(vcs_paths)
 
             lpaths = list(lpaths) or __get_current_paths(os.getcwd())
+            if self.lintargs.get("use_filters", True):
+                # Only the paths to lint are needed here. Workers filter their
+                # own chunk again and compute the excludes at that point, so
+                # skip the expensive glob expansion over the whole tree.
+                lpaths, _ = filterpaths(
+                    self.root,
+                    lpaths,
+                    include=linter["include"],
+                    exclude=linter.get("exclude", []),
+                    extensions=linter.get("extensions", []),
+                    exclude_extensions=linter.get("exclude_extensions", []),
+                    expand_excludes=False,
+                )
+                if not lpaths:
+                    continue
+
             chunk_size = (
                 min(self.MAX_PATHS_PER_JOB, int(ceil(len(lpaths) / num_procs))) or 1
             )
@@ -323,15 +402,30 @@ class LintRoller:
             return
 
         # Merge this job's results with our global ones.
-        self.result.update(future.result())
+        try:
+            self.result.update(future.result())
+        except Exception:
+            log.exception("Sub-process raised an error:")
 
-    def roll(self, paths=None, outgoing=None, workdir=None, rev=None, num_procs=None):
+    def roll(
+        self,
+        paths=None,
+        outgoing=None,
+        workdir=None,
+        rev=None,
+        num_procs=None,
+        virtualenv_manager=None,
+    ):
         """Run all of the registered linters against the specified file paths.
+
+        Linters that have files to lint are set up first, unless `setup` has
+        already run for them.
 
         :param paths: An iterable of files and/or directories to lint.
         :param outgoing: Lint files touched by commits that are not on the remote repository.
         :param workdir: Lint all files touched in the working directory.
         :param num_procs: The number of processes to use. Default: cpu count
+        :param virtualenv_manager: Passed to the linters' setup functions.
         :return: A :class:`~result.ResultSummary` instance.
         """
         if not self.linters:
@@ -391,15 +485,16 @@ class LintRoller:
 
         # Make sure all paths are absolute. Join `paths` to cwd and `vcs_paths` to root.
         paths = set(map(os.path.abspath, paths))
-        vcs_paths = set(
-            [
-                os.path.join(self.root, p) if not os.path.isabs(p) else p
-                for p in vcs_paths
-            ]
-        )
+        vcs_paths = set([
+            os.path.join(self.root, p) if not os.path.isabs(p) else p for p in vcs_paths
+        ])
 
         num_procs = num_procs or cpu_count()
         jobs = list(self._generate_jobs(paths, vcs_paths, num_procs))
+
+        if jobs:
+            self.setup(virtualenv_manager, names={linter["name"] for linter, _ in jobs})
+            jobs = [job for job in jobs if job[0]["name"] not in self.result.skipped]
 
         # Make sure we never spawn more processes than we have jobs.
         num_procs = min(len(jobs), num_procs) or 1
@@ -414,11 +509,13 @@ class LintRoller:
         # Submit jobs to the worker pool. The _collect_results method will be
         # called when a job is finished. We store the futures so that they can
         # be canceled in the event of a KeyboardInterrupt.
+        #
+        # When fixing, partition jobs into groups where no job in a group
+        # shares a path with, or lies inside a directory of, another job in
+        # that group. Jobs within a group run in parallel safely; a
+        # barrier between groups prevents concurrent writes to the same file by
+        # different linters.
         futures = []
-        for job in jobs:
-            future = executor.submit(_run_worker, *job, **self.lintargs)
-            future.add_done_callback(self._collect_results)
-            futures.append(future)
 
         def _parent_sigint_handler(signum, frame):
             """Sigint handler for the parent process.
@@ -434,6 +531,21 @@ class LintRoller:
             signal.signal(signal.SIGINT, signal.SIG_IGN)
 
         signal.signal(signal.SIGINT, _parent_sigint_handler)
+
+        if self.lintargs.get("fix"):
+            for group_jobs in _group_jobs(jobs):
+                group_futures = []
+                for job in group_jobs:
+                    future = executor.submit(_run_worker, *job, **self.lintargs)
+                    future.add_done_callback(self._collect_results)
+                    futures.append(future)
+                    group_futures.append(future)
+                futures_wait(group_futures)
+        else:
+            for job in jobs:
+                future = executor.submit(_run_worker, *job, **self.lintargs)
+                future.add_done_callback(self._collect_results)
+                futures.append(future)
         executor.shutdown()
         signal.signal(signal.SIGINT, orig_sigint)
         return self.result

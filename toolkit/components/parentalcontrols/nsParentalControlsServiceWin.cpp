@@ -1,4 +1,3 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode:nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -16,9 +15,9 @@
 #include "nsIXULAppInfo.h"
 #include "nsWindowsHelpers.h"
 #include "nsIWindowsRegKey.h"
-#include "mozilla/UniquePtr.h"
 
 #include <sddl.h>
+#include <memory>
 
 using namespace mozilla;
 
@@ -41,7 +40,7 @@ static nsAutoString GetUserSid() {
     return ret;
   }
 
-  UniquePtr<char[]> buf = MakeUnique<char[]>(bufLen);
+  auto buf = std::make_unique<char[]>(bufLen);
   success = ::GetTokenInformation(token, TokenUser, buf.get(), bufLen, &bufLen);
   MOZ_ASSERT(success);
 

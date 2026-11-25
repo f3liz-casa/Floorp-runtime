@@ -7,17 +7,41 @@ use crate::compact::handle_set_map::HandleMap;
 
 impl FunctionTracer<'_> {
     pub fn trace_block(&mut self, block: &[crate::Statement]) {
+        self.trace_block_impl(block, false)
+    }
+
+    /// Like [`Self::trace_block`], but also mark every [`Emit`]ted expression
+    /// as used, whether or not anything needs its value.
+    ///
+    /// Compaction only keeps values something actually needs, so
+    /// `trace_block` ignores `Emit` statements. A consumer that has to account
+    /// for every expression the generated code *mentions*, rather than every
+    /// expression it needs, wants this instead: the MSL backend does no dead
+    /// code elimination, so it writes out a definition for each expression it
+    /// bakes whether or not anything reads it, and that definition refers to
+    /// the expression's operands.
+    ///
+    /// [`Emit`]: crate::Statement::Emit
+    #[cfg(msl_out)]
+    pub fn trace_block_including_emits(&mut self, block: &[crate::Statement]) {
+        self.trace_block_impl(block, true)
+    }
+
+    fn trace_block_impl(&mut self, block: &[crate::Statement], emits_are_used: bool) {
         let mut worklist: Vec<&[crate::Statement]> = vec![block];
         while let Some(last) = worklist.pop() {
             for stmt in last {
                 use crate::Statement as St;
                 match *stmt {
-                    St::Emit(ref _range) => {
+                    St::Emit(ref range) => {
                         // If we come across a statement that actually uses an
                         // expression in this range, it'll get traced from
                         // there. But since evaluating expressions has no
                         // effect, we don't need to assume that everything
-                        // emitted is live.
+                        // emitted is live - unless our caller says otherwise.
+                        if emits_are_used {
+                            self.expressions_used.insert_iter(range.clone());
+                        }
                     }
                     St::Block(ref block) => worklist.push(block),
                     St::If {
@@ -152,6 +176,30 @@ impl FunctionTracer<'_> {
                         self.expressions_used.insert(argument);
                         self.expressions_used.insert(result);
                     }
+                    St::CooperativeStore { target, ref data } => {
+                        self.expressions_used.insert(target);
+                        self.expressions_used.insert(data.pointer);
+                        self.expressions_used.insert(data.stride);
+                    }
+                    St::RayPipelineFunction(func) => match func {
+                        crate::RayPipelineFunction::TraceRay {
+                            acceleration_structure,
+                            descriptor,
+                            payload,
+                        } => {
+                            self.expressions_used.insert(acceleration_structure);
+                            self.expressions_used.insert(descriptor);
+                            self.expressions_used.insert(payload);
+                        }
+                    },
+                    St::DebugPrintf {
+                        format: _,
+                        ref arguments,
+                    } => {
+                        for &expr in arguments {
+                            self.expressions_used.insert(expr);
+                        }
+                    }
 
                     // Trivial statements.
                     St::Break
@@ -202,6 +250,7 @@ impl FunctionTracer<'_> {
             }
             Qf::ConfirmIntersection => {}
             Qf::Terminate => {}
+            Qf::Begin => {}
         }
     }
 }
@@ -371,6 +420,33 @@ impl FunctionMap {
                         adjust(argument);
                         adjust(result);
                     }
+                    St::CooperativeStore {
+                        ref mut target,
+                        ref mut data,
+                    } => {
+                        adjust(target);
+                        adjust(&mut data.pointer);
+                        adjust(&mut data.stride);
+                    }
+                    St::RayPipelineFunction(ref mut func) => match *func {
+                        crate::RayPipelineFunction::TraceRay {
+                            ref mut acceleration_structure,
+                            ref mut descriptor,
+                            ref mut payload,
+                        } => {
+                            adjust(acceleration_structure);
+                            adjust(descriptor);
+                            adjust(payload);
+                        }
+                    },
+                    St::DebugPrintf {
+                        format: _,
+                        ref mut arguments,
+                    } => {
+                        for expr in arguments {
+                            adjust(expr);
+                        }
+                    }
 
                     // Trivial statements.
                     St::Break
@@ -421,6 +497,7 @@ impl FunctionMap {
             }
             Qf::ConfirmIntersection => {}
             Qf::Terminate => {}
+            Qf::Begin => {}
         }
     }
 }

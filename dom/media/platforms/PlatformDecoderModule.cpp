@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim:set ts=2 sw=2 sts=2 et cindent: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -30,18 +28,15 @@ CreateDecoderParamsForAsync::CreateDecoderParamsForAsync(
 CreateDecoderParamsForAsync::CreateDecoderParamsForAsync(
     CreateDecoderParamsForAsync&& aParams) = default;
 
+/* static */
 RefPtr<PlatformDecoderModule::CreateDecoderPromise>
-PlatformDecoderModule::AsyncCreateDecoder(const CreateDecoderParams& aParams) {
-  RefPtr<MediaDataDecoder> decoder;
-  MediaResult result = NS_OK;
-  if (aParams.mConfig.IsAudio()) {
-    decoder = CreateAudioDecoder(CreateDecoderParams{aParams, &result});
-  } else if (aParams.mConfig.IsVideo()) {
-    decoder = CreateVideoDecoder(CreateDecoderParams{aParams, &result});
-  }
+PlatformDecoderModule::CreateDecoderPromiseFrom(
+    already_AddRefed<MediaDataDecoder> aDecoder,
+    const CreateDecoderParams& aParams, const MediaResult& aError) {
+  RefPtr<MediaDataDecoder> decoder = aDecoder;
   if (!decoder) {
-    if (NS_FAILED(result)) {
-      return CreateDecoderPromise::CreateAndReject(result, __func__);
+    if (NS_FAILED(aError)) {
+      return CreateDecoderPromise::CreateAndReject(aError, __func__);
     }
     return CreateDecoderPromise::CreateAndReject(
         MediaResult(NS_ERROR_DOM_MEDIA_FATAL_ERR,

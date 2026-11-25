@@ -1,4 +1,3 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -11,12 +10,13 @@
 #include "mozilla/UniquePtr.h"
 #include "mozilla/WeakPtr.h"
 
+#include "nsChangeObserver.h"
 #include "nsISupports.h"
 #include "nsMenuParentX.h"
-#include "nsChangeObserver.h"
-#include "nsTArray.h"
 #include "nsString.h"
+#include "nsTArray.h"
 
+class nsAppMenuItemIcon;
 class nsMenuBarX;
 class nsMenuGroupOwnerX;
 class nsMenuX;
@@ -32,14 +32,19 @@ class Element;
 
 // ApplicationMenuDelegate is used to receive Cocoa notifications.
 @interface ApplicationMenuDelegate : NSObject <NSMenuDelegate> {
-  nsMenuBarX* mApplicationMenu;  // weak ref
+  nsMenuBarX* mApplicationMenu;        // weak ref
+  NSMenuItem* mSetAsDefaultMenuItem;   // weak ref
+  NSMenuItem* mReferralsPageMenuItem;  // weak ref
 }
 - (id)initWithApplicationMenu:(nsMenuBarX*)aApplicationMenu;
+- (NSMenuItem*)setAsDefaultMenuItem;
+- (void)setSetAsDefaultMenuItem:(NSMenuItem*)menuItem;
+- (NSMenuItem*)referralsPageMenuItem;
+- (void)setReferralsPageMenuItem:(NSMenuItem*)menuItem;
 @end
 
 // Objective-C class used for menu items to allow Gecko to override their
-// standard behavior in order to stop key equivalents from firing in certain
-// instances.
+// standard behavior in order to highlight an item without running its action.
 @interface GeckoNSMenuItem : NSMenuItem {
 }
 - (id)target;
@@ -48,7 +53,7 @@ class Element;
 @end
 
 // Objective-C class used to allow us to intervene with keyboard event handling,
-// particularly to stop key equivalents from firing in certain instances. We
+// particularly to leave key equivalents to the Gecko window that is key. We
 // allow mouse actions to work normally.
 @interface GeckoNSMenu : NSMenu {
 }
@@ -65,9 +70,11 @@ class Element;
 - (void)_overrideClassOfMenuItem:(NSMenuItem*)aMenuItem;
 @end
 
-// Objective-C class used as action target for menu items.
+// Objective-C class used as action target for menu items. The single instance
+// also watches for menu item changes made by AppKit.
 @interface NativeMenuItemTarget : NSObject {
 }
+- (void)menuDidChangeItem:(NSNotification*)aNotification;
 - (IBAction)menuItemHit:(id)aSender;
 @end
 
@@ -89,6 +96,8 @@ class nsMenuBarX : public nsMenuParentX,
   // We save them here for use in command handling.
   RefPtr<nsIContent> mAboutItemContent;
   RefPtr<nsIContent> mPrefItemContent;
+  RefPtr<nsIContent> mSetAsDefaultItemContent;
+  RefPtr<nsIContent> mReferralsPageItemContent;
   RefPtr<nsIContent> mAccountItemContent;
   RefPtr<nsIContent> mQuitItemContent;
 
@@ -115,9 +124,24 @@ class nsMenuBarX : public nsMenuParentX,
   bool PerformKeyEquivalent(NSEvent* aEvent);
   GeckoNSMenu* NativeNSMenu() { return mNativeMenu; }
 
+  // Highlights aItem in the menu bar the way AppKit does when a key equivalent
+  // runs an item, without running its action. Does nothing for an item that
+  // is not in the main menu, is hidden, or is disabled.
+  static void HighlightNativeMenuItem(NSMenuItem* aItem);
+
+  // The application menu item whose XUL node in aKeyElement's document has
+  // aKeyElement as its key, or nil.
+  static NSMenuItem* ApplicationMenuItemForKeyElement(
+      mozilla::dom::Element* aKeyElement);
+
+  // Mirrors the shortcut AppKit reports for aItem into the key element behind
+  // it, in every window for an application menu item.
+  static void CopyUserKeyEquivalentOfItemToKeyElements(NSMenuItem* aItem);
+
   // nsMenuParentX
   void MenuChildChangedVisibility(const MenuChild& aChild,
                                   bool aIsVisible) override;
+  size_t NestingDepth() override { return 0; }
 
  protected:
   virtual ~nsMenuBarX();
@@ -133,6 +157,10 @@ class nsMenuBarX : public nsMenuParentX,
                                       SEL aAction, int aTag,
                                       NativeMenuItemTarget* aTarget);
   void CreateApplicationMenu(nsMenuX* aMenu);
+  void CopyAllUserKeyEquivalentsToKeyElements();
+  // The application menu is shared by all menu bars, but each window has its
+  // own key elements for its items.
+  void CopyAppMenuUserKeyEquivalentsToKeyElements();
 
   // Calculates the index at which aChild's NSMenuItem should be inserted into
   // our NSMenu. The order of NSMenuItems in the NSMenu is the same as the order
@@ -152,6 +180,8 @@ class nsMenuBarX : public nsMenuParentX,
   GeckoNSMenu* mNativeMenu;  // root menu, representing entire menu bar
   bool mNeedsRebuild;
   ApplicationMenuDelegate* mApplicationMenuDelegate;
+
+  nsTArray<mozilla::UniquePtr<nsAppMenuItemIcon>> mAppMenuIcons;
 };
 
 #endif  // nsMenuBarX_h_

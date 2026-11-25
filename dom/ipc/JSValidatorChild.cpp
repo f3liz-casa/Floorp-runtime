@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -192,25 +190,24 @@ JSValidatorChild::ValidatorResult JSValidatorChild::ShouldAllowJS(
     return ValidatorResult::Failure;
   }
 
+  auto clearContext =
+      mozilla::MakeScopeExit([&] { JS::ClearFrontendErrors(fc); });
+
   JS::SourceText<Utf8Unit> srcBuf;
   if (!srcBuf.init(fc, aSpan.Elements(), aSpan.Length(),
                    JS::SourceOwnership::Borrowed)) {
-    JS::ClearFrontendErrors(fc);
     return ValidatorResult::Failure;
   }
 
   // Parse to JavaScript
   JS::PrefableCompileOptions prefableOptions;
   xpc::SetPrefableCompileOptions(prefableOptions);
-  // For the syntax validation purpose, asm.js doesn't need to be enabled.
-  prefableOptions.setAsmJSOption(JS::AsmJSOption::DisabledByAsmJSPref);
 
   JS::CompileOptions options(prefableOptions);
   RefPtr<JS::Stencil> stencil =
       JS::CompileGlobalScriptToStencil(fc, options, srcBuf);
 
   if (!stencil) {
-    JS::ClearFrontendErrors(fc);
     return ValidatorResult::Other;
   }
 

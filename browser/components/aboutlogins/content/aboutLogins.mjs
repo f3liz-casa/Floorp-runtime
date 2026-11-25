@@ -47,12 +47,22 @@ function handleAllLogins(logins) {
 
 let fxaLoggedIn = null;
 let passwordSyncEnabled = null;
+let perDeviceSyncEnabled = null;
 
 function handleSyncState(syncState) {
   gElements.fxAccountsButton.updateState(syncState);
   gElements.loginIntro.updateState(syncState);
+  gElements.loginItem.updateSyncState(syncState);
   fxaLoggedIn = syncState.loggedIn;
   passwordSyncEnabled = syncState.passwordSyncEnabled;
+  perDeviceSyncEnabled = syncState.perDeviceSyncEnabled;
+
+  document.l10n.setAttributes(
+    gElements.removeAllButton,
+    fxaLoggedIn && passwordSyncEnabled && perDeviceSyncEnabled
+      ? "about-logins-menu-menuitem-delete-all-logins"
+      : "about-logins-menu-menuitem-remove-all-logins2"
+  );
 }
 
 window.addEventListener("AboutLoginsChromeToContent", event => {
@@ -124,6 +134,11 @@ window.addEventListener("AboutLoginsChromeToContent", event => {
       gElements.loginItem.setVulnerableLogins(event.detail.value);
       break;
     }
+    case "SetChangePasswordURLs": {
+      gElements.loginList.setChangePasswordURLs(event.detail.value);
+      gElements.loginItem.setChangePasswordURLs(event.detail.value);
+      break;
+    }
     case "Setup": {
       gElements.loginList.selectLoginByDomainOrGuid(
         event.detail.value.preselectedLogin
@@ -131,6 +146,11 @@ window.addEventListener("AboutLoginsChromeToContent", event => {
       handleAllLogins(event.detail.value.logins);
       handleSyncState(event.detail.value.syncState);
       gElements.loginList.setSortDirection(event.detail.value.selectedSort);
+      if (!event.detail.value.importVisible) {
+        gElements.menuButton.shadowRoot.querySelector(
+          ".menuitem-import-browser"
+        ).hidden = true;
+      }
       document.documentElement.classList.add("initialized");
       gElements.loginList.classList.add("initialized");
       break;
@@ -159,17 +179,26 @@ window.addEventListener("AboutLoginsChromeToContent", event => {
 window.addEventListener("AboutLoginsRemoveAllLoginsDialog", () => {
   let loginItem = document.querySelector("login-item");
   let options = {};
-  if (fxaLoggedIn && passwordSyncEnabled) {
+
+  options.confirmCheckboxLabel =
+    "about-logins-confirm-remove-all-dialog-checkbox-label2";
+  options.confirmButtonLabel =
+    "about-logins-confirm-remove-all-dialog-confirm-button-label";
+
+  if (fxaLoggedIn && passwordSyncEnabled && perDeviceSyncEnabled) {
+    options.title = "about-logins-confirm-delete-all-sync-dialog-title";
+    options.message = "about-logins-confirm-delete-all-sync-dialog-message";
+    options.confirmCheckboxLabel =
+      "about-logins-confirm-delete-all-dialog-checkbox-label";
+    options.confirmButtonLabel =
+      "about-logins-confirm-delete-all-dialog-confirm-button-label";
+  } else if (fxaLoggedIn && passwordSyncEnabled) {
     options.title = "about-logins-confirm-remove-all-sync-dialog-title2";
     options.message = "about-logins-confirm-remove-all-sync-dialog-message3";
   } else {
     options.title = "about-logins-confirm-remove-all-dialog-title2";
     options.message = "about-logins-confirm-remove-all-dialog-message2";
   }
-  options.confirmCheckboxLabel =
-    "about-logins-confirm-remove-all-dialog-checkbox-label2";
-  options.confirmButtonLabel =
-    "about-logins-confirm-remove-all-dialog-confirm-button-label";
   options.count = numberOfLogins;
 
   let dialog = document.querySelector("remove-logins-dialog");

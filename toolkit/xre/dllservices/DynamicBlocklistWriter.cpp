@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
@@ -55,8 +53,8 @@ DynamicBlocklistWriter::DynamicBlocklistWriter(
     return;
   }
 
-  mStringBuffer = MakeUnique<uint8_t[]>(mStringBufferSize);
-  Unused << mArray.resize(entriesToWrite + 1);  // aBlockEntries + sentinel
+  mStringBuffer = std::make_unique<uint8_t[]>(mStringBufferSize);
+  (void)mArray.resize(entriesToWrite + 1);  // aBlockEntries + sentinel
 
   size_t currentStringOffset = 0;
   size_t i = 0;

@@ -13,7 +13,6 @@
   add_setup(async function setup() {
     await SpecialPowers.pushPrefEnv({
       "set": [
-        ["dom.w3c_pointer_events.getcoalescedevents_only_in_securecontext", true],
         // Test is intentionally testing in non-secure contexts.
         ["dom.security.https_first", false]
       ]
@@ -25,7 +24,7 @@
       manifest: {
         content_scripts: [
           {
-            // eslint-disable-next-line @microsoft/sdl/no-insecure-url
+            // eslint-disable-next-line sdl/no-insecure-url
             "matches": ["http://example.org/"],
             "js": ["content_script.js"]
           },
@@ -47,7 +46,7 @@
       },
     });
     await extension.startup();
-    // eslint-disable-next-line @microsoft/sdl/no-insecure-url
+    // eslint-disable-next-line sdl/no-insecure-url
     const win = window.open("http://example.org/");
     await extension.awaitMessage("done");
     win.close();
@@ -59,7 +58,7 @@
       manifest: {
         content_scripts: [
           {
-            // eslint-disable-next-line @microsoft/sdl/no-insecure-url
+            // eslint-disable-next-line sdl/no-insecure-url
             "matches": ["http://example.org/"],
             "js": ["content_script.js"]
           },
@@ -84,7 +83,7 @@
       }
     });
     await extension.startup();
-    // eslint-disable-next-line @microsoft/sdl/no-insecure-url
+    // eslint-disable-next-line sdl/no-insecure-url
     const win = window.open("http://example.org/");
     await extension.awaitMessage("done");
     win.close();
@@ -96,7 +95,7 @@
       manifest: {
         content_scripts: [
           {
-            // eslint-disable-next-line @microsoft/sdl/no-insecure-url
+            // eslint-disable-next-line sdl/no-insecure-url
             "matches": ["http://example.org/"],
             "js": ["content_script.js"]
           },
@@ -118,7 +117,7 @@
       },
     });
     await extension.startup();
-    // eslint-disable-next-line @microsoft/sdl/no-insecure-url
+    // eslint-disable-next-line sdl/no-insecure-url
     const win = window.open("http://example.org/");
     await extension.awaitMessage("done");
     win.close();
@@ -130,7 +129,7 @@
       manifest: {
         content_scripts: [
           {
-            // eslint-disable-next-line @microsoft/sdl/no-insecure-url
+            // eslint-disable-next-line sdl/no-insecure-url
             "matches": ["http://example.org/"],
             "js": ["content_script.js"]
           },
@@ -155,11 +154,61 @@
       }
     });
     await extension.startup();
-    // eslint-disable-next-line @microsoft/sdl/no-insecure-url
+    // eslint-disable-next-line sdl/no-insecure-url
     const win = window.open("http://example.org/");
     await extension.awaitMessage("done");
     win.close();
     await extension.unload();
+  });
+
+  async function testStructuredCloneCryptoKeyInSecureContext(legacyPref) {
+    await SpecialPowers.pushPrefEnv({
+      set: [["extensions.webextensions.legacyStructuredCloneBehavior", legacyPref]],
+    });
+    let extension = ExtensionTestUtils.loadExtension({
+      manifest: {
+        content_scripts: [
+          {
+            "matches": ["https://example.org/"],
+            "js": ["content_script.js"]
+          },
+        ]
+      },
+      files: {
+        async "content_script.js"() {
+          browser.test.assertEq(window.isSecureContext, true, "window.isSecureContext === true");
+
+          let key = await window.crypto.subtle.generateKey(
+            { name: "AES-CBC", length: 128 },
+            false,
+            ["encrypt"]
+          );
+          let clone;
+          try {
+            clone = structuredClone(key);
+          } catch (e) {
+            browser.test.fail(`structuredClone(CryptoKey) threw: ${e}`);
+          }
+          browser.test.assertEq(Object.prototype.toString.call(clone), "[object CryptoKey]", "Content script can structuredClone a CryptoKey in a secure context");
+
+          browser.test.sendMessage("done");
+        },
+      },
+    });
+    await extension.startup();
+    const win = window.open("https://example.org/");
+    await extension.awaitMessage("done");
+    win.close();
+    await extension.unload();
+    await SpecialPowers.popPrefEnv();
+  }
+
+  add_task(async function test_contentscript_structuredClone_CryptoKey_legacy() {
+    await testStructuredCloneCryptoKeyInSecureContext(true);
+  });
+
+  add_task(async function test_contentscript_structuredClone_CryptoKey_nonlegacy() {
+    await testStructuredCloneCryptoKeyInSecureContext(false);
   });
 
 </script>

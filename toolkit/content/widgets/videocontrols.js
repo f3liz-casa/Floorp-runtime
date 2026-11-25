@@ -39,20 +39,20 @@ this.VideoControlsWidget = class {
   /*
    * Actually switch the implementation.
    * - With "controls" set, the VideoControlsImplWidget controls should load.
+   * - Without it, the NoControlsPictureInPictureImpleWidget should load
+   *   if the video is being viewed in Picture-in-Picture.
    * - Without it, on mobile, the NoControlsMobileImplWidget should load, so
    *   the user could see the click-to-play button when the video/audio is blocked.
-   * - Without it, on desktop, the NoControlsPictureInPictureImpleWidget should load
-   *   if the video is being viewed in Picture-in-Picture.
    */
   switchImpl() {
     let newImpl;
     let pageURI = this.document.documentURI;
     if (this.element.controls) {
       newImpl = VideoControlsImplWidget;
-    } else if (this.isMobile) {
-      newImpl = NoControlsMobileImplWidget;
     } else if (VideoControlsWidget.isPictureInPictureVideo(this.element)) {
       newImpl = NoControlsPictureInPictureImplWidget;
+    } else if (this.isMobile) {
+      newImpl = NoControlsMobileImplWidget;
     } else if (
       pageURI.startsWith("http://") ||
       pageURI.startsWith("https://")
@@ -109,6 +109,57 @@ this.VideoControlsWidget = class {
   // If you change this, also change SEEK_TIME_SECS in PictureInPictureChild.sys.mjs
   static SEEK_TIME_SECS = 5;
 
+  /**
+   * Cache of the control widths defined as CSS custom properties in
+   * videocontrols.css, shared across all instances.
+   *
+   * @type {Map<string, number>}
+   */
+  static controlWidthCache = new Map();
+
+  /**
+   * Parsed markup of each widget, per document, keyed by an identifier of
+   * the markup.
+   *
+   * @type {WeakMap<Document, Map<string, Element>>}
+   */
+  static templateCache = new WeakMap();
+
+  /**
+   * Returns the root element of the parsed `markup`, cached per document, to
+   * be imported into a shadow root with importNodeAndAppendChildAt(). Callers
+   * must not modify the returned element, other than from `fixup`, which runs
+   * once after parsing.
+   *
+   * @param {Document} document
+   *   Document whose widgets share the cached templates.
+   * @param {string} key
+   *   Cache key identifying the markup and any fixup variant.
+   * @param {string} markup
+   *   XML markup to parse when the template is not cached.
+   * @param {function(Element): void} [fixup]
+   *   Optional function that modifies the root element before it is cached.
+   * @returns {Element} The cached template's root element.
+   */
+  static parseTemplate(document, key, markup, fixup) {
+    let templates = this.templateCache.get(document);
+    if (!templates) {
+      templates = new Map();
+      this.templateCache.set(document, templates);
+    }
+    let template = templates.get(key);
+    if (!template) {
+      const parser = new document.defaultView.DOMParser();
+      template = parser.parseFromSafeString(
+        markup,
+        "application/xml"
+      ).documentElement;
+      fixup?.(template);
+      templates.set(key, template);
+    }
+    return template;
+  }
+
   static isPictureInPictureVideo(someVideo) {
     return someVideo.isCloningElementVisually;
   }
@@ -126,11 +177,11 @@ this.VideoControlsWidget = class {
    * media.videocontrols.picture-in-picture.video-toggle.always-show pref, which
    * is mostly used for testing.
    *
-   * @param {Object} prefs
+   * @param {object} prefs
    *   The preferences set that was passed to the UAWidget.
    * @param {Element} someVideo
    *   The <video> to test.
-   * @param {Object} reflowedDimensions
+   * @param {object} reflowedDimensions
    *   An object representing the reflowed dimensions of the <video>. Properties
    *   are:
    *
@@ -140,7 +191,7 @@ this.VideoControlsWidget = class {
    *     videoHeight (Number):
    *       The height of the video in pixels.
    *
-   * @return {Boolean}
+   * @return {boolean}
    */
   static shouldShowPictureInPictureToggle(
     prefs,
@@ -193,13 +244,13 @@ this.VideoControlsWidget = class {
    * that they're being used. It also will enable the appropriate stylesheet for
    * the preferred toggle experiment.
    *
-   * @param {Object} prefs
+   * @param {object} prefs
    *   The preferences set that was passed to the UAWidget.
    * @param {ShadowRoot} shadowRoot
    *   The shadowRoot of the <video> element where the video controls are.
    * @param {Element} toggle
    *   The toggle element.
-   * @param {Object} reflowedDimensions
+   * @param {object} reflowedDimensions
    *   An object representing the reflowed dimensions of the <video>. Properties
    *   are:
    *
@@ -504,6 +555,16 @@ this.VideoControlsImplWidget = class {
               if (control.modifier) {
                 propertyName += "-" + control.modifier;
               }
+
+              // These only depend on videocontrols.css and on touch mode, so
+              // they're cached and shared across all instances.
+              let cacheKey = `${this.isTouchControls}:${propertyName}`;
+              let cachedWidths = VideoControlsWidget.controlWidthCache;
+              let width = cachedWidths.get(cacheKey);
+              if (width !== undefined) {
+                return width;
+              }
+
               let preDefinedSize =
                 this.controlBarComputedStyles.getPropertyValue(propertyName);
 
@@ -516,7 +577,9 @@ this.VideoControlsImplWidget = class {
                 return 0;
               }
 
-              return parseInt(preDefinedSize, 10);
+              width = parseInt(preDefinedSize, 10);
+              cachedWidths.set(cacheKey, width);
+              return width;
             },
           },
           offsetLeft: throwOnGet,
@@ -898,9 +961,6 @@ this.VideoControlsImplWidget = class {
               case this.muteButton:
                 this.toggleMute();
                 break;
-              case this.castingButton:
-                this.toggleCasting();
-                break;
               case this.closedCaptionButton:
                 this.toggleClosedCaption();
                 break;
@@ -912,11 +972,12 @@ this.VideoControlsImplWidget = class {
               case this.controlsSpacer:
                 this.clickToPlayClickHandler(aEvent);
                 break;
-              case this.textTrackList:
+              case this.textTrackList: {
                 const index = +aEvent.originalTarget.getAttribute("index");
                 this.changeTextTrack(index);
                 this.closedCaptionButton.focus();
                 break;
+              }
               case this.videocontrols:
                 // Prevent any click event within media controls from dispatching through to video.
                 aEvent.stopPropagation();
@@ -926,7 +987,7 @@ this.VideoControlsImplWidget = class {
           case "dblclick":
             this.toggleFullscreen();
             break;
-          case "resizevideocontrols":
+          case "resizevideocontrols": {
             // Since this event come from the layout, this is the only place
             // we are sure of that probing into layout won't trigger or force
             // reflow.
@@ -951,6 +1012,7 @@ this.VideoControlsImplWidget = class {
             }
             this.updatePictureInPictureToggleDisplay();
             break;
+          }
           case "fullscreenchange":
             this.onFullscreenChange();
             break;
@@ -990,9 +1052,6 @@ this.VideoControlsImplWidget = class {
             break;
           case "removetrack":
             this.onTextTrackRemove(aEvent);
-            break;
-          case "media-videoCasting":
-            this.updateCasting(aEvent.detail);
             break;
           case "focusin":
             // Show the controls to highlight the focused control, but only
@@ -1205,7 +1264,9 @@ this.VideoControlsImplWidget = class {
         this.scrubber.isDragging = false;
 
         if (this.isPausedByDragging) {
-          this.video.play();
+          this.video.play().catch(() => {
+            /* Do nothing on rejection */
+          });
           this.isPausedByDragging = false;
         }
       },
@@ -1548,8 +1609,10 @@ this.VideoControlsImplWidget = class {
           );
         }
 
+        // Creating the animation is not free, so avoid doing it for immediate
+        // fades (e.g. during setup) when there's nothing to cancel.
         let animation = this.animationMap.get(element);
-        if (!animation) {
+        if (!animation && !immediate) {
           animation = new this.window.Animation(
             new this.window.KeyframeEffect(
               element,
@@ -1640,7 +1703,7 @@ this.VideoControlsImplWidget = class {
           }
         } else {
           // immediate
-          animation.cancel();
+          animation?.cancel();
           finishedPromise = Promise.resolve();
         }
         finishedPromise.then(
@@ -1671,7 +1734,9 @@ this.VideoControlsImplWidget = class {
       startPlay() {
         this._triggeredByControls = true;
         this.hideClickToPlay();
-        this.video.play();
+        this.video.play().catch(() => {
+          /* Do nothing on rejection */
+        });
       },
 
       togglePause() {
@@ -1989,10 +2054,6 @@ this.VideoControlsImplWidget = class {
         return textTrack.kind == "subtitles" || textTrack.kind == "captions";
       },
 
-      get isCastingAvailable() {
-        return !this.isAudioOnly && this.video.mozAllowCasting;
-      },
-
       get isClosedCaptionAvailable() {
         // There is no rendering area, no need to show the caption.
         if (this.isAudioOnly) {
@@ -2015,27 +2076,6 @@ this.VideoControlsImplWidget = class {
 
         // fallback to off button if there's no showing track.
         return showingTT ? showingTT.index : 0;
-      },
-
-      get isCastingOn() {
-        return this.isCastingAvailable && this.video.mozIsCasting;
-      },
-
-      setCastingButtonState() {
-        this.castingButton.toggleAttribute("enabled", this.isCastingOn);
-        this.adjustControlSize();
-      },
-
-      updateCasting(eventDetail) {
-        let castingData = JSON.parse(eventDetail);
-        if ("allow" in castingData) {
-          this.video.mozAllowCasting = !!castingData.allow;
-        }
-
-        if ("active" in castingData) {
-          this.video.mozIsCasting = !!castingData.active;
-        }
-        this.setCastingButtonState();
       },
 
       get isClosedCaptionOn() {
@@ -2111,16 +2151,12 @@ this.VideoControlsImplWidget = class {
 
       onControlBarAnimationFinished() {
         this.hideClosedCaptionMenu();
-        this.video.dispatchEvent(
+        this.video.updateCueDisplay();
+        // Note this is useful only for testing.
+        this.controlBar.dispatchEvent(
           new this.window.CustomEvent("controlbarchange")
         );
         this.adjustControlSize();
-      },
-
-      toggleCasting() {
-        this.videocontrols.dispatchEvent(
-          new this.window.CustomEvent("VideoBindingCast")
-        );
       },
 
       hideClosedCaptionMenu() {
@@ -2293,10 +2329,9 @@ this.VideoControlsImplWidget = class {
         videoWidth: 300,
 
         // <audio> takes this width to grow/shrink controls.
-        // The initial value has to be smaller than the calculated minRequiredWidth
-        // so that we don't run into bug 1495821 (see comment on adjustControlSize()
-        // below)
-        videocontrolsWidth: 0,
+        // Match Layout's kFallbackIntrinsicWidthInPixels (300px), which gives
+        // <audio controls> its intrinsic width regardless of the controls' size.
+        videocontrolsWidth: 300,
 
         // Used to decide if updating the scrubber progress will make a visible
         // change (ie. make it move by at least one pixel).
@@ -2343,7 +2378,6 @@ this.VideoControlsImplWidget = class {
         this.fullscreenButton.isWanted = !this.controlBar.hasAttribute(
           "fullscreen-unavailable"
         );
-        this.castingButton.isWanted = this.isCastingAvailable;
         this.closedCaptionButton.isWanted = this.isClosedCaptionAvailable;
         this.volumeStack.isWanted = !this.muteButton.hasAttribute("noAudio");
 
@@ -2519,7 +2553,6 @@ this.VideoControlsImplWidget = class {
         this.clickToPlay = this.shadowRoot.getElementById("clickToPlay");
         this.fullscreenButton =
           this.shadowRoot.getElementById("fullscreenButton");
-        this.castingButton = this.shadowRoot.getElementById("castingButton");
         this.closedCaptionButton = this.shadowRoot.getElementById(
           "closedCaptionButton"
         );
@@ -2534,6 +2567,12 @@ this.VideoControlsImplWidget = class {
         let isMobile = this.window.navigator.appVersion.includes("Android");
         if (isMobile) {
           this.controlsContainer.classList.add("mobile");
+          this.shadowRoot
+            .getElementById("pictureInPicture")
+            .setAttribute(
+              "data-l10n-id",
+              "videocontrols-status-picture-in-picture-android"
+            );
         }
 
         // TODO: Switch to touch controls on touch-based desktops (bug 1447547)
@@ -2554,7 +2593,6 @@ this.VideoControlsImplWidget = class {
           this.playButton,
           this.muteButton,
           this.fullscreenButton,
-          this.castingButton,
           this.closedCaptionButton,
           this.positionDurationBox,
           this.scrubberStack,
@@ -2580,7 +2618,6 @@ this.VideoControlsImplWidget = class {
 
         this.controlsEvents = [
           { el: this.muteButton, type: "click" },
-          { el: this.castingButton, type: "click" },
           { el: this.closedCaptionButton, type: "click" },
           { el: this.fullscreenButton, type: "click" },
           { el: this.playButton, type: "click" },
@@ -2613,8 +2650,6 @@ this.VideoControlsImplWidget = class {
           { el: this.video.textTracks, type: "addtrack" },
           { el: this.video.textTracks, type: "removetrack" },
           { el: this.video.textTracks, type: "change" },
-
-          { el: this.video, type: "media-videoCasting", touchOnly: true },
 
           { el: this.controlBar, type: "focusin" },
           { el: this.scrubber, type: "mousedown" },
@@ -2719,7 +2754,9 @@ this.VideoControlsImplWidget = class {
           case "mouseup":
             if (aEvent.originalTarget == this.Utils.controlsSpacer) {
               if (this.firstShow) {
-                this.Utils.video.play();
+                this.Utils.video.play().catch(() => {
+                  /* Do nothing on rejection */
+                });
                 this.firstShow = false;
               }
               this.toggleControls();
@@ -2792,8 +2829,11 @@ this.VideoControlsImplWidget = class {
   }
 
   generateContent() {
-    const parser = new this.window.DOMParser();
-    let parserDoc = parser.parseFromSafeString(
+    const tabToAllControls =
+      this.prefs["media.videocontrols.keyboard-tab-to-all-controls"];
+    let template = VideoControlsWidget.parseTemplate(
+      this.document,
+      tabToAllControls ? "controls-tab-to-all" : "controls",
       `<div class="videocontrols" xmlns="http://www.w3.org/1999/xhtml" role="none">
         <link rel="stylesheet" href="chrome://global/skin/media/videocontrols.css" />
         <link rel="stylesheet" href="chrome://global/skin/media/pipToggle.css" />
@@ -2863,8 +2903,6 @@ this.VideoControlsImplWidget = class {
                 <input type="range" id="volumeControl" class="volumeControl" min="0" max="100" step="1" tabindex="-1"
                        data-l10n-id="videocontrols-volume-control"/>
               </div>
-              <button id="castingButton" class="button castingButton"
-                      data-l10n-id="videocontrols-casting-button-label"/>
               <button id="closedCaptionButton" class="button closedCaptionButton" aria-controls="textTrackList"
                       aria-haspopup="menu" aria-expanded="false" data-l10n-id="videocontrols-closed-caption-button"/>
               <div id="textTrackListContainer" class="textTrackListContainer" hidden="true" role="presentation">
@@ -2877,31 +2915,27 @@ this.VideoControlsImplWidget = class {
           </div>
         </div>
       </div>`,
-      "application/xml"
+      template => {
+        if (tabToAllControls) {
+          // Make all of the individual controls tabbable.
+          for (const el of template.querySelectorAll('[tabindex="-1"]')) {
+            el.removeAttribute("tabindex");
+          }
+        }
+      }
     );
     this.l10n = new this.window.DOMLocalization(
       ["branding/brand.ftl", "toolkit/global/videocontrols.ftl"],
       true
     );
     this.l10n.connectRoot(this.shadowRoot);
-    if (this.prefs["media.videocontrols.keyboard-tab-to-all-controls"]) {
-      // Make all of the individual controls tabbable.
-      for (const el of parserDoc.documentElement.querySelectorAll(
-        '[tabindex="-1"]'
-      )) {
-        el.removeAttribute("tabindex");
-      }
-    }
-    this.shadowRoot.importNodeAndAppendChildAt(
-      this.shadowRoot,
-      parserDoc.documentElement,
-      true
-    );
+    this.shadowRoot.importNodeAndAppendChildAt(this.shadowRoot, template, true);
     this.l10n.translateRoots();
   }
 
   onchange() {
     this.Utils.updatePictureInPictureMessage();
+    this.Utils.updateVolumeControls();
     this.shadowRoot.firstChild.removeAttribute("flipped");
   }
 
@@ -3015,7 +3049,9 @@ this.NoControlsMobileImplWidget = class {
         }
 
         this.noControlsOverlay.hidden = true;
-        this.video.play();
+        this.video.play().catch(() => {
+          /* Do nothing on rejection */
+        });
       },
 
       init(shadowRoot) {
@@ -3073,8 +3109,9 @@ this.NoControlsMobileImplWidget = class {
   }
 
   generateContent() {
-    const parser = new this.window.DOMParser();
-    let parserDoc = parser.parseFromSafeString(
+    let template = VideoControlsWidget.parseTemplate(
+      this.document,
+      "nocontrols-mobile",
       `<div class="videocontrols" xmlns="http://www.w3.org/1999/xhtml" role="none">
         <link rel="stylesheet" href="chrome://global/skin/media/videocontrols.css" />
         <div id="controlsContainer" class="controlsContainer" role="none" hidden="true">
@@ -3084,14 +3121,9 @@ this.NoControlsMobileImplWidget = class {
             </div>
           </div>
         </div>
-      </div>`,
-      "application/xml"
+      </div>`
     );
-    this.shadowRoot.importNodeAndAppendChildAt(
-      this.shadowRoot,
-      parserDoc.documentElement,
-      true
-    );
+    this.shadowRoot.importNodeAndAppendChildAt(this.shadowRoot, template, true);
   }
 };
 
@@ -3119,8 +3151,9 @@ this.NoControlsPictureInPictureImplWidget = class {
   }
 
   generateContent() {
-    const parser = new this.window.DOMParser();
-    let parserDoc = parser.parseFromSafeString(
+    let template = VideoControlsWidget.parseTemplate(
+      this.document,
+      "nocontrols-pip",
       `<div class="videocontrols" xmlns="http://www.w3.org/1999/xhtml" role="none">
         <link rel="stylesheet" href="chrome://global/skin/media/videocontrols.css" />
         <div id="controlsContainer" class="controlsContainer" role="none">
@@ -3130,14 +3163,18 @@ this.NoControlsPictureInPictureImplWidget = class {
           </div>
           <div class="controlsOverlay stackItem"></div>
         </div>
-      </div>`,
-      "application/xml"
+      </div>`
     );
-    this.shadowRoot.importNodeAndAppendChildAt(
-      this.shadowRoot,
-      parserDoc.documentElement,
-      true
-    );
+    this.shadowRoot.importNodeAndAppendChildAt(this.shadowRoot, template, true);
+    let isMobile = this.window.navigator.appVersion.includes("Android");
+    if (isMobile) {
+      this.shadowRoot
+        .getElementById("pictureInPicture")
+        .setAttribute(
+          "data-l10n-id",
+          "videocontrols-status-picture-in-picture-android"
+        );
+    }
     this.l10n = new this.window.DOMLocalization([
       "branding/brand.ftl",
       "toolkit/global/videocontrols.ftl",
@@ -3297,8 +3334,9 @@ this.NoControlsDesktopImplWidget = class {
   }
 
   generateContent() {
-    const parser = new this.window.DOMParser();
-    let parserDoc = parser.parseFromSafeString(
+    let template = VideoControlsWidget.parseTemplate(
+      this.document,
+      "nocontrols-desktop",
       `<div class="videocontrols" xmlns="http://www.w3.org/1999/xhtml" role="none">
         <link rel="stylesheet" href="chrome://global/skin/media/videocontrols.css" />
         <link rel="stylesheet" href="chrome://global/skin/media/pipToggle.css" />
@@ -3318,14 +3356,9 @@ this.NoControlsDesktopImplWidget = class {
             </button>
           </div>
         </div>
-      </div>`,
-      "application/xml"
+      </div>`
     );
-    this.shadowRoot.importNodeAndAppendChildAt(
-      this.shadowRoot,
-      parserDoc.documentElement,
-      true
-    );
+    this.shadowRoot.importNodeAndAppendChildAt(this.shadowRoot, template, true);
     this.l10n = new this.window.DOMLocalization([
       "branding/brand.ftl",
       "toolkit/global/videocontrols.ftl",

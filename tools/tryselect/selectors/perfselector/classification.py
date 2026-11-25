@@ -62,11 +62,11 @@ class Suites(ClassificationEnum):
 
 
 class Variants(ClassificationEnum):
-    FISSION = {"value": "fission", "index": 0}
-    BYTECODE_CACHED = {"value": "bytecode-cached", "index": 1}
-    LIVE_SITES = {"value": "live-sites", "index": 2}
-    PROFILING = {"value": "profiling", "index": 3}
-    SWR = {"value": "swr", "index": 4}
+    BYTECODE_CACHED = {"value": "bytecode-cached", "index": 0}
+    LIVE_SITES = {"value": "live-sites", "index": 1}
+    PROFILING = {"value": "profiling", "index": 2}
+    SWR = {"value": "swr", "index": 3}
+    NOVA = {"value": "nova", "index": 4}
 
 
 """
@@ -142,7 +142,7 @@ def raptor_test_finder(task_cmd, task_label, test):
                     if "android" in task_label:
                         # Some tasks don't follow the proper ordering where a test
                         # name is specified after the app name
-                        if not task_without_app[-1] or task_without_app[-1] == "-nofis":
+                        if not task_without_app[-1]:
                             task_without_app = task_without_app[0].split("browsertime")
                     modified_task_label = task_without_app[-1]
                     break
@@ -151,7 +151,7 @@ def raptor_test_finder(task_cmd, task_label, test):
     return modified_task_label
 
 
-@functools.lru_cache(maxsize=10)
+@functools.cache
 def get_talos_json():
     with pathlib.Path(build.topsrcdir, "testing", "talos", "talos.json").open() as f:
         talos_json = json.load(f)
@@ -283,14 +283,14 @@ class ClassificationProvider:
             Platforms.MACOSX.value: {
                 "query": {
                     Suites.PERFTEST.value: "'macosx",
-                    "default": "'osx 'shippable",
+                    "default": "!1470 'osx 'shippable",
                 },
                 "platform": Platforms.DESKTOP.value,
             },
             Platforms.DESKTOP.value: {
                 "query": {
                     Suites.PERFTEST.value: "!android",
-                    "default": "!android 'shippable !-32 !clang",
+                    "default": "!android 'shippable !-32 !clang !1470",
                 },
                 "platform": Platforms.DESKTOP.value,
             },
@@ -358,12 +358,6 @@ class ClassificationProvider:
     @property
     def variants(self):
         return {
-            Variants.FISSION.value: {
-                "query": "!nofis",
-                "negation": "'nofis",
-                "platforms": [Platforms.ANDROID.value],
-                "apps": [Apps.FENIX.value, Apps.GECKOVIEW.value],
-            },
             Variants.BYTECODE_CACHED.value: {
                 "query": "'bytecode",
                 "negation": "!bytecode",
@@ -396,6 +390,12 @@ class ClassificationProvider:
                 "platforms": [Platforms.DESKTOP.value],
                 "apps": [Apps.FIREFOX.value],
             },
+            Variants.NOVA.value: {
+                "query": "'-nv",
+                "negation": "!-nv",
+                "platforms": [Platforms.DESKTOP.value],
+                "apps": [Apps.FIREFOX.value],
+            },
         }
 
     @property
@@ -405,10 +405,10 @@ class ClassificationProvider:
                 "apps": list(self.apps.keys()),
                 "platforms": list(self.platforms.keys()),
                 "variants": [
-                    Variants.FISSION.value,
                     Variants.LIVE_SITES.value,
                     Variants.PROFILING.value,
                     Variants.BYTECODE_CACHED.value,
+                    Variants.NOVA.value,
                 ],
                 "task-specifier": "browsertime",
                 "task-test-finder": raptor_test_finder,
@@ -420,6 +420,7 @@ class ClassificationProvider:
                 "variants": [
                     Variants.PROFILING.value,
                     Variants.SWR.value,
+                    Variants.NOVA.value,
                 ],
                 "task-specifier": "talos",
                 "task-test-finder": talos_test_finder,
@@ -464,6 +465,13 @@ class ClassificationProvider:
                 "query": {
                     Suites.RAPTOR.value: ["'browsertime 'tp6 !tp6-bench"],
                 },
+                "variant-restrictions": {
+                    Suites.RAPTOR.value: [
+                        Variants.BYTECODE_CACHED.value,
+                        Variants.LIVE_SITES.value,
+                        Variants.PROFILING.value,
+                    ]
+                },
                 "suites": [Suites.RAPTOR.value],
                 "app-restrictions": {
                     Suites.RAPTOR.value: [
@@ -486,12 +494,23 @@ class ClassificationProvider:
                 "query": {
                     Suites.RAPTOR.value: ["'browsertime 'speedometer3"],
                 },
-                "variant-restrictions": {Suites.RAPTOR.value: [Variants.FISSION.value]},
+                "variant-restrictions": {Suites.RAPTOR.value: [Variants.NOVA.value]},
                 "suites": [Suites.RAPTOR.value],
                 "app-restrictions": {},
                 "tasks": [],
                 "description": "A group of Speedometer3 tests on various platforms and architectures, speedometer3 is "
                 "currently the best benchmark we have for a baseline on real-world web performance",
+            },
+            "JetStream 3": {
+                "query": {
+                    Suites.RAPTOR.value: ["'browsertime 'jetstream3"],
+                },
+                "variant-restrictions": {Suites.RAPTOR.value: []},
+                "suites": [Suites.RAPTOR.value],
+                "app-restrictions": {},
+                "tasks": [],
+                "description": "JetStream3 tests on various platforms and architectures, "
+                "JetStream3 is our best JavaScript and WebAssembly-focused benchmark",
             },
             "Responsiveness": {
                 "query": {
@@ -522,6 +541,7 @@ class ClassificationProvider:
                     Platforms.MACOSX.value,
                     Platforms.WINDOWS.value,
                 ],
+                "variant-restrictions": {Suites.PERFTEST.value: []},
                 "app-restrictions": {
                     Suites.PERFTEST.value: [
                         Apps.FIREFOX.value,
@@ -560,6 +580,9 @@ class ClassificationProvider:
                     Suites.TALOS.value: ["'talos 'damp"],
                 },
                 "suites": [Suites.TALOS.value],
+                "variant-restrictions": {
+                    Suites.TALOS.value: [Variants.SWR.value, Variants.PROFILING.value]
+                },
                 "tasks": [],
                 "description": "The DAMP tests are a group of tests that measure the performance of the browsers "
                 "devtools under certain conditiones. More information on the DAMP tests can be found"
@@ -571,6 +594,13 @@ class ClassificationProvider:
                     Suites.TALOS.value: ["'talos"],
                 },
                 "suites": [Suites.TALOS.value],
+                "variant-restrictions": {
+                    Suites.TALOS.value: [
+                        Variants.SWR.value,
+                        Variants.PROFILING.value,
+                        Variants.NOVA.value,
+                    ]
+                },
                 "tasks": [],
                 "description": "This selects all of the talos performance tests. More information can be found here: "
                 "https://firefox-source-docs.mozilla.org/testing/perfdocs/talos.html#test-types",
@@ -586,6 +616,7 @@ class ClassificationProvider:
                 "variant-restrictions": {
                     Suites.RAPTOR.value: [],
                     Suites.TALOS.value: [],
+                    Suites.AWSY.value: [],
                 },
                 "app-restrictions": {
                     Suites.RAPTOR.value: [Apps.FIREFOX.value],
@@ -602,7 +633,10 @@ class ClassificationProvider:
                     Suites.RAPTOR.value: ["'browsertime 'youtube-playback"],
                 },
                 "suites": [Suites.TALOS.value, Suites.RAPTOR.value],
-                "variant-restrictions": {Suites.RAPTOR.value: [Variants.FISSION.value]},
+                "variant-restrictions": {
+                    Suites.RAPTOR.value: [],
+                    Suites.TALOS.value: [],
+                },
                 "app-restrictions": {
                     Suites.RAPTOR.value: [
                         Apps.FIREFOX.value,
@@ -625,7 +659,7 @@ class ClassificationProvider:
                     Platforms.MACOSX.value,
                     Platforms.WINDOWS.value,
                 ],
-                "variant-restrictions": {Suites.RAPTOR.value: [Variants.FISSION.value]},
+                "variant-restrictions": {Suites.RAPTOR.value: []},
                 "app-restrictions": {
                     Suites.RAPTOR.value: [Apps.FIREFOX.value],
                 },
@@ -637,7 +671,7 @@ class ClassificationProvider:
             },
             "Startup": {
                 "query": {
-                    Suites.PERFTEST.value: ["'startup !-test-"],
+                    Suites.PERFTEST.value: ["'startup !-test- !profiling"],
                     Suites.TALOS.value: ["'sessionrestore | 'other !damp"],
                 },
                 "suites": [Suites.PERFTEST.value, Suites.TALOS.value],
@@ -672,6 +706,7 @@ class ClassificationProvider:
                     Platforms.MACOSX.value,
                     Platforms.WINDOWS.value,
                 ],
+                "variant-restrictions": {Suites.PERFTEST.value: []},
                 "app-restrictions": {
                     Suites.PERFTEST.value: [
                         Apps.FIREFOX.value,
@@ -690,6 +725,7 @@ class ClassificationProvider:
                 "platform-restrictions": [
                     Platforms.ANDROID.value,
                 ],
+                "variant-restrictions": {Suites.PERFTEST.value: []},
                 "app-restrictions": {
                     Suites.PERFTEST.value: [
                         Apps.FENIX.value,
@@ -704,6 +740,7 @@ class ClassificationProvider:
                     Suites.PERFTEST.value: ["'perftest 'tr8ns"],
                 },
                 "suites": [Suites.PERFTEST.value],
+                "variant-restrictions": {Suites.PERFTEST.value: []},
                 "platform-restrictions": [
                     Platforms.DESKTOP.value,
                     Platforms.LINUX.value,
@@ -726,6 +763,10 @@ class ClassificationProvider:
                     Suites.PERFTEST.value: ["'applink-startup"],
                 },
                 "suites": [Suites.RAPTOR.value, Suites.PERFTEST.value],
+                "variant-restrictions": {
+                    Suites.PERFTEST.value: [],
+                    Suites.RAPTOR.value: [],
+                },
                 "platform-restrictions": [
                     Platforms.ANDROID_A55.value,
                 ],
@@ -738,8 +779,28 @@ class ClassificationProvider:
                     ],
                 },
                 "tasks": [],
+                "try-config-defaults": {"per-task-rebuild": {"speedometer3": 10}},
                 "description": (
                     "Our most important set of tests for android performance."
+                ),
+            },
+            "Critical Desktop Performance": {
+                "query": {
+                    Suites.RAPTOR.value: ["'browsertime 'speedometer3"],
+                },
+                "variant-restrictions": {Suites.RAPTOR.value: [Variants.NOVA.value]},
+                "suites": [Suites.RAPTOR.value],
+                "platform-restrictions": [
+                    Platforms.DESKTOP.value,
+                    Platforms.LINUX.value,
+                    Platforms.MACOSX.value,
+                    Platforms.WINDOWS.value,
+                ],
+                "app-restrictions": {},
+                "tasks": [],
+                "try-config-defaults": {"per-task-rebuild": {"speedometer3": 20}},
+                "description": (
+                    "Our most important set of tests for desktop performance."
                 ),
             },
         }

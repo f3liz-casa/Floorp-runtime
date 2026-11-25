@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set sw=2 ts=8 et tw=80 : */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -23,15 +21,14 @@ https://tools.ietf.org/html/draft-ietf-httpbis-alt-svc-06
 #ifndef mozilla_net_AlternateServices_h
 #define mozilla_net_AlternateServices_h
 
+#include "SpeculativeTransaction.h"
+#include "mozilla/BasePrincipal.h"
 #include "nsHttp.h"
-#include "nsRefPtrHashtable.h"
-#include "nsString.h"
 #include "nsIDataStorage.h"
 #include "nsIInterfaceRequestor.h"
-#include "nsIStreamListener.h"
 #include "nsISpeculativeConnect.h"
-#include "mozilla/BasePrincipal.h"
-#include "SpeculativeTransaction.h"
+#include "nsRefPtrHashtable.h"
+#include "nsString.h"
 
 class nsILoadInfo;
 
@@ -41,8 +38,6 @@ namespace net {
 class nsProxyInfo;
 class nsHttpConnectionInfo;
 class nsHttpTransaction;
-class nsHttpChannel;
-class WellKnownChecker;
 
 class AltSvcMapping {
   NS_INLINE_DECL_THREADSAFE_REFCOUNTING(AltSvcMapping)
@@ -84,8 +79,8 @@ class AltSvcMapping {
   bool RouteEquals(AltSvcMapping* map);
   bool HTTPS() { return mHttps; }
 
-  void GetConnectionInfo(nsHttpConnectionInfo** outCI, nsProxyInfo* pi,
-                         const OriginAttributes& originAttributes);
+  virtual void GetConnectionInfo(nsHttpConnectionInfo** outCI, nsProxyInfo* pi,
+                                 const OriginAttributes& originAttributes);
 
   int32_t TTL();
   int32_t StorageEpoch() { return mStorageEpoch; }
@@ -106,13 +101,23 @@ class AltSvcMapping {
 
   bool IsHttp3() { return mIsHttp3; }
   const nsCString& NPNToken() const { return mNPNToken; }
+  const OriginAttributes& GetOriginAttributes() const {
+    return mOriginAttributes;
+  }
   SupportedAlpnRank AlpnRank() const { return mAlpnRank; }
 
- private:
+ protected:
+  // Used by Http3FirstAltSvcMapping
+  AltSvcMapping(const nsACString& originScheme, const nsACString& originHost,
+                int32_t originPort, const nsACString& username,
+                bool privateBrowsing, const nsACString& alternateHost,
+                int32_t alternatePort, const nsACString& npnToken,
+                const OriginAttributes& originAttributes, bool aIsHttp3,
+                SupportedAlpnRank aRank);
   virtual ~AltSvcMapping() = default;
   void SyncString(const nsCString& str);
   nsCOMPtr<nsIDataStorage> mStorage;
-  int32_t mStorageEpoch;
+  int32_t mStorageEpoch = 0;
   void Serialize(nsCString& out);
 
   nsCString mHashKey;
@@ -145,6 +150,22 @@ class AltSvcMapping {
   SupportedAlpnRank mAlpnRank{SupportedAlpnRank::NOT_SUPPORTED};
 };
 
+class Http3FirstAltSvcMapping : public AltSvcMapping {
+ public:
+  Http3FirstAltSvcMapping(const nsACString& originScheme,
+                          const nsACString& originHost, int32_t originPort,
+                          const nsACString& username, bool privateBrowsing,
+                          const nsACString& alternateHost,
+                          int32_t alternatePort, const nsACString& npnToken,
+                          const OriginAttributes& originAttributes,
+                          bool aIsHttp3, SupportedAlpnRank aRank);
+  void GetConnectionInfo(nsHttpConnectionInfo** outCI, nsProxyInfo* pi,
+                         const OriginAttributes& originAttributes) override;
+
+ private:
+  ~Http3FirstAltSvcMapping();
+};
+
 class AltSvcOverride : public nsIInterfaceRequestor,
                        public nsISpeculativeConnectionOverrider {
  public:
@@ -158,31 +179,6 @@ class AltSvcOverride : public nsIInterfaceRequestor,
  private:
   virtual ~AltSvcOverride() = default;
   nsCOMPtr<nsIInterfaceRequestor> mCallbacks;
-};
-
-class TransactionObserver final : public nsIStreamListener {
- public:
-  NS_DECL_THREADSAFE_ISUPPORTS
-  NS_DECL_NSISTREAMLISTENER
-  NS_DECL_NSIREQUESTOBSERVER
-
-  TransactionObserver(nsHttpChannel* channel, WellKnownChecker* checker);
-  void Complete(bool versionOK, bool authOK, nsresult reason);
-
- private:
-  friend class WellKnownChecker;
-  virtual ~TransactionObserver() = default;
-
-  nsCOMPtr<nsISupports> mChannelRef;
-  nsHttpChannel* mChannel;
-  WellKnownChecker* mChecker;
-  nsCString mWKResponse;
-
-  bool mRanOnce;
-  bool mStatusOK;  // HTTP Status 200
-  // These two values could be accessed on sts thread.
-  Atomic<bool> mAuthOK;     // confirmed no TLS failure
-  Atomic<bool> mVersionOK;  // connection h2
 };
 
 class AltSvcCache {
@@ -200,8 +196,12 @@ class AltSvcCache {
   already_AddRefed<AltSvcMapping> GetAltServiceMapping(
       const nsACString& scheme, const nsACString& host, int32_t port,
       bool privateBrowsing, const OriginAttributes& originAttributes,
-      bool aHttp2Allowed, bool aHttp3Allowed);
+      bool aHttp2Allowed, bool aHttp3Allowed, bool aForceHttp3First = false);
   void ClearAltServiceMappings();
+  // Removes all Alt-Svc mappings whose origin attributes match
+  // aOriginAttributes.
+  void ClearAltServiceMappingsMatchingOA(
+      const OriginAttributes& aOriginAttributes);
   void ClearHostMapping(const nsACString& host, int32_t port,
                         const OriginAttributes& originAttributes);
   void ClearHostMapping(nsHttpConnectionInfo* ci);
@@ -217,39 +217,20 @@ class AltSvcCache {
   int32_t mStorageEpoch{0};
 };
 
-// This class is used to write the validated result to AltSvcMapping when the
-// AltSvcTransaction is closed and destroyed.
-class AltSvcMappingValidator final {
- public:
-  NS_INLINE_DECL_THREADSAFE_REFCOUNTING(AltSvcMappingValidator)
-
-  explicit AltSvcMappingValidator(AltSvcMapping* aMap);
-
-  void OnTransactionDestroy(bool aValidateResult);
-
-  void OnTransactionClose(bool aValidateResult);
-
- protected:
-  virtual ~AltSvcMappingValidator() = default;
-
-  RefPtr<AltSvcMapping> mMapping;
-};
-
 // This is the asynchronous null transaction used to validate
 // an alt-svc advertisement only for https://
-// When http over socket process is enabled, this class should live only in
-// socket process.
-template <class Validator>
 class AltSvcTransaction final : public SpeculativeTransaction {
  public:
   AltSvcTransaction(nsHttpConnectionInfo* ci, nsIInterfaceRequestor* callbacks,
-                    uint32_t caps, Validator* aValidator, bool aIsHttp3);
+                    uint32_t caps, AltSvcMapping* aMap);
 
   ~AltSvcTransaction() override;
 
   // AltSvcTransaction is used to validate the alt-svc record, so we don't want
   // to fetch HTTPS RR for this.
   virtual nsresult FetchHTTPSRR() override { return NS_ERROR_NOT_IMPLEMENTED; }
+
+  bool IsAltSvcValidation() override { return true; }
 
  private:
   // check on alternate route.
@@ -262,9 +243,8 @@ class AltSvcTransaction final : public SpeculativeTransaction {
                         uint32_t* countRead) override;
 
  private:
-  RefPtr<Validator> mValidator;
+  RefPtr<AltSvcMapping> mMapping;
   uint32_t mIsHttp3 : 1;
-  uint32_t mRunning : 1;
   uint32_t mTriedToValidate : 1;
   uint32_t mTriedToWrite : 1;
   uint32_t mValidatedResult : 1;

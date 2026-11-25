@@ -3,6 +3,7 @@
 <head>
   <meta charset="utf-8">
   <title>Test basic login, contextual inscure password warning without saved logins</title>
+  <script src="/tests/SimpleTest/GleanTest.js"></script>
   <script src="/tests/SimpleTest/SimpleTest.js"></script>
   <script src="/tests/SimpleTest/EventUtils.js"></script>
   <script type="text/javascript" src="../../../satchel/test/satchel_common.js"></script>
@@ -31,7 +32,7 @@ let chromeScript = runChecksAfterCommonInit();
 <pre id="test">
 <script class="testbody" type="text/javascript">
 
-/** Test for Login Manager: contextual insecure password warning without saved logins. **/
+/** Test for Login Manager: contextual insecure password warning without saved logins. */
 
 let uname = getFormElementByName(1, "uname");
 let pword = getFormElementByName(1, "pword");
@@ -45,6 +46,13 @@ function restoreForm() {
 
 function spinEventLoop() {
   return Promise.resolve();
+}
+
+function closeCurrentTab() {
+  runInParent(function cleanUpWindow() {
+    let window = Services.wm.getMostRecentWindow("navigator:browser");
+    window.gBrowser.removeTab(window.gBrowser.selectedTab);
+  });
 }
 
 add_setup(async () => {
@@ -61,7 +69,9 @@ add_task(async function test_form1_initial_empty() {
 });
 
 add_task(async function test_form1_warning_entry() {
+  await GleanTest.testResetFOG();
   await SimpleTest.promiseFocus(window);
+
   // Trigger autocomplete popup
   restoreForm();
   await popupBy();
@@ -70,19 +80,21 @@ add_task(async function test_form1_warning_entry() {
   is(popupState.open, true, "Check popup is opened");
   is(popupState.selectedIndex, -1, "Check no entries are selected upon opening");
 
-  let acEvents = await getTelemetryEvents({ process: "parent", filterProps: TelemetryFilterPropsAC, clear: true });
-  is(acEvents.length, 1, "One autocomplete event");
-  checkACTelemetryEvent(acEvents[0], uname, {
-    "hadPrevious": "0",
-    "insecureWarning": "1",
-    "loginsFooter": "1"
-  });
+  const events = await GleanTest.formAutocomplete.showLogins.testGetValue();
+  is(events.length, 1, "One autocomplete event");
+  is("0", events[0].extra.hadPrevious);
+  is("1", events[0].extra.insecureWarning);
+  is("1", events[0].extra.loginsFooter);
 
   synthesizeKey("KEY_ArrowDown"); // select insecure warning
   checkLoginForm(uname, "", pword, ""); // value shouldn't update just by selecting
   synthesizeKey("KEY_Enter");
   await spinEventLoop(); // let focus happen
   checkLoginForm(uname, "", pword, "");
+
+  // Activating the insecure warning opens the support page in a new tab;
+  // close it so it doesn't steal focus from later tests in the same run.
+  closeCurrentTab();
 });
 
 </script>

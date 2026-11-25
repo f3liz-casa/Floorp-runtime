@@ -1,6 +1,4 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- * vim: set ts=8 sts=2 et sw=2 tw=80:
- * This Source Code Form is subject to the terms of the Mozilla Public
+/* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
@@ -11,6 +9,7 @@
 #define js_experimental_CompileScript_h
 
 #include "jspubtd.h"
+
 #include "js/ErrorReport.h"  // JSErrorReport
 #include "js/experimental/JSStencil.h"
 #include "js/GCAnnotations.h"
@@ -28,8 +27,22 @@ struct CompilationInput;
 namespace JS {
 using FrontendContext = js::FrontendContext;
 
+struct FrontendContextCreationOptions {
+  // Set to false to avoid sharing the compiled stencil's script data to the
+  // process global state.
+  //
+  // If the compiled stencils will never be instantiated in the process and
+  // they'll be discarded immediately, set this to false to avoid holding the
+  // data unnecessarily.
+  bool shareScriptData = true;
+
+  // Set to true to allow calling JS::RequestFrontendCompilationCancellation.
+  bool allowCancellingCompilation = false;
+};
+
 // Create a new front-end context.
-JS_PUBLIC_API JS::FrontendContext* NewFrontendContext();
+JS_PUBLIC_API JS::FrontendContext* NewFrontendContext(
+    const FrontendContextCreationOptions* options = nullptr);
 
 // Destroy a front-end context allocated with NewFrontendContext.
 JS_PUBLIC_API void DestroyFrontendContext(JS::FrontendContext* fc);
@@ -88,6 +101,19 @@ JS_PUBLIC_API bool HadFrontendOutOfMemory(JS::FrontendContext* fc);
 
 // Returns true if the JS::FrontendContext had allocation overflow error.
 JS_PUBLIC_API bool HadFrontendAllocationOverflow(JS::FrontendContext* fc);
+
+// Request that the compilation using the given JS::FrontendContext be
+// cancelled, which then fails as if an error had been reported. Requires
+// FrontendContextCreationOptions::allowCancellingCompilation to be true, and
+// can be called from any thread. A running compilation aborts before the next
+// function it parses or emits, so it can also still succeed. The request is
+// permanent, and the resulting failure cannot be converted with
+// ConvertFrontendErrorsToRuntimeErrors, so the result must be discarded.
+JS_PUBLIC_API void RequestFrontendCompilationCancellation(
+    JS::FrontendContext* fc);
+
+// Returns true if a cancellation request aborted the compilation.
+JS_PUBLIC_API bool HadFrontendCancelled(JS::FrontendContext* fc);
 
 // Clear errors reported to the JS::FrontendContext.
 // No-op when there's no errors.

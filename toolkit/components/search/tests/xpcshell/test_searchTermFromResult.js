@@ -32,6 +32,26 @@ let CONFIG_V2 = [
       },
     ],
   },
+  {
+    recordType: "engine",
+    identifier: "engine-partner-code",
+    base: {
+      name: "Test Engine With Partner Code",
+      partnerCode: "firefox-code",
+      urls: {
+        search: {
+          base: "https://www.example.org/search",
+          params: [{ name: "tt", value: "{partnerCode}" }],
+          searchTermParamName: "q",
+        },
+      },
+    },
+    variants: [
+      {
+        environment: { allRegionsAndLocales: true },
+      },
+    ],
+  },
 ];
 
 let defaultEngine;
@@ -43,9 +63,9 @@ const TERM_ENCODED = "c%3B%2C%3F%3A%40%26%3D%2B%24-_.!~*'()%23+d%C3%A8f";
 
 add_setup(async function () {
   SearchTestUtils.setRemoteSettingsConfig(CONFIG_V2);
-  await Services.search.init();
+  await SearchService.init();
 
-  defaultEngine = Services.search.getEngineByName("Test Engine With Purposes");
+  defaultEngine = SearchService.getEngineByName("Test Engine With Purposes");
 });
 
 add_task(async function test_searchTermFromResult() {
@@ -55,7 +75,7 @@ add_task(async function test_searchTermFromResult() {
     keyword: "idn_addParam",
     search_url: "https://www.xn--bcher-kva.ch/search",
   });
-  let engineEscapedIDN = Services.search.getEngineByName("idn_addParam");
+  let engineEscapedIDN = SearchService.getEngineByName("idn_addParam");
 
   // Setup server for french engine.
   await useHttpServer("");
@@ -72,7 +92,7 @@ add_task(async function test_searchTermFromResult() {
     encoding: "windows-1252",
     search_url: "https://www.bacon.test/find",
   });
-  let engineWinCharset = Services.search.getEngineByName("bacon_addParam");
+  let engineWinCharset = SearchService.getEngineByName("bacon_addParam");
 
   // For providers with non-encoded characters in their path.
   await SearchTestUtils.installSearchExtension({
@@ -80,7 +100,7 @@ add_task(async function test_searchTermFromResult() {
     keyword: "characters_with_accents_in_path",
     search_url: "https://fr.example.org/âêîôû:ÂÊÎÔÛ",
   });
-  let engineWithAccentsInPath = Services.search.getEngineByName(
+  let engineWithAccentsInPath = SearchService.getEngineByName(
     "characters_with_accents_in_path"
   );
 
@@ -230,9 +250,7 @@ add_task(async function test_searchTermFromResult_blank() {
 });
 
 add_task(async function test_searchTermFromResult_prefParam() {
-  const defaultBranch = Services.prefs.getDefaultBranch(
-    SearchUtils.BROWSER_SEARCH_PREF
-  );
+  const defaultBranch = Services.prefs.getDefaultBranch("browser.search.");
 
   defaultBranch.setCharPref("param.testChannelEnabled", "yes");
 
@@ -267,9 +285,7 @@ add_task(async function test_searchTermFromResult_paramsInSearchUrl() {
     search_url: "https://example.com/?q={searchTerms}&pc=firefox",
     search_url_get_params: "",
   });
-  let testEngine = Services.search.getEngineByName(
-    "engine_params_in_search_url"
-  );
+  let testEngine = SearchService.getEngineByName("engine_params_in_search_url");
   let url = `https://example.com/?q=${TERM_ENCODED}&pc=firefox`;
   Assert.equal(
     getTerm(url, testEngine),
@@ -289,7 +305,7 @@ add_task(async function test_searchTermFromResult_paramsInSearchUrl() {
     search_url: "https://example.com/q={searchTerms}",
     search_url_get_params: "",
   });
-  testEngine = Services.search.getEngineByName(
+  testEngine = SearchService.getEngineByName(
     "engine_params_in_search_url_without_delimiter"
   );
   url = `https://example.com/?q=${TERM_ENCODED}&pc=firefox&page=1`;
@@ -297,6 +313,35 @@ add_task(async function test_searchTermFromResult_paramsInSearchUrl() {
     getTerm(url, testEngine),
     "",
     "Should get a blank string from an engine with no params and no delimiter in its url."
+  );
+});
+
+add_task(async function test_searchTermFromResult_partnerCode() {
+  let engine = SearchService.getEngineByName("Test Engine With Partner Code");
+  let url = URL.fromURI(engine.getSubmission(TERM, null).uri);
+  Assert.equal(
+    url.searchParams.get("tt"),
+    "firefox-code",
+    "Submission url should contain the partner code."
+  );
+  Assert.equal(
+    getTerm(url, engine),
+    TERM,
+    "Should get term from a url with the partner code."
+  );
+
+  url.searchParams.set("tt", "other-code");
+  Assert.equal(
+    getTerm(url, engine),
+    TERM,
+    "Should get term from a url with a different partner code."
+  );
+
+  url.searchParams.delete("tt");
+  Assert.equal(
+    getTerm(url, engine),
+    "",
+    "Should get a blank string from a url missing the partner code param."
   );
 });
 

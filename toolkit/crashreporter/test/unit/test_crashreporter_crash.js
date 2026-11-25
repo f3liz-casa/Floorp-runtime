@@ -16,12 +16,17 @@ add_task(async function run_test() {
     is_win7_or_newer = true;
   }
 
+  registerCleanupFunction(async () => {
+    Services.prefs.clearUserPref("termsofuse.bypassNotification");
+  });
+
   // try a basic crash
   await do_content_crash(null, function (mdump, extra) {
     Assert.ok(mdump.exists());
     Assert.greater(mdump.fileSize, 0);
-    Assert.ok("StartupTime" in extra);
-    Assert.ok("CrashTime" in extra);
+    Assert.ok("StartupTime" in extra, "StartupTime annotation is present");
+    Assert.ok("CrashTime" in extra, "CrashTime annotation is present");
+    Assert.ok("UptimeTS" in extra, "UptimeTS annotation is present");
     Assert.ok(
       CrashTestUtils.dumpHasStream(
         mdump.path,
@@ -72,6 +77,10 @@ add_task(async function run_test() {
       TelemetryController.testSetup();
     },
     function (mdump, extra) {
+      Assert.ok("StartupTime" in extra, "StartupTime annotation is present");
+      Assert.ok("CrashTime" in extra, "CrashTime annotation is present");
+      Assert.ok("UptimeTS" in extra, "UptimeTS annotation is present");
+
       Assert.equal(extra.TestKey, "TestValue");
       Assert.equal(extra.TestUnicode, "\u{1F4A9}\n\u{0000}Escape");
       Assert.ok(
@@ -108,6 +117,8 @@ add_task(async function run_test() {
     function () {
       // Enable the FHR, official policy bypass (since we're in a test) and
       // specify a telemetry server & client ID.
+      Services.prefs.setBoolPref("termsofuse.bypassNotification", true);
+      Services.prefs.setBoolPref("browser.preonboarding.enabled", false);
       Services.prefs.setBoolPref(
         "datareporting.policy.dataSubmissionPolicyBypassNotification",
         true
@@ -178,6 +189,7 @@ add_task(async function run_test() {
         "datareporting.policy.dataSubmissionPolicyBypassNotification",
         true
       );
+      Services.prefs.setBoolPref("termsofuse.bypassNotification", true);
       Services.prefs.setBoolPref(
         "datareporting.healthreport.uploadEnabled",
         false

@@ -69,7 +69,7 @@ option('trim_dsp',
     value: 'if-release',
     description: 'Eliminate redundant DSP functions where possible')
 
-option('macos_kperf',
+option('asm_debug',
     type: 'boolean',
     value: false,
-    description: 'Use the private macOS kperf API for benchmarking')
+    description: 'Include functions for assembly debugging')

@@ -10,24 +10,28 @@
 
 #include "modules/rtp_rtcp/source/rtp_sender_video.h"
 
-#include <stdlib.h>
-#include <string.h>
-
+#include <algorithm>
+#include <bitset>
+#include <cstddef>
 #include <cstdint>
+#include <cstdlib>
+#include <cstring>
 #include <memory>
 #include <optional>
+#include <span>
 #include <utility>
 #include <variant>
 #include <vector>
 
 #include "absl/algorithm/container.h"
+#include "absl/container/inlined_vector.h"
 #include "absl/memory/memory.h"
-#include "absl/strings/match.h"
-#include "api/array_view.h"
 #include "api/crypto/frame_encryptor_interface.h"
 #include "api/field_trials_view.h"
+#include "api/frame_transformer_interface.h"
 #include "api/make_ref_counted.h"
 #include "api/media_types.h"
+#include "api/task_queue/task_queue_factory.h"
 #include "api/transport/rtp/corruption_detection_message.h"
 #include "api/transport/rtp/dependency_descriptor.h"
 #include "api/units/data_rate.h"
@@ -41,8 +45,6 @@
 #include "api/video/video_layers_allocation.h"
 #include "api/video/video_rotation.h"
 #include "api/video/video_timing.h"
-#include "common_video/corruption_detection_converters.h"
-#include "common_video/frame_instrumentation_data.h"
 #include "modules/rtp_rtcp/include/rtp_rtcp_defines.h"
 #include "modules/rtp_rtcp/source/absolute_capture_time_sender.h"
 #include "modules/rtp_rtcp/source/corruption_detection_extension.h"
@@ -72,9 +74,16 @@
 namespace webrtc {
 
 namespace {
+using PacketizationFormat = RtpPacketizer::PacketizationFormat;
+
 constexpr size_t kRedForFecHeaderLength = 1;
 constexpr TimeDelta kMaxUnretransmittableFrameInterval =
     TimeDelta::Millis(33 * 4);
+// Minimum interval between repeated warnings.
+constexpr TimeDelta kWarningLogInterval = TimeDelta::Seconds(10);
+// Largest chain diff that the dependency descriptor can represent, see
+// `frame_chain_fdiff` in the dependency descriptor specification.
+constexpr int kMaxChainDiff = (1 << 8) - 1;
 
 void BuildRedPayload(const RtpPacketToSend& media_packet,
                      RtpPacketToSend* red_packet) {
@@ -159,6 +168,28 @@ bool PacketWillLikelyBeRequestedForRestransmissionIfLost(
                : false);
 }
 
+PacketizationFormat GetPacketizationFormat(const VideoCodecType codec_type,
+                                           bool raw_packetization) {
+  if (raw_packetization) {
+    return PacketizationFormat::kRaw;
+  }
+
+  switch (codec_type) {
+    case kVideoCodecH264:
+      return PacketizationFormat::kH264;
+    case kVideoCodecVP8:
+      return PacketizationFormat::kVP8;
+    case kVideoCodecVP9:
+      return PacketizationFormat::kVP9;
+    case kVideoCodecAV1:
+      return PacketizationFormat::kAV1;
+    case kVideoCodecH265:
+      return PacketizationFormat::kH265;
+    case kVideoCodecGeneric:
+      return PacketizationFormat::kGeneric;
+  }
+}
+
 }  // namespace
 
 RTPSenderVideo::RTPSenderVideo(const Config& config)
@@ -179,9 +210,11 @@ RTPSenderVideo::RTPSenderVideo(const Config& config)
       post_encode_overhead_bitrate_(/*max_window_size=*/TimeDelta::Seconds(1)),
       frame_encryptor_(config.frame_encryptor),
       require_frame_encryption_(config.require_frame_encryption),
-      generic_descriptor_auth_experiment_(!absl::StartsWith(
-          config.field_trials->Lookup("WebRTC-GenericDescriptorAuth"),
-          "Disabled")),
+      sframe_required_by_negotiation_(config.sframe_required_by_negotiation),
+      sframe_encryption_config_(config.sframe_encryption_config),
+      generic_descriptor_auth_experiment_(
+          !config.field_trials->IsDisabled("WebRTC-GenericDescriptorAuth")),
+      raw_packetization_(config.raw_packetization),
       absolute_capture_time_sender_(config.clock),
       frame_transformer_delegate_(
           config.frame_transformer
@@ -190,7 +223,11 @@ RTPSenderVideo::RTPSenderVideo(const Config& config)
                     config.frame_transformer,
                     rtp_sender_->SSRC(),
                     rtp_sender_->Rid(),
-                    config.task_queue_factory)
+                    config.task_queue_factory,
+                    !config.field_trials->IsDisabled(
+                        "WebRTC-MediaTaskQueuePriorities")
+                        ? TaskQueueFactory::Priority::kVideo
+                        : TaskQueueFactory::Priority::kNormal)
               : nullptr) {
   if (frame_transformer_delegate_)
     frame_transformer_delegate_->Init();
@@ -449,6 +486,9 @@ void RTPSenderVideo::AddRtpHeaderExtensions(const RTPVideoHeader& video_header,
         generic_descriptor.SetFrameId(
             static_cast<uint16_t>(video_header.generic->frame_id));
         for (int64_t dep : video_header.generic->dependencies) {
+          // A dependency that the descriptor can't represent is left out. That
+          // only matters to receivers that lost the referenced frame, whereas
+          // leaving out the descriptor would make the stream inconsistent.
           generic_descriptor.AddFrameDependencyDiff(
               video_header.generic->frame_id - dep);
         }
@@ -487,39 +527,76 @@ void RTPSenderVideo::AddRtpHeaderExtensions(const RTPVideoHeader& video_header,
   }
 
   if (last_packet && video_header.frame_instrumentation_data) {
-    std::optional<CorruptionDetectionMessage> message;
-    if (const auto* data = std::get_if<FrameInstrumentationData>(
-            &(*video_header.frame_instrumentation_data))) {
-      message =
-          ConvertFrameInstrumentationDataToCorruptionDetectionMessage(*data);
-    } else if (const auto* sync_data =
-                   std::get_if<FrameInstrumentationSyncData>(
-                       &(*video_header.frame_instrumentation_data))) {
-      message = ConvertFrameInstrumentationSyncDataToCorruptionDetectionMessage(
-          *sync_data);
-    } else {
-      RTC_DCHECK_NOTREACHED();
-    }
-
-    if (message.has_value()) {
-      packet->SetExtension<CorruptionDetectionExtension>(*message);
-    } else {
-      RTC_LOG(LS_WARNING) << "Failed to convert frame instrumentation data to "
-                             "corruption detection message.";
-    }
+    packet->SetExtension<CorruptionDetectionExtension>(
+        CorruptionDetectionMessage::FromFrameInstrumentationData(
+            *video_header.frame_instrumentation_data));
   }
 }
 
+bool RTPSenderVideo::HandleMissingDependencyDescriptor(
+    const RTPVideoHeader& video_header,
+    const RtpPacketToSend& packet) {
+  if (video_structure_ == nullptr ||
+      !packet.IsRegistered<RtpDependencyDescriptorExtension>()) {
+    // The dependency descriptor isn't used.
+    return true;
+  }
+  if (video_header.frame_type == VideoFrameType::kVideoFrameKey) {
+    // Disable attaching dependency descriptor to delta packets (including
+    // non-first packet of a key frame) when it wasn't attached to a key frame,
+    // as dependency descriptor can't be usable in such case.
+    // This can also happen when the descriptor is larger than 15 bytes and
+    // two-byte header extensions are not negotiated using extmap-allow-mixed.
+    RTC_LOG(LS_WARNING) << "Disable dependency descriptor because failed to "
+                           "attach it to a key frame.";
+    video_structure_ = nullptr;
+    return true;
+  }
+  // The dependency descriptor can't describe this delta frame, e.g. because it
+  // references a frame too far back. Drop the frame rather than send it
+  // without a description of its dependencies, which receivers and middleboxes
+  // rely on. Unlike for key frames, keep the dependency descriptor enabled for
+  // the frames that follow.
+  Timestamp now = clock_->CurrentTime();
+  if (now >= last_undescribable_frame_log_ + kWarningLogInterval) {
+    RTC_LOG(LS_WARNING) << "Failed to describe frame dependencies. Frame is "
+                           "dropped.";
+    last_undescribable_frame_log_ = now;
+  }
+  return false;
+}
+
 bool RTPSenderVideo::SendVideo(int payload_type,
-                               std::optional<VideoCodecType> codec_type,
+                               VideoCodecType codec_type,
                                uint32_t rtp_timestamp,
                                Timestamp capture_time,
-                               ArrayView<const uint8_t> payload,
+                               std::span<const uint8_t> payload,
                                size_t encoder_output_size,
                                RTPVideoHeader video_header,
                                TimeDelta expected_retransmission_time,
                                std::vector<uint32_t> csrcs) {
+  return SendVideoFrame(payload_type, codec_type,
+                        RtpTimestampWithOffset{rtp_timestamp}, capture_time,
+                        payload, encoder_output_size, video_header,
+                        expected_retransmission_time, std::move(csrcs));
+}
+
+bool RTPSenderVideo::SendVideoFrame(int payload_type,
+                                    VideoCodecType codec_type,
+                                    RtpTimestampInfo rtp_timestamp_info,
+                                    Timestamp capture_time,
+                                    std::span<const uint8_t> payload,
+                                    size_t encoder_output_size,
+                                    RTPVideoHeader video_header,
+                                    TimeDelta expected_retransmission_time,
+                                    std::vector<uint32_t> csrcs) {
   RTC_CHECK_RUNS_SERIALIZED(&send_checker_);
+
+  uint32_t rtp_timestamp =
+      std::holds_alternative<RtpTimestampWithoutOffset>(rtp_timestamp_info)
+          ? std::get<RtpTimestampWithoutOffset>(rtp_timestamp_info) +
+                rtp_sender_->TimestampOffset()
+          : std::get<RtpTimestampWithOffset>(rtp_timestamp_info);
 
   if (video_header.frame_type == VideoFrameType::kEmptyFrame)
     return true;
@@ -562,15 +639,46 @@ bool RTPSenderVideo::SendVideo(int payload_type,
         video_header.generic->active_decode_targets,
         video_header.frame_type == VideoFrameType::kVideoFrameKey,
         video_header.generic->frame_id, video_header.generic->chain_diffs);
+    // Chain diffs of inactive chains aren't serialized, so they may be
+    // arbitrarily large, e.g. when a spatial layer isn't being produced.
+    const std::bitset<32> active_chains =
+        active_decode_targets_tracker_.ActiveChainsBitmask();
+    absl::InlinedVector<int, 4>& chain_diffs =
+        video_header.generic->chain_diffs;
+    for (size_t i = 0; i < chain_diffs.size() && i < active_chains.size();
+         ++i) {
+      int& chain_diff = chain_diffs[i];
+      if (!active_chains[i] || chain_diff <= kMaxChainDiff) {
+        continue;
+      }
+      // A chain diff that the dependency descriptor can't represent would
+      // make the frame undescribable. Instead, describe the chain as having
+      // no previous frame, like RtpPayloadParams does for VP9. That can lead
+      // to video corruption if a previous frame of the chain was lost.
+      Timestamp now = clock_->CurrentTime();
+      if (now >= last_chain_diff_log_ + kWarningLogInterval) {
+        RTC_LOG(LS_WARNING) << "Chain diff " << chain_diff
+                            << " is too large for the dependency descriptor. "
+                               "Sending 0 instead.";
+        last_chain_diff_log_ = now;
+      }
+      chain_diff = 0;
+    }
   }
 
   // No FEC protection for upper temporal layers, if used.
   const bool use_fec = fec_type_.has_value() &&
                        (temporal_id == 0 || temporal_id == kNoTemporalIdx);
 
-  // Maximum size of packet including rtp headers.
+  std::unique_ptr<RtpPacketToSend> single_packet =
+      rtp_sender_->AllocatePacket(csrcs);
+
+  // Maximum size of packet including rtp headers. Capped by the capacity of the
+  // allocated packet so that the packetizer never exceeds the buffer, even if
+  // the max packet size is changed concurrently.
   // Extra space left in case packet will be resent using fec or rtx.
-  int packet_capacity = rtp_sender_->MaxRtpPacketSize();
+  int packet_capacity =
+      std::min(single_packet->capacity(), rtp_sender_->MaxRtpPacketSize());
   if (use_fec) {
     packet_capacity -= FecPacketOverhead();
   }
@@ -578,9 +686,6 @@ bool RTPSenderVideo::SendVideo(int payload_type,
     packet_capacity -= rtp_sender_->RtxPacketOverhead();
   }
 
-  std::unique_ptr<RtpPacketToSend> single_packet =
-      rtp_sender_->AllocatePacket(csrcs);
-  RTC_DCHECK_LE(packet_capacity, single_packet->capacity());
   single_packet->SetPayloadType(payload_type);
   single_packet->SetTimestamp(rtp_timestamp);
   if (capture_time.IsFinite())
@@ -614,18 +719,9 @@ bool RTPSenderVideo::SendVideo(int payload_type,
   AddRtpHeaderExtensions(video_header,
                          /*first_packet=*/true, /*last_packet=*/true,
                          single_packet.get());
-  if (video_structure_ != nullptr &&
-      single_packet->IsRegistered<RtpDependencyDescriptorExtension>() &&
-      !single_packet->HasExtension<RtpDependencyDescriptorExtension>()) {
-    RTC_DCHECK_EQ(video_header.frame_type, VideoFrameType::kVideoFrameKey);
-    // Disable attaching dependency descriptor to delta packets (including
-    // non-first packet of a key frame) when it wasn't attached to a key frame,
-    // as dependency descriptor can't be usable in such case.
-    // This can also happen when the descriptor is larger than 15 bytes and
-    // two-byte header extensions are not negotiated using extmap-allow-mixed.
-    RTC_LOG(LS_WARNING) << "Disable dependency descriptor because failed to "
-                           "attach it to a key frame.";
-    video_structure_ = nullptr;
+  if (!single_packet->HasExtension<RtpDependencyDescriptorExtension>() &&
+      !HandleMissingDependencyDescriptor(video_header, *single_packet)) {
+    return false;
   }
 
   AddRtpHeaderExtensions(video_header,
@@ -647,15 +743,21 @@ bool RTPSenderVideo::SendVideo(int payload_type,
 
   RTC_DCHECK_GE(single_packet->headers_size(), middle_packet->headers_size());
   limits.single_packet_reduction_len =
-      single_packet->headers_size() - middle_packet->headers_size();
+      single_packet->headers_size() > middle_packet->headers_size()
+          ? single_packet->headers_size() - middle_packet->headers_size()
+          : 0;
 
   RTC_DCHECK_GE(first_packet->headers_size(), middle_packet->headers_size());
   limits.first_packet_reduction_len =
-      first_packet->headers_size() - middle_packet->headers_size();
+      first_packet->headers_size() > middle_packet->headers_size()
+          ? first_packet->headers_size() - middle_packet->headers_size()
+          : 0;
 
   RTC_DCHECK_GE(last_packet->headers_size(), middle_packet->headers_size());
   limits.last_packet_reduction_len =
-      last_packet->headers_size() - middle_packet->headers_size();
+      last_packet->headers_size() > middle_packet->headers_size()
+          ? last_packet->headers_size() - middle_packet->headers_size()
+          : 0;
 
   bool has_generic_descriptor =
       first_packet->HasExtension<RtpGenericFrameDescriptorExtension00>() ||
@@ -670,7 +772,7 @@ bool RTPSenderVideo::SendVideo(int payload_type,
   Buffer encrypted_video_payload;
   if (frame_encryptor_ != nullptr) {
     const size_t max_ciphertext_size =
-        frame_encryptor_->GetMaxCiphertextByteSize(webrtc::MediaType::VIDEO,
+        frame_encryptor_->GetMaxCiphertextByteSize(MediaType::VIDEO,
                                                    payload.size());
     encrypted_video_payload.SetSize(max_ciphertext_size);
 
@@ -683,8 +785,8 @@ bool RTPSenderVideo::SendVideo(int payload_type,
     }
 
     if (frame_encryptor_->Encrypt(
-            webrtc::MediaType::VIDEO, first_packet->Ssrc(), additional_data,
-            payload, encrypted_video_payload, &bytes_written) != 0) {
+            MediaType::VIDEO, first_packet->Ssrc(), additional_data, payload,
+            encrypted_video_payload, &bytes_written) != 0) {
       return false;
     }
 
@@ -696,13 +798,22 @@ bool RTPSenderVideo::SendVideo(int payload_type,
            "one is required since require_frame_encryptor is set";
   }
 
-  std::unique_ptr<RtpPacketizer> packetizer =
-      RtpPacketizer::Create(codec_type, payload, limits, video_header);
+  std::unique_ptr<RtpPacketizer> packetizer = RtpPacketizer::Create(
+      GetPacketizationFormat(codec_type, raw_packetization_), payload, limits,
+      video_header);
 
   const size_t num_packets = packetizer->NumPackets();
 
-  if (num_packets == 0)
+  if (num_packets == 0) {
+    Timestamp now = clock_->CurrentTime();
+    if (now >= last_fail_packetize_log_ + kWarningLogInterval) {
+      RTC_LOG(LS_WARNING) << "Failed to packetize " << codec_type
+                          << " video frame of size " << payload.size()
+                          << ". Frame is dropped.";
+      last_fail_packetize_log_ = now;
+    }
     return false;
+  }
 
   bool first_frame = first_frame_sent_();
   std::vector<std::unique_ptr<RtpPacketToSend>> rtp_packets;
@@ -801,21 +912,32 @@ bool RTPSenderVideo::SendVideo(int payload_type,
 }
 
 bool RTPSenderVideo::SendEncodedImage(int payload_type,
-                                      std::optional<VideoCodecType> codec_type,
+                                      VideoCodecType codec_type,
                                       uint32_t rtp_timestamp,
                                       const EncodedImage& encoded_image,
                                       RTPVideoHeader video_header,
-                                      TimeDelta expected_retransmission_time) {
+                                      TimeDelta expected_retransmission_time,
+                                      const std::vector<uint32_t>& csrcs) {
+  if (sframe_required_by_negotiation_) {
+    // TODO(bugs.webrtc.org/479862368): Enable the encryptor check once frames
+    // are encrypted; until then dropping unconditionally keeps media off the
+    // wire.
+    RTC_LOG(LS_WARNING) << "Dropping video frame: Sframe is required but no "
+                           "Sframe encryptor is set up for this stream.";
+    return false;
+  }
+
   if (frame_transformer_delegate_) {
     // The frame will be sent async once transformed.
     return frame_transformer_delegate_->TransformFrame(
         payload_type, codec_type, rtp_timestamp, encoded_image, video_header,
-        expected_retransmission_time);
+        expected_retransmission_time, csrcs);
   }
-  return SendVideo(payload_type, codec_type, rtp_timestamp,
-                   encoded_image.CaptureTime(), encoded_image,
-                   encoded_image.size(), video_header,
-                   expected_retransmission_time, /*csrcs=*/{});
+  return SendVideoFrame(payload_type, codec_type,
+                        RtpTimestampInfo(RtpTimestampWithOffset{rtp_timestamp}),
+                        encoded_image.CaptureTime(), encoded_image,
+                        encoded_image.size(), video_header,
+                        expected_retransmission_time, csrcs);
 }
 
 DataRate RTPSenderVideo::PostEncodeOverhead() const {

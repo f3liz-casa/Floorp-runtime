@@ -1,6 +1,4 @@
-/* -*- Mode: Java; c-basic-offset: 4; tab-width: 20; indent-tabs-mode: nil; -*-
- * vim: ts=4 sw=4 expandtab:
- * This Source Code Form is subject to the terms of the Mozilla Public
+/* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
@@ -58,6 +56,11 @@ public class WebResponse extends WebMessage {
    */
   public final @Nullable boolean skipConfirmation;
 
+  /**
+   * Construct a new WebResponse from the given builder.
+   *
+   * @param builder Builder instance containing the response parameters
+   */
   protected WebResponse(final @NonNull Builder builder) {
     super(builder);
     this.statusCode = builder.mStatusCode;
@@ -163,6 +166,8 @@ public class WebResponse extends WebMessage {
     }
 
     /**
+     * Set whether or not this response is secure.
+     *
      * @param isSecure Whether or not this response is secure.
      * @return This Builder instance.
      */
@@ -172,6 +177,8 @@ public class WebResponse extends WebMessage {
     }
 
     /**
+     * Set the server certificate used with this response.
+     *
      * @param certificate The certificate used.
      * @return This Builder instance.
      */
@@ -217,9 +224,7 @@ public class WebResponse extends WebMessage {
       return this;
     }
 
-    /**
-     * @return A {@link WebResponse} constructed with the values from this Builder instance.
-     */
+    /** {@return a {@link WebResponse} constructed with the values from this Builder instance} */
     public @NonNull WebResponse build() {
       return new WebResponse(this);
     }

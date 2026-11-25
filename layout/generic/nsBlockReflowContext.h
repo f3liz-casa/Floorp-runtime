@@ -1,13 +1,11 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 /* class that a parent frame uses to reflow a block frame */
 
-#ifndef nsBlockReflowContext_h___
-#define nsBlockReflowContext_h___
+#ifndef nsBlockReflowContext_h_
+#define nsBlockReflowContext_h_
 
 #include "mozilla/ReflowOutput.h"
 
@@ -31,6 +29,17 @@ class nsBlockReflowContext {
   nsBlockReflowContext(nsPresContext* aPresContext,
                        const ReflowInput& aParentRI);
   ~nsBlockReflowContext() = default;
+
+  /**
+   * Returns whether `margin-trim` on the block container aFrame discards the
+   * block-start / block-end margins of the children that adjoin the
+   * corresponding content edge, along with any margin collapsed with those.
+   * https://drafts.csswg.org/css-box-4/#margin-trim-block
+   *
+   * Note that this only reports what aFrame's own style asks for.
+   */
+  static bool StyleTrimsChildBStartMargins(const nsIFrame* aFrame);
+  static bool StyleTrimsChildBEndMargins(const nsIFrame* aFrame);
 
   void ReflowBlock(const mozilla::LogicalRect& aSpace, bool aApplyBStartMargin,
                    mozilla::CollapsingMargin& aPrevMargin, nscoord aClearance,
@@ -88,4 +97,4 @@ class nsBlockReflowContext {
   mozilla::CollapsingMargin mBStartMargin;
 };
 
-#endif /* nsBlockReflowContext_h___ */
+#endif /* nsBlockReflowContext_h_ */

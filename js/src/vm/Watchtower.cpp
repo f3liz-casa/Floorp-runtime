@@ -1,19 +1,20 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- * vim: set ts=8 sts=2 et sw=2 tw=80:
- * This Source Code Form is subject to the terms of the Mozilla Public
+/* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "vm/Watchtower.h"
 
+#include "builtin/Array.h"
 #include "js/CallAndConstruct.h"
 #include "js/experimental/TypedData.h"
 #include "vm/Compartment.h"
 #include "vm/JSContext.h"
 #include "vm/JSObject.h"
 #include "vm/NativeObject.h"
+#include "vm/ObjectFuse.h"
 #include "vm/PlainObject.h"
 #include "vm/Realm.h"
+#include "vm/TypedArrayObject.h"
 
 #include "vm/Compartment-inl.h"
 #include "vm/JSObject-inl.h"
@@ -86,6 +87,7 @@ static bool ReshapeForShadowedProp(JSContext* cx, Handle<NativeObject*> obj,
 
     if (mozilla::Maybe<PropertyInfo> propInfo = nproto->lookup(cx, id)) {
       if (proto->hasObjectFuse()) {
+        MOZ_ASSERT(ObjectFuse::tracksPropertyKey(id));
         if (auto* objFuse = cx->zone()->objectFuses.get(nproto)) {
           objFuse->handleTeleportingShadowedProperty(cx, *propInfo);
         }
@@ -147,22 +149,20 @@ void MaybePopReturnFuses(JSContext* cx, Handle<NativeObject*> nobj) {
   }
 }
 
-static void MaybePopStringPrototypeSymbolsFuse(JSContext* cx, NativeObject* obj,
-                                               PropertyKey key) {
-  if (!key.isSymbol()) {
-    return;
+void MaybePopTypedArrayConstructorSpeciesFuses(JSContext* cx,
+                                               NativeObject* nobj) {
+  MOZ_ASSERT(nobj->hasRealmFuseProperty());
+
+  if (IsTypedArrayConstructor(nobj)) {
+    nobj->realm()->realmFuses.optimizeTypedArraySpeciesFuse.popFuse(
+        cx, nobj->realm()->realmFuses);
   }
-  GlobalObject* global = &obj->global();
-  if (obj != global->maybeGetPrototype(JSProto_String) &&
-      obj != global->maybeGetPrototype(JSProto_Object)) {
-    return;
-  }
-  if (key.toSymbol() == cx->wellKnownSymbols().match ||
-      key.toSymbol() == cx->wellKnownSymbols().replace ||
-      key.toSymbol() == cx->wellKnownSymbols().search ||
-      key.toSymbol() == cx->wellKnownSymbols().split) {
-    obj->realm()->realmFuses.optimizeStringPrototypeSymbolsFuse.popFuse(
-        cx, obj->realm()->realmFuses);
+}
+
+static void MaybePopHasNoIndexedPropsFuses(JSContext* cx, NativeObject* nobj) {
+  MOZ_ASSERT(nobj->hasRealmFuseProperty());
+  if (InvalidatingRealmFuse* fuse = MaybeGetHasNoIndexedPropsFuse(nobj)) {
+    fuse->popFuse(cx, nobj->realm()->realmFuses);
   }
 }
 
@@ -182,8 +182,15 @@ bool Watchtower::watchPropertyAddSlow(JSContext* cx, Handle<NativeObject*> obj,
     if (id == NameToId(cx->names().return_)) {
       MaybePopReturnFuses(cx, obj);
     }
-
-    MaybePopStringPrototypeSymbolsFuse(cx, obj, id);
+  }
+  if (MOZ_UNLIKELY(obj->hasRealmFuseProperty())) {
+    if (id.isWellKnownSymbol(JS::SymbolCode::species)) {
+      MaybePopTypedArrayConstructorSpeciesFuses(cx, obj);
+    }
+    uint32_t index;
+    if (IdIsIndex(id, &index) && !obj->isIndexed()) {
+      MaybePopHasNoIndexedPropsFuses(cx, obj);
+    }
   }
 
   if (MOZ_UNLIKELY(obj->useWatchtowerTestingLog())) {
@@ -196,7 +203,7 @@ bool Watchtower::watchPropertyAddSlow(JSContext* cx, Handle<NativeObject*> obj,
   return true;
 }
 
-static bool ReshapeForProtoMutation(JSContext* cx, HandleObject obj) {
+static bool ReshapeForProtoMutation(JSContext* cx, Handle<NativeObject*> obj) {
   // To avoid the JIT guarding on each prototype in the proto chain to detect
   // prototype mutation, we can instead reshape the rest of the proto chain such
   // that a guard on any of them is sufficient. To avoid excessive reshaping and
@@ -280,16 +287,18 @@ static_assert(
     "IsTypedArrayProtoKey(JSProto_TypedArray) is expected to return false");
 
 static bool WatchProtoChangeImpl(JSContext* cx, HandleObject obj) {
-  if (!obj->isUsedAsPrototype()) {
+  if (!obj->is<NativeObject>()) {
     return true;
   }
-  if (!ReshapeForProtoMutation(cx, obj)) {
-    return false;
-  }
-  if (obj->is<NativeObject>()) {
-    InvalidateMegamorphicCache(cx, obj.as<NativeObject>());
+  auto nobj = obj.as<NativeObject>();
 
-    NativeObject* nobj = &obj->as<NativeObject>();
+  if (nobj->isUsedAsPrototype()) {
+    if (!ReshapeForProtoMutation(cx, nobj)) {
+      return false;
+    }
+
+    InvalidateMegamorphicCache(cx, nobj);
+
     if (nobj == nobj->global().maybeGetArrayIteratorPrototype()) {
       nobj->realm()->realmFuses.arrayIteratorPrototypeHasIteratorProto.popFuse(
           cx, nobj->realm()->realmFuses);
@@ -300,17 +309,17 @@ static bool WatchProtoChangeImpl(JSContext* cx, HandleObject obj) {
           cx, nobj->realm()->realmFuses);
     }
 
-    if (nobj == nobj->global().maybeGetPrototype(JSProto_String)) {
-      nobj->realm()->realmFuses.optimizeStringPrototypeSymbolsFuse.popFuse(
-          cx, nobj->realm()->realmFuses);
-    }
-
     auto protoKey = StandardProtoKeyOrNull(nobj);
     if (IsTypedArrayProtoKey(protoKey) &&
         nobj == nobj->global().maybeGetPrototype(protoKey)) {
       nobj->realm()->realmFuses.optimizeTypedArraySpeciesFuse.popFuse(
           cx, nobj->realm()->realmFuses);
     }
+  }
+
+  if (MOZ_UNLIKELY(nobj->hasRealmFuseProperty())) {
+    MaybePopTypedArrayConstructorSpeciesFuses(cx, nobj);
+    MaybePopHasNoIndexedPropsFuses(cx, nobj);
   }
 
   return true;
@@ -332,6 +341,34 @@ bool Watchtower::watchProtoChangeSlow(JSContext* cx, HandleObject obj) {
   }
 
   return true;
+}
+
+// static
+bool Watchtower::watchesFirstDenseElementAddSlow(NativeObject* obj) {
+  MOZ_ASSERT(obj->hasRealmFuseProperty());
+
+  // Adding a dense element only matters if it would pop one of the fuses for
+  // indexed properties on prototypes.
+  InvalidatingRealmFuse* fuse = MaybeGetHasNoIndexedPropsFuse(obj);
+  return fuse && fuse->intact();
+}
+
+// static
+void Watchtower::watchFirstDenseElementAddSlow(JSContext* cx,
+                                               NativeObject* obj) {
+  MOZ_ASSERT(watchesFirstDenseElementAdd(obj));
+  MaybePopHasNoIndexedPropsFuses(cx, obj);
+}
+
+void Watchtower::watchGlobalLexicalRedeclaration(JSContext* cx,
+                                                 Handle<NativeObject*> obj) {
+  if (!obj->hasObjectFuse()) {
+    return;
+  }
+
+  if (ObjectFuse* fuse = obj->zone()->objectFuses.get(obj)) {
+    fuse->handleGlobalLexicalMutation(cx);
+  }
 }
 
 static void MaybePopArrayConstructorFuses(JSContext* cx, NativeObject* obj,
@@ -622,7 +659,8 @@ static void MaybePopRealmFuses(JSContext* cx, NativeObject* obj, jsid id) {
 // static
 bool Watchtower::watchPropertyRemoveSlow(JSContext* cx,
                                          Handle<NativeObject*> obj, HandleId id,
-                                         PropertyInfo propInfo) {
+                                         PropertyInfo propInfo,
+                                         bool* wasTrackedObjectFuseProp) {
   MOZ_ASSERT(watchesPropertyRemove(obj));
 
   if (obj->isUsedAsPrototype() && !id.isInt()) {
@@ -636,9 +674,9 @@ bool Watchtower::watchPropertyRemoveSlow(JSContext* cx,
   if (MOZ_UNLIKELY(obj->hasRealmFuseProperty())) {
     MaybePopRealmFuses(cx, obj, id);
   }
-  if (obj->hasObjectFuse()) {
+  if (obj->hasObjectFuse() && ObjectFuse::tracksPropertyKey(id)) {
     if (auto* objFuse = cx->zone()->objectFuses.get(obj)) {
-      objFuse->handlePropertyRemove(cx, propInfo);
+      objFuse->handlePropertyRemove(cx, propInfo, wasTrackedObjectFuseProp);
     }
   }
 
@@ -650,6 +688,15 @@ bool Watchtower::watchPropertyRemoveSlow(JSContext* cx,
   }
 
   return true;
+}
+
+// static
+void Watchtower::finishPropertyRemove(JSContext* cx, NativeObject* obj,
+                                      PropertyInfo propInfo) {
+  MOZ_ASSERT(obj->hasObjectFuse());
+  if (auto* objFuse = cx->zone()->objectFuses.get(obj)) {
+    objFuse->finishPropertyRemove(propInfo);
+  }
 }
 
 // static
@@ -700,11 +747,17 @@ void Watchtower::watchPropertyValueChangeSlow(
   // accessor property or when redefining a data property as an accessor
   // property and vice versa.
 
+  // This is a no-op for indexed properties (sparse elements).
+  if (id.isInt()) {
+    return;
+  }
+
   // Handle object fuses before the check for no-op changes below. We don't
   // attach SetProp stubs for constant properties, so if a constant property is
   // overwritten with the same value, we want to mark it non-constant.
   // See Watchtower::canOptimizeSetSlotSlow.
   if (obj->hasObjectFuse()) {
+    MOZ_ASSERT(ObjectFuse::tracksPropertyKey(id));
     if (auto* objFuse = cx->zone()->objectFuses.get(obj)) {
       objFuse->handlePropertyValueChange(cx, propInfo);
     }
@@ -749,8 +802,10 @@ template void Watchtower::watchPropertyValueChangeSlow<AllowGC::NoGC>(
 // static
 SetSlotOptimizable Watchtower::canOptimizeSetSlotSlow(JSContext* cx,
                                                       NativeObject* obj,
+                                                      PropertyKey key,
                                                       PropertyInfo prop) {
   MOZ_ASSERT(obj->hasObjectFuse());
+  MOZ_ASSERT(ObjectFuse::tracksPropertyKey(key));
 
   ObjectFuse* objFuse = cx->zone()->objectFuses.getOrCreate(cx, obj);
   if (!objFuse) {
@@ -788,38 +843,6 @@ bool Watchtower::watchFreezeOrSealSlow(JSContext* cx, Handle<NativeObject*> obj,
       return false;
     }
   }
-
-  return true;
-}
-
-// static
-bool Watchtower::watchObjectSwapSlow(JSContext* cx, HandleObject a,
-                                     HandleObject b) {
-  MOZ_ASSERT(watchesObjectSwap(a, b));
-
-  // If we're swapping an object that's used as prototype, we're mutating the
-  // proto chains of other objects. Treat this as a proto change to ensure we
-  // invalidate shape teleporting and megamorphic caches.
-  if (!WatchProtoChangeImpl(cx, a)) {
-    return false;
-  }
-  if (!WatchProtoChangeImpl(cx, b)) {
-    return false;
-  }
-
-  if (a->hasObjectFuse()) {
-    if (auto* objFuse = cx->zone()->objectFuses.get(a.as<NativeObject>())) {
-      objFuse->handleObjectSwap(cx);
-    }
-  }
-  if (b->hasObjectFuse()) {
-    if (auto* objFuse = cx->zone()->objectFuses.get(b.as<NativeObject>())) {
-      objFuse->handleObjectSwap(cx);
-    }
-  }
-
-  // Note: we don't invoke the testing callback for swap because the objects may
-  // not be safe to expose to JS at this point. See bug 1754699.
 
   return true;
 }

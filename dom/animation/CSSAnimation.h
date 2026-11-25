@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -14,34 +12,16 @@
 #include "mozilla/dom/MutationObservers.h"
 
 namespace mozilla {
-// Properties of CSS Animations that can be overridden by the Web Animations API
-// in a manner that means we should ignore subsequent changes to markup for that
-// property.
-enum class CSSAnimationProperties {
-  None = 0,
-  Keyframes = 1 << 0,
-  Duration = 1 << 1,
-  IterationCount = 1 << 2,
-  Direction = 1 << 3,
-  Delay = 1 << 4,
-  FillMode = 1 << 5,
-  Composition = 1 << 6,
-  Effect = Keyframes | Duration | IterationCount | Direction | Delay |
-           FillMode | Composition,
-  PlayState = 1 << 7,
-};
-MOZ_MAKE_ENUM_CLASS_BITWISE_OPERATORS(CSSAnimationProperties)
 
 namespace dom {
 
 class CSSAnimation final : public Animation {
  public:
-  explicit CSSAnimation(nsIGlobalObject* aGlobal, nsAtom* aAnimationName)
+  CSSAnimation(nsIGlobalObject* aGlobal, nsAtom* aAnimationName,
+               bool aIsStylePaused)
       : dom::Animation(aGlobal),
         mAnimationName(aAnimationName),
-        mNeedsNewAnimationIndexWhenRun(false),
-        mPreviousPhase(ComputedTiming::AnimationPhase::Idle),
-        mPreviousIteration(0) {
+        mIsStylePaused(aIsStylePaused) {
     // We might need to drop this assertion once we add a script-accessible
     // constructor but for animations generated from CSS markup the
     // animation-name should never be empty.
@@ -64,7 +44,8 @@ class CSSAnimation final : public Animation {
 
   // Animation interface overrides
   void SetEffect(AnimationEffect* aEffect) override;
-  void SetStartTimeAsDouble(const Nullable<double>& aStartTime) override;
+  void SetStartTime(const Nullable<CSSNumberish>& aStartTime,
+                    ErrorResult& aRv) override;
   Promise* GetReady(ErrorResult& aRv) override;
   void Reverse(ErrorResult& aRv) override;
 
@@ -83,31 +64,10 @@ class CSSAnimation final : public Animation {
 
   void PlayFromStyle();
   void PauseFromStyle();
-  void CancelFromStyle(PostRestyleMode aPostRestyle) {
-    Animation::Cancel(aPostRestyle);
-
-    // When an animation is disassociated with style it enters an odd state
-    // where its composite order is undefined until it first transitions
-    // out of the idle state.
-    //
-    // Even if the composite order isn't defined we don't want it to be random
-    // in case we need to determine the order to dispatch events associated
-    // with an animation in this state. To solve this we treat the animation as
-    // if it had been added to the end of the global animation list so that
-    // its sort order is defined. We'll update this index again once the
-    // animation leaves the idle state.
-    //
-    // Note: We have to update |mAnimationIndex| after calling
-    // Animation::Cancel(), which enqueues animationcancel event, to make sure
-    // we have the correct |mAnimationIndex| in AnimationEventInfo.
-    mAnimationIndex = sNextAnimationIndex++;
-    mNeedsNewAnimationIndexWhenRun = true;
-
-    // We need to do this *after* calling Cancel() since
-    // Cancel() might synchronously trigger a cancel event for which
-    // we need an owning element to target the event at.
-    mOwningElement = OwningElementRef();
-  }
+  void CancelFromStyle(PostRestyleMode aPostRestyle);
+  // Drop this animation's reference to the named timeline aName from
+  // nsAnimationManager, which otherwise keeps updating it.
+  void RemovedNamedTimelineReference(const nsAtom* aName);
 
   void Tick(TickState&) override;
   void QueueEvents(
@@ -140,12 +100,23 @@ class CSSAnimation final : public Animation {
     QueueEvents(aActiveTime);
   }
 
-  CSSAnimationProperties GetOverriddenProperties() const {
-    return mOverriddenProperties;
-  }
-  void AddOverriddenProperties(CSSAnimationProperties aProperties) {
+  void PropertiesWillSetFromJS(CSSAnimationProperties aProperties) override {
     mOverriddenProperties |= aProperties;
   }
+  CSSAnimationProperties PropertiesOverridenByJS() const override {
+    return mOverriddenProperties;
+  }
+
+  // Try to sync with the new style and update the current CSSAnimation. This
+  // ignores the overridden properties.
+  void UpdatePropertiesWithNew(
+      const NonOwningAnimationTarget& aTarget,
+      const ComputedStyle* aComputedStyle, TimingParams&& aNewTiming,
+      nsTArray<Keyframe>&& aNewKeyframes,
+      const StyleComputedTimingFunction& aNewTimingFunction,
+      CompositeOperation aNewComposite, AnimationTimeline* aNewTimeline,
+      const dom::ScopedTimelineName& aNewTimelineName,
+      dom::AnimationRange&& aNewRange, bool aNewIsStylePaused);
 
  protected:
   virtual ~CSSAnimation() {
@@ -191,18 +162,28 @@ class CSSAnimation final : public Animation {
   // For (b) and (c) the owning element will return !IsSet().
   OwningElementRef mOwningElement;
 
-  // When true, indicates that when this animation next leaves the idle state,
-  // its animation index should be updated.
-  bool mNeedsNewAnimationIndexWhenRun;
-
-  // Phase and current iteration from the previous time we queued events.
-  // This is used to determine what new events to dispatch.
-  ComputedTiming::AnimationPhase mPreviousPhase;
-  uint64_t mPreviousIteration;
+  uint64_t mPreviousIteration = 0;
 
   // Properties that would normally be defined by the cascade but which have
   // since been explicitly set via the Web Animations API.
   CSSAnimationProperties mOverriddenProperties = CSSAnimationProperties::None;
+
+  // Phase and current iteration from the previous time we queued events.
+  // This is used to determine what new events to dispatch.
+  ComputedTiming::AnimationPhase mPreviousPhase =
+      ComputedTiming::AnimationPhase::Idle;
+
+  // When true, indicates that when this animation next leaves the idle state,
+  // its animation index should be updated.
+  bool mNeedsNewAnimationIndexWhenRun = false;
+
+  // The animation-play-state for this CSSAnimation. We cache this to determine
+  // if we need to play or pause the animation when there are any animation
+  // style changes.
+  // Note: We cannot just use Animation::PlayState() which may be affected by
+  // the timeline, e.g. null timeline may make it paused even if
+  // animation-play-state is running.
+  bool mIsStylePaused = false;
 };
 
 // A subclass of KeyframeEffect that reports when specific properties have been
@@ -216,6 +197,10 @@ class CSSAnimationKeyframeEffect : public KeyframeEffect {
       : KeyframeEffect(aDocument, std::move(aTarget), std::move(aTiming),
                        aOptions) {}
 
+  CSSAnimationKeyframeEffect* AsCSSAnimationKeyframeEffect() override {
+    return this;
+  }
+
   void GetTiming(EffectTiming& aRetVal) const override;
   void GetComputedTimingAsDict(ComputedEffectTiming& aRetVal) const override;
   void UpdateTiming(const OptionalEffectTiming& aTiming,
@@ -223,6 +208,14 @@ class CSSAnimationKeyframeEffect : public KeyframeEffect {
   void SetKeyframes(JSContext* aContext, JS::Handle<JSObject*> aKeyframes,
                     ErrorResult& aRv) override;
   void SetComposite(const CompositeOperation& aComposite) override;
+  void SetDefaultTimingFunction(
+      const StyleComputedTimingFunction& aTimingFunction) {
+    mDefaultTimingFunction = aTimingFunction;
+  }
+  void SetDefaultComposite(const CompositeOperation& aComposite) {
+    mDefaultComposite = aComposite;
+  }
+  bool GetComputedKeyframes(nsTArray<Keyframe>& aKeyframes) const override;
 
  private:
   CSSAnimation* GetOwningCSSAnimation() {
@@ -234,6 +227,26 @@ class CSSAnimationKeyframeEffect : public KeyframeEffect {
 
   // Flushes styles if our owning animation is a CSSAnimation
   void MaybeFlushUnanimatedStyle() const;
+
+  // The default timing function is the corresponding computed value of
+  // animation-timing-function on element.
+  // Note: We shouldn't reuse |mTiming.mFunction| because it has other usages,
+  // e.g. it should still be "linear" when calling getTiming() and computing the
+  // progress.
+  // https://drafts.csswg.org/css-animations-2/#keyframe-processing
+  StyleComputedTimingFunction mDefaultTimingFunction =
+      StyleComputedTimingFunction::Keyword(StyleTimingKeyword::Ease);
+  // The default composite is the corresponding computed value of
+  // animation-composition on element.
+  // Note: We cannot reuse |mEffectOptions.mComposite| which may be updated by
+  // Web Animations. We should always use the animation-composition from style.
+  CompositeOperation mDefaultComposite = CompositeOperation::Replace;
+
+  // True if we should ignore keyframes generation (for 0% and 100%) because the
+  // new keyframes are from JS. It's unfortunate we cannot reuse
+  // |CSSAnimation::mOverriddenProperties| because this keyframe effect may not
+  // be associated with an animation.
+  bool mIgnoreKeyframesGeneration = false;
 };
 
 }  // namespace dom

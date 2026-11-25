@@ -1,5 +1,4 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- *
+/*
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -70,67 +69,41 @@
 // interrupt the PR_Poll that may waiting for I/O on the socket for which we
 // are validating the cert.
 //
-// When socket process is enabled, libssl is running on socket process. To
-// perform certificate authentication with CertVerifier, we have to send all
-// needed information to parent process and send the result back to socket
-// process via IPC. The workflow is described below.
-// 1. In AuthCertificateHookInternal(), we call RemoteProcessCertVerification()
-//    instead of SSLServerCertVerificationJob::Dispatch when we are on socket
-//    process.
-// 2. In RemoteProcessCertVerification(), PVerifySSLServerCert actors will be
-//    created on IPDL background thread for carrying needed information via IPC.
-// 3. On parent process, VerifySSLServerCertParent is created and it calls
-//    SSLServerCertVerificationJob::Dispatch for doing certificate verification
-//    on one of CertVerificationThreads.
-// 4. When validation is done, OnVerifiedSSLServerCertSuccess IPC message is
-//    sent through the IPDL background thread when
-//    CertVerifier::VerifySSLServerCert returns Success. Otherwise,
-//    OnVerifiedSSLServerCertFailure is sent.
-// 5. After setp 4, PVerifySSLServerCert actors will be released. The
-//    verification result will be dispatched via
-//    SSLServerCertVerificationResult.
-
 #include "SSLServerCertVerification.h"
-
-#include <cstring>
 
 #include "CertVerifier.h"
 #include "CryptoTask.h"
 #include "ExtendedValidation.h"
 #include "NSSCertDBTrustDomain.h"
 #include "NSSSocketControl.h"
-#include "PSMRunnable.h"
 #include "RootCertificateTelemetryUtils.h"
 #include "ScopedNSSTypes.h"
 #include "SharedCertVerifier.h"
-#include "VerifySSLServerCertChild.h"
 #include "cert.h"
 #include "mozilla/Assertions.h"
-#include "mozilla/Casting.h"
 #include "mozilla/RefPtr.h"
 #include "mozilla/StaticPrefs_security.h"
 #include "mozilla/UniquePtr.h"
-#include "mozilla/Unused.h"
 #include "mozilla/glean/SecurityManagerSslMetrics.h"
+#include "mozpkix/pkix.h"
+#include "mozpkix/pkixcheck.h"
+#include "mozpkix/pkixnss.h"
+#include "mozpkix/pkixutil.h"
 #include "nsComponentManagerUtils.h"
 #include "nsContentUtils.h"
 #include "nsICertOverrideService.h"
 #include "nsIPublicKeyPinningService.h"
 #include "nsISiteSecurityService.h"
 #include "nsISocketProvider.h"
-#include "nsThreadPool.h"
-#include "nsNetUtil.h"
 #include "nsNSSCertificate.h"
 #include "nsNSSComponent.h"
 #include "nsNSSIOLayer.h"
+#include "nsNetUtil.h"
 #include "nsServiceManagerUtils.h"
 #include "nsString.h"
+#include "nsThreadPool.h"
 #include "nsURLHelper.h"
 #include "nsXPCOMCIDInternal.h"
-#include "mozpkix/pkix.h"
-#include "mozpkix/pkixcheck.h"
-#include "mozpkix/pkixnss.h"
-#include "mozpkix/pkixutil.h"
 #include "secerr.h"
 #include "secport.h"
 #include "ssl.h"
@@ -386,7 +359,7 @@ static nsresult OverrideAllowedForHost(
 // Prohibit changing the server cert only if we negotiated SPDY,
 // in order to support SPDY's cross-origin connection pooling.
 static SECStatus BlockServerCertChangeForSpdy(
-    NSSSocketControl* socketControl, const UniqueCERTCertificate& serverCert) {
+    NSSSocketControl* socketControl, const nsTArray<uint8_t>& serverCertDER) {
   if (!socketControl->IsHandshakeCompleted()) {
     // first handshake on this connection, not a
     // renegotiation.
@@ -427,9 +400,7 @@ static SECStatus BlockServerCertChangeForSpdy(
     PR_SetError(SEC_ERROR_LIBRARY_FAILURE, 0);
     return SECFailure;
   }
-  if (certDER.Length() == serverCert->derCert.len &&
-      memcmp(certDER.Elements(), serverCert->derCert.data, certDER.Length()) ==
-          0) {
+  if (certDER == serverCertDER) {
     return SECSuccess;
   }
 
@@ -502,6 +473,15 @@ void GatherCertificateTransparencyTelemetry(
   // but it failed to parse (e.g. due to unsupported CT protocol version).
   glean::ssl::scts_per_connection.AccumulateSingleSample(sctsCount);
 
+  uint32_t sctsFromTiledLogs = 0;
+  for (const auto& verifiedSCT : info.verifyResult.verifiedScts) {
+    if (verifiedSCT.logFormat == ct::CTLogFormat::Tiled) {
+      sctsFromTiledLogs++;
+    }
+  }
+  glean::ssl::scts_from_tiled_logs_per_connection.AccumulateSingleSample(
+      sctsFromTiledLogs);
+
   // Report CT Policy compliance by CA.
   if (info.policyCompliance.isSome() &&
       *info.policyCompliance != ct::CTPolicyCompliance::Compliant) {
@@ -514,8 +494,7 @@ void GatherCertificateTransparencyTelemetry(
 }
 
 // This function collects telemetry about certs. It will be called on one of
-// CertVerificationThread. When the socket process is used this will be called
-// on the parent process.
+// CertVerificationThread.
 static void CollectCertTelemetry(
     mozilla::pkix::Result aCertVerificationResult, EVStatus aEVStatus,
     CertVerifier::OCSPStaplingStatus aOcspStaplingStatus,
@@ -700,7 +679,7 @@ PRErrorCode AuthCertificateParseResults(
   if (NS_FAILED(rv)) {
     return aCertVerificationError;
   }
-  Unused << isTemporaryOverride;
+  (void)isTemporaryOverride;
   if (haveOverride) {
     uint32_t probeValue =
         MapOverridableErrorToProbeValue(aCertVerificationError);
@@ -733,8 +712,7 @@ SECStatus SSLServerCertVerificationJob::Dispatch(
     Maybe<nsTArray<uint8_t>>& stapledOCSPResponse,
     Maybe<nsTArray<uint8_t>>& sctsFromTLSExtension,
     Maybe<DelegatedCredentialInfo>& dcInfo, uint32_t providerFlags, Time time,
-    uint32_t certVerifierFlags,
-    BaseSSLServerCertVerificationResult* aResultTask) {
+    uint32_t certVerifierFlags, SSLServerCertVerificationResult* aResultTask) {
   // Runs on the socket transport thread
   if (!aResultTask || peerCertChain.IsEmpty()) {
     MOZ_ASSERT_UNREACHABLE(
@@ -783,7 +761,7 @@ SSLServerCertVerificationJob::Run() {
   if (!certVerifier) {
     // We can't release this off the STS thread because some parts of it
     // are not threadsafe. Just leak mResultTask.
-    Unused << mResultTask.forget();
+    mResultTask.forget().leak();
     return NS_ERROR_FAILURE;
   }
 
@@ -817,7 +795,7 @@ SSLServerCertVerificationJob::Run() {
     if (NS_FAILED(rv)) {
       // We can't release this off the STS thread because some parts of it
       // are not threadsafe. Just leak mResultTask.
-      Unused << mResultTask.forget();
+      mResultTask.forget().leak();
     }
     return rv;
   }
@@ -848,7 +826,7 @@ SSLServerCertVerificationJob::Run() {
   if (NS_FAILED(rv)) {
     // We can't release this off the STS thread because some parts of it
     // are not threadsafe. Just leak mResultTask.
-    Unused << mResultTask.forget();
+    mResultTask.forget().leak();
   }
   return rv;
 }
@@ -894,16 +872,8 @@ SECStatus AuthCertificateHookInternal(
   }
 
   uint64_t addr = reinterpret_cast<uintptr_t>(aPtrForLogging);
-  RefPtr<SSLServerCertVerificationResult> resultTask =
-      new SSLServerCertVerificationResult(socketControl);
-
-  if (XRE_IsSocketProcess()) {
-    return RemoteProcessCertVerification(
-        std::move(peerCertChain), hostName, socketControl->GetPort(),
-        socketControl->GetOriginAttributes(), stapledOCSPResponse,
-        sctsFromTLSExtension, dcInfo, providerFlags, certVerifierFlags,
-        resultTask);
-  }
+  RefPtr resultTask =
+      MakeRefPtr<SSLServerCertVerificationResult>(socketControl);
 
   // We *must* do certificate verification on a background thread because
   // we need the socket transport thread to be free for our OCSP requests,
@@ -935,30 +905,24 @@ SECStatus AuthCertificateHook(void* arg, PRFileDesc* fd, PRBool checkSig,
 
   NSSSocketControl* socketInfo = static_cast<NSSSocketControl*>(arg);
 
-  UniqueCERTCertificate serverCert(SSL_PeerCertificate(fd));
+  UniqueSECItemArray peerCertChain;
+  SECStatus rv =
+      SSL_PeerCertificateChainDER(fd, TempPtrToSetter(&peerCertChain));
 
-  if (!checkSig || isServer || !socketInfo || !serverCert) {
+  if (!checkSig || isServer || !socketInfo || rv != SECSuccess ||
+      !peerCertChain || peerCertChain->len == 0) {
     PR_SetError(PR_INVALID_STATE_ERROR, 0);
     return SECFailure;
   }
   socketInfo->SetFullHandshake();
 
-  if (BlockServerCertChangeForSpdy(socketInfo, serverCert) != SECSuccess) {
-    return SECFailure;
-  }
-
-  UniqueSECItemArray peerCertChain;
-  SECStatus rv =
-      SSL_PeerCertificateChainDER(fd, TempPtrToSetter(&peerCertChain));
-  if (rv != SECSuccess) {
-    PR_SetError(PR_INVALID_STATE_ERROR, 0);
-    return SECFailure;
-  }
-  MOZ_ASSERT(peerCertChain,
-             "AuthCertificateHook: peerCertChain unexpectedly null");
-
   nsTArray<nsTArray<uint8_t>> peerCertsBytes =
       CreateCertBytesArray(peerCertChain);
+
+  if (BlockServerCertChangeForSpdy(socketInfo, peerCertsBytes[0]) !=
+      SECSuccess) {
+    return SECFailure;
+  }
 
   // SSL_PeerStapledOCSPResponses will never return a non-empty response if
   // OCSP stapling wasn't enabled because libssl wouldn't have let the server
@@ -1072,7 +1036,9 @@ SSLServerCertVerificationResult::SSLServerCertVerificationResult(
       mFinalError(0),
       mOverridableErrorCategory(
           nsITransportSecurityInfo::OverridableErrorCategory::ERROR_UNSET),
-      mProviderFlags(0) {}
+      mIsBuiltCertChainRootBuiltInRoot(false),
+      mProviderFlags(0),
+      mMadeOCSPRequests(false) {}
 
 nsresult SSLServerCertVerificationResult::Dispatch(
     nsTArray<nsTArray<uint8_t>>&& aBuiltChain,
@@ -1119,7 +1085,7 @@ nsresult SSLServerCertVerificationResult::Dispatch(
   MOZ_ASSERT(stsTarget, "Failed to get socket transport service event target");
   if (!stsTarget) {
     // This has to be released on STS; just leak it
-    Unused << mSocketControl.forget();
+    mSocketControl.forget().leak();
     return NS_ERROR_FAILURE;
   }
   rv = stsTarget->Dispatch(this, NS_DISPATCH_NORMAL);
@@ -1159,13 +1125,13 @@ SSLServerCertVerificationResult::Run() {
     nsTArray<uint8_t> certBytes(mPeerCertChain.ElementAt(0).Clone());
     nsCOMPtr<nsIX509Cert> cert(new nsNSSCertificate(std::move(certBytes)));
     mSocketControl->SetServerCert(cert, EVStatus::NotEV);
-    mSocketControl->SetFailedCertChain(std::move(mPeerCertChain));
     if (mOverridableErrorCategory !=
         nsITransportSecurityInfo::OverridableErrorCategory::ERROR_UNSET) {
       mSocketControl->SetStatusErrorBits(mOverridableErrorCategory);
     }
   }
 
+  mSocketControl->SetHandshakeCertificates(std::move(mPeerCertChain));
   mSocketControl->SetCertVerificationResult(mFinalError);
   // Release this reference to the socket control so that it will be freed on
   // the socket thread.

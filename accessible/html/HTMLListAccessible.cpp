@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -7,10 +5,10 @@
 #include "HTMLListAccessible.h"
 
 #include "AccAttributes.h"
-#include "nsAccessibilityService.h"
-#include "mozilla/a11y/Role.h"
 #include "States.h"
-
+#include "mozilla/a11y/Role.h"
+#include "nsAccessibilityService.h"
+#include "nsCoreUtils.h"
 #include "nsLayoutUtils.h"
 
 using namespace mozilla;
@@ -76,37 +74,26 @@ LocalAccessible* HTMLLIAccessible::Bullet() const {
 ////////////////////////////////////////////////////////////////////////////////
 // HTMLListBulletAccessible
 ////////////////////////////////////////////////////////////////////////////////
-HTMLListBulletAccessible::HTMLListBulletAccessible(nsIContent* aContent,
-                                                   DocAccessible* aDoc)
-    : LeafAccessible(aContent, aDoc) {
-  mGenericTypes |= eText;
-}
-
-////////////////////////////////////////////////////////////////////////////////
-// HTMLListBulletAccessible: LocalAccessible
-
-ENameValueFlag HTMLListBulletAccessible::Name(nsString& aName) const {
-  nsLayoutUtils::GetMarkerSpokenText(mContent, aName);
-  return eNameOK;
-}
 
 role HTMLListBulletAccessible::NativeRole() const {
   return roles::LISTITEM_MARKER;
 }
 
 uint64_t HTMLListBulletAccessible::NativeState() const {
-  return LeafAccessible::NativeState() | states::READONLY;
+  return TextLeafAccessible::NativeState() | states::READONLY;
 }
 
 already_AddRefed<AccAttributes> HTMLListBulletAccessible::NativeAttributes() {
-  RefPtr<AccAttributes> attributes = new AccAttributes();
+  auto attributes = MakeRefPtr<AccAttributes>();
   return attributes.forget();
 }
 
-void HTMLListBulletAccessible::AppendTextTo(nsAString& aText,
-                                            uint32_t aStartOffset,
-                                            uint32_t aLength) {
-  nsAutoString bulletText;
-  Name(bulletText);
-  aText.Append(Substring(bulletText, aStartOffset, aLength));
+/* static */
+void HTMLListBulletAccessible::ComputeText(nsIContent* aMarker,
+                                           nsAString& aText) {
+  if (Maybe<nsString> cssAlt = nsCoreUtils::GetCssAltContent(aMarker)) {
+    aText = *cssAlt;
+    return;
+  }
+  nsLayoutUtils::GetMarkerSpokenText(aMarker, aText);
 }

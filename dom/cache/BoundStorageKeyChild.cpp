@@ -1,12 +1,9 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "BoundStorageKeyChild.h"
 
-#include "mozilla/Unused.h"
 #include "mozilla/dom/cache/CacheChild.h"
 #include "mozilla/dom/cache/CacheOpChild.h"
 #include "mozilla/dom/cache/CacheStorage.h"
@@ -36,6 +33,18 @@ void BoundStorageKeyChild::ClearListener() {
 
 void BoundStorageKeyChild::StartDestroyFromListener() {
   NS_ASSERT_OWNINGTHREAD(BoundStorageKeyChild);
+
+  // The listener is being destroyed now. Managed actors (CacheStorageChild,
+  // CacheChild, CacheStreamControlChild) tear down asynchronously and none of
+  // them keeps the listener alive, so StartDestroy() usually takes the delayed
+  // path; sever the listener here or DestroyInternal() would later call into
+  // freed memory.
+  BoundStorageKeyChildListener* listener = mListener;
+  if (listener) {
+    listener->OnActorDestroy(this);
+    // listener should call ClearListener() in OnActorDestroy()
+    MOZ_DIAGNOSTIC_ASSERT(!mListener);
+  }
 
   StartDestroy();
 }

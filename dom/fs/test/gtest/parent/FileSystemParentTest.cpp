@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -7,11 +5,13 @@
 #include "FileSystemParentTest.h"
 
 #include "FileSystemParentTestHelpers.h"
+#include "FileSystemParentTypes.h"
 #include "TestHelpers.h"
 #include "datamodel/FileSystemDataManager.h"
 #include "datamodel/FileSystemDatabaseManager.h"
 #include "gtest/gtest.h"
 #include "mozilla/dom/PFileSystemManager.h"
+#include "nsIFile.h"
 
 namespace mozilla::dom::fs::test {
 
@@ -75,13 +75,14 @@ void FileSystemParentTest::GetStaticDatabaseUsage(
             QM_TRY_INSPECT(
                 const ResultConnection& conn,
                 data::GetStorageConnection(GetTestOriginMetadata(),
-                                           /* aDirectoryLockId */ -1));
+                                           /* aDirectoryLockId */ -1,
+                                           /* aMaybeCipherKey */ Nothing()));
 
             return data::FileSystemDatabaseManager::GetUsage(
                 conn, GetTestOriginMetadata());
           }));
 
-  aDatabaseUsage = databaseUsage;
+  aDatabaseUsage = std::move(databaseUsage);
 }
 
 void FileSystemParentTest::EnsureDataManager() {
@@ -108,6 +109,36 @@ void FileSystemParentTest::UnlockExclusive(const EntryId& aEntryId) {
 
   PerformOnBackgroundThread(
       [this, &aEntryId]() { mDataManager->UnlockExclusive(aEntryId); });
+}
+
+void FileSystemParentTest::LockShared(const EntryId& aEntryId,
+                                      FileId& aFileId) {
+  ASSERT_TRUE(mDataManager);
+
+  TEST_TRY_UNWRAP(FileId fileId, PerformOnBackgroundThread([this, &aEntryId]() {
+                    return mDataManager->LockShared(aEntryId);
+                  }));
+
+  aFileId = fileId;
+}
+
+void FileSystemParentTest::GetFileObject(const EntryId& aEntryId,
+                                         const FileId& aFileId,
+                                         nsCOMPtr<nsIFile>& aFile) {
+  ASSERT_TRUE(mDataManager);
+
+  TEST_TRY(PerformOnThread(
+      mDataManager->MutableIOTaskQueuePtr(),
+      [this, &aEntryId, &aFileId, &aFile]() -> Result<Ok, QMResult> {
+        ContentType type;
+        TimeStamp lastModifiedMs = 0;
+        Path path;
+        QM_TRY(QM_TO_RESULT(mDataManager->MutableDatabaseManagerPtr()->GetFile(
+            aEntryId, aFileId, FileMode::SHARED_FROM_EMPTY, type,
+            lastModifiedMs, path, aFile)));
+
+        return Ok{};
+      }));
 }
 
 void FileSystemParentTest::CreateNewEmptyFile(EntryId& aEntryId) {
@@ -187,7 +218,7 @@ void FileSystemParentTest::GetDatabaseUsage(quota::UsageInfo& aDatabaseUsage) {
         QM_TRY_RETURN(databaseManager->GetUsage());
       }));
 
-  aDatabaseUsage = databaseUsage;
+  aDatabaseUsage = std::move(databaseUsage);
 }
 
 void FileSystemParentTest::UpdateDatabaseUsage(const FileId& aFileId) {

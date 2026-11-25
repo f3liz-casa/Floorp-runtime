@@ -5,11 +5,7 @@ const FORM_PAGE_PATH =
 const passwordInputSelector = "#form-basic-password";
 
 add_setup(async function () {
-  Services.telemetry.clearEvents();
-  TelemetryTestUtils.assertEvents([], {
-    category: "pwmgr",
-    method: "autocomplete_shown",
-  });
+  Services.fog.testResetFOG();
 });
 
 add_task(async function test_autocomplete_new_password_popup_item_visible() {
@@ -40,8 +36,8 @@ add_task(async function test_autocomplete_new_password_popup_item_visible() {
       url: TEST_ORIGIN + FORM_PAGE_PATH,
     },
     async function (browser) {
-      await SimpleTest.promiseFocus(browser.ownerGlobal);
-      await ContentTask.spawn(
+      await SimpleTest.promiseFocus(browser.documentGlobal);
+      await SpecialPowers.spawn(
         browser,
         [passwordInputSelector],
         function openAutocomplete(sel) {
@@ -56,16 +52,17 @@ add_task(async function test_autocomplete_new_password_popup_item_visible() {
       let item = popup.querySelector(`[originaltype="generatedPassword"]`);
       Assert.ok(item, "Should get 'Generate password' richlistitem");
 
-      let onPopupClosed = BrowserTestUtils.waitForCondition(
+      let onPopupClosed = TestUtils.waitForCondition(
         () => !popup.popupOpen,
         "Popup should get closed"
       );
 
       await TestUtils.waitForTick();
 
-      TelemetryTestUtils.assertEvents(
-        [["pwmgr", "autocomplete_shown", "generatedpassword"]],
-        { category: "pwmgr", method: "autocomplete_shown" }
+      Assert.equal(
+        Glean.pwmgr.autocompleteShownGeneratedpassword.testGetValue().length,
+        1,
+        "One shown event"
       );
 
       await closePopup(popup);

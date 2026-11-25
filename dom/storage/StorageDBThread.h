@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -330,7 +328,7 @@ class StorageDBThread final {
 
   virtual void AsyncPreload(LocalStorageCacheBridge* aCache,
                             bool aPriority = false) {
-    InsertDBOp(MakeUnique<DBOperation>(
+    InsertDBOp(std::make_unique<DBOperation>(
         aPriority ? DBOperation::opPreloadUrgent : DBOperation::opPreload,
         aCache));
   }
@@ -339,45 +337,46 @@ class StorageDBThread final {
                            bool aForce = false);
 
   virtual void AsyncGetUsage(StorageUsageBridge* aUsage) {
-    InsertDBOp(MakeUnique<DBOperation>(DBOperation::opGetUsage, aUsage));
+    InsertDBOp(std::make_unique<DBOperation>(DBOperation::opGetUsage, aUsage));
   }
 
   virtual nsresult AsyncAddItem(LocalStorageCacheBridge* aCache,
                                 const nsAString& aKey,
                                 const nsAString& aValue) {
-    return InsertDBOp(
-        MakeUnique<DBOperation>(DBOperation::opAddItem, aCache, aKey, aValue));
+    return InsertDBOp(std::make_unique<DBOperation>(DBOperation::opAddItem,
+                                                    aCache, aKey, aValue));
   }
 
   virtual nsresult AsyncUpdateItem(LocalStorageCacheBridge* aCache,
                                    const nsAString& aKey,
                                    const nsAString& aValue) {
-    return InsertDBOp(MakeUnique<DBOperation>(DBOperation::opUpdateItem, aCache,
-                                              aKey, aValue));
+    return InsertDBOp(std::make_unique<DBOperation>(DBOperation::opUpdateItem,
+                                                    aCache, aKey, aValue));
   }
 
   virtual nsresult AsyncRemoveItem(LocalStorageCacheBridge* aCache,
                                    const nsAString& aKey) {
     return InsertDBOp(
-        MakeUnique<DBOperation>(DBOperation::opRemoveItem, aCache, aKey));
+        std::make_unique<DBOperation>(DBOperation::opRemoveItem, aCache, aKey));
   }
 
   virtual nsresult AsyncClear(LocalStorageCacheBridge* aCache) {
-    return InsertDBOp(MakeUnique<DBOperation>(DBOperation::opClear, aCache));
+    return InsertDBOp(
+        std::make_unique<DBOperation>(DBOperation::opClear, aCache));
   }
 
   virtual void AsyncClearAll() {
-    InsertDBOp(MakeUnique<DBOperation>(DBOperation::opClearAll));
+    InsertDBOp(std::make_unique<DBOperation>(DBOperation::opClearAll));
   }
 
   virtual void AsyncClearMatchingOrigin(const nsACString& aOriginNoSuffix) {
-    InsertDBOp(MakeUnique<DBOperation>(DBOperation::opClearMatchingOrigin,
-                                       aOriginNoSuffix));
+    InsertDBOp(std::make_unique<DBOperation>(DBOperation::opClearMatchingOrigin,
+                                             aOriginNoSuffix));
   }
 
   virtual void AsyncClearMatchingOriginAttributes(
       const OriginAttributesPattern& aPattern) {
-    InsertDBOp(MakeUnique<DBOperation>(
+    InsertDBOp(std::make_unique<DBOperation>(
         DBOperation::opClearMatchingOriginAttributes, aPattern));
   }
 

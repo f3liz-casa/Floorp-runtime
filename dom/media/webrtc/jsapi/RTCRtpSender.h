@@ -2,8 +2,8 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef _RTCRtpSender_h_
-#define _RTCRtpSender_h_
+#ifndef RTCRtpSender_h_
+#define RTCRtpSender_h_
 
 #include "RTCStatsReport.h"
 #include "js/RootingAPI.h"
@@ -76,7 +76,9 @@ class RTCRtpSender : public nsISupports,
   static void GetCapabilities(const GlobalObject&, const nsAString& kind,
                               Nullable<dom::RTCRtpCapabilities>& result);
   already_AddRefed<Promise> SetParameters(
-      const dom::RTCRtpSendParameters& aParameters, ErrorResult& aError);
+      const dom::RTCRtpSendParameters& aParameters,
+      const dom::RTCSetParameterOptions& aSetParameterOptions,
+      ErrorResult& aError);
   // Not a simple getter, so not const
   // See https://w3c.github.io/webrtc-pc/#dom-rtcrtpsender-getparameters
   void GetParameters(RTCRtpSendParameters& aParameters);
@@ -173,7 +175,6 @@ class RTCRtpSender : public nsISupports,
   Sequence<RTCRtpEncodingParameters> ToSendEncodings(
       const std::vector<std::string>& aRids) const;
   void MaybeGetJsepRids();
-  void UpdateDtmfSender();
 
   void WarnAboutBadSetParameters(const nsCString& aError);
   nsCString GetEffectiveTLDPlus1() const;
@@ -278,6 +279,8 @@ class RTCRtpSender : public nsISupports,
   void ApplyVideoConfig(const VideoConfig& aConfig);
   void ApplyAudioConfig(const AudioConfig& aConfig);
   void UpdateParametersCodecs();
+  void UpdateParametersRtcp();
+  void UpdateParametersHeaderExtensions();
 
   Canonical<Ssrcs> mSsrcs;
   Canonical<Ssrcs> mVideoRtxSsrcs;
@@ -295,4 +298,4 @@ class RTCRtpSender : public nsISupports,
 
 }  // namespace dom
 }  // namespace mozilla
-#endif  // _RTCRtpSender_h_
+#endif  // RTCRtpSender_h_

@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -844,7 +842,8 @@ NS_IMETHODIMP AboutThirdParty::UpdateBlocklist(const nsAString& aLeafName,
     mDynamicBlocklist.Remove(aLeafName);
   }
 
-  auto newTask = MakeUnique<DynamicBlocklistWriter>(promise, mDynamicBlocklist);
+  auto newTask =
+      std::make_unique<DynamicBlocklistWriter>(promise, mDynamicBlocklist);
   if (!newTask->IsReady()) {
     promise->MaybeReject(NS_ERROR_CANNOT_CONVERT_DATA);
     return NS_OK;

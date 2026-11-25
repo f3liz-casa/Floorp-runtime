@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -74,6 +72,7 @@ class CoalescedInputFlusher : public nsARefreshObserver {
  public:
   explicit CoalescedInputFlusher(BrowserChild* aBrowserChild);
 
+  MOZ_CAN_RUN_SCRIPT
   virtual void WillRefresh(mozilla::TimeStamp aTime) override = 0;
 
   NS_INLINE_DECL_REFCOUNTING(CoalescedInputFlusher, override)
@@ -90,6 +89,8 @@ class CoalescedInputFlusher : public nsARefreshObserver {
  protected:
   virtual ~CoalescedInputFlusher();
 
+  // BrowserChild owns us and unregisters us from the refresh driver in
+  // DestroyWindow() before it can go away.
   BrowserChild* mBrowserChild;
   // A refresh driver which this instance waits for the next refresh of.
   RefPtr<nsRefreshDriver> mRefreshDriver;

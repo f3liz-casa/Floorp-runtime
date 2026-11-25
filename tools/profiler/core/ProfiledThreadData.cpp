@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -36,10 +34,10 @@ ProfiledThreadData::~ProfiledThreadData() {
   MOZ_COUNT_DTOR(ProfiledThreadData);
 }
 
-static void StreamTables(UniqueStacks&& aUniqueStacks, JSContext* aCx,
+static void StreamTables(UniqueStacks&& aUniqueStacks, JSContext* /*aCx*/,
                          SpliceableJSONWriter& aWriter,
                          SpliceableChunkedJSONWriter* aShapesWriter,
-                         const mozilla::TimeStamp& aProcessStartTime,
+                         const mozilla::TimeStamp& /*aProcessStartTime*/,
                          mozilla::ProgressLogger aProgressLogger) {
   aWriter.StartObjectProperty("stackTable");
   {
@@ -104,7 +102,8 @@ mozilla::NotNull<mozilla::UniquePtr<UniqueStacks>>
 ProfiledThreadData::PrepareUniqueStacks(
     const ProfileBuffer& aBuffer, JSContext* aCx,
     mozilla::FailureLatch& aFailureLatch, ProfilerCodeAddressService* aService,
-    mozilla::ProgressLogger aProgressLogger) {
+    mozilla::ProgressLogger aProgressLogger,
+    const nsTHashMap<SourceId, IndexIntoSourceTable>* aSourceIdToIndexMap) {
   if (mJITFrameInfoForPreviousJSContexts &&
       mJITFrameInfoForPreviousJSContexts->HasExpired(
           aBuffer.BufferRangeStart())) {
@@ -127,13 +126,14 @@ ProfiledThreadData::PrepareUniqueStacks(
         *mBufferPositionWhenReceivedJSContext, mThreadInfo.ThreadId(), aCx,
         jitFrameInfo,
         aProgressLogger.CreateSubLoggerTo("Adding JIT info...", 90_pc,
-                                          "Added JIT info"));
+                                          "Added JIT info"),
+        aSourceIdToIndexMap);
   } else {
     aProgressLogger.SetLocalProgress(90_pc, "No JIT info");
   }
 
   return mozilla::MakeNotNull<mozilla::UniquePtr<UniqueStacks>>(
-      aFailureLatch, std::move(jitFrameInfo), aService);
+      aFailureLatch, std::move(jitFrameInfo), aService, aSourceIdToIndexMap);
 }
 
 void ProfiledThreadData::StreamJSON(
@@ -174,7 +174,7 @@ void ProfiledThreadData::StreamJSON(
     ThreadStreamingContext&& aThreadStreamingContext,
     SpliceableJSONWriter& aWriter, const nsACString& aProcessName,
     const nsACString& aETLDplus1, const mozilla::TimeStamp& aProcessStartTime,
-    ProfilerCodeAddressService* aService,
+    ProfilerCodeAddressService* /*aService*/,
     mozilla::ProgressLogger aProgressLogger) {
   aWriter.Start();
   {
@@ -350,19 +350,19 @@ void StreamSamplesAndMarkers(const char* aName,
   (void)DoStreamSamplesAndMarkers(
       aName, aWriter, aProcessName, aETLDplus1, aProcessStartTime,
       aRegisterTime, aUnregisterTime, std::move(aProgressLogger),
-      [&](mozilla::ProgressLogger aSubProgressLogger) {
+      [&](mozilla::ProgressLogger /*aSubProgressLogger*/) {
         aWriter.TakeAndSplice(
             aThreadData.mSamplesDataWriter.TakeChunkedWriteFunc());
         return aThreadData.mProfiledThreadData.Info().ThreadId();
       },
-      [&](mozilla::ProgressLogger aSubProgressLogger) {
+      [&](mozilla::ProgressLogger /*aSubProgressLogger*/) {
         aWriter.TakeAndSplice(
             aThreadData.mMarkersDataWriter.TakeChunkedWriteFunc());
       });
 }
 
 void ProfiledThreadData::NotifyAboutToLoseJSContext(
-    JSContext* aContext, const mozilla::TimeStamp& aProcessStartTime,
+    JSContext* aContext, const mozilla::TimeStamp& /*aProcessStartTime*/,
     ProfileBuffer& aBuffer) {
   if (!mBufferPositionWhenReceivedJSContext) {
     return;
@@ -379,7 +379,7 @@ void ProfiledThreadData::NotifyAboutToLoseJSContext(
   mozilla::UniquePtr<JITFrameInfo> jitFrameInfo =
       mJITFrameInfoForPreviousJSContexts
           ? std::move(mJITFrameInfoForPreviousJSContexts)
-          : mozilla::MakeUnique<JITFrameInfo>();
+          : std::make_unique<JITFrameInfo>();
 
   aBuffer.AddJITInfoForRange(*mBufferPositionWhenReceivedJSContext,
                              mThreadInfo.ThreadId(), aContext, *jitFrameInfo,
@@ -393,7 +393,8 @@ ThreadStreamingContext::ThreadStreamingContext(
     ProfiledThreadData& aProfiledThreadData, const ProfileBuffer& aBuffer,
     JSContext* aCx, mozilla::FailureLatch& aFailureLatch,
     ProfilerCodeAddressService* aService,
-    mozilla::ProgressLogger aProgressLogger)
+    mozilla::ProgressLogger aProgressLogger,
+    const nsTHashMap<SourceId, IndexIntoSourceTable>* aSourceIdToIndexMap)
     : mProfiledThreadData(aProfiledThreadData),
       mJSContext(aCx),
       mSamplesDataWriter(aFailureLatch),
@@ -403,7 +404,8 @@ ThreadStreamingContext::ThreadStreamingContext(
           aBuffer, aCx, aFailureLatch, aService,
           aProgressLogger.CreateSubLoggerFromTo(
               0_pc, "Preparing thread streaming context unique stacks...",
-              99_pc, "Prepared thread streaming context Unique stacks"))) {
+              99_pc, "Prepared thread streaming context Unique stacks"),
+          aSourceIdToIndexMap)) {
   if (aFailureLatch.Failed()) {
     return;
   }
@@ -429,7 +431,7 @@ ProcessStreamingContext::ProcessStreamingContext(
   if (mFailureLatch.Failed()) {
     return;
   }
-  if (!mTIDList.initCapacity(aThreadCount)) {
+  if (!mThreadIds.initCapacity(aThreadCount)) {
     mFailureLatch.SetFailure(
         "OOM in ProcessStreamingContext allocating TID list");
     return;
@@ -437,7 +439,7 @@ ProcessStreamingContext::ProcessStreamingContext(
   if (!mThreadStreamingContextList.initCapacity(aThreadCount)) {
     mFailureLatch.SetFailure(
         "OOM in ProcessStreamingContext allocating context list");
-    mTIDList.clear();
+    mThreadIds.clear();
     return;
   }
 }
@@ -446,25 +448,29 @@ ProcessStreamingContext::~ProcessStreamingContext() {
   if (mFailureLatch.Failed()) {
     return;
   }
-  MOZ_ASSERT(mTIDList.length() == mThreadStreamingContextList.length());
-  MOZ_ASSERT(mTIDList.length() == mTIDList.capacity(),
+  MOZ_ASSERT(mThreadIds.length() == mThreadStreamingContextList.length());
+  MOZ_ASSERT(mThreadIds.length() == mThreadIds.capacity(),
              "Didn't pre-allocate exactly right");
 }
 
 void ProcessStreamingContext::AddThreadStreamingContext(
     ProfiledThreadData& aProfiledThreadData, const ProfileBuffer& aBuffer,
     JSContext* aCx, ProfilerCodeAddressService* aService,
-    mozilla::ProgressLogger aProgressLogger) {
+    mozilla::ProgressLogger aProgressLogger,
+    const nsTHashMap<SourceId, IndexIntoSourceTable>* aSourceIdToIndexMap) {
   if (mFailureLatch.Failed()) {
     return;
   }
-  MOZ_ASSERT(mTIDList.length() == mThreadStreamingContextList.length());
-  MOZ_ASSERT(mTIDList.length() < mTIDList.capacity(),
+  MOZ_ASSERT(mThreadIds.length() == mThreadStreamingContextList.length());
+  MOZ_ASSERT(mThreadIds.length() < mThreadIds.capacity(),
              "Didn't pre-allocate enough");
-  mTIDList.infallibleAppend(aProfiledThreadData.Info().ThreadId());
+  mThreadIds.infallibleAppend(
+      ThreadStreamingId{aProfiledThreadData.Info().ThreadId(),
+                        aProfiledThreadData.BufferPositionWhenUnregistered()});
   mThreadStreamingContextList.infallibleEmplaceBack(
       aProfiledThreadData, aBuffer, aCx, mFailureLatch, aService,
       aProgressLogger.CreateSubLoggerFromTo(
           1_pc, "Prepared streaming thread id", 100_pc,
-          "Added thread streaming context"));
+          "Added thread streaming context"),
+      aSourceIdToIndexMap);
 }

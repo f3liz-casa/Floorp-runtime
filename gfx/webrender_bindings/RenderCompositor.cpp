@@ -1,22 +1,29 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "RenderCompositor.h"
 
+#include "GLContext.h"
 #include "gfxConfig.h"
 #include "gfxPlatform.h"
-#include "GLContext.h"
 #include "mozilla/StaticPrefs_gfx.h"
 #include "mozilla/gfx/Logging.h"
 #include "mozilla/gfx/gfxVars.h"
 #include "mozilla/layers/SyncObject.h"
+#include "mozilla/webrender/RenderCompositorLayerNative.h"
 #include "mozilla/webrender/RenderCompositorLayersSWGL.h"
 #include "mozilla/webrender/RenderCompositorOGL.h"
 #include "mozilla/webrender/RenderCompositorSWGL.h"
 #include "mozilla/widget/CompositorWidget.h"
+
+#ifdef MOZ_WIDGET_ANDROID
+#  include "GLContextEGL.h"
+#  include "ScopedGLHelpers.h"
+#  include "mozilla/ScopeExit.h"
+#  include "mozilla/gfx/2D.h"
+#  include "mozilla/layers/AndroidHardwareBuffer.h"
+#endif
 
 #ifdef XP_WIN
 #  include "mozilla/webrender/RenderCompositorANGLE.h"
@@ -54,18 +61,17 @@ void wr_compositor_begin_frame(void* aCompositor) {
 }
 
 void wr_compositor_bind(void* aCompositor, wr::NativeTileId aId,
-                        wr::DeviceIntPoint* aOffset, uint32_t* aFboId,
+                        wr::DeviceIntPoint* aOffset, uint64_t* aSurfaceHandle,
                         wr::DeviceIntRect aDirtyRect,
                         wr::DeviceIntRect aValidRect) {
   RenderCompositor* compositor = static_cast<RenderCompositor*>(aCompositor);
-  compositor->Bind(aId, aOffset, aFboId, aDirtyRect, aValidRect);
+  compositor->Bind(aId, aOffset, aSurfaceHandle, aDirtyRect, aValidRect);
 }
 
 void wr_compositor_create_surface(void* aCompositor, wr::NativeSurfaceId aId,
-                                  wr::DeviceIntPoint aVirtualOffset,
                                   wr::DeviceIntSize aTileSize, bool aIsOpaque) {
   RenderCompositor* compositor = static_cast<RenderCompositor*>(aCompositor);
-  compositor->CreateSurface(aId, aVirtualOffset, aTileSize, aIsOpaque);
+  compositor->CreateSurface(aId, aTileSize, aIsOpaque);
 }
 
 void wr_compositor_create_external_surface(void* aCompositor,
@@ -151,11 +157,6 @@ void wr_compositor_end_frame(void* aCompositor) {
   compositor->CompositorEndFrame();
 }
 
-void wr_compositor_enable_native_compositor(void* aCompositor, bool aEnable) {
-  RenderCompositor* compositor = static_cast<RenderCompositor*>(aCompositor);
-  compositor->EnableNativeCompositor(aEnable);
-}
-
 void wr_compositor_get_capabilities(void* aCompositor,
                                     CompositorCapabilities* aCaps) {
   RenderCompositor* compositor = static_cast<RenderCompositor*>(aCompositor);
@@ -172,6 +173,13 @@ void wr_compositor_get_window_properties(void* aCompositor,
                                          WindowProperties* aProperties) {
   RenderCompositor* compositor = static_cast<RenderCompositor*>(aCompositor);
   compositor->GetWindowProperties(aProperties);
+}
+
+void wr_compositor_get_swapchain_mode(void* aCompositor, bool* aUsesOsLayers,
+                                      size_t* aMaxPartialPresentRects) {
+  RenderCompositor* compositor = static_cast<RenderCompositor*>(aCompositor);
+  *aUsesOsLayers = compositor->UseLayerCompositor();
+  *aMaxPartialPresentRects = compositor->GetMaxPartialPresentRects();
 }
 
 void wr_compositor_unbind(void* aCompositor) {
@@ -197,15 +205,15 @@ void wr_compositor_unmap_tile(void* aCompositor) {
   compositor->UnmapTile();
 }
 
-void wr_partial_present_compositor_set_buffer_damage_region(
-    void* aCompositor, const wr::DeviceIntRect* aRects, size_t aNRects) {
-  RenderCompositor* compositor = static_cast<RenderCompositor*>(aCompositor);
-  compositor->SetBufferDamageRegion(aRects, aNRects);
-}
-
 /* static */
 UniquePtr<RenderCompositor> RenderCompositor::Create(
     const RefPtr<widget::CompositorWidget>& aWidget, nsACString& aError) {
+  if (aWidget->AsDelegate() &&
+      aWidget->AsDelegate()->AsHeadlessCompositorWidget()) {
+    MOZ_ASSERT(aWidget->GetCompositorOptions().UseSoftwareWebRender());
+    return RenderCompositorSWGL::Create(aWidget, aError);
+  }
+
   if (aWidget->GetCompositorOptions().UseSoftwareWebRender()) {
 #ifdef XP_DARWIN
     // Mac uses NativeLayerCA
@@ -244,7 +252,11 @@ UniquePtr<RenderCompositor> RenderCompositor::Create(
 #if defined(MOZ_WAYLAND)
   if (gfx::gfxVars::UseWebRenderCompositor() &&
       aWidget->GetCompositorOptions().AllowNativeCompositor()) {
-    return RenderCompositorNativeOGL::Create(aWidget, aError);
+    if (StaticPrefs::gfx_webrender_layer_compositor()) {
+      return RenderCompositorLayerNativeOGL::Create(aWidget, aError);
+    } else {
+      return RenderCompositorNativeOGL::Create(aWidget, aError);
+    }
   }
 #endif
 
@@ -260,6 +272,16 @@ UniquePtr<RenderCompositor> RenderCompositor::Create(
   // RenderCompositorOGL is not used on android
   return nullptr;
 #elif defined(XP_DARWIN)
+  if (gfx::gfxVars::UseWebRenderCompositor() &&
+      aWidget->GetCompositorOptions().AllowNativeCompositor()) {
+    if (StaticPrefs::gfx_webrender_layer_compositor()) {
+      UniquePtr<RenderCompositor> compositor =
+          RenderCompositorLayerNativeOGL::Create(aWidget, aError);
+      if (compositor) {
+        return compositor;
+      }
+    }
+  }
   // Mac uses NativeLayerCA
   return RenderCompositorNativeOGL::Create(aWidget, aError);
 #else
@@ -324,5 +346,110 @@ gfx::DeviceResetReason RenderCompositor::IsContextLost(bool aForce) {
   }
   return gfx::DeviceResetReason::OTHER;
 }
+
+#ifdef MOZ_WIDGET_ANDROID
+/* static */
+bool RenderCompositor::CaptureScreenPixelsFromGL(
+    gl::GLContextEGL* aGL, const gfx::IntRect& aSourceRect,
+    const LayoutDeviceIntSize& aFramebufferSize,
+    gl::OriginPos aFramebufferOrigin,
+    layers::AndroidHardwareBuffer* aHardwareBuffer) {
+  const auto& egl = aGL->mEgl;
+  const bool needsYFlip = aFramebufferOrigin != gl::OriginPos::TopLeft;
+  gl::ScopedBindFramebuffer scopedBind(aGL);
+
+  const bool canBlit =
+      aGL->IsSupported(gl::GLFeature::framebuffer_blit) &&
+      aGL->IsExtensionSupported(gl::GLContext::OES_EGL_image) &&
+      egl->IsExtensionSupported(gl::EGLExtension::KHR_fence_sync) &&
+      egl->IsExtensionSupported(gl::EGLExtension::ANDROID_native_fence_sync);
+
+  if (!canBlit) {
+    // Fallback path for devices which cannot blit directly to the hardware
+    // buffer. Use glReadPixels to read the source rect into a buffer, then draw
+    // into the CPU-mapped hardware buffer, flipping and scaling as required.
+    const int bpp = gfx::BytesPerPixel(aHardwareBuffer->mFormat);
+    const RefPtr<gfx::DataSourceSurface> surface =
+        gfx::Factory::CreateDataSourceSurfaceWithStride(
+            aSourceRect.Size(), gfx::SurfaceFormat::R8G8B8A8,
+            aSourceRect.width * bpp);
+    if (!surface) {
+      return false;
+    }
+    {
+      const gfx::DataSourceSurface::ScopedMap map(
+          surface, gfx::DataSourceSurface::WRITE);
+      if (!map.IsMapped()) {
+        return false;
+      }
+      aGL->BindReadFB(0);
+      const int srcY = needsYFlip ? aFramebufferSize.height - aSourceRect.y -
+                                        aSourceRect.height
+                                  : aSourceRect.y;
+      aGL->fReadPixels(aSourceRect.x, srcY, aSourceRect.width,
+                       aSourceRect.height, LOCAL_GL_RGBA,
+                       LOCAL_GL_UNSIGNED_BYTE, map.GetData());
+    }
+
+    uint8_t* destBuf = nullptr;
+    if (aHardwareBuffer->Lock(AHARDWAREBUFFER_USAGE_CPU_WRITE_OFTEN, nullptr,
+                              reinterpret_cast<void**>(&destBuf))) {
+      return false;
+    }
+    const auto hardwareBufferUnlock =
+        MakeScopeExit([&]() { aHardwareBuffer->Unlock(); });
+    const RefPtr<gfx::DrawTarget> dt = gfx::Factory::CreateDrawTargetForData(
+        gfx::BackendType::SKIA, destBuf, aHardwareBuffer->mSize,
+        aHardwareBuffer->mStride * bpp, aHardwareBuffer->mFormat);
+    if (!dt) {
+      return false;
+    }
+    if (needsYFlip) {
+      dt->SetTransform(
+          gfx::Matrix::Scaling(1.0, -1.0) *
+          gfx::Matrix::Translation(0, aHardwareBuffer->mSize.height));
+    }
+    dt->DrawSurface(surface, gfx::Rect({}, gfx::Size(aHardwareBuffer->mSize)),
+                    gfx::Rect({}, gfx::Size(aSourceRect.Size())),
+                    gfx::DrawSurfaceOptions(gfx::SamplingFilter::LINEAR),
+                    gfx::DrawOptions(1.0f, gfx::CompositionOp::OP_SOURCE));
+    return true;
+  }
+
+  // Attach the hardware buffer to a framebuffer, then blit the source rect to
+  // it from the main framebuffer, flipping and scaling as required.
+  gl::ScopedEGLImageForAndroidHardwareBuffer eglImage(aGL, aHardwareBuffer);
+  if (eglImage.Image() == EGL_NO_IMAGE) {
+    return false;
+  }
+  gl::ScopedRenderbuffer rb(aGL);
+  aGL->fBindRenderbuffer(LOCAL_GL_RENDERBUFFER, rb);
+  aGL->fEGLImageTargetRenderbufferStorage(LOCAL_GL_RENDERBUFFER, eglImage);
+  gl::ScopedFramebufferForRenderbuffer fb(aGL, rb);
+
+  const auto srcRect =
+      needsYFlip
+          ? gfx::IntRect(aSourceRect.x, aFramebufferSize.height - aSourceRect.y,
+                         aSourceRect.width, -aSourceRect.height)
+          : aSourceRect;
+  const auto destRect = gfx::IntRect({}, aHardwareBuffer->mSize);
+  aGL->BindReadFB(0);
+  aGL->BindDrawFB(fb.FB());
+  aGL->fBlitFramebuffer(srcRect.x, srcRect.y, srcRect.XMost(), srcRect.YMost(),
+                        destRect.x, destRect.y, destRect.XMost(),
+                        destRect.YMost(), LOCAL_GL_COLOR_BUFFER_BIT,
+                        LOCAL_GL_LINEAR);
+
+  if (EGLSync sync =
+          egl->fCreateSyncKHR(LOCAL_EGL_SYNC_NATIVE_FENCE_ANDROID, nullptr)) {
+    auto fence = UniqueFileHandle(egl->fDupNativeFenceFDANDROID(sync));
+    if (fence) {
+      aHardwareBuffer->SetAcquireFence(std::move(fence));
+    }
+    egl->fDestroySync(sync);
+  }
+  return true;
+}
+#endif
 
 }  // namespace mozilla::wr

@@ -6,11 +6,14 @@ const { FileTestUtils } = ChromeUtils.importESModule(
   "resource://testing-common/FileTestUtils.sys.mjs"
 );
 
-let { TelemetryTestUtils } = ChromeUtils.importESModule(
-  "resource://testing-common/TelemetryTestUtils.sys.mjs"
-);
-
 let { MockFilePicker } = SpecialPowers;
+
+add_setup(async function () {
+  registerCleanupFunction(async function () {
+    SpecialPowers.clearUserPref("signon.rustMirror.migrationNeeded");
+    SpecialPowers.clearUserPref("signon.rustMirror.poisoned");
+  });
+});
 
 /**
  * A helper class to deal with Login CSV import UI.
@@ -48,7 +51,7 @@ class CsvImportHelper {
    * @returns {Promise} A promise that is resolved when the picker selects the file.
    */
   static async clickImportFromCsvMenu(browser, linesInFile) {
-    MockFilePicker.init(window.browsingContext);
+    MockFilePicker.init();
     MockFilePicker.returnValue = MockFilePicker.returnOK;
     let csvFile = await LoginTestUtils.file.setupCsvFileWithLines(linesInFile);
 
@@ -61,7 +64,7 @@ class CsvImportHelper {
       }, "waiting for menu to open");
     });
 
-    Services.telemetry.clearEvents();
+    Services.fog.testResetFOG();
 
     function getImportMenuItem() {
       let menuButton = window.document.querySelector("menu-button");
@@ -72,17 +75,11 @@ class CsvImportHelper {
 
     async function waitForFilePicker() {
       let filePickerPromise = CsvImportHelper.waitForOpenFilePicker(csvFile);
-      // First event is for opening about:logins
-      await LoginTestUtils.telemetry.waitForEventCount(
+      await Services.fog.testFlushAllChildren();
+      Assert.equal(
+        Glean.pwmgr.mgmtMenuItemUsedImportFromCsv.testGetValue().length,
         1,
-        "content",
-        "pwmgr",
-        "mgmt_menu_item_used"
-      );
-      TelemetryTestUtils.assertEvents(
-        [["pwmgr", "mgmt_menu_item_used", "import_from_csv"]],
-        { category: "pwmgr", method: "mgmt_menu_item_used" },
-        { process: "content", clear: false }
+        "One import from CSV event"
       );
 
       info("waiting for Import file picker to get opened");
@@ -98,7 +95,7 @@ class CsvImportHelper {
    *
    * @param {browser} browser
    *        The browser object.
-   * @returns {Promise<Object>} A promise that contains added, modified, noChange and errors count.
+   * @returns {Promise<object>} A promise that contains added, modified, noChange and errors count.
    */
   static async getCsvImportSuccessDialogData(browser) {
     return SpecialPowers.spawn(browser, [], async () => {
@@ -141,7 +138,7 @@ class CsvImportHelper {
    *
    * @param {browser} browser
    *        The browser object.
-   * @returns {Promise<Object>} A promise that contains the hidden state and l10n id for title, description and focused element.
+   * @returns {Promise<object>} A promise that contains the hidden state and l10n id for title, description and focused element.
    */
   static async getCsvImportErrorDialogData(browser) {
     return SpecialPowers.spawn(browser, [], async () => {
@@ -171,12 +168,14 @@ class CsvImportHelper {
    */
   static async waitForImportToComplete() {
     info("Waiting for the import to complete");
-    await LoginTestUtils.telemetry.waitForEventCount(1, "parent");
-    TelemetryTestUtils.assertEvents(
-      [["pwmgr", "mgmt_menu_item_used", "import_csv_complete"]],
-      { category: "pwmgr", method: "mgmt_menu_item_used" },
-      { process: "parent" }
-    );
+    TestUtils.waitForCondition(() => {
+      return (
+        Glean.pwmgr.mgmtMenuItemUsedImportCsvComplete.testGetValue()?.length ==
+        1
+      );
+    }, "Waiting for the import to complete.");
+    // TODO: We have to sleep a bit here or the next open of the import menu fails for some reason.
+    await new Promise(resolve => setTimeout(resolve, 100)); // eslint-disable-line mozilla/no-arbitrary-setTimeout
   }
 
   /**
@@ -184,7 +183,7 @@ class CsvImportHelper {
    *
    * @param {browser} browser
    *        The browser object.
-   * @returns {Promise<Object>} A promise that contains the about:loginsimportreport tab.
+   * @returns {Promise<object>} A promise that contains the about:loginsimportreport tab.
    */
   static async clickDetailedReport(browser) {
     let loadedReportTab = BrowserTestUtils.waitForNewTab(
@@ -212,7 +211,7 @@ class CsvImportHelper {
   /**
    * An utility method to fetch data from the about:loginsimportreport page.
    *
-   * @returns {Promise<Object>} A promise that contains the detailed report data like added, modified, noChange, errors and rows.
+   * @returns {Promise<object>} A promise that contains the detailed report data like added, modified, noChange, errors and rows.
    */
   static async getDetailedReportData() {
     const data = await SpecialPowers.spawn(
@@ -249,8 +248,8 @@ class CsvImportHelper {
 const random = Math.round(Math.random() * 100000001);
 
 add_setup(async function () {
-  registerCleanupFunction(() => {
-    Services.logins.removeAllUserFacingLogins();
+  registerCleanupFunction(async () => {
+    await Services.logins.removeAllUserFacingLoginsAsync();
   });
 });
 

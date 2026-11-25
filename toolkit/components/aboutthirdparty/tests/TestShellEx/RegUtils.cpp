@@ -1,14 +1,13 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- * vim: sw=2 ts=2 et lcs=trail\:.,tab\:>~ :
- * This Source Code Form is subject to the terms of the Mozilla Public
+/* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#include "mozilla/UniquePtr.h"
 #include "RegUtils.h"
 
 #include <windows.h>
 #include <strsafe.h>
+
+#include <memory>
 
 extern std::wstring gDllPath;
 
@@ -60,7 +59,7 @@ std::wstring RegKey::GetString(const wchar_t* aValueName) {
   LSTATUS status = ::RegGetValueW(mKey, aValueName, nullptr, RRF_RT_REG_SZ,
                                   nullptr, nullptr, &len);
 
-  mozilla::UniquePtr<uint8_t[]> buf = mozilla::MakeUnique<uint8_t[]>(len);
+  auto buf = std::make_unique<uint8_t[]>(len);
   status = ::RegGetValueW(mKey, aValueName, nullptr, RRF_RT_REG_SZ, nullptr,
                           buf.get(), &len);
   if (status != ERROR_SUCCESS) {

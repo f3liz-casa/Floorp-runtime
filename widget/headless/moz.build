@@ -1,5 +1,3 @@
-# -*- Mode: python; indent-tabs-mode: nil; tab-width: 40 -*-
-# vim: set filetype=python:
 # This Source Code Form is subject to the terms of the Mozilla Public
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
@@ -20,6 +18,11 @@ LOCAL_INCLUDES += [
     "/widget/%s" % widget_dir,
 ]
 
+EXPORTS.mozilla.widget += [
+    "HeadlessCompositorWidget.h",
+    "HeadlessWidget.h",
+]
+
 UNIFIED_SOURCES += [
     "HeadlessClipboard.cpp",
     "HeadlessClipboardData.cpp",
@@ -29,9 +32,13 @@ UNIFIED_SOURCES += [
     "HeadlessWidget.cpp",
 ]
 
-if widget_dir == "gtk":
+if CONFIG["MOZ_WIDGET_TOOLKIT"] != "uikit":
+    EXPORTS.mozilla.widget += [
+        "HeadlessCompositorWidgetParent.h",
+    ]
+
     UNIFIED_SOURCES += [
-        "HeadlessLookAndFeelGTK.cpp",
+        "HeadlessCompositorWidgetParent.cpp",
     ]
 
 if CONFIG["MOZ_WIDGET_TOOLKIT"] == "cocoa":
@@ -42,7 +49,17 @@ else:
     UNIFIED_SOURCES += [
         "HeadlessKeyBindings.cpp",
     ]
+    SOURCE_HEADERS += [
+        "HeadlessKeyBindings.h",
+    ]
 
 include("/ipc/chromium/chromium-config.mozbuild")
 
 FINAL_LIBRARY = "xul"
+
+SOURCE_HEADERS += [
+    "HeadlessClipboard.h",
+    "HeadlessClipboardData.h",
+    "HeadlessScreenHelper.h",
+    "HeadlessSound.h",
+]

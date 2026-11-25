@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -149,6 +147,10 @@ static uint32_t ToLinkMask(const nsAString& aLink) {
     mask = LinkStyle::ePRELOAD;
   } else if (aLink.EqualsLiteral("modulepreload")) {
     mask = LinkStyle::eMODULE_PRELOAD;
+  } else if (aLink.EqualsLiteral("compression-dictionary")) {
+    mask = LinkStyle::eCOMPRESSION_DICTIONARY;
+  } else if (aLink.EqualsLiteral("expect")) {
+    mask = LinkStyle::eEXPECT;
   }
 
   return mask;
@@ -223,6 +225,21 @@ void LinkStyle::BindToTree() {
   }
 }
 
+template <typename CharT>
+static bool DoGetInlineSheetText(nsIContent& aContent,
+                                 nsTSubstring<CharT>& aResult) {
+  return nsContentUtils::GetNodeTextContent(&aContent, false, aResult,
+                                            fallible);
+}
+
+bool LinkStyle::GetInlineSheetText(nsACString& aResult) {
+  return DoGetInlineSheetText(AsContent(), aResult);
+}
+
+bool LinkStyle::GetInlineSheetText(nsAString& aResult) {
+  return DoGetInlineSheetText(AsContent(), aResult);
+}
+
 Result<LinkStyle::Update, nsresult> LinkStyle::DoUpdateStyleSheet(
     Document* aOldDocument, ShadowRoot* aOldShadowRoot,
     nsICSSLoaderObserver* aObserver, ForceUpdate aForceUpdate) {
@@ -259,8 +276,7 @@ Result<LinkStyle::Update, nsresult> LinkStyle::DoUpdateStyleSheet(
 
   // Loader could be null during unlink, see bug 1425866.
   // ... No need to update if updating is disabled, as well.
-  if (!doc || !doc->CSSLoader() || !doc->CSSLoader()->GetEnabled() ||
-      !mUpdatesEnabled) {
+  if (!doc || !doc->EnsureCSSLoader().GetEnabled() || !mUpdatesEnabled) {
     return Update{};
   }
 
@@ -274,7 +290,7 @@ Result<LinkStyle::Update, nsresult> LinkStyle::DoUpdateStyleSheet(
   Maybe<SheetInfo> info = GetStyleSheetInfo();
   if (aForceUpdate == ForceUpdate::No && mStyleSheet && info &&
       !info->mIsInline && info->mURI) {
-    if (nsIURI* oldURI = mStyleSheet->GetSheetURI()) {
+    if (nsIURI* oldURI = mStyleSheet->GetOriginalURI()) {
       bool equal;
       nsresult rv = oldURI->Equals(info->mURI, &equal);
       if (NS_SUCCEEDED(rv) && equal) {
@@ -283,6 +299,7 @@ Result<LinkStyle::Update, nsresult> LinkStyle::DoUpdateStyleSheet(
     }
   }
 
+  const bool droppedSheet = !!mStyleSheet;
   if (mStyleSheet) {
     if (mStyleSheet->IsComplete()) {
       if (thisContent.IsInShadowTree()) {
@@ -299,29 +316,37 @@ Result<LinkStyle::Update, nsresult> LinkStyle::DoUpdateStyleSheet(
     SetStyleSheet(nullptr);
   }
 
+  // Called when the old sheet was dropped and no new sheet load follows, so
+  // nothing else unblocks rendering on this element.
+  auto unblockDroppedSheet = [&] {
+    if (droppedSheet && thisContent.IsElement()) {
+      doc->UnblockRendering(*thisContent.AsElement());
+    }
+  };
+
   if (!info) {
+    unblockDroppedSheet();
     return Update{};
   }
 
   if (!info->mURI && !info->mIsInline) {
     // If href is empty and this is not inline style then just bail
+    unblockDroppedSheet();
     return Update{};
   }
 
   if (info->mIsInline) {
-    nsAutoString text;
-    if (!nsContentUtils::GetNodeTextContent(&thisContent, false, text,
-                                            fallible)) {
+    nsAutoCString text;
+    if (!DoGetInlineSheetText(thisContent, text)) {
       return Err(NS_ERROR_OUT_OF_MEMORY);
     }
-
     MOZ_ASSERT(thisContent.NodeInfo()->NameAtom() != nsGkAtoms::link,
                "<link> is not 'inline', and needs different CSP checks");
     MOZ_ASSERT(thisContent.IsElement());
     nsresult rv = NS_OK;
     if (!nsStyleUtil::CSPAllowsInlineStyle(
             thisContent.AsElement(), doc, info->mTriggeringPrincipal,
-            mLineNumber, mColumnNumber, text, &rv)) {
+            mLineNumber, mColumnNumber, VoidString(), &rv)) {
       if (NS_FAILED(rv)) {
         return Err(rv);
       }
@@ -329,7 +354,20 @@ Result<LinkStyle::Update, nsresult> LinkStyle::DoUpdateStyleSheet(
     }
 
     // Parse the style sheet.
-    return doc->CSSLoader()->LoadInlineStyle(*info, text, aObserver);
+    auto result =
+        doc->EnsureCSSLoader().LoadInlineStyle(*info, text, aObserver);
+
+    // https://html.spec.whatwg.org/#render-blocking-mechanism
+    // If element's media attribute's value matches the environment and element
+    // is potentially render-blocking, then block rendering on element.
+    if (thisContent.IsElement() && result.isOk() &&
+        result.inspect().ShouldBlock()) {
+      // Unblocked in css::Loader::NotifyObservers once the sheet finishes
+      // loading.
+      doc->MaybeBlockRendering(*thisContent.AsElement());
+    }
+
+    return result;
   }
   if (thisContent.IsElement()) {
     nsAutoString integrity;
@@ -340,13 +378,23 @@ Result<LinkStyle::Update, nsresult> LinkStyle::DoUpdateStyleSheet(
                NS_ConvertUTF16toUTF8(integrity).get()));
     }
   }
-  auto resultOrError = doc->CSSLoader()->LoadStyleLink(*info, aObserver);
+  auto resultOrError = doc->EnsureCSSLoader().LoadStyleLink(*info, aObserver);
   if (resultOrError.isErr()) {
     // Don't propagate LoadStyleLink() errors further than this, since some
     // consumers (e.g. nsXMLContentSink) will completely abort on innocuous
     // things like a stylesheet load being blocked by the security system.
+    unblockDroppedSheet();
     return Update{};
   }
+
+  // https://html.spec.whatwg.org/#render-blocking-mechanism
+  // If el's media attribute's value matches the environment and el is
+  // potentially render-blocking, then block rendering on el.
+  if (thisContent.IsElement() && resultOrError.inspect().ShouldBlock()) {
+    // Unblocked in css::Loader::NotifyObservers once the sheet loads.
+    doc->MaybeBlockRendering(*thisContent.AsElement());
+  }
+
   return resultOrError;
 }
 
@@ -388,7 +436,7 @@ void LinkStyle::MaybeFinishCopyStyleSheet(Document* aDocument) {
   }
   RefPtr<StyleSheet> sheet = mStyleSheet->Clone(nullptr, root);
   SetStyleSheet(sheet.get());
-  aDocument->CSSLoader()->InsertSheetInTree(*sheet);
+  aDocument->EnsureCSSLoader().InsertSheetInTree(*sheet);
 }
 
 }  // namespace mozilla::dom

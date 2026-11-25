@@ -1,24 +1,24 @@
-/* -*- Mode: C++; tab-width: 20; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "nsThebesFontEnumerator.h"
-#include <stdint.h>              // for uint32_t
+
+#include <stdint.h>  // for uint32_t
+
 #include "gfxPlatform.h"         // for gfxPlatform
 #include "mozilla/Assertions.h"  // for MOZ_ASSERT_HELPER2
 #include "mozilla/UniquePtr.h"
 #include "mozilla/dom/Promise.h"  // for mozilla::dom::Promise
+#include "nsAtom.h"               // for nsAtom, NS_Atomize
 #include "nsCOMPtr.h"             // for nsCOMPtr
 #include "nsDebug.h"              // for NS_ENSURE_ARG_POINTER
 #include "nsError.h"              // for NS_OK, NS_FAILED, nsresult
-#include "nsAtom.h"               // for nsAtom, NS_Atomize
 #include "nsID.h"
 #include "nsString.h"  // for nsAutoCString, nsAutoString, etc
 #include "nsTArray.h"  // for nsTArray, nsTArray_Impl, etc
 #include "nscore.h"    // for char16_t, NS_IMETHODIMP
 
-using mozilla::MakeUnique;
 using mozilla::Runnable;
 using mozilla::UniquePtr;
 
@@ -153,7 +153,7 @@ nsThebesFontEnumerator::EnumerateFontsAsync(
     return errv.StealNSResult();
   }
 
-  auto enumerateFontsPromise = MakeUnique<EnumerateFontsPromise>(promise);
+  auto enumerateFontsPromise = std::make_unique<EnumerateFontsPromise>(promise);
 
   nsCOMPtr<nsIThread> thread;
   nsresult rv = NS_NewNamedThread("FontEnumThread", getter_AddRefs(thread));

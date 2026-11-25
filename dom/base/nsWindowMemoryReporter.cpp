@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -10,7 +8,6 @@
 #include "js/MemoryMetrics.h"
 #include "mozilla/ClearOnShutdown.h"
 #include "mozilla/Preferences.h"
-#include "mozilla/ResultExtensions.h"
 #include "mozilla/Services.h"
 #include "mozilla/StaticPtr.h"
 #include "mozilla/Try.h"
@@ -19,6 +16,7 @@
 #include "nsGlobalWindowInner.h"
 #include "nsGlobalWindowOuter.h"
 #include "nsNetCID.h"
+#include "nsPIDOMWindowInlines.h"
 #include "nsPrintfCString.h"
 #include "nsQueryObject.h"
 #include "nsServiceManagerUtils.h"
@@ -96,7 +94,7 @@ void nsWindowMemoryReporter::Init() {
   MOZ_ASSERT(!sWindowReporter);
   sWindowReporter = new nsWindowMemoryReporter();
   ClearOnShutdown(&sWindowReporter);
-  RegisterStrongMemoryReporter(sWindowReporter);
+  RegisterStrongMemoryReporter(do_AddRef(sWindowReporter));
   RegisterNonJSSizeOfTab(NonJSSizeOfTab);
 
   nsCOMPtr<nsIObserverService> os = services::GetObserverService();
@@ -429,52 +427,11 @@ static void CollectWindowReports(nsGlobalWindowInner* aWindow,
                "Number of event listeners in a window, including event "
                "listeners on nodes and other event targets.");
 
-  // There are many different kinds of frames, but it is very likely
-  // that only a few matter.  Implement a cutoff so we don't bloat
-  // about:memory with many uninteresting entries.
-  const size_t ARENA_SUNDRIES_THRESHOLD =
-      js::MemoryReportingSundriesThreshold();
-
-  size_t presArenaSundriesSize = 0;
-#define ARENA_OBJECT(name_, sundries_size_, prefix_)                    \
-  {                                                                     \
-    size_t size = windowSizes.mArenaSizes.NS_ARENA_SIZES_FIELD(name_);  \
-    if (size < ARENA_SUNDRIES_THRESHOLD) {                              \
-      sundries_size_ += size;                                           \
-    } else {                                                            \
-      REPORT_SUM_SIZE(prefix_ #name_, size,                             \
-                      "Memory used by objects of type " #name_          \
-                      " within a window.");                             \
-    }                                                                   \
-    aWindowTotalSizes->mArenaSizes.NS_ARENA_SIZES_FIELD(name_) += size; \
-  }
-#define PRES_ARENA_OBJECT(name_) \
-  ARENA_OBJECT(name_, presArenaSundriesSize, "/layout/pres-arena/")
-#include "nsPresArenaObjectList.h"
-#undef PRES_ARENA_OBJECT
-
-  if (presArenaSundriesSize > 0) {
-    REPORT_SUM_SIZE(
-        "/layout/pres-arena/sundries", presArenaSundriesSize,
-        "The sum of all memory used by objects in the arena which were too "
-        "small to be shown individually.");
-  }
-
-  size_t displayListArenaSundriesSize = 0;
-#define DISPLAY_LIST_ARENA_OBJECT(name_)            \
-  ARENA_OBJECT(name_, displayListArenaSundriesSize, \
-               "/layout/display-list-arena/")
-#include "nsDisplayListArenaTypes.h"
-#undef DISPLAY_LIST_ARENA_OBJECT
-
-  if (displayListArenaSundriesSize > 0) {
-    REPORT_SUM_SIZE(
-        "/layout/display-list-arena/sundries", displayListArenaSundriesSize,
-        "The sum of all memory used by objects in the DL arena which were too "
-        "small to be shown individually.");
-  }
-
-#undef ARENA_OBJECT
+  REPORT_COUNT(
+      "/media/media-source-urls", mMediaSourceURLsCount,
+      "Number of MediaSource object URLs allocated with URL.createObjectURL; "
+      "the referenced data cannot be freed until all URLs for it have been "
+      "explicitly invalidated with URL.revokeObjectURL.");
 
   // There are many different kinds of style structs, but it is likely that
   // only a few matter. Implement a cutoff so we don't bloat about:memory with
@@ -654,27 +611,6 @@ nsWindowMemoryReporter::CollectReports(nsIHandleReportCallback* aHandleReport,
   REPORT("window-objects/property-tables", windowTotalSizes.mPropertyTablesSize,
          "This is the sum of all windows' 'property-tables' numbers.");
 
-  size_t presArenaTotal = 0;
-#define PRES_ARENA_OBJECT(name_) \
-  presArenaTotal += windowTotalSizes.mArenaSizes.NS_ARENA_SIZES_FIELD(name_);
-#include "nsPresArenaObjectList.h"
-#undef PRES_ARENA_OBJECT
-
-  REPORT("window-objects/layout/pres-arena", presArenaTotal,
-         "Memory used for the pres arena within windows. "
-         "This is the sum of all windows' 'layout/pres-arena/' numbers.");
-
-  size_t displayListArenaTotal = 0;
-#define DISPLAY_LIST_ARENA_OBJECT(name_) \
-  displayListArenaTotal +=               \
-      windowTotalSizes.mArenaSizes.NS_ARENA_SIZES_FIELD(name_);
-#include "nsDisplayListArenaTypes.h"
-#undef DISPLAY_LIST_ARENA_OBJECT
-
-  REPORT("window-objects/layout/display-list-arena", displayListArenaTotal,
-         "Memory used for the display list arena within windows. This is the "
-         "sum of all windows' 'layout/display-list-arena/' numbers.");
-
   size_t styleTotal = 0;
 #define ADD_TO_STYLE_TOTAL(name_) \
   styleTotal += windowTotalSizes.mStyleSizes.NS_STYLE_SIZES_FIELD(name_);
@@ -763,7 +699,7 @@ void nsWindowMemoryReporter::AsyncCheckForGhostWindows() {
   NS_NewTimerWithFuncCallback(
       getter_AddRefs(mCheckTimer), CheckTimerFired, nullptr, timerDelay,
       nsITimer::TYPE_ONE_SHOT,
-      "nsWindowMemoryReporter::AsyncCheckForGhostWindows_timer");
+      "nsWindowMemoryReporter::AsyncCheckForGhostWindows_timer"_ns);
 }
 
 void nsWindowMemoryReporter::ObserveAfterMinimizeMemoryUsage() {

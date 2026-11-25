@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -19,10 +17,14 @@ class WebAuthnRegisterArgs final : public nsIWebAuthnRegisterArgs {
   NS_DECL_NSIWEBAUTHNREGISTERARGS
 
   explicit WebAuthnRegisterArgs(const nsCString& aOrigin,
+                                const nsCString& aTopOrigin,
+                                const bool aIsCrossOrigin,
                                 const nsCString& aClientDataJSON,
                                 const bool aPrivateBrowsing,
                                 const WebAuthnMakeCredentialInfo& aInfo)
       : mOrigin(aOrigin),
+        mTopOrigin(aTopOrigin),
+        mIsCrossOrigin(aIsCrossOrigin),
         mClientDataJSON(aClientDataJSON),
         mPrivateBrowsing(aPrivateBrowsing),
         mInfo(aInfo),
@@ -68,6 +70,8 @@ class WebAuthnRegisterArgs final : public nsIWebAuthnRegisterArgs {
   ~WebAuthnRegisterArgs() = default;
 
   const nsCString mOrigin;
+  const nsCString mTopOrigin;
+  const bool mIsCrossOrigin;
   const nsCString mClientDataJSON;
   const bool mPrivateBrowsing;
   const WebAuthnMakeCredentialInfo mInfo;
@@ -89,10 +93,14 @@ class WebAuthnSignArgs final : public nsIWebAuthnSignArgs {
   NS_DECL_NSIWEBAUTHNSIGNARGS
 
   explicit WebAuthnSignArgs(const nsCString& aOrigin,
+                            const nsCString& aTopOrigin,
+                            const bool aIsCrossOrigin,
                             const nsCString& aClientDataJSON,
                             const bool aPrivateBrowsing,
                             const WebAuthnGetAssertionInfo& aInfo)
       : mOrigin(aOrigin),
+        mTopOrigin(aTopOrigin),
+        mIsCrossOrigin(aIsCrossOrigin),
         mClientDataJSON(aClientDataJSON),
         mPrivateBrowsing(aPrivateBrowsing),
         mInfo(aInfo),
@@ -131,6 +139,8 @@ class WebAuthnSignArgs final : public nsIWebAuthnSignArgs {
   ~WebAuthnSignArgs() = default;
 
   const nsCString mOrigin;
+  const nsCString mTopOrigin;
+  const bool mIsCrossOrigin;
   const nsCString mClientDataJSON;
   const bool mPrivateBrowsing;
   const WebAuthnGetAssertionInfo mInfo;

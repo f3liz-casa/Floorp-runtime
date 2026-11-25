@@ -1,5 +1,4 @@
-/* -*- indent-tabs-mode: nil; js-indent-level: 2 -*-
- * This Source Code Form is subject to the terms of the Mozilla Public
+/* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
@@ -7,7 +6,7 @@
  * Native Android logging for JavaScript, wrapped for use by Log.sys.mjs.
  *
  * // Import it as a ESM:
- * import { AndroidAppender } from "resource://gre/modules/AndroidLog.sys.mjs";
+ * import { AndroidAppender } from "moz-src:///mobile/android/modules/geckoview/AndroidLog.sys.mjs";
  *
  * // Add the appender to a Log.sys.mjs appender:
  * import { Log } from "resource://gre/modules/Log.sys.mjs";

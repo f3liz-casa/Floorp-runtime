@@ -1,16 +1,13 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim:expandtab:shiftwidth=2:tabstop=2:
- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef __nsLookAndFeel
-#define __nsLookAndFeel
+#ifndef _nsLookAndFeel
+#define _nsLookAndFeel
 
 #include "X11UndefineNone.h"
-#include "nsXPLookAndFeel.h"
 #include "gfxFont.h"
+#include "nsXPLookAndFeel.h"
 
 struct _GtkStyle;
 typedef struct _GDBusProxy GDBusProxy;
@@ -71,21 +68,18 @@ class nsLookAndFeel final : public nsXPLookAndFeel {
 
   static const nscolor kBlack = NS_RGB(0, 0, 0);
   static const nscolor kWhite = NS_RGB(255, 255, 255);
+#ifdef MOZ_ENABLE_DBUS
   // Returns whether any setting changed.
   bool RecomputeDBusSettings();
   // Returns whether the setting really changed.
   bool RecomputeDBusAppearanceSetting(const nsACString& aKey, GVariant* aValue);
+#endif
 
   struct ColorPair {
     nscolor mBg = kWhite;
     nscolor mFg = kBlack;
 
-    bool operator==(const ColorPair& aOther) const {
-      return mBg == aOther.mBg && mFg == aOther.mFg;
-    }
-    bool operator!=(const ColorPair& aOther) const {
-      return !(*this == aOther);
-    }
+    bool operator==(const ColorPair& aOther) const = default;
   };
 
   struct ButtonColors : ColorPair {
@@ -107,8 +101,10 @@ class nsLookAndFeel final : public nsXPLookAndFeel {
   static bool ShouldHonorThemeScrollbarColors();
   mozilla::Maybe<ColorScheme> ComputeColorSchemeSetting();
 
+#ifdef MOZ_ENABLE_DBUS
   void WatchDBus();
   void UnwatchDBus();
+#endif
 
   // We use up to two themes (one light, one dark), which might have different
   // sets of fonts and colors.
@@ -122,10 +118,10 @@ class nsLookAndFeel final : public nsXPLookAndFeel {
     ThemeFamily mFamily{0};
 
     // Cached fonts
-    nsString mDefaultFontName;
-    nsString mButtonFontName;
-    nsString mFieldFontName;
-    nsString mMenuFontName;
+    nsString mDefaultFontName{u"sans-serif"_ns};
+    nsString mButtonFontName{u"sans-serif"_ns};
+    nsString mFieldFontName{u"sans-serif"_ns};
+    nsString mMenuFontName{u"sans-serif"_ns};
     gfxFontStyle mDefaultFontStyle;
     gfxFontStyle mButtonFontStyle;
     gfxFontStyle mFieldFontStyle;
@@ -174,7 +170,7 @@ class nsLookAndFeel final : public nsXPLookAndFeel {
     float mCaretRatio = 0.0f;
     int32_t mTitlebarRadius = 0;
     int32_t mTooltipRadius = 0;
-    char16_t mInvisibleCharacter = 0;
+    char16_t mInvisibleCharacter = 0x2022;
     bool mMenuSupportsDrag = false;
 
     void Init();
@@ -237,6 +233,7 @@ class nsLookAndFeel final : public nsXPLookAndFeel {
   bool mCSDReversedPlacement = false;
   bool mPrefersReducedMotion = false;
   bool mSystemThemeOverridden = false;
+  bool mIsHeadless = true;
   NativeChangeKind mPendingChanges = NativeChangeKind::All;
   int32_t mCSDMaximizeButtonPosition = 0;
   int32_t mCSDMinimizeButtonPosition = 0;

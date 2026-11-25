@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -12,14 +10,12 @@
 #include "mozilla/ClearOnShutdown.h"
 #include "mozilla/GUniquePtr.h"
 #include "mozilla/Logging.h"
-#include "mozilla/UniquePtrExtensions.h"
 #include "mozilla/WidgetUtilsGtk.h"
 #include "mozilla/widget/AsyncDBus.h"
 #include "mozilla/dom/Promise.h"
+#include "nsAppShell.h"
 
 #include "prlink.h"
-
-#include <string.h>
 
 static mozilla::LazyLogModule gNativeMessagingPortalLog(
     "NativeMessagingPortal");
@@ -107,6 +103,7 @@ struct CallbackData {
 NativeMessagingPortal::NativeMessagingPortal() {
   LOG_NMP("NativeMessagingPortal::NativeMessagingPortal()");
   mCancellable = dont_AddRef(g_cancellable_new());
+  nsAppShell::DBusConnectionCheck();
   g_dbus_proxy_new_for_bus(G_BUS_TYPE_SESSION, G_DBUS_PROXY_FLAGS_NONE, nullptr,
                            "org.freedesktop.portal.Desktop",
                            "/org/freedesktop/portal/desktop",
@@ -125,6 +122,7 @@ NativeMessagingPortal::~NativeMessagingPortal() {
       continue;
     }
     GUniquePtr<GError> error;
+    nsAppShell::DBusConnectionCheck();
     RefPtr<GDBusProxy> proxy = dont_AddRef(g_dbus_proxy_new_for_bus_sync(
         G_BUS_TYPE_SESSION, G_DBUS_PROXY_FLAGS_NONE, nullptr,
         "org.freedesktop.portal.Desktop", it.first.c_str(),
@@ -173,6 +171,7 @@ struct NativeMessagingPortal::DelayedCall {
 void NativeMessagingPortal::OnProxyReady(GObject* source, GAsyncResult* result,
                                          gpointer user_data) {
   NativeMessagingPortal* self = static_cast<NativeMessagingPortal*>(user_data);
+  nsAppShell::DBusConnectionCheck();
   GUniquePtr<GError> error;
   self->mProxy = dont_AddRef(
       g_dbus_proxy_new_for_bus_finish(result, getter_Transfers(error)));
@@ -201,7 +200,7 @@ NativeMessagingPortal::GetAvailable(JSContext* aCx, dom::Promise** aPromise) {
   if (mInitialized) {
     MaybeDelayedIsAvailable(*promise, nullptr);
   } else {
-    auto delayed = MakeUnique<DelayedCall>(
+    auto delayed = std::make_unique<DelayedCall>(
         &NativeMessagingPortal::MaybeDelayedIsAvailable, *promise);
     mPending.push_back(std::move(delayed));
   }
@@ -242,7 +241,7 @@ NativeMessagingPortal::CreateSession(const nsACString& aApplication,
   if (mInitialized) {
     MaybeDelayedCreateSession(*promise, args);
   } else {
-    auto delayed = MakeUnique<DelayedCall>(
+    auto delayed = std::make_unique<DelayedCall>(
         &NativeMessagingPortal::MaybeDelayedCreateSession, *promise, args);
     mPending.push_back(std::move(delayed));
   }
@@ -267,7 +266,8 @@ void NativeMessagingPortal::MaybeDelayedCreateSession(dom::Promise& aPromise,
   g_variant_builder_init(&options, G_VARIANT_TYPE_VARDICT);
   g_variant_builder_add(&options, "{sv}", "session_handle_token",
                         g_variant_ref_sink(aArgs));
-  auto callbackData = MakeUnique<CallbackData>(aPromise);
+  auto callbackData = std::make_unique<CallbackData>(aPromise);
+  nsAppShell::DBusConnectionCheck();
   g_dbus_proxy_call(mProxy, "CreateSession", g_variant_new("(a{sv})", &options),
                     G_DBUS_CALL_FLAGS_NONE, -1, nullptr,
                     &NativeMessagingPortal::OnCreateSessionDone,
@@ -293,10 +293,11 @@ void NativeMessagingPortal::OnCreateSessionDone(GObject* source,
     RefPtr<NativeMessagingPortal> portal = GetSingleton();
     portal->mSessions[value] = SessionState::Active;
 
+    nsAppShell::DBusConnectionCheck();
     GDBusConnection* connection = g_dbus_proxy_get_connection(proxy);
     // The "Closed" signal is emitted e.g. when the user denies access to the
     // native application when the shell prompts them.
-    auto subscription_id_ptr = MakeUnique<guint>(0);
+    auto subscription_id_ptr = std::make_unique<guint>(0);
     *subscription_id_ptr = g_dbus_connection_signal_subscribe(
         connection, "org.freedesktop.portal.Desktop",
         "org.freedesktop.portal.Session", "Closed", value, nullptr,
@@ -304,7 +305,7 @@ void NativeMessagingPortal::OnCreateSessionDone(GObject* source,
         subscription_id_ptr.get(), [](gpointer aUserData) {
           UniquePtr<guint> release(reinterpret_cast<guint*>(aUserData));
         });
-    Unused << subscription_id_ptr.release();  // Ownership transferred above.
+    (void)subscription_id_ptr.release();  // Ownership transferred above.
 
     callbackData->promise->MaybeResolve(nsDependentCString(value, length));
   } else {
@@ -340,7 +341,9 @@ NativeMessagingPortal::CloseSession(const nsACString& aHandle, JSContext* aCx,
 
   sessionIterator->second = SessionState::Closing;
   LOG_NMP("closing session %s", sessionHandle.get());
-  auto callbackData = MakeUnique<CallbackData>(*promise, sessionHandle.get());
+  auto callbackData =
+      std::make_unique<CallbackData>(*promise, sessionHandle.get());
+  nsAppShell::DBusConnectionCheck();
   g_dbus_proxy_new_for_bus(
       G_BUS_TYPE_SESSION, G_DBUS_PROXY_FLAGS_NONE, nullptr,
       "org.freedesktop.portal.Desktop", sessionHandle.get(),
@@ -366,6 +369,7 @@ void NativeMessagingPortal::OnCloseSessionProxyReady(GObject* source,
     return RejectPromiseWithErrorMessage(*callbackData->promise, *error);
   }
 
+  nsAppShell::DBusConnectionCheck();
   g_dbus_proxy_call(proxy, "Close", nullptr, G_DBUS_CALL_FLAGS_NONE, -1,
                     nullptr, &NativeMessagingPortal::OnCloseSessionDone,
                     callbackData.release());
@@ -380,6 +384,7 @@ void NativeMessagingPortal::OnCloseSessionDone(GObject* source,
 
   RefPtr<NativeMessagingPortal> portal = GetSingleton();
   GUniquePtr<GError> error;
+  nsAppShell::DBusConnectionCheck();
   RefPtr<GVariant> res = dont_AddRef(
       g_dbus_proxy_call_finish(proxy, result, getter_Transfers(error)));
   if (res) {
@@ -400,6 +405,7 @@ void NativeMessagingPortal::OnSessionClosedSignal(
     GDBusConnection* bus, const gchar* sender_name, const gchar* object_path,
     const gchar* interface_name, const gchar* signal_name, GVariant* parameters,
     gpointer user_data) {
+  nsAppShell::DBusConnectionCheck();
   guint subscription_id = *reinterpret_cast<guint*>(user_data);
   LOG_NMP("session %s was closed by the portal", object_path);
   g_dbus_connection_signal_unsubscribe(bus, subscription_id);
@@ -443,7 +449,9 @@ NativeMessagingPortal::GetManifest(const nsACString& aHandle,
   RefPtr<dom::Promise> promise;
   MOZ_TRY(GetPromise(aCx, promise));
 
-  auto callbackData = MakeUnique<CallbackData>(*promise, sessionHandle.get());
+  auto callbackData =
+      std::make_unique<CallbackData>(*promise, sessionHandle.get());
+  nsAppShell::DBusConnectionCheck();
   g_dbus_proxy_call(
       mProxy, "GetManifest",
       g_variant_new("(oss)", sessionHandle.get(), name.get(), extension.get()),
@@ -514,7 +522,8 @@ NativeMessagingPortal::Start(const nsACString& aHandle, const nsACString& aName,
   RefPtr<dom::Promise> promise;
   MOZ_TRY(GetPromise(aCx, promise));
 
-  auto callbackData = MakeUnique<CallbackData>(*promise, sessionHandle.get());
+  auto callbackData =
+      std::make_unique<CallbackData>(*promise, sessionHandle.get());
   auto* releasedCallbackData = callbackData.release();
 
   LOG_NMP("starting %s, requested by %s in session %s", name.get(),
@@ -526,6 +535,7 @@ NativeMessagingPortal::Start(const nsACString& aHandle, const nsACString& aName,
   nsAutoCString requestPath;
   widget::GetPortalRequestPath(mProxy, token, requestPath);
 
+  nsAppShell::DBusConnectionCheck();
   GDBusConnection* connection = g_dbus_proxy_get_connection(mProxy);
   releasedCallbackData->subscription_id = g_dbus_connection_signal_subscribe(
       connection, "org.freedesktop.portal.Desktop",
@@ -535,7 +545,7 @@ NativeMessagingPortal::Start(const nsACString& aHandle, const nsACString& aName,
       releasedCallbackData, nullptr);
 
   auto callbackDataCopy =
-      MakeUnique<CallbackData>(*promise, sessionHandle.get());
+      std::make_unique<CallbackData>(*promise, sessionHandle.get());
   GVariantBuilder options;
   g_variant_builder_init(&options, G_VARIANT_TYPE_VARDICT);
   g_variant_builder_add(&options, "{sv}", "handle_token",
@@ -554,6 +564,7 @@ NativeMessagingPortal::Start(const nsACString& aHandle, const nsACString& aName,
 /* static */
 void NativeMessagingPortal::OnStartDone(GObject* source, GAsyncResult* result,
                                         gpointer user_data) {
+  nsAppShell::DBusConnectionCheck();
   GDBusProxy* proxy = G_DBUS_PROXY(source);
   UniquePtr<CallbackData> callbackData(static_cast<CallbackData*>(user_data));
 
@@ -580,6 +591,7 @@ void NativeMessagingPortal::OnStartRequestResponseSignal(
     GDBusConnection* bus, const gchar* sender_name, const gchar* object_path,
     const gchar* interface_name, const gchar* signal_name, GVariant* parameters,
     gpointer user_data) {
+  nsAppShell::DBusConnectionCheck();
   UniquePtr<CallbackData> callbackData(static_cast<CallbackData*>(user_data));
 
   LOG_NMP("got response signal for %s in session %s", object_path,
@@ -639,6 +651,7 @@ static gint GetFD(const RefPtr<GVariant>& result, GUnixFDList* fds,
 void NativeMessagingPortal::OnGetPipesDone(GObject* source,
                                            GAsyncResult* result,
                                            gpointer user_data) {
+  nsAppShell::DBusConnectionCheck();
   GDBusProxy* proxy = G_DBUS_PROXY(source);
   UniquePtr<CallbackData> callbackData(static_cast<CallbackData*>(user_data));
   auto promise = callbackData->promise;

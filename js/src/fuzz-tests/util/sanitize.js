@@ -1,4 +1,3 @@
-/* -*- Mode: javascript; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 4 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -58,8 +57,6 @@ function sanitizeGlobal(g) {
     deterministicgc: function () { },
     fullcompartmentchecks: function () { },
     setIonCheckGraphCoherency: function () { },
-    enableShellAllocationMetadataBuilder: function () { },
-    setTimeResolution: function () { },
     options: function () { return "tracejit,methodjit,typeinfer"; },
     setJitCompilerOption: function () { },
     clearLastWarning: function () { },
@@ -89,6 +86,8 @@ function sanitizeGlobal(g) {
     ignoreUnhandledRejections: function () { },
     enableTrackAllocations: function () { },
     disableTrackAllocations: function () { },
+    startRecordingAllocations: function () { },
+    stopRecordingAllocations: function () { return []; },
     setTestFilenameValidationCallback: function () { },
   };
 

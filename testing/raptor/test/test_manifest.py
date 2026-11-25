@@ -157,11 +157,11 @@ def test_get_raptor_test_list_firefox(mock_info, create_args):
 
 @patch("logger.logger.RaptorLogger.info")
 def test_get_raptor_test_list_chrome(mock_info, create_args):
-    args = create_args(app="chrome", test="speedometer", browser_cycles=1)
+    args = create_args(app="chrome", test="speedometer2", browser_cycles=1)
 
     test_list = get_raptor_test_list(args, mozinfo.os)
     assert len(test_list) == 1
-    assert test_list[0]["name"] == "speedometer"
+    assert test_list[0]["name"] == "speedometer2"
 
 
 @patch("logger.logger.RaptorLogger.info")
@@ -302,12 +302,12 @@ def test_get_raptor_test_list_extra_profiler_run_disabled(mock_info, create_args
 @patch("logger.logger.RaptorLogger.info")
 def test_get_raptor_test_list_extra_profiler_run_enabled_chrome(mock_info, create_args):
     args = create_args(
-        app="chrome", test="amazon", extra_profiler_run=True, browser_cycles=1
+        app="chrome", test="unity-webgl", extra_profiler_run=True, browser_cycles=1
     )
 
     test_list = get_raptor_test_list(args, mozinfo.os)
     assert len(test_list) == 1
-    assert test_list[0]["name"] == "amazon"
+    assert test_list[0]["name"] == "unity-webgl"
     assert test_list[0]["extra_profiler_run"] is True
 
 
@@ -315,11 +315,11 @@ def test_get_raptor_test_list_extra_profiler_run_enabled_chrome(mock_info, creat
 def test_get_raptor_test_list_extra_profiler_run_disabled_chrome(
     mock_info, create_args
 ):
-    args = create_args(app="chrome", test="amazon", browser_cycles=1)
+    args = create_args(app="chrome", test="unity-webgl", browser_cycles=1)
 
     test_list = get_raptor_test_list(args, mozinfo.os)
     assert len(test_list) == 1
-    assert test_list[0]["name"] == "amazon"
+    assert test_list[0]["name"] == "unity-webgl"
     assert test_list[0].get("extra_profiler_run") is None
 
 
@@ -341,7 +341,7 @@ def test_get_raptor_test_list_using_live_sites(mock_info, create_args):
     test_list = get_raptor_test_list(args, mozinfo.os)
     assert len(test_list) == 1
     assert test_list[0]["name"] == "amazon"
-    assert test_list[0]["use_live_sites"] == "true"
+    assert test_list[0]["use_live_sites"]
     assert test_list[0]["playback"] is None
 
 
@@ -388,20 +388,20 @@ def test_get_raptor_test_list_add_test_url_params(mock_info, create_args):
 
 @patch("logger.logger.RaptorLogger.info")
 def test_get_raptor_test_list_refbrow(mock_info, create_args):
-    args = create_args(app="refbrow", test="speedometer", browser_cycles=1)
+    args = create_args(app="refbrow", test="speedometer2", browser_cycles=1)
 
     test_list = get_raptor_test_list(args, mozinfo.os)
     assert len(test_list) == 1
-    assert test_list[0]["name"] == "speedometer"
+    assert test_list[0]["name"] == "speedometer2"
 
 
 @patch("logger.logger.RaptorLogger.info")
 def test_get_raptor_test_list_fenix(mock_info, create_args):
-    args = create_args(app="fenix", test="speedometer", browser_cycles=1)
+    args = create_args(app="fenix", test="speedometer2", browser_cycles=1)
 
     test_list = get_raptor_test_list(args, mozinfo.os)
     assert len(test_list) == 1
-    assert test_list[0]["name"] == "speedometer"
+    assert test_list[0]["name"] == "speedometer2"
 
 
 def test_add_test_url_params_with_single_extra_param():

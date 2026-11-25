@@ -37,6 +37,37 @@ const AVATARS = [
   "video-game-controller",
 ];
 
+const AVATAR_TOOLTIP_IDS = {
+  barbell: "barbell-avatar-tooltip",
+  bike: "bike-avatar-tooltip",
+  book: "book-avatar-tooltip",
+  briefcase: "briefcase-avatar-tooltip",
+  canvas: "picture-avatar-tooltip",
+  craft: "craft-avatar-tooltip",
+  "default-favicon": "globe-avatar-tooltip",
+  diamond: "diamond-avatar-tooltip",
+  flower: "flower-avatar-tooltip",
+  folder: "folder-avatar-tooltip",
+  hammer: "hammer-avatar-tooltip",
+  heart: "heart-avatar-tooltip",
+  "heart-rate": "heart-rate-avatar-tooltip",
+  history: "clock-avatar-tooltip",
+  leaf: "leaf-avatar-tooltip",
+  lightbulb: "lightbulb-avatar-tooltip",
+  makeup: "makeup-avatar-tooltip",
+  message: "message-avatar-tooltip",
+  "musical-note": "musical-note-avatar-tooltip",
+  palette: "palette-avatar-tooltip",
+  "paw-print": "paw-print-avatar-tooltip",
+  plane: "plane-avatar-tooltip",
+  present: "present-avatar-tooltip",
+  shopping: "shopping-avatar-tooltip",
+  soccer: "soccer-ball-avatar-tooltip",
+  "sparkle-single": "sparkle-single-avatar-tooltip",
+  star: "star-avatar-tooltip",
+  "video-game-controller": "video-game-controller-avatar-tooltip",
+};
+
 const VIEWS = {
   ICON: "icon",
   CUSTOM: "custom",
@@ -78,6 +109,7 @@ export class ProfileAvatarSelector extends MozLitElement {
     bottomRightMover: "#mover-bottomRight",
     avatarPicker: "#avatars",
     avatars: { all: "moz-visual-picker-item" },
+    dialog: "dialog",
   };
 
   constructor() {
@@ -130,21 +162,10 @@ export class ProfileAvatarSelector extends MozLitElement {
   }
 
   toggleHidden(force = null) {
-    if (force === true) {
-      this.hidden = true;
-    } else if (force === false) {
-      this.hidden = false;
+    if (force === true || (this.dialog.open && force !== false)) {
+      this.dialog.close();
     } else {
-      this.hidden = !this.hidden;
-    }
-
-    // Add or remove event listeners as necessary
-    if (this.hidden) {
-      document.removeEventListener("click", this);
-      window.removeEventListener("keydown", this);
-    } else {
-      document.addEventListener("click", this);
-      window.addEventListener("keydown", this);
+      this.dialog.showModal();
     }
   }
 
@@ -156,19 +177,11 @@ export class ProfileAvatarSelector extends MozLitElement {
     this.toggleHidden(true);
   }
 
-  maybeHide() {
-    if (this.view === VIEWS.CROP) {
-      this.setView(VIEWS.CUSTOM);
-      return;
-    }
-
-    this.hide();
-  }
-
   cropViewStart() {
     window.addEventListener("pointerdown", this);
     window.addEventListener("pointermove", this);
     window.addEventListener("pointerup", this);
+    window.addEventListener("keydown", this);
     document.documentElement.classList.add("disable-text-selection");
   }
 
@@ -176,9 +189,9 @@ export class ProfileAvatarSelector extends MozLitElement {
     window.removeEventListener("pointerdown", this);
     window.removeEventListener("pointermove", this);
     window.removeEventListener("pointerup", this);
+    window.removeEventListener("keydown", this);
     document.documentElement.classList.remove("disable-text-selection");
   }
-
   getAvatarL10nId(value) {
     switch (value) {
       case "barbell":
@@ -190,11 +203,11 @@ export class ProfileAvatarSelector extends MozLitElement {
       case "briefcase":
         return "briefcase-avatar";
       case "canvas":
-        return "canvas-avatar";
+        return "picture-avatar";
       case "craft":
         return "craft-avatar";
       case "default-favicon":
-        return "default-favicon-avatar";
+        return "globe-avatar";
       case "diamond":
         return "diamond-avatar";
       case "flower":
@@ -208,7 +221,7 @@ export class ProfileAvatarSelector extends MozLitElement {
       case "heart-rate":
         return "heart-rate-avatar";
       case "history":
-        return "history-avatar";
+        return "clock-avatar";
       case "leaf":
         return "leaf-avatar";
       case "lightbulb":
@@ -230,7 +243,7 @@ export class ProfileAvatarSelector extends MozLitElement {
       case "shopping":
         return "shopping-avatar";
       case "soccer":
-        return "soccer-avatar";
+        return "soccer-ball-avatar";
       case "sparkle-single":
         return "sparkle-single-avatar";
       case "star":
@@ -252,9 +265,9 @@ export class ProfileAvatarSelector extends MozLitElement {
     );
   }
 
-  handleTabClick(event) {
+  handleTabChange(event) {
     event.stopImmediatePropagation();
-    if (event.target.id === "icon") {
+    if (event.target.value === VIEWS.ICON) {
       this.setView(VIEWS.ICON);
     } else {
       this.setView(VIEWS.CUSTOM);
@@ -264,7 +277,8 @@ export class ProfileAvatarSelector extends MozLitElement {
   iconTabContentTemplate() {
     return html`<moz-visual-picker
       type="listbox"
-      value=${this.avatar}
+      data-l10n-id="avatar-selector-icon-list"
+      value=${this.value}
       name="avatar"
       id="avatars"
       @change=${this.handleAvatarChange}
@@ -279,6 +293,8 @@ export class ProfileAvatarSelector extends MozLitElement {
               type="ghost"
               iconSrc="chrome://browser/content/profiles/assets/16_${avatar}.svg"
               tabindex="-1"
+              data-l10n-id=${AVATAR_TOOLTIP_IDS[avatar]}
+              data-l10n-attrs="tooltiptext"
             ></moz-button
           ></moz-visual-picker-item>`
       )}</moz-visual-picker
@@ -564,23 +580,6 @@ export class ProfileAvatarSelector extends MozLitElement {
         this.handleKeyDown(event);
         break;
       }
-      case "click": {
-        if (this.view === VIEWS.CROP) {
-          return;
-        }
-
-        let element = event.originalTarget;
-        while (element && element !== this) {
-          element = element?.getRootNode()?.host;
-        }
-
-        if (element === this) {
-          return;
-        }
-
-        this.hide();
-        break;
-      }
     }
   }
 
@@ -676,11 +675,10 @@ export class ProfileAvatarSelector extends MozLitElement {
   }
 
   handleKeyDown(event) {
+    // The keydown listener is only registered while in the crop view.
     if (event.key === "Escape") {
-      this.maybeHide();
-    }
-
-    if (this.view !== VIEWS.CROP) {
+      event.preventDefault();
+      this.setView(VIEWS.CUSTOM);
       return;
     }
 
@@ -983,27 +981,34 @@ export class ProfileAvatarSelector extends MozLitElement {
         rel="stylesheet"
         href="chrome://browser/content/profiles/profile-avatar-selector.css"
       />
-      <moz-card id="avatar-selector">
-        <div id="content">
-          <div class="button-group">
-            <moz-button
-              id="icon"
-              type=${this.view === VIEWS.ICON ? "primary" : "default"}
-              size="small"
-              data-l10n-id="avatar-selector-icon-tab"
-              @click=${this.handleTabClick}
-            ></moz-button>
-            <moz-button
-              id="custom"
-              type=${this.view === VIEWS.ICON ? "default" : "primary"}
-              size="small"
-              data-l10n-id="avatar-selector-custom-tab"
-              @click=${this.handleTabClick}
-            ></moz-button>
+      <dialog
+        data-l10n-id="avatar-selector-dialog"
+        closedby=${this.view === VIEWS.CROP ? "closerequest" : "any"}
+      >
+        <moz-card id="avatar-selector">
+          <div id="content">
+            <moz-segmented-control
+              class="button-group"
+              value=${this.view === VIEWS.ICON ? VIEWS.ICON : VIEWS.CUSTOM}
+              @change=${this.handleTabChange}
+            >
+              <moz-segmented-control-item
+                id="icon"
+                value=${VIEWS.ICON}
+                size="small"
+                data-l10n-id="avatar-selector-icon-tab"
+              ></moz-segmented-control-item>
+              <moz-segmented-control-item
+                id="custom"
+                value=${VIEWS.CUSTOM}
+                size="small"
+                data-l10n-id="avatar-selector-custom-tab"
+              ></moz-segmented-control-item>
+            </moz-segmented-control>
+            ${this.contentTemplate()}
           </div>
-          ${this.contentTemplate()}
-        </div>
-      </moz-card>`;
+        </moz-card>
+      </dialog>`;
   }
 }
 

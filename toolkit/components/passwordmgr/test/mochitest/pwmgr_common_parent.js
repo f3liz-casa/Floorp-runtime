@@ -3,8 +3,6 @@
  * See pwmgr_common.js for the content process companion.
  */
 
-/* eslint-env mozilla/chrome-script */
-
 "use strict";
 
 var { AppConstants } = ChromeUtils.importESModule(
@@ -140,8 +138,8 @@ addMessageListener("promptShown", async function () {
   });
 });
 
-addMessageListener("cleanup", () => {
-  Services.logins.removeAllUserFacingLogins();
+addMessageListener("cleanup", async () => {
+  await Services.logins.removeAllUserFacingLoginsAsync();
 });
 
 // Begin message listeners
@@ -162,38 +160,6 @@ addMessageListener("loadRecipes", async function (recipes) {
 addMessageListener("resetRecipes", async function () {
   let recipeParent = await LoginManagerParent.recipeParentPromise;
   await recipeParent.reset();
-});
-
-addMessageListener("getTelemetryEvents", options => {
-  options = Object.assign(
-    {
-      filterProps: {},
-      clear: false,
-    },
-    options
-  );
-  let snapshots = Services.telemetry.snapshotEvents(
-    Ci.nsITelemetry.DATASET_PRERELEASE_CHANNELS,
-    options.clear
-  );
-  let events = options.process in snapshots ? snapshots[options.process] : [];
-
-  // event is array of values like: [22476,"pwmgr","autocomplete_field","generatedpassword"]
-  let keys = ["id", "category", "method", "object", "value"];
-  events = events.filter(entry => {
-    for (let idx = 0; idx < keys.length; idx++) {
-      let key = keys[idx];
-      if (
-        key in options.filterProps &&
-        options.filterProps[key] !== entry[idx]
-      ) {
-        return false;
-      }
-    }
-    return true;
-  });
-
-  return events;
 });
 
 addMessageListener("proxyLoginManager", async msg => {
@@ -226,9 +192,13 @@ addMessageListener("isLoggedIn", () => {
 
 addMessageListener("setPrimaryPassword", ({ enable }) => {
   if (enable) {
-    LoginTestUtils.primaryPassword.enable();
+    LoginTestUtils.primaryPassword.enable().then(() => {
+      sendAsyncMessage("primaryPasswordSet");
+    });
   } else {
-    LoginTestUtils.primaryPassword.disable();
+    LoginTestUtils.primaryPassword.disable().then(() => {
+      sendAsyncMessage("primaryPasswordSet");
+    });
   }
 });
 

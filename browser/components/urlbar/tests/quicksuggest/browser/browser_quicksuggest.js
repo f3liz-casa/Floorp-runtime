@@ -12,6 +12,18 @@ const REMOTE_SETTINGS_RESULTS = [
     keywords: ["fra", "frab"],
     full_keywords: [["frab", 2]],
   }),
+  QuickSuggestTestUtils.ampRemoteSettings({
+    keywords: ["0.3"],
+    full_keywords: [["0.3", 2]],
+    score: 0.3,
+    url: "https://example.com/amp/0.3",
+  }),
+  QuickSuggestTestUtils.ampRemoteSettings({
+    keywords: ["1.0"],
+    full_keywords: [["1.0", 2]],
+    score: 1.0,
+    url: "https://example.com/amp/1.0",
+  }),
   QuickSuggestTestUtils.wikipediaRemoteSettings(),
 ];
 
@@ -35,6 +47,11 @@ const MERINO_DYNAMIC_WIKIPEDIA_SUGGESTION = {
   iab_category: "5 - Education",
   block_id: 1,
 };
+
+// Expected AMP icon sizes.
+const AMP_ICON_SIZE_TOP_PICK_LARGE = 58;
+const AMP_ICON_SIZE_TOP_PICK_SMALL = 28;
+const AMP_ICON_SIZE_NON_TOP_PICK = 16;
 
 // Trying to avoid timeouts in TV mode.
 requestLongerTimeout(5);
@@ -62,37 +79,11 @@ add_setup(async function () {
   });
 
   // Disable Merino so we trigger only remote settings suggestions.
-  UrlbarPrefs.set("quicksuggest.dataCollection.enabled", false);
+  UrlbarPrefs.set("quicksuggest.online.enabled", false);
 
   await SpecialPowers.pushPrefEnv({
     set: [["browser.urlbar.suggest.engines", false]],
   });
-});
-
-// Tests a sponsored result and keyword highlighting.
-add_task(async function sponsored() {
-  await UrlbarTestUtils.promiseAutocompleteResultPopup({
-    window,
-    value: "fra",
-  });
-  await QuickSuggestTestUtils.assertIsQuickSuggest({
-    window,
-    index: 1,
-    isSponsored: true,
-    url: "https://example.com/amp",
-  });
-  let row = await UrlbarTestUtils.waitForAutocompleteResultAt(window, 1);
-  Assert.equal(
-    row.querySelector(".urlbarView-title").firstChild.textContent,
-    "fra",
-    "The part of the keyword that matches users input is not bold."
-  );
-  Assert.equal(
-    row.querySelector(".urlbarView-title > strong").textContent,
-    "b",
-    "The auto completed section of the keyword is bolded."
-  );
-  await UrlbarTestUtils.promisePopupClose(window);
 });
 
 // Tests a non-sponsored result.
@@ -107,6 +98,10 @@ add_task(async function nonSponsored() {
     isSponsored: false,
     url: "https://example.com/wikipedia",
   });
+
+  let row = await UrlbarTestUtils.waitForAutocompleteResultAt(window, 1);
+  Assert.ok(!row.hasAttribute("sponsored"));
+
   await UrlbarTestUtils.promisePopupClose(window);
 });
 
@@ -125,29 +120,17 @@ add_task(async function sponsoredPriority() {
     index: 1,
     isSponsored: true,
     isBestMatch: true,
+    bestMatchType: UrlbarShared.BEST_MATCH_TYPE.SMALL,
     url: "https://example.com/amp",
   });
 
   let row = await UrlbarTestUtils.waitForAutocompleteResultAt(window, 1);
-  Assert.equal(
-    row.querySelector(".urlbarView-title").firstChild.textContent,
-    "fra",
-    "The part of the keyword that matches users input is not bold."
-  );
-  Assert.equal(
-    row.querySelector(".urlbarView-title > strong").textContent,
-    "b",
-    "The auto completed section of the keyword is bolded."
-  );
+  Assert.ok(row.hasAttribute("sponsored"));
 
   // Group label.
   let before = window.getComputedStyle(row, "::before");
-  Assert.equal(before.content, "attr(label)", "::before.content is enabled");
-  Assert.equal(
-    row.getAttribute("label"),
-    "Top pick",
-    "Row has 'Top pick' group label"
-  );
+  Assert.equal(before.content, "none", "::before.content is none");
+  Assert.ok(!row.hasAttribute("label"), "Row should not have a group label");
 
   await UrlbarTestUtils.promisePopupClose(window);
   await cleanUpNimbus();
@@ -172,7 +155,11 @@ add_task(async function sponsoredPriorityButNotSponsoredSuggestion() {
 
   let row = await UrlbarTestUtils.waitForAutocompleteResultAt(window, 1);
   let before = window.getComputedStyle(row, "::before");
-  Assert.equal(before.content, "attr(label)", "::before.content is enabled");
+  Assert.equal(
+    before.content,
+    '"Firefox Suggest"',
+    "::before.content is enabled"
+  );
   Assert.equal(
     row.getAttribute("label"),
     "Firefox Suggest",
@@ -203,25 +190,16 @@ add_task(async function ampTopPickCharThreshold_meetsThreshold() {
     index: 1,
     isSponsored: true,
     isBestMatch: true,
-    hasSponsoredLabel: false,
+    bestMatchType: UrlbarShared.BEST_MATCH_TYPE.SMALL,
     url: "https://example.com/amp",
   });
 
   let row = await UrlbarTestUtils.waitForAutocompleteResultAt(window, 1);
-  Assert.equal(
-    row.querySelector(".urlbarView-title > strong").textContent,
-    query,
-    "The title should include the full keyword and the part that matches the query should be bold"
-  );
 
   // Group label.
   let before = window.getComputedStyle(row, "::before");
-  Assert.equal(before.content, "attr(label)", "::before.content is enabled");
-  Assert.equal(
-    row.getAttribute("label"),
-    "Sponsored",
-    "Row has 'Sponsored' group label"
-  );
+  Assert.equal(before.content, "none", "::before.content is none");
+  Assert.ok(!row.hasAttribute("label"), "Row should not have a group label");
 
   await UrlbarTestUtils.promisePopupClose(window);
   await cleanUpNimbus();
@@ -256,7 +234,11 @@ add_task(async function ampTopPickCharThreshold_belowThreshold() {
 
   // Group label.
   let before = window.getComputedStyle(row, "::before");
-  Assert.equal(before.content, "attr(label)", "::before.content is enabled");
+  Assert.equal(
+    before.content,
+    '"Firefox Suggest"',
+    "::before.content is enabled"
+  );
   Assert.equal(
     row.getAttribute("label"),
     "Firefox Suggest",
@@ -287,7 +269,10 @@ add_task(async function resultMenu_manage_nonSponsored() {
 add_task(async function resultMenu_manage_navigational() {
   // Enable Merino.
   await SpecialPowers.pushPrefEnv({
-    set: [["browser.urlbar.quicksuggest.dataCollection.enabled", true]],
+    set: [
+      ["browser.urlbar.quicksuggest.online.available", true],
+      ["browser.urlbar.quicksuggest.online.enabled", true],
+    ],
   });
 
   MerinoTestUtils.server.response.body.suggestions = [
@@ -306,7 +291,10 @@ add_task(async function resultMenu_manage_navigational() {
 add_task(async function resultMenu_manage_dynamicWikipedia() {
   // Enable Merino.
   await SpecialPowers.pushPrefEnv({
-    set: [["browser.urlbar.quicksuggest.dataCollection.enabled", true]],
+    set: [
+      ["browser.urlbar.quicksuggest.online.available", true],
+      ["browser.urlbar.quicksuggest.online.enabled", true],
+    ],
   });
   MerinoTestUtils.server.response.body.suggestions = [
     MERINO_DYNAMIC_WIKIPEDIA_SUGGESTION,
@@ -319,3 +307,154 @@ add_task(async function resultMenu_manage_dynamicWikipedia() {
 
   await SpecialPowers.popPrefEnv();
 });
+
+// Tests the "Learn more" result menu.
+add_task(async function resultMenu_learn_more_sponsored() {
+  await UrlbarTestUtils.promiseAutocompleteResultPopup({
+    window,
+    value: "fra",
+  });
+
+  info("Selecting Learn more item from the result menu");
+  let tabOpenPromise = BrowserTestUtils.waitForNewTab(
+    gBrowser,
+    Services.urlFormatter.formatURLPref("app.support.baseURL") +
+      "awesome-bar-result-menu"
+  );
+  await UrlbarTestUtils.openResultMenuAndClickItem(window, "help", {
+    resultIndex: 1,
+  });
+  info("Waiting for Learn more link to open in a new tab");
+  await tabOpenPromise;
+  gBrowser.removeCurrentTab();
+
+  await UrlbarTestUtils.promisePopupClose(window);
+});
+
+// Tests `quicksuggest.ampTopPickScoreForLargeIcon` (Nimbus variable
+// `quickSuggestAmpTopPickScoreForLargeIcon`).
+add_task(async function ampTopPickScoreForLargeIcon() {
+  const TEST_DATA = [
+    {
+      topPick: true,
+      scoreForLargeIcon: "1.0",
+      query: "0.3",
+      expected: {
+        bestMatchType: UrlbarShared.BEST_MATCH_TYPE.SMALL,
+        url: "https://example.com/amp/0.3",
+      },
+    },
+
+    {
+      topPick: true,
+      scoreForLargeIcon: "1.0",
+      query: "1.0",
+      expected: {
+        bestMatchType: UrlbarShared.BEST_MATCH_TYPE.LARGE,
+        url: "https://example.com/amp/1.0",
+      },
+    },
+
+    {
+      topPick: true,
+      scoreForLargeIcon: "",
+      query: "1.0",
+      expected: {
+        bestMatchType: UrlbarShared.BEST_MATCH_TYPE.SMALL,
+        url: "https://example.com/amp/1.0",
+      },
+    },
+
+    {
+      topPick: false,
+      scoreForLargeIcon: "1.0",
+      query: "1.0",
+      expected: {
+        bestMatchType: UrlbarShared.BEST_MATCH_TYPE.NONE,
+        url: "https://example.com/amp/1.0",
+      },
+    },
+
+    {
+      topPick: false,
+      scoreForLargeIcon: "",
+      query: "1.0",
+      expected: {
+        bestMatchType: UrlbarShared.BEST_MATCH_TYPE.NONE,
+        url: "https://example.com/amp/1.0",
+      },
+    },
+  ];
+
+  for (let { topPick, scoreForLargeIcon, query, expected } of TEST_DATA) {
+    const cleanUpNimbus = await UrlbarTestUtils.initNimbusFeature({
+      quickSuggestAmpTopPickScoreForLargeIcon: scoreForLargeIcon,
+    });
+    await doTopPickTest({ topPick, query, expected });
+    await cleanUpNimbus();
+  }
+});
+
+async function doTopPickTest({ query, topPick, expected }) {
+  if (topPick) {
+    UrlbarPrefs.set("quicksuggest.ampTopPickCharThreshold", 1);
+  }
+
+  await UrlbarTestUtils.promiseAutocompleteResultPopup({
+    window,
+    value: query,
+  });
+
+  await QuickSuggestTestUtils.assertIsQuickSuggest({
+    window,
+    index: 1,
+    isSponsored: true,
+    isBestMatch: topPick,
+    bestMatchType: expected.bestMatchType,
+    url: expected.url,
+  });
+
+  let row = await UrlbarTestUtils.waitForAutocompleteResultAt(window, 1);
+  let icon = row.querySelector(".urlbarView-favicon");
+
+  let expectedSize;
+  switch (expected.bestMatchType) {
+    case UrlbarShared.BEST_MATCH_TYPE.NONE:
+      expectedSize = AMP_ICON_SIZE_NON_TOP_PICK;
+      break;
+    case UrlbarShared.BEST_MATCH_TYPE.SMALL:
+      expectedSize = AMP_ICON_SIZE_TOP_PICK_SMALL;
+      break;
+    case UrlbarShared.BEST_MATCH_TYPE.LARGE:
+      expectedSize = AMP_ICON_SIZE_TOP_PICK_LARGE;
+      break;
+  }
+
+  let { width, height } = window.getComputedStyle(icon);
+  Assert.equal(
+    width,
+    `${expectedSize}px`,
+    "style.width should have expected value"
+  );
+  Assert.equal(
+    height,
+    `${expectedSize}px`,
+    "style.height should have expected value"
+  );
+
+  // Check the bounding rect too for good measure.
+  let iconRect = icon.getBoundingClientRect();
+  Assert.equal(
+    iconRect.width,
+    expectedSize,
+    "Icon bounding width should have expected value"
+  );
+  Assert.equal(
+    iconRect.height,
+    expectedSize,
+    "Icon bounding height should have expected value"
+  );
+
+  await UrlbarTestUtils.promisePopupClose(window);
+  UrlbarPrefs.clear("quicksuggest.ampTopPickCharThreshold");
+}

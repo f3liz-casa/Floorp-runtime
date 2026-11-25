@@ -34,20 +34,23 @@ add_task(async function test_policy_masterpassword_set() {
     },
   });
 
-  LoginTestUtils.primaryPassword.enable();
+  await LoginTestUtils.primaryPassword.enable();
 
   await BrowserTestUtils.withNewTab(
-    "about:preferences#privacy",
+    "about:preferences#passwordsAutofill",
     async browser => {
+      let primaryPasswordControl = browser.contentDocument.getElementById(
+        "turnOffPrimaryPassword"
+      );
       is(
-        browser.contentDocument.getElementById("useMasterPassword").disabled,
+        primaryPasswordControl.disabled,
         true,
-        "Master Password checkbox should be disabled"
+        "Turn off primary password button should be disabled"
       );
     }
   );
 
-  LoginTestUtils.primaryPassword.disable();
+  await LoginTestUtils.primaryPassword.disable();
 });
 
 // Test that password can't be removed in changemp.xhtml
@@ -58,7 +61,7 @@ add_task(async function test_policy_nochangemp() {
     },
   });
 
-  LoginTestUtils.primaryPassword.enable();
+  await LoginTestUtils.primaryPassword.enable();
 
   let changeMPWindow = window.openDialog(
     "chrome://mozapps/content/preferences/changemp.xhtml",
@@ -85,7 +88,7 @@ add_task(async function test_policy_nochangemp() {
 
   await BrowserTestUtils.closeWindow(changeMPWindow);
 
-  LoginTestUtils.primaryPassword.disable();
+  await LoginTestUtils.primaryPassword.disable();
 });
 
 // Test that admin message shows

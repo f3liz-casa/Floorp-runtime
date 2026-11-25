@@ -290,12 +290,16 @@ class ScriptModule extends WindowGlobalBiDiModule {
           })
         : null;
 
-    realm.userActivationEnabled = userActivation;
+    if (userActivation) {
+      realm.notifyUserActivation();
+    }
 
-    const rv = realm.executeInGlobalWithBindings(
+    const debuggerEnvironment = this.messageHandler.debuggerEnvironment;
+    const rv = realm.executeInRealmWithBindings(
       functionDeclaration,
       deserializedArguments,
-      deserializedThis
+      deserializedThis,
+      debuggerEnvironment
     );
 
     return this.#buildReturnValue(
@@ -365,10 +369,12 @@ class ScriptModule extends WindowGlobalBiDiModule {
 
     const realm = this.messageHandler.getRealm({ realmId, sandboxName });
 
-    realm.userActivationEnabled = userActivation;
+    if (userActivation) {
+      realm.notifyUserActivation();
+    }
 
-    const rv = realm.executeInGlobal(expression);
-
+    const debuggerEnvironment = this.messageHandler.debuggerEnvironment;
+    const rv = realm.executeInRealm(expression, debuggerEnvironment);
     return this.#buildReturnValue(
       rv,
       realm,
@@ -423,7 +429,7 @@ class ScriptModule extends WindowGlobalBiDiModule {
           emitScriptMessage: this.#emitScriptMessage,
         })
       );
-      const rv = realm.executeInGlobalWithBindings(
+      const rv = realm.executeInRealmWithBindings(
         functionDeclaration,
         deserializedArguments
       );

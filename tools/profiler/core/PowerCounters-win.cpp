@@ -136,8 +136,8 @@ class PowerMeterDevice {
         return;
       }
 
-      mDataBuffer =
-          MakeUnique<EMI_CHANNEL_MEASUREMENT_DATA[]>(metadata2->ChannelCount);
+      mDataBuffer = std::make_unique<EMI_CHANNEL_MEASUREMENT_DATA[]>(
+          metadata2->ChannelCount);
       if (!mDataBuffer) {
         return;
       }
@@ -165,7 +165,7 @@ class PowerMeterDevice {
         return;
       }
 
-      mDataBuffer = MakeUnique<EMI_CHANNEL_MEASUREMENT_DATA[]>(1);
+      mDataBuffer = std::make_unique<EMI_CHANNEL_MEASUREMENT_DATA[]>(1);
       if (!mDataBuffer) {
         return;
       }
@@ -288,7 +288,7 @@ PowerCounters::PowerCounters() {
     }
 
     UniquePtr<PowerMeterDevice> pmd =
-        MakeUnique<PowerMeterDevice>(pdidd->DevicePath);
+        std::make_unique<PowerMeterDevice>(pdidd->DevicePath);
     if (!pmd->HasChannels() ||
         !mPowerMeterDevices.emplaceBack(std::move(pmd))) {
       NS_WARNING("PowerMeterDevice without measurement channel (or OOM)");
@@ -302,7 +302,7 @@ PowerCounters::PowerCounters() {
 
 // This default destructor can not be defined in the header file as it depends
 // on the full definition of PowerMeterDevice which lives in this file.
-PowerCounters::~PowerCounters() {}
+PowerCounters::~PowerCounters() = default;
 
 void PowerCounters::Sample() {
   for (auto& device : mPowerMeterDevices) {

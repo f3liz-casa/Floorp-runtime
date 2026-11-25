@@ -1,5 +1,6 @@
 <!DOCTYPE html>
 <title>Federated Credential Management API authz getUserInfo() tests.</title>
+<meta name="pac" content="/fedcm/support/proxy.sub.pac">
 <link rel="help" href="https://fedidcg.github.io/FedCM">
 <script src="/resources/testharness.js"></script>
 <script src="/resources/testharnessreport.js"></script>
@@ -43,7 +44,7 @@ fedcm/support/fedcm/userinfo-iframe.html`;
   assert_equals(message.firstAccountEmail, "john_doe@idp.example");
   assert_equals(message.firstAccountName, "John Doe");
   assert_equals(message.firstAccountGivenName, "John");
-  assert_equals(message.firstAccountPicture, "https://idp.example/profile/123");
+  assert_equals(message.firstAccountPicture, "https://localhost/profile/123");
 }, 'Test getUserInfo() after resolve() to verify that resolve stores the RP/IDP connection');
 
 </script>

@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -96,6 +94,10 @@ already_AddRefed<Promise> CookieStoreManager::GetSubscriptions(
   NS_DispatchToCurrentThread(NS_NewRunnableFunction(
       __func__, [self = RefPtr(this), principal = RefPtr(principal.get()),
                  promise = RefPtr(promise)]() {
+        if (promise->GetParentObject()->IsDying()) {
+          return;
+        }
+
         if (!self->MaybeCreateActor()) {
           promise->MaybeRejectWithNotAllowedError("Permission denied");
           return;
@@ -121,6 +123,10 @@ already_AddRefed<Promise> CookieStoreManager::GetSubscriptions(
             [promise = RefPtr(promise)](
                 const CookieStoreChild::GetSubscriptionsRequestPromise::
                     ResolveOrRejectValue& aResult) {
+              if (promise->GetParentObject()->IsDying()) {
+                return;
+              }
+
               if (aResult.IsReject()) {
                 promise->MaybeResolve(nsTArray<CookieStoreGetOptions>());
                 return;
@@ -174,6 +180,10 @@ already_AddRefed<Promise> CookieStoreManager::SubscribeOrUnsubscribe(
       __func__,
       [self = RefPtr(this), promise = RefPtr(promise),
        principal = RefPtr(principal.get()), aSubscriptions, aAction]() {
+        if (promise->GetParentObject()->IsDying()) {
+          return;
+        }
+
         nsCOMPtr<nsIURI> baseURI;
         nsresult rv = NS_NewURI(getter_AddRefs(baseURI), self->mScopeURL,
                                 nullptr, nullptr);

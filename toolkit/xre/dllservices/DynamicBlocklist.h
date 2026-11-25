@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
@@ -10,10 +8,8 @@
 #include <winternl.h>
 
 #include "nsWindowsHelpers.h"
-#include "mozilla/CheckedInt.h"
 #include "mozilla/NativeNt.h"
 #include "mozilla/UniquePtr.h"
-#include "mozilla/Unused.h"
 #include "mozilla/Vector.h"
 
 #if defined(MOZILLA_INTERNAL_API)
@@ -71,7 +67,7 @@ class DynamicBlockList final : public DynamicBlockListBase {
 
   void CreateListWithTestEntry() {
     mPayloadSize = sizeof(DllBlockInfo) * 2 + kTestDllBytes;
-    mPayload = MakeUnique<uint8_t[]>(mPayloadSize);
+    mPayload = std::make_unique<uint8_t[]>(mPayloadSize);
     DllBlockInfo* entry = reinterpret_cast<DllBlockInfo*>(mPayload.get());
     AssignTestEntry(entry, sizeof(DllBlockInfo) * 2);
     memcpy(mPayload.get() + sizeof(DllBlockInfo) * 2, kTestDll, kTestDllBytes);
@@ -136,8 +132,7 @@ class DynamicBlockList final : public DynamicBlockListBase {
       destinationPayloadSize += sizeof(DllBlockInfo) + kTestDllBytes;
     }
 #endif
-    UniquePtr<uint8_t[]> payload =
-        MakeUnique<uint8_t[]>(destinationPayloadSize);
+    auto payload = std::make_unique<uint8_t[]>(destinationPayloadSize);
     ok = ::ReadFile(file.get(), payload.get(), header.mPayloadSize, &bytesRead,
                     nullptr);
     if (!ok || bytesRead != header.mPayloadSize) {

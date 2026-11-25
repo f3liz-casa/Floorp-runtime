@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -9,7 +7,6 @@
 
 #include "mozilla/RefPtr.h"
 #include "mozilla/dom/File.h"
-#include "mozilla/ipc/IPDLParamTraits.h"
 
 /*
  * Blobs and IPC
@@ -215,25 +212,6 @@
  * When RemoteLazyInputStream is serialized and sent to the parent process,
  * start and range are sent too and SlicedInputStream is used in the parent side
  * as well.
- *
- * Socket Process
- * ~~~~~~~~~~~~~~
- *
- * The socket process is a separate process used to do networking operations.
- * When a website sends a blob as the body of a POST/PUT request, we need to
- * send the corresponding RemoteLazyInputStream to the socket process.
- *
- * This is the only serialization of RemoteLazyInputStream from parent to child
- * process and it works _only_ for the socket process. Do not expose this
- * serialization to PContent or PBackground or any other top-level IPDL protocol
- * without a DOM File peer review!
- *
- * The main difference between Socket Process is that DOM-File thread is not
- * used. Here is a list of reasons:
- * - DOM-File moves the ownership of the RemoteLazyInputStream actors to
- *   PBackground, but in the Socket Process we don't have PBackground (yet?)
- * - Socket Process is a stable process with a simple life-time configuration:
- *   we can keep the actors on the main-thread because no Workers are involved.
  */
 
 namespace mozilla::dom {

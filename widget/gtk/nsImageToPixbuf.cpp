@@ -1,16 +1,17 @@
-/* vim:set sw=2 sts=2 et cin: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#include <gdk-pixbuf/gdk-pixbuf.h>
-
 #include "nsImageToPixbuf.h"
 
-#include "imgIContainer.h"
-#include "mozilla/gfx/2D.h"
-#include "mozilla/RefPtr.h"
+#include <gdk-pixbuf/gdk-pixbuf.h>
+
+#include <algorithm>
+
 #include "GRefPtr.h"
+#include "imgIContainer.h"
+#include "mozilla/RefPtr.h"
+#include "mozilla/gfx/2D.h"
 #include "nsCOMPtr.h"
 
 using mozilla::gfx::DataSourceSurface;
@@ -59,9 +60,9 @@ already_AddRefed<GdkPixbuf> nsImageToPixbuf::ImageToPixbuf(
 
 already_AddRefed<GdkPixbuf> nsImageToPixbuf::SourceSurfaceToPixbuf(
     SourceSurface* aSurface, int32_t aWidth, int32_t aHeight) {
-  MOZ_ASSERT(aWidth <= aSurface->GetSize().width &&
-                 aHeight <= aSurface->GetSize().height,
-             "Requested rect is bigger than the supplied surface");
+  using mozilla::gfx::Factory;
+
+  MOZ_ASSERT(aSurface);
 
   RefPtr<GdkPixbuf> pixbuf =
       dont_AddRef(gdk_pixbuf_new(GDK_COLORSPACE_RGB, TRUE, 8, aWidth, aHeight));
@@ -72,19 +73,59 @@ already_AddRefed<GdkPixbuf> nsImageToPixbuf::SourceSurfaceToPixbuf(
   uint32_t destStride = gdk_pixbuf_get_rowstride(pixbuf);
   guchar* destPixels = gdk_pixbuf_get_pixels(pixbuf);
 
-  RefPtr<DataSourceSurface> dataSurface = aSurface->GetDataSurface();
+  RefPtr<DataSourceSurface> dataSurface;
   DataSourceSurface::MappedSurface map;
-  if (!dataSurface->Map(DataSourceSurface::MapType::READ, &map)) {
-    return nullptr;
+
+  SurfaceFormat sourceFormat = aSurface->GetFormat();
+  if (MOZ_UNLIKELY(sourceFormat != SurfaceFormat::B8G8R8A8 &&
+                   sourceFormat != SurfaceFormat::B8G8R8X8)) {
+    dataSurface = Factory::CreateDataSourceSurface(
+        mozilla::gfx::IntSize(aWidth, aHeight), SurfaceFormat::B8G8R8A8);
+    if (NS_WARN_IF(!dataSurface)) {
+      return nullptr;
+    }
+
+    if (!dataSurface->Map(DataSourceSurface::MapType::READ_WRITE, &map)) {
+      return nullptr;
+    }
+
+    RefPtr<mozilla::gfx::DrawTarget> dt = Factory::CreateDrawTargetForData(
+        mozilla::gfx::BackendType::SKIA, map.mData, dataSurface->GetSize(),
+        map.mStride, dataSurface->GetFormat());
+    if (!dt) {
+      dataSurface->Unmap();
+      return nullptr;
+    }
+
+    dt->FillRect(
+        mozilla::gfx::Rect(0, 0, aWidth, aHeight),
+        mozilla::gfx::SurfacePattern(aSurface, mozilla::gfx::ExtendMode::CLAMP),
+        mozilla::gfx::DrawOptions(1.0f,
+                                  mozilla::gfx::CompositionOp::OP_SOURCE));
+  } else {
+    dataSurface = aSurface->GetDataSurface();
+    if (!dataSurface->Map(DataSourceSurface::MapType::READ, &map)) {
+      return nullptr;
+    }
   }
+  MOZ_ASSERT(dataSurface);
+  MOZ_ASSERT(map.mData);
 
   uint8_t* srcData = map.mData;
   int32_t srcStride = map.mStride;
 
   SurfaceFormat format = dataSurface->GetFormat();
 
-  for (int32_t row = 0; row < aHeight; ++row) {
-    for (int32_t col = 0; col < aWidth; ++col) {
+  // Clamp the copy to the source size and clear any remaining pixels.
+  const mozilla::gfx::IntSize srcSize = dataSurface->GetSize();
+  const int32_t copyWidth = std::min(aWidth, srcSize.width);
+  const int32_t copyHeight = std::min(aHeight, srcSize.height);
+  if (copyWidth < aWidth || copyHeight < aHeight) {
+    gdk_pixbuf_fill(pixbuf, 0);
+  }
+
+  for (int32_t row = 0; row < copyHeight; ++row) {
+    for (int32_t col = 0; col < copyWidth; ++col) {
       guchar* destPixel = destPixels + row * destStride + 4 * col;
 
       uint32_t* srcPixel =

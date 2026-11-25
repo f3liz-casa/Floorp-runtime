@@ -1,5 +1,4 @@
-/* -*- Mode: Java; c-basic-offset: 4; tab-width: 20; indent-tabs-mode: nil; -*-
- * This Source Code Form is subject to the terms of the Mozilla Public
+/* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
@@ -13,6 +12,7 @@ import android.app.AlertDialog;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.app.PendingIntent;
+import android.app.PictureInPictureParams;
 import android.content.ContentResolver;
 import android.content.ContentValues;
 import android.content.Context;
@@ -24,7 +24,9 @@ import android.content.pm.PackageManager;
 import android.content.res.Resources;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
+import android.graphics.Canvas;
 import android.graphics.Color;
+import android.graphics.Paint;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
@@ -51,6 +53,7 @@ import android.widget.TextView;
 import android.widget.Toast;
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
+import androidx.annotation.OptIn;
 import androidx.annotation.UiThread;
 import androidx.appcompat.app.ActionBar;
 import androidx.appcompat.app.AppCompatActivity;
@@ -77,10 +80,13 @@ import java.util.Map;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import org.json.JSONObject;
+import org.mozilla.geckoview.AIFeaturesController;
+import org.mozilla.geckoview.AIFeaturesController.RuntimeAIFeatures;
 import org.mozilla.geckoview.AllowOrDeny;
 import org.mozilla.geckoview.Autocomplete;
 import org.mozilla.geckoview.BasicSelectionActionDelegate;
 import org.mozilla.geckoview.ContentBlocking;
+import org.mozilla.geckoview.ExperimentalGeckoViewApi;
 import org.mozilla.geckoview.GeckoResult;
 import org.mozilla.geckoview.GeckoRuntime;
 import org.mozilla.geckoview.GeckoRuntimeSettings;
@@ -93,6 +99,7 @@ import org.mozilla.geckoview.GeckoWebExecutor;
 import org.mozilla.geckoview.Image;
 import org.mozilla.geckoview.MediaSession;
 import org.mozilla.geckoview.OrientationController;
+import org.mozilla.geckoview.PictureInPictureController;
 import org.mozilla.geckoview.ProfilerController;
 import org.mozilla.geckoview.SlowScriptResponse;
 import org.mozilla.geckoview.TranslationsController;
@@ -103,6 +110,7 @@ import org.mozilla.geckoview.WebNotificationDelegate;
 import org.mozilla.geckoview.WebRequest;
 import org.mozilla.geckoview.WebRequestError;
 import org.mozilla.geckoview.WebResponse;
+import org.mozilla.geckoview_example.utils.EdgeToEdgeUtils;
 import org.mozilla.geckoview_example.utils.WindowUtils;
 
 interface WebExtensionDelegate {
@@ -163,17 +171,20 @@ class WebExtensionManager
   @Nullable
   @Override
   public GeckoResult<AllowOrDeny> onUpdatePrompt(
-      @NonNull WebExtension currentlyInstalled,
       @NonNull WebExtension updatedExtension,
       @NonNull String[] newPermissions,
-      @NonNull String[] newOrigins) {
+      @NonNull String[] newOrigins,
+      @NonNull String[] newDataCollectionPermissions) {
     return GeckoResult.allow();
   }
 
   @Nullable
   @Override
   public GeckoResult<AllowOrDeny> onOptionalPrompt(
-      final @NonNull WebExtension extension, final String[] permissions, final String[] origins) {
+      final @NonNull WebExtension extension,
+      final String[] permissions,
+      final String[] origins,
+      final String[] dataCollectionPermissions) {
     return GeckoResult.allow();
   }
 
@@ -331,6 +342,24 @@ class WebExtensionManager
                           resolved.badgeText,
                           resolved.badgeTextColor,
                           resolved.badgeBackgroundColor));
+                })
+            .exceptionally(
+                throwable -> {
+                  Bitmap errorIcon = Bitmap.createBitmap(64, 64, Bitmap.Config.ARGB_8888);
+                  Canvas canvas = new Canvas(errorIcon);
+                  Paint paint = new Paint();
+                  paint.setColor(Color.RED);
+                  paint.setStyle(Paint.Style.FILL);
+                  canvas.drawRect(0f, 0f, 64f, 64f, paint);
+
+                  extensionDelegate.onActionButton(
+                      new ActionButton(
+                          errorIcon,
+                          resolved.badgeText,
+                          resolved.badgeTextColor,
+                          resolved.badgeBackgroundColor));
+
+                  return null;
                 });
       }
     } else {
@@ -430,10 +459,15 @@ public class GeckoViewActivity extends AppCompatActivity
   private static final String FULL_ACCESSIBILITY_TREE_EXTRA = "full_accessibility_tree";
   private static final String SEARCH_URI_BASE = "https://www.google.com/search?q=";
   private static final String ACTION_SHUTDOWN = "org.mozilla.geckoview_example.SHUTDOWN";
+  /* package */ static final String ACTION_RETURN_TO_PIP_SOURCE =
+      "org.mozilla.geckoview_example.RETURN_TO_PIP_SOURCE";
+  private static final String ACTION_REQUEST_PIP = "org.mozilla.geckoview_example.REQUEST_PIP";
+  private static final int MEDIA_NOTIFICATION_ID = 1;
   private static final String CHANNEL_ID = "GeckoViewExample";
   private static final int REQUEST_FILE_PICKER = 1;
   private static final int REQUEST_PERMISSIONS = 2;
   private static final int REQUEST_WRITE_EXTERNAL_STORAGE = 3;
+  private static final int REQUEST_NOTIFICATIONS = 4;
 
   private static GeckoRuntime sGeckoRuntime;
 
@@ -446,6 +480,7 @@ public class GeckoViewActivity extends AppCompatActivity
   private boolean mCollapsed;
   private boolean mKillProcessOnDestroy;
   private boolean mDesktopMode;
+  private boolean mStarted;
 
   private TabSession mPopupSession;
   private View mPopupView;
@@ -461,6 +496,12 @@ public class GeckoViewActivity extends AppCompatActivity
   private boolean mFullScreen;
   private boolean mExpectedTranslate = false;
   private boolean mTranslateRestore = false;
+  private boolean mTranslationsEnabled = true;
+  private boolean mPipFullscreenMedia = false;
+  private boolean mPipIsPlaying = false;
+
+  /** The session the media notification acts on, which is the one that last started playing. */
+  private @Nullable GeckoSession mMediaPlayingSession;
 
   private String mDetectedLanguage = null;
 
@@ -473,6 +514,99 @@ public class GeckoViewActivity extends AppCompatActivity
 
   private int mNextActivityResultCode = 10;
   private HashMap<Integer, GeckoResult<Intent>> mPendingActivityResult = new HashMap<>();
+
+  private boolean supportsPip() {
+    return getPackageManager().hasSystemFeature(PackageManager.FEATURE_PICTURE_IN_PICTURE);
+  }
+
+  private boolean maybeEnterPip() {
+    if (!supportsPip()) return false;
+    if (!mPipFullscreenMedia || !mPipIsPlaying) return false;
+    try {
+      enterPictureInPictureMode(new PictureInPictureParams.Builder().build());
+      return true;
+    } catch (IllegalStateException e) {
+      Log.w(LOGTAG, "Could not enter picture-in-picture", e);
+      return false;
+    }
+  }
+
+  @Override
+  public void onUserLeaveHint() {
+    if (!maybeEnterPip()) {
+      super.onUserLeaveHint();
+    }
+  }
+
+  /**
+   * Posts a notification for the playing media, carrying an action that asks Gecko for a
+   * picture-in-picture window. A real embedder would use a {@code MediaStyle} notification backed
+   * by a platform media session so that the action also shows up in the lock screen controls.
+   */
+  private void showMediaNotification() {
+    if (!supportsPip()) {
+      return;
+    }
+
+    final PendingIntent pipIntent =
+        PendingIntent.getActivity(
+            getApplicationContext(),
+            MEDIA_NOTIFICATION_ID,
+            new Intent(this, GeckoViewActivity.class)
+                .setAction(ACTION_REQUEST_PIP)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+            PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT);
+
+    final NotificationCompat.Builder builder =
+        new NotificationCompat.Builder(getApplicationContext(), CHANNEL_ID)
+            .setSmallIcon(R.drawable.ic_status_logo)
+            .setContentTitle(getResources().getString(R.string.app_name))
+            .setContentText(getResources().getString(R.string.media_playing))
+            .setPriority(NotificationCompat.PRIORITY_LOW)
+            .setOngoing(true)
+            .setCategory(NotificationCompat.CATEGORY_TRANSPORT)
+            .addAction(
+                R.drawable.ic_status_logo,
+                getResources().getString(R.string.media_enter_pip),
+                pipIntent);
+
+    NotificationManagerCompat.from(this).notify(MEDIA_NOTIFICATION_ID, builder.build());
+  }
+
+  /** Without this the media notification, and its picture-in-picture action, is never shown. */
+  private void requestNotificationPermission() {
+    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
+      Log.d(LOGTAG, "Notifications are on by default on API " + Build.VERSION.SDK_INT);
+      return;
+    }
+    if (ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS)
+        != PackageManager.PERMISSION_GRANTED) {
+      ActivityCompat.requestPermissions(
+          this, new String[] {Manifest.permission.POST_NOTIFICATIONS}, REQUEST_NOTIFICATIONS);
+    }
+  }
+
+  private void hideMediaNotification() {
+    NotificationManagerCompat.from(this).cancel(MEDIA_NOTIFICATION_ID);
+  }
+
+  @OptIn(markerClass = ExperimentalGeckoViewApi.class)
+  private void requestPipForCurrentMedia() {
+    if (mMediaPlayingSession == null) {
+      Log.d(LOGTAG, "No media playing, ignoring picture-in-picture request");
+      return;
+    }
+    mMediaPlayingSession.getSessionPictureInPicture().request();
+  }
+
+  @Override
+  public void onPictureInPictureModeChanged(boolean isInPictureInPictureMode) {
+    super.onPictureInPictureModeChanged(isInPictureInPictureMode);
+    GeckoSession s = (mGeckoView != null) ? mGeckoView.getSession() : null;
+    if (s != null) {
+      s.getCompositorController().onPipModeChanged(isInPictureInPictureMode);
+    }
+  }
 
   private LocationView.CommitListener mCommitListener =
       new LocationView.CommitListener() {
@@ -715,6 +849,14 @@ public class GeckoViewActivity extends AppCompatActivity
         }
       };
 
+  private final BooleanSetting mEdgeToEdgeEnabled =
+      new BooleanSetting(R.string.key_edge_to_edge_enabled, R.bool.edge_to_edge_enabled_default) {
+        @Override
+        public void setValue(final GeckoRuntimeSettings settings, final Boolean value) {
+          EdgeToEdgeUtils.setEdgeToEdgeEnabled(value);
+        }
+      };
+
   private final StringSetting mEnhancedTrackingProtection =
       new StringSetting(
           R.string.key_enhanced_tracking_protection,
@@ -737,52 +879,6 @@ public class GeckoViewActivity extends AppCompatActivity
           }
 
           settings.getContentBlocking().setEnhancedTrackingProtectionLevel(etpLevel);
-        }
-      };
-
-  private final StringSetting mCookieBannerHandling =
-      new StringSetting(
-          R.string.key_cookie_banner_handling, R.string.cookie_banner_handling_default) {
-        @Override
-        public void setValue(final GeckoRuntimeSettings settings, final String value) {
-          int cbMode;
-          switch (value) {
-            case "disabled":
-              cbMode = ContentBlocking.CookieBannerMode.COOKIE_BANNER_MODE_DISABLED;
-              break;
-            case "reject_all":
-              cbMode = ContentBlocking.CookieBannerMode.COOKIE_BANNER_MODE_REJECT;
-              break;
-            case "reject_accept_all":
-              cbMode = ContentBlocking.CookieBannerMode.COOKIE_BANNER_MODE_REJECT_OR_ACCEPT;
-              break;
-            default:
-              throw new RuntimeException("Invalid Cookie Banner Handling mode: " + value);
-          }
-          settings.getContentBlocking().setCookieBannerMode(cbMode);
-        }
-      };
-
-  private final StringSetting mCookieBannerHandlingPrivateMode =
-      new StringSetting(
-          R.string.key_cookie_banner_handling_pb, R.string.cookie_banner_handling_pb_default) {
-        @Override
-        public void setValue(final GeckoRuntimeSettings settings, final String value) {
-          int cbPrivateMode;
-          switch (value) {
-            case "disabled":
-              cbPrivateMode = ContentBlocking.CookieBannerMode.COOKIE_BANNER_MODE_DISABLED;
-              break;
-            case "reject_all":
-              cbPrivateMode = ContentBlocking.CookieBannerMode.COOKIE_BANNER_MODE_REJECT;
-              break;
-            case "reject_accept_all":
-              cbPrivateMode = ContentBlocking.CookieBannerMode.COOKIE_BANNER_MODE_REJECT_OR_ACCEPT;
-              break;
-            default:
-              throw new RuntimeException("Invalid Cookie Banner Handling private mode: " + value);
-          }
-          settings.getContentBlocking().setCookieBannerModePrivateBrowsing(cbPrivateMode);
         }
       };
 
@@ -820,6 +916,7 @@ public class GeckoViewActivity extends AppCompatActivity
     }
   }
 
+  @OptIn(markerClass = ExperimentalGeckoViewApi.class)
   @Override
   protected void onCreate(Bundle savedInstanceState) {
     super.onCreate(savedInstanceState);
@@ -833,12 +930,13 @@ public class GeckoViewActivity extends AppCompatActivity
 
     Log.i(LOGTAG, "zerdatime " + SystemClock.elapsedRealtime() + " - application start");
     createNotificationChannel();
+    requestNotificationPermission();
     setContentView(R.layout.geckoview_activity);
     mGeckoView = findViewById(R.id.gecko_view);
     mGeckoView.setActivityContextDelegate(new ExampleActivityDelegate());
     mTabSessionManager = new TabSessionManager();
 
-    WindowUtils.setupPersistentInsets(getWindow());
+    WindowUtils.setupPersistentInsets(getWindow(), true);
     WindowUtils.setupImeBehavior(getWindow());
     setSupportActionBar(findViewById(R.id.toolbar));
 
@@ -846,6 +944,9 @@ public class GeckoViewActivity extends AppCompatActivity
     preferences.registerOnSharedPreferenceChangeListener(this);
     // Read initial preference state
     onPreferencesChange(preferences);
+
+    // This references a preference value, so this is after reading initial preference state
+    EdgeToEdgeUtils.init(getWindow(), mEdgeToEdgeEnabled.value());
 
     mToolbarView = new ToolbarLayout(this, mTabSessionManager);
     mToolbarView.setId(R.id.toolbar_layout);
@@ -912,59 +1013,57 @@ public class GeckoViewActivity extends AppCompatActivity
             }
           });
 
-      // `getSystemService` call requires API level 23
-      if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.M) {
-        sGeckoRuntime.setWebNotificationDelegate(
-            new WebNotificationDelegate() {
-              NotificationManager notificationManager = getSystemService(NotificationManager.class);
+      sGeckoRuntime.setWebNotificationDelegate(
+          new WebNotificationDelegate() {
+            NotificationManager notificationManager = getSystemService(NotificationManager.class);
 
-              @Override
-              public void onShowNotification(@NonNull WebNotification notification) {
-                Intent clickIntent = new Intent(GeckoViewActivity.this, GeckoViewActivity.class);
-                clickIntent.putExtra("onClick", notification);
-                PendingIntent dismissIntent =
-                    PendingIntent.getActivity(
-                        GeckoViewActivity.this, mLastID, clickIntent, PendingIntent.FLAG_IMMUTABLE);
+            @Override
+            public void onShowNotification(@NonNull WebNotification notification) {
+              Intent clickIntent = new Intent(GeckoViewActivity.this, GeckoViewActivity.class);
+              clickIntent.putExtra("onClick", notification);
+              PendingIntent dismissIntent =
+                  PendingIntent.getActivity(
+                      GeckoViewActivity.this, mLastID, clickIntent, PendingIntent.FLAG_IMMUTABLE);
 
-                NotificationCompat.Builder builder =
-                    new NotificationCompat.Builder(GeckoViewActivity.this, CHANNEL_ID)
-                        .setContentTitle(notification.title)
-                        .setContentText(notification.text)
-                        .setSmallIcon(R.drawable.ic_status_logo)
-                        .setContentIntent(dismissIntent)
-                        .setAutoCancel(true);
+              NotificationCompat.Builder builder =
+                  new NotificationCompat.Builder(GeckoViewActivity.this, CHANNEL_ID)
+                      .setContentTitle(notification.title)
+                      .setContentText(notification.text)
+                      .setSmallIcon(R.drawable.ic_status_logo)
+                      .setContentIntent(dismissIntent)
+                      .setAutoCancel(true);
 
-                mNotificationIDMap.put(notification.tag, mLastID);
+              mNotificationIDMap.put(notification.tag, mLastID);
 
-                if (notification.imageUrl != null && notification.imageUrl.length() > 0) {
-                  final GeckoWebExecutor executor = new GeckoWebExecutor(sGeckoRuntime);
+              if (notification.imageUrl != null && notification.imageUrl.length() > 0) {
+                final GeckoWebExecutor executor = new GeckoWebExecutor(sGeckoRuntime);
 
-                  GeckoResult<WebResponse> response =
-                      executor.fetch(
-                          new WebRequest.Builder(notification.imageUrl)
-                              .addHeader("Accept", "image")
-                              .build());
-                  response.accept(
-                      value -> {
-                        Bitmap bitmap = BitmapFactory.decodeStream(value.body);
-                        builder.setLargeIcon(bitmap);
-                        notificationManager.notify(mLastID++, builder.build());
-                      });
-                } else {
-                  notificationManager.notify(mLastID++, builder.build());
-                }
+                GeckoResult<WebResponse> response =
+                    executor.fetch(
+                        new WebRequest.Builder(notification.imageUrl)
+                            .addHeader("Accept", "image")
+                            .build());
+                response.accept(
+                    value -> {
+                      Bitmap bitmap = BitmapFactory.decodeStream(value.body);
+                      builder.setLargeIcon(bitmap);
+                      notificationManager.notify(mLastID++, builder.build());
+                    });
+              } else {
+                notificationManager.notify(mLastID++, builder.build());
               }
+              notification.show();
+            }
 
-              @Override
-              public void onCloseNotification(@NonNull WebNotification notification) {
-                if (mNotificationIDMap.containsKey(notification.tag)) {
-                  int id = mNotificationIDMap.get(notification.tag);
-                  notificationManager.cancel(id);
-                  mNotificationIDMap.remove(notification.tag);
-                }
+            @Override
+            public void onCloseNotification(@NonNull WebNotification notification) {
+              if (mNotificationIDMap.containsKey(notification.tag)) {
+                int id = mNotificationIDMap.get(notification.tag);
+                notificationManager.cancel(id);
+                mNotificationIDMap.remove(notification.tag);
               }
-            });
-      }
+            }
+          });
 
       sGeckoRuntime.setDelegate(
           () -> {
@@ -1017,6 +1116,17 @@ public class GeckoViewActivity extends AppCompatActivity
 
     mToolbarView.getLocationView().setCommitListener(mCommitListener);
     mToolbarView.updateTabCount();
+
+    RuntimeAIFeatures.listFeatures()
+        .then(
+            features -> {
+              final AIFeaturesController.AIFeature translations = features.get("translations");
+              if (translations != null) {
+                mTranslationsEnabled = translations.isEnabled;
+                invalidateOptionsMenu();
+              }
+              return null;
+            });
   }
 
   private void openSettingsActivity() {
@@ -1115,19 +1225,15 @@ public class GeckoViewActivity extends AppCompatActivity
   }
 
   private void createNotificationChannel() {
-    // Create the NotificationChannel, but only on API 26+ because
-    // the NotificationChannel class is new and not in the support library
-    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-      CharSequence name = getString(R.string.app_name);
-      String description = getString(R.string.activity_label);
-      int importance = NotificationManager.IMPORTANCE_DEFAULT;
-      NotificationChannel channel = new NotificationChannel(CHANNEL_ID, name, importance);
-      channel.setDescription(description);
-      // Register the channel with the system; you can't change the importance
-      // or other notification behaviors after this
-      NotificationManager notificationManager = getSystemService(NotificationManager.class);
-      notificationManager.createNotificationChannel(channel);
-    }
+    CharSequence name = getString(R.string.app_name);
+    String description = getString(R.string.activity_label);
+    int importance = NotificationManager.IMPORTANCE_DEFAULT;
+    NotificationChannel channel = new NotificationChannel(CHANNEL_ID, name, importance);
+    channel.setDescription(description);
+    // Register the channel with the system; you can't change the importance
+    // or other notification behaviors after this
+    NotificationManager notificationManager = getSystemService(NotificationManager.class);
+    notificationManager.createNotificationChannel(channel);
   }
 
   private TabSession createSession(final @Nullable String cookieStoreId) {
@@ -1164,6 +1270,42 @@ public class GeckoViewActivity extends AppCompatActivity
   private final GeckoSession.NavigationDelegate mNavigationDelegate =
       new ExampleNavigationDelegate();
 
+  @OptIn(markerClass = ExperimentalGeckoViewApi.class)
+  private class ExamplePictureInPictureDelegate
+      implements PictureInPictureController.SessionPictureInPicture.Delegate {
+    @Override
+    public void onEnterPictureInPicture(
+        final @NonNull GeckoSession session, final @NonNull String placementToken) {
+      final PictureInPictureActivity window = PipSessionHolder.getActiveActivity();
+      final boolean windowIsUp = window != null && !window.isFinishing();
+
+      final GeckoSession pipSession =
+          new GeckoSession(
+              new GeckoSessionSettings.Builder().pictureInPictureToken(placementToken).build());
+      pipSession.open(sGeckoRuntime);
+      PipSessionHolder.sSourceSession = session;
+
+      if (windowIsUp) {
+        window.adoptSession(pipSession);
+      } else {
+        PipSessionHolder.sSession = pipSession;
+        startActivity(
+            new Intent(GeckoViewActivity.this, PictureInPictureActivity.class)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
+      }
+    }
+
+    @Override
+    public void onExitPictureInPicture(final @NonNull GeckoSession session) {
+      final PictureInPictureActivity window = PipSessionHolder.getActiveActivity();
+      if (window != null && window.isShowingSource(session)) {
+        window.closeForGecko();
+        PipSessionHolder.releaseSource(session);
+      }
+    }
+  }
+
+  @OptIn(markerClass = ExperimentalGeckoViewApi.class)
   private void connectSession(GeckoSession session) {
     session.setContentDelegate(new ExampleContentDelegate());
     session.setHistoryDelegate(new ExampleHistoryDelegate());
@@ -1185,6 +1327,8 @@ public class GeckoViewActivity extends AppCompatActivity
     session.setMediaSessionDelegate(new ExampleMediaSessionDelegate(this));
 
     session.setTranslationsSessionDelegate(new ExampleTranslationsSessionDelegate());
+
+    session.setPictureInPictureDelegate(new ExamplePictureInPictureDelegate());
 
     session.setSelectionActionDelegate(new BasicSelectionActionDelegate(this));
     if (sExtensionManager.extension != null) {
@@ -1249,12 +1393,21 @@ public class GeckoViewActivity extends AppCompatActivity
       return;
     }
 
-    if (mCanGoBack && session != null) {
-      session.goBack();
-      return;
-    }
+    session
+        .processBackPressed()
+        .accept(
+            handled -> {
+              if (handled) {
+                return;
+              }
 
-    super.onBackPressed();
+              if (mCanGoBack && session != null) {
+                session.goBack();
+                return;
+              }
+
+              super.onBackPressed();
+            });
   }
 
   @Override
@@ -1284,79 +1437,70 @@ public class GeckoViewActivity extends AppCompatActivity
     menu.findItem(R.id.desktop_mode).setEnabled(hasSession);
     menu.findItem(R.id.translate).setVisible(mExpectedTranslate);
     menu.findItem(R.id.translate_restore).setVisible(mTranslateRestore);
+    menu.findItem(R.id.translate_disable).setVisible(mTranslationsEnabled);
+    menu.findItem(R.id.translate_enable).setVisible(!mTranslationsEnabled);
     return true;
   }
 
   @Override
   public boolean onOptionsItemSelected(MenuItem item) {
     GeckoSession session = mTabSessionManager.getCurrentSession();
-    switch (item.getItemId()) {
-      case R.id.action_reload:
-        session.reload();
-        break;
-      case R.id.action_forward:
-        session.goForward();
-        break;
-      case R.id.action_tpe:
-        sGeckoRuntime
-            .getStorageController()
-            .setPermission(
-                mTrackingProtectionPermission,
-                mTrackingProtectionPermission.value == ContentPermission.VALUE_ALLOW
-                    ? ContentPermission.VALUE_DENY
-                    : ContentPermission.VALUE_ALLOW);
-        session.reload();
-        break;
-      case R.id.desktop_mode:
-        mDesktopMode = !mDesktopMode;
-        updateDesktopMode(session);
-        session.reload();
-        break;
-      case R.id.action_pb:
-        mUsePrivateBrowsing = !mUsePrivateBrowsing;
-        recreateSession();
-        break;
-      case R.id.collapse:
-        mCollapsed = !mCollapsed;
-        setViewVisibility(mGeckoView, !mCollapsed);
-        break;
-      case R.id.install_addon:
-        installAddon();
-        break;
-      case R.id.update_addon:
-        updateAddon();
-        break;
-      case R.id.settings:
-        openSettingsActivity();
-        break;
-      case R.id.action_new_tab:
-        createNewTab();
-        break;
-      case R.id.action_close_tab:
-        closeTab((TabSession) session);
-        break;
-      case R.id.save_pdf:
-        savePdf(session);
-        break;
-      case R.id.print_page:
-        printPage(session);
-        break;
-      case R.id.translate:
-        translate(session);
-        break;
-      case R.id.translate_restore:
-        translateRestore(session);
-        break;
-      case R.id.translate_manage:
-        translateManage();
-        break;
-      case R.id.webcompat_info:
-        webCompatInfo(session);
-        break;
-      default:
-        return super.onOptionsItemSelected(item);
-    }
+    int id = item.getItemId();
 
+    if (id == R.id.action_reload) {
+      session.reload();
+    } else if (id == R.id.action_forward) {
+      session.goForward();
+    } else if (id == R.id.action_tpe) {
+      sGeckoRuntime
+          .getStorageController()
+          .setPermission(
+              mTrackingProtectionPermission,
+              mTrackingProtectionPermission.value == ContentPermission.VALUE_ALLOW
+                  ? ContentPermission.VALUE_DENY
+                  : ContentPermission.VALUE_ALLOW);
+      session.reload();
+    } else if (id == R.id.desktop_mode) {
+      mDesktopMode = !mDesktopMode;
+      updateDesktopMode(session);
+      session.reload();
+    } else if (id == R.id.action_pb) {
+      mUsePrivateBrowsing = !mUsePrivateBrowsing;
+      recreateSession();
+    } else if (id == R.id.collapse) {
+      mCollapsed = !mCollapsed;
+      setViewVisibility(mGeckoView, !mCollapsed);
+    } else if (id == R.id.install_addon) {
+      installAddon();
+    } else if (id == R.id.update_addon) {
+      updateAddon();
+    } else if (id == R.id.settings) {
+      openSettingsActivity();
+    } else if (id == R.id.action_new_tab) {
+      createNewTab();
+    } else if (id == R.id.action_close_tab) {
+      closeTab((TabSession) session);
+    } else if (id == R.id.save_pdf) {
+      savePdf(session);
+    } else if (id == R.id.print_page) {
+      printPage(session);
+    } else if (id == R.id.translate) {
+      translate(session);
+    } else if (id == R.id.translate_restore) {
+      translateRestore(session);
+    } else if (id == R.id.translate_manage) {
+      translateManage();
+    } else if (id == R.id.translate_disable) {
+      translateSetEnabled(false);
+    } else if (id == R.id.translate_enable) {
+      translateSetEnabled(true);
+    } else if (id == R.id.webcompat_info) {
+      webCompatInfo(session);
+    } else if (id == R.id.take_screenshot) {
+      takeScreenshot();
+    } else {
+      return super.onOptionsItemSelected(item);
+    }
     return true;
   }
 
@@ -1435,6 +1579,51 @@ public class GeckoViewActivity extends AppCompatActivity
     ProfilerController.addMarker("Create new tab", startTime);
   }
 
+  private void takeScreenshot() {
+    mGeckoView
+        .captureFullPage()
+        .map(
+            bitmap -> {
+              ContentResolver resolver = getContentResolver();
+
+              ContentValues contentValues = new ContentValues();
+              contentValues.put(
+                  MediaStore.MediaColumns.DISPLAY_NAME,
+                  "screenshot-" + System.currentTimeMillis() + ".png");
+              contentValues.put(MediaStore.MediaColumns.MIME_TYPE, "image/png");
+              contentValues.put(
+                  MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_PICTURES);
+              contentValues.put(MediaStore.MediaColumns.IS_PENDING, 1);
+
+              Uri screenshotUri =
+                  resolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, contentValues);
+
+              if (screenshotUri != null) {
+                try (OutputStream out = resolver.openOutputStream(screenshotUri)) {
+                  bitmap.compress(Bitmap.CompressFormat.PNG, 100, out);
+                } catch (Throwable e) {
+                  Log.e(LOGTAG, "Error saving screenshot: " + e.getMessage());
+                  if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                    resolver.delete(screenshotUri, null);
+                  }
+                }
+              } else {
+                Log.e(LOGTAG, "Error saving screenshot: the screenshotUri is null");
+              }
+              contentValues.clear();
+              contentValues.put(MediaStore.MediaColumns.IS_PENDING, 0);
+              if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                resolver.update(screenshotUri, contentValues, null);
+              }
+              return null;
+            })
+        .exceptionally(
+            exception -> {
+              Log.e(LOGTAG, "Error saving screenshot: " + exception.getMessage());
+              return GeckoResult.fromException(exception);
+            });
+  }
+
   @SuppressLint("WrongThread")
   @UiThread
   private void savePdf(GeckoSession session) {
@@ -1473,9 +1662,7 @@ public class GeckoViewActivity extends AppCompatActivity
             supportedLanguages -> {
               // Just a check if sorting is working on the Language object by reversing, Languages
               // should generally come from the API in the display order.
-              if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-                Collections.reverse(supportedLanguages.fromLanguages);
-              }
+              Collections.reverse(supportedLanguages.fromLanguages);
               ArrayAdapter<TranslationsController.Language> fromData =
                   new ArrayAdapter<TranslationsController.Language>(
                       this.getBaseContext(),
@@ -1504,6 +1691,9 @@ public class GeckoViewActivity extends AppCompatActivity
                           final int langIndex =
                               toData.getPosition(
                                   new TranslationsController.Language(preferredList.get(i), null));
+                          if (langIndex < 0) {
+                            continue;
+                          }
                           TranslationsController.Language displayLanguage =
                               toData.getItem(langIndex);
                           toData.remove(displayLanguage);
@@ -1554,6 +1744,21 @@ public class GeckoViewActivity extends AppCompatActivity
                 mTranslateRestore = false;
                 return null;
               }
+            });
+  }
+
+  @OptIn(markerClass = ExperimentalGeckoViewApi.class)
+  private void translateSetEnabled(final boolean enabled) {
+    RuntimeAIFeatures.setFeatureEnablement("translations", enabled)
+        .then(
+            value -> {
+              mTranslationsEnabled = enabled;
+              invalidateOptionsMenu();
+              return null;
+            },
+            exception -> {
+              Log.e(LOGTAG, "Could not set translations enabled state: " + exception);
+              return null;
             });
   }
 
@@ -1719,6 +1924,22 @@ public class GeckoViewActivity extends AppCompatActivity
     sExtensionManager.onClicked(mTabSessionManager.getCurrentSession());
   }
 
+  /**
+   * Selects the tab whose video was playing in an expanded picture-in-picture window, if it is
+   * still around.
+   */
+  private void returnToPipSource() {
+    final GeckoSession source = PipSessionHolder.sReturnToSession;
+    PipSessionHolder.sReturnToSession = null;
+    if (source == null) {
+      return;
+    }
+    final TabSession tabSession = mTabSessionManager.getSession(source);
+    if (tabSession != null) {
+      switchToSession(tabSession, true);
+    }
+  }
+
   public void switchToSession(TabSession session, boolean activateTab) {
     TabSession currentSession = mTabSessionManager.getCurrentSession();
     if (session != currentSession) {
@@ -1754,6 +1975,10 @@ public class GeckoViewActivity extends AppCompatActivity
     // No point having the URL bar enabled if there's no session to navigate to
     view.setEnabled(hasSession);
 
+    if (mStarted) {
+      PipSessionHolder.sVisibleSession = session;
+    }
+
     if (hasSession) {
       mGeckoView.setSession(session);
       if (activateTab) {
@@ -1764,6 +1989,20 @@ public class GeckoViewActivity extends AppCompatActivity
       mGeckoView.coverUntilFirstPaint(Color.WHITE);
       view.setText("");
     }
+  }
+
+  @Override
+  protected void onStart() {
+    super.onStart();
+    mStarted = true;
+    PipSessionHolder.sVisibleSession = mGeckoView.getSession();
+  }
+
+  @Override
+  protected void onStop() {
+    super.onStop();
+    mStarted = false;
+    PipSessionHolder.sVisibleSession = null;
   }
 
   @Override
@@ -1785,6 +2024,16 @@ public class GeckoViewActivity extends AppCompatActivity
         sGeckoRuntime.shutdown();
       }
       finish();
+      return;
+    }
+
+    if (ACTION_RETURN_TO_PIP_SOURCE.equals(intent.getAction())) {
+      returnToPipSource();
+      return;
+    }
+
+    if (ACTION_REQUEST_PIP.equals(intent.getAction())) {
+      requestPipForCurrentMedia();
       return;
     }
 
@@ -2119,12 +2368,14 @@ public class GeckoViewActivity extends AppCompatActivity
 
     @Override
     public void onCrash(GeckoSession session) {
+      PipSessionHolder.closeWindowFor(session);
       Log.e(LOGTAG, "Crashed, reopening session");
       session.open(sGeckoRuntime);
     }
 
     @Override
     public void onKill(GeckoSession session) {
+      PipSessionHolder.closeWindowFor(session);
       TabSession tabSession = mTabSessionManager.getSession(session);
       if (tabSession == null) {
         return;
@@ -2211,16 +2462,6 @@ public class GeckoViewActivity extends AppCompatActivity
       if (toolbar != null) {
         toolbar.setTranslationY(toolbar.getHeight());
       }
-    }
-
-    @Override
-    public void onCookieBannerDetected(final GeckoSession session) {
-      Log.d("BELL", "A cookie banner was detected on this website");
-    }
-
-    @Override
-    public void onCookieBannerHandled(final GeckoSession session) {
-      Log.d("BELL", "A cookie banner was handled on this website");
     }
   }
 
@@ -2337,13 +2578,8 @@ public class GeckoViewActivity extends AppCompatActivity
     @Override
     public void onAndroidPermissionsRequest(
         final GeckoSession session, final String[] permissions, final Callback callback) {
-      if (Build.VERSION.SDK_INT >= 23) {
-        // requestPermissions was introduced in API 23.
-        mCallback = callback;
-        requestPermissions(permissions, androidPermissionRequestCode);
-      } else {
-        callback.grant();
-      }
+      mCallback = callback;
+      requestPermissions(permissions, androidPermissionRequestCode);
     }
 
     @Override
@@ -2599,6 +2835,8 @@ public class GeckoViewActivity extends AppCompatActivity
           return "ERROR_NET_TIMEOUT";
         case WebRequestError.ERROR_CONNECTION_REFUSED:
           return "ERROR_CONNECTION_REFUSED";
+        case WebRequestError.ERROR_LOCAL_NETWORK_ACCESS_DENIED:
+          return "ERROR_LOCAL_NETWORK_ACCESS_DENIED";
         case WebRequestError.ERROR_UNKNOWN_PROTOCOL:
           return "ERROR_UNKNOWN_PROTOCOL";
         case WebRequestError.ERROR_UNKNOWN_HOST:
@@ -2619,6 +2857,8 @@ public class GeckoViewActivity extends AppCompatActivity
           return "ERROR_SAFEBROWSING_UNWANTED_URI";
         case WebRequestError.ERROR_SAFEBROWSING_HARMFUL_URI:
           return "ERROR_SAFEBROWSING_HARMFUL_URI";
+        case WebRequestError.ERROR_HARMFULADDON_URI:
+          return "ERROR_HARMFULADDON_URI";
         case WebRequestError.ERROR_CONTENT_CRASHED:
           return "ERROR_CONTENT_CRASHED";
         case WebRequestError.ERROR_OFFLINE:
@@ -2884,11 +3124,32 @@ public class GeckoViewActivity extends AppCompatActivity
     }
 
     @Override
+    public void onPlay(@NonNull GeckoSession session, @NonNull MediaSession mediaSession) {
+      mPipIsPlaying = true;
+      mMediaPlayingSession = session;
+      showMediaNotification();
+    }
+
+    @Override
+    public void onPause(@NonNull GeckoSession session, @NonNull MediaSession mediaSession) {
+      mPipIsPlaying = false;
+      hideMediaNotification();
+    }
+
+    @Override
+    public void onStop(@NonNull GeckoSession session, @NonNull MediaSession mediaSession) {
+      mPipIsPlaying = false;
+      mMediaPlayingSession = null;
+      hideMediaNotification();
+    }
+
+    @Override
     public void onFullscreen(
         @NonNull final GeckoSession session,
         @NonNull final MediaSession mediaSession,
         final boolean enabled,
         @Nullable final MediaSession.ElementMetadata meta) {
+      mPipFullscreenMedia = enabled;
       Log.d(LOGTAG, "onFullscreen: Metadata=" + (meta != null ? meta.toString() : "null"));
 
       if (!enabled) {

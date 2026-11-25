@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -7,12 +5,11 @@
 #include "TextureClientSharedSurface.h"
 
 #include "GLContext.h"
+#include "SharedSurface.h"
 #include "mozilla/gfx/2D.h"
 #include "mozilla/gfx/Logging.h"  // for gfxDebug
 #include "mozilla/layers/ISurfaceAllocator.h"
-#include "mozilla/Unused.h"
 #include "nsThreadUtils.h"
-#include "SharedSurface.h"
 
 #ifdef MOZ_WIDGET_ANDROID
 #  include "mozilla/layers/AndroidHardwareBuffer.h"
@@ -27,7 +24,7 @@ namespace layers {
 already_AddRefed<TextureClient> SharedSurfaceTextureData::CreateTextureClient(
     const layers::SurfaceDescriptor& aDesc, const gfx::SurfaceFormat aFormat,
     gfx::IntSize aSize, TextureFlags aFlags, LayersIPCChannel* aAllocator) {
-  auto data = MakeUnique<SharedSurfaceTextureData>(aDesc, aFormat, aSize);
+  auto data = std::make_unique<SharedSurfaceTextureData>(aDesc, aFormat, aSize);
   return TextureClient::CreateWithData(data.release(), aFlags, aAllocator);
 }
 

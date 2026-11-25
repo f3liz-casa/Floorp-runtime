@@ -1,3 +1,4 @@
+import functools
 import json
 import os
 import re
@@ -10,10 +11,6 @@ from mozbuild.util import FileAvoidWrite
 from perfecthash import PerfectHash
 
 NO_CONTRACT_ID = 0xFFFFFFFF
-
-PHF_SIZE = 512
-
-TINY_PHF_SIZE = 16
 
 # In tests, we might not have a (complete) buildconfig.
 ENDIAN = (
@@ -61,44 +58,22 @@ class ProcessSelector:
     CONTENT_PROCESS_ONLY = 1 << 1
     ALLOW_IN_GPU_PROCESS = 1 << 2
     ALLOW_IN_VR_PROCESS = 1 << 3
-    ALLOW_IN_SOCKET_PROCESS = 1 << 4
     ALLOW_IN_RDD_PROCESS = 1 << 5
     ALLOW_IN_UTILITY_PROCESS = 1 << 6
     ALLOW_IN_GMPLUGIN_PROCESS = 1 << 7
     ALLOW_IN_GPU_AND_MAIN_PROCESS = ALLOW_IN_GPU_PROCESS | MAIN_PROCESS_ONLY
-    ALLOW_IN_GPU_AND_SOCKET_PROCESS = ALLOW_IN_GPU_PROCESS | ALLOW_IN_SOCKET_PROCESS
     ALLOW_IN_GPU_AND_VR_PROCESS = ALLOW_IN_GPU_PROCESS | ALLOW_IN_VR_PROCESS
-    ALLOW_IN_GPU_VR_AND_SOCKET_PROCESS = (
-        ALLOW_IN_GPU_PROCESS | ALLOW_IN_VR_PROCESS | ALLOW_IN_SOCKET_PROCESS
-    )
-    ALLOW_IN_RDD_AND_SOCKET_PROCESS = ALLOW_IN_RDD_PROCESS | ALLOW_IN_SOCKET_PROCESS
-    ALLOW_IN_GPU_RDD_AND_SOCKET_PROCESS = (
-        ALLOW_IN_GPU_PROCESS | ALLOW_IN_RDD_PROCESS | ALLOW_IN_SOCKET_PROCESS
-    )
-    ALLOW_IN_GPU_RDD_SOCKET_AND_UTILITY_PROCESS = (
+    ALLOW_IN_GPU_AND_RDD_PROCESS = ALLOW_IN_GPU_PROCESS | ALLOW_IN_RDD_PROCESS
+    ALLOW_IN_GPU_RDD_VR_AND_UTILITY_PROCESS = (
         ALLOW_IN_GPU_PROCESS
         | ALLOW_IN_RDD_PROCESS
-        | ALLOW_IN_SOCKET_PROCESS
+        | ALLOW_IN_VR_PROCESS
         | ALLOW_IN_UTILITY_PROCESS
     )
-    ALLOW_IN_GPU_RDD_VR_AND_SOCKET_PROCESS = (
+    ALLOW_IN_GPU_RDD_VR_UTILITY_AND_GMPLUGIN_PROCESS = (
         ALLOW_IN_GPU_PROCESS
         | ALLOW_IN_RDD_PROCESS
         | ALLOW_IN_VR_PROCESS
-        | ALLOW_IN_SOCKET_PROCESS
-    )
-    ALLOW_IN_GPU_RDD_VR_SOCKET_AND_UTILITY_PROCESS = (
-        ALLOW_IN_GPU_PROCESS
-        | ALLOW_IN_RDD_PROCESS
-        | ALLOW_IN_VR_PROCESS
-        | ALLOW_IN_SOCKET_PROCESS
-        | ALLOW_IN_UTILITY_PROCESS
-    )
-    ALLOW_IN_GPU_RDD_VR_SOCKET_UTILITY_AND_GMPLUGIN_PROCESS = (
-        ALLOW_IN_GPU_PROCESS
-        | ALLOW_IN_RDD_PROCESS
-        | ALLOW_IN_VR_PROCESS
-        | ALLOW_IN_SOCKET_PROCESS
         | ALLOW_IN_UTILITY_PROCESS
         | ALLOW_IN_GMPLUGIN_PROCESS
     )
@@ -112,18 +87,12 @@ PROCESSES = {
     ProcessSelector.CONTENT_PROCESS_ONLY: "CONTENT_PROCESS_ONLY",
     ProcessSelector.ALLOW_IN_GPU_PROCESS: "ALLOW_IN_GPU_PROCESS",
     ProcessSelector.ALLOW_IN_VR_PROCESS: "ALLOW_IN_VR_PROCESS",
-    ProcessSelector.ALLOW_IN_SOCKET_PROCESS: "ALLOW_IN_SOCKET_PROCESS",
     ProcessSelector.ALLOW_IN_RDD_PROCESS: "ALLOW_IN_RDD_PROCESS",
     ProcessSelector.ALLOW_IN_GPU_AND_MAIN_PROCESS: "ALLOW_IN_GPU_AND_MAIN_PROCESS",
-    ProcessSelector.ALLOW_IN_GPU_AND_SOCKET_PROCESS: "ALLOW_IN_GPU_AND_SOCKET_PROCESS",
     ProcessSelector.ALLOW_IN_GPU_AND_VR_PROCESS: "ALLOW_IN_GPU_AND_VR_PROCESS",
-    ProcessSelector.ALLOW_IN_GPU_VR_AND_SOCKET_PROCESS: "ALLOW_IN_GPU_VR_AND_SOCKET_PROCESS",
-    ProcessSelector.ALLOW_IN_RDD_AND_SOCKET_PROCESS: "ALLOW_IN_RDD_AND_SOCKET_PROCESS",
-    ProcessSelector.ALLOW_IN_GPU_RDD_AND_SOCKET_PROCESS: "ALLOW_IN_GPU_RDD_AND_SOCKET_PROCESS",
-    ProcessSelector.ALLOW_IN_GPU_RDD_SOCKET_AND_UTILITY_PROCESS: "ALLOW_IN_GPU_RDD_SOCKET_AND_UTILITY_PROCESS",  # NOQA: E501
-    ProcessSelector.ALLOW_IN_GPU_RDD_VR_AND_SOCKET_PROCESS: "ALLOW_IN_GPU_RDD_VR_AND_SOCKET_PROCESS",  # NOQA: E501
-    ProcessSelector.ALLOW_IN_GPU_RDD_VR_SOCKET_AND_UTILITY_PROCESS: "ALLOW_IN_GPU_RDD_VR_SOCKET_AND_UTILITY_PROCESS",  # NOQA: E501
-    ProcessSelector.ALLOW_IN_GPU_RDD_VR_SOCKET_UTILITY_AND_GMPLUGIN_PROCESS: "ALLOW_IN_GPU_RDD_VR_SOCKET_UTILITY_AND_GMPLUGIN_PROCESS",  # NOQA: E501
+    ProcessSelector.ALLOW_IN_GPU_AND_RDD_PROCESS: "ALLOW_IN_GPU_AND_RDD_PROCESS",
+    ProcessSelector.ALLOW_IN_GPU_RDD_VR_AND_UTILITY_PROCESS: "ALLOW_IN_GPU_RDD_VR_AND_UTILITY_PROCESS",  # NOQA: E501
+    ProcessSelector.ALLOW_IN_GPU_RDD_VR_UTILITY_AND_GMPLUGIN_PROCESS: "ALLOW_IN_GPU_RDD_VR_UTILITY_AND_GMPLUGIN_PROCESS",  # NOQA: E501
 }
 
 
@@ -272,7 +241,7 @@ class ModuleEntry:
 
         if len(self.interfaces) > 255:
             raise Exception(
-                "JS service %s may not have more than 255 " "interfaces" % self.js_name
+                "JS service %s may not have more than 255 interfaces" % self.js_name
             )
 
         self.interfaces_offset = len(interfaces)
@@ -298,6 +267,7 @@ class ModuleEntry:
         )
         self.singleton = data.get("singleton", False)
         self.overridable = data.get("overridable", False)
+        self.serializable = data.get("serializable", False)
 
         self.protocol_config = data.get("protocol_config", None)
 
@@ -322,8 +292,7 @@ class ModuleEntry:
             for prop in ("init_method", "legacy_constructor", "headers"):
                 if getattr(self, prop):
                     error(
-                        "JavaScript components may not specify a '%s' "
-                        "property" % prop
+                        "JavaScript components may not specify a '%s' property" % prop
                     )
         elif self.external:
             if self.constructor or self.legacy_constructor:
@@ -349,7 +318,7 @@ class ModuleEntry:
             )
 
         if self.overridable and not self.contract_ids:
-            error("Overridable components must specify at least one contract " "ID")
+            error("Overridable components must specify at least one contract ID")
 
     @property
     def contract_id(self):
@@ -370,6 +339,8 @@ class ModuleEntry:
           {self.cid.to_cxx()},
           {contract_id},
           {lower_processes(self.processes)},
+          {"true" if self.serializable else "false"},
+          {"true" if self.singleton else "false"},
         }}"""
 
     # Generates the C++ code for a JSServiceEntry representing this module.
@@ -443,7 +414,7 @@ class ModuleEntry:
           std::is_same_v<already_AddRefed<T>, decltype(%(constructor)s())>,
           "Singleton constructor must return already_AddRefed");
       static_assert(
-          std::is_base_of<%(type)s, T>::value,
+          std::is_base_of_v<%(type)s, T>,
           "Singleton constructor must return correct already_AddRefed");
 
 """ % {
@@ -879,19 +850,16 @@ def gen_substs(manifests):
             raise Exception("Duplicate cid: %s" % str(mod.cid))
         cids.add(str(mod.cid))
 
-    cid_phf = PerfectHash(modules, PHF_SIZE, key=lambda module: module.cid.bytes)
+    cid_phf = PerfectHash(modules, key=lambda module: module.cid.bytes)
 
-    contract_phf = PerfectHash(
-        contracts, PHF_SIZE, key=lambda entry: entry.contract.encode()
-    )
+    contract_phf = PerfectHash(contracts, key=lambda entry: entry.contract.encode())
 
     js_services_phf = PerfectHash(
-        list(js_services.values()), PHF_SIZE, key=lambda entry: entry.js_name.encode()
+        list(js_services.values()), key=lambda entry: entry.js_name.encode()
     )
 
     protocol_handlers_phf = PerfectHash(
         list(protocol_handlers.values()),
-        TINY_PHF_SIZE,
         key=lambda entry: entry.scheme.encode(),
     )
 
@@ -940,7 +908,7 @@ def gen_substs(manifests):
         lower_entry=lambda entry: entry.to_cxx(),
         return_type="const StaticModule*",
         return_entry=(
-            "return entry.CID().Equals(aKey) && entry.Active()" " ? &entry : nullptr;"
+            "return entry.CID().Equals(aKey) && entry.Active() ? &entry : nullptr;"
         ),
         key_type="const nsID&",
         key_bytes="reinterpret_cast<const char*>(&aKey)",
@@ -994,14 +962,14 @@ def gen_substs(manifests):
 
 
 # Returns true if the given build config substitution is defined and truthy.
-def defined(subst):
-    return bool(buildconfig.substs.get(subst))
+def defined(subst, config=buildconfig):
+    return bool(config.substs.get(subst))
 
 
-def read_manifest(filename):
+def read_manifest(filename, config=buildconfig):
     glbl = {
-        "buildconfig": buildconfig,
-        "defined": defined,
+        "buildconfig": config,
+        "defined": functools.partial(defined, config=config),
         "ProcessSelector": ProcessSelector,
         "BackgroundTasksSelector": BackgroundTasksSelector,
     }

@@ -13,16 +13,15 @@
 
 #include <cstdint>
 #include <optional>
+
 #include "api/audio/audio_device_defines.h"
 #include "api/ref_count.h"
-#include "api/scoped_refptr.h"
-#include "api/task_queue/task_queue_factory.h"
 
 namespace webrtc {
 
 class AudioDeviceModuleForTest;
 
-class AudioDeviceModule : public webrtc::RefCountInterface {
+class AudioDeviceModule : public RefCountInterface {
  public:
   enum AudioLayer {
     kPlatformDefaultAudio = 0,
@@ -57,17 +56,25 @@ class AudioDeviceModule : public webrtc::RefCountInterface {
     double total_samples_duration_s = 0;
     double total_playout_delay_s = 0;
     uint64_t total_samples_count = 0;
+
+    // Capture stats.
+    double dropped_samples_duration_s = 0;
+    uint64_t dropped_samples_events = 0;
+    double total_capture_samples_duration_s = 0;
+    double total_capture_delay_s = 0;
+    uint64_t total_capture_samples_count = 0;
+  };
+
+  // Minimum, average, and maximum audio capture frame processing times in
+  // nanoseconds accumulated over the interval since the previous call to
+  // GetAndResetCaptureProcessingTimeStats().
+  struct ProcessingTimeStats {
+    int32_t min_processing_time_ns = 0;
+    int32_t avg_processing_time_ns = 0;
+    int32_t max_processing_time_ns = 0;
   };
 
  public:
-  // Creates a default ADM for usage in production code.
-  static scoped_refptr<AudioDeviceModule> Create(
-      AudioLayer audio_layer, TaskQueueFactory* task_queue_factory);
-  // Creates an ADM with support for extra test methods. Don't use this factory
-  // in production code.
-  static scoped_refptr<AudioDeviceModuleForTest> CreateForTest(
-      AudioLayer audio_layer, TaskQueueFactory* task_queue_factory);
-
   // Retrieve the currently utilized audio layer
   virtual int32_t ActiveAudioLayer(AudioLayer* audioLayer) const = 0;
 
@@ -169,6 +176,14 @@ class AudioDeviceModule : public webrtc::RefCountInterface {
   // Used to generate RTC stats. If not implemented, RTCAudioPlayoutStats will
   // not be present in the stats.
   virtual std::optional<Stats> GetStats() const { return std::nullopt; }
+
+  // Returns and resets the accumulated audio capture frame processing time
+  // stats since the last call. Returns std::nullopt if not implemented or if no
+  // frames were recorded since the last call.
+  virtual std::optional<ProcessingTimeStats>
+      GetAndResetCaptureProcessingTimeStats() {
+    return std::nullopt;
+  }
 
 // Only supported on iOS.
 #if defined(WEBRTC_IOS)

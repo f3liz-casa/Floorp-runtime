@@ -3,8 +3,8 @@
 const PAGE_PREFS = "about:preferences";
 const PAGE_PRIVACY = PAGE_PREFS + "#privacy";
 const SELECTORS = {
-  savedCreditCardsBtn: "#creditCardAutofill button",
-  reauthCheckbox: "#creditCardReauthenticate checkbox",
+  savedCreditCardsBtn: "setting-group[groupid=payments] #savedPaymentsButton",
+  reauthCheckbox: "setting-group[groupid=payments] #requireOSAuthForPayments",
 };
 
 // On mac, this test times out in chaos mode
@@ -74,11 +74,16 @@ add_task(async function test_os_auth_disabled_with_checkbox() {
   FormAutofillUtils.setOSAuthEnabled(true);
 });
 
-/*
+add_task(async function test_osAuth_enabled() {
+  await test_osAuth_enabled_behaviour(true);
+});
+
+/**
  * This test ensures that there is an OS authentication prompt when OS
  * authentication is enabled.
  */
-add_task(async function test_osAuth_enabled_behaviour() {
+async function test_osAuth_enabled_behaviour() {
+  info(`Running test_osAuth_enabled_behaviour`);
   let finalPrefPaneLoaded = TestUtils.topicObserved("sync-pane-loaded");
   await SpecialPowers.pushPrefEnv({
     set: [[FormAutofillUtils.AUTOFILL_CREDITCARDS_OS_AUTH_LOCKED_PREF, true]],
@@ -93,68 +98,63 @@ add_task(async function test_osAuth_enabled_behaviour() {
         return;
       }
       let reauthObserved = OSKeyStoreTestUtils.waitForOSKeyStoreLogin(true);
-      await SpecialPowers.spawn(browser, [SELECTORS], async selectors => {
-        content.document.querySelector(selectors.savedCreditCardsBtn).click();
-      });
-      let ccManageDialog = await waitForSubDialogLoad(
-        content,
-        MANAGE_CREDIT_CARDS_DIALOG_URL
-      );
-      await SpecialPowers.spawn(ccManageDialog, [], async () => {
-        let selRecords = content.document.getElementById("credit-cards");
-        await EventUtils.synthesizeMouseAtCenter(
-          selRecords.children[0],
-          [],
-          content
-        );
-        content.document.querySelector("#edit").click();
-      });
+      await openEditPaymentsList(browser);
       await reauthObserved; // If the OS does not popup, this will cause a timeout in the test.
+
       await waitForSubDialogLoad(content, EDIT_CREDIT_CARD_DIALOG_URL);
     }
   );
+}
+
+add_task(async function test_osAuth_disabled() {
+  await test_osAuth_disabled_behavior(false);
+  await test_osAuth_disabled_behavior(true);
 });
 
-/*
+/**
  * This test checks that no OS authentication prompt is triggered when OS
  * authentication is disabled.
  */
-add_task(async function test_osAuth_disabled_behavior() {
+async function test_osAuth_disabled_behavior() {
+  info(`Running test_osAuth_disabled_behavior.`);
+
   let finalPrefPaneLoaded = TestUtils.topicObserved("sync-pane-loaded");
   FormAutofillUtils.setOSAuthEnabled(false);
   await BrowserTestUtils.withNewTab(
     { gBrowser, url: PAGE_PRIVACY },
     async function (browser) {
       await finalPrefPaneLoaded;
-      await SpecialPowers.spawn(
-        browser,
-        [SELECTORS.savedCreditCardsBtn, SELECTORS.reauthCheckbox],
-        async (saveButton, reauthCheckbox) => {
-          is(
-            content.document.querySelector(reauthCheckbox).checked,
-            false,
-            "OSReauth for credit cards should NOT be checked"
-          );
-          content.document.querySelector(saveButton).click();
-        }
-      );
-      let ccManageDialog = await waitForSubDialogLoad(
-        content,
-        MANAGE_CREDIT_CARDS_DIALOG_URL
-      );
-      await SpecialPowers.spawn(ccManageDialog, [], async () => {
-        let selRecords = content.document.getElementById("credit-cards");
-        await EventUtils.synthesizeMouseAtCenter(
-          selRecords.children[0],
-          [],
-          content
-        );
-        content.document.getElementById("edit").click();
-      });
-      info("The OS Auth dialog should NOT show up");
+      await openEditPaymentsList(browser);
       // If OSAuth prompt shows up, the next line would cause a timeout since the edit dialog would not show up.
       await waitForSubDialogLoad(content, EDIT_CREDIT_CARD_DIALOG_URL);
     }
   );
   FormAutofillUtils.setOSAuthEnabled(true);
-});
+}
+
+/*
+ * Helper function for opening the payment methods list UI.
+ */
+async function openEditPaymentsList(browser) {
+  await SpecialPowers.spawn(browser, [], async () => {
+    const savedPaymentsBtn = content.document.querySelector(
+      "#savedPaymentsButton"
+    );
+    savedPaymentsBtn.click();
+
+    info("Ensure we have navigated to the manage payments page.");
+    const paymentsPage = content.document.querySelector(
+      '[data-category="paneManagePayments"]'
+    );
+    await ContentTaskUtils.waitForCondition(
+      () => !paymentsPage.hidden,
+      "Payments page is failed to show."
+    );
+    ok(true, "Payments page is visible");
+    info("Click list item edit button");
+    const editBtn = paymentsPage.querySelector("moz-button[action='edit']");
+    editBtn.click();
+  });
+}
+
+async function test_OsAuth_Enabled() {}

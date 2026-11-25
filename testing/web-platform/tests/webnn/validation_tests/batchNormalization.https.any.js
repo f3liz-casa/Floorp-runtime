@@ -248,6 +248,16 @@ const tests = [
       label: label,
     },
   },
+  {
+    name: '[batchNormalization] Throw if the input is a scalar.',
+    input: {dataType: 'float32', shape: []},
+    mean: {dataType: 'float32', shape: [1]},
+    variance: {dataType: 'float32', shape: [1]},
+    options: {
+      axis: 0,
+      label: label,
+    }
+  }
 ];
 
 tests.forEach(
@@ -277,3 +287,11 @@ tests.forEach(
             regrexp);
       }
     }, test.name));
+
+validateOperandRank('batchNormalization', 'input', (builder, input) => {
+  const mean = builder.input(
+      'mean', {dataType: input.dataType, shape: [kExampleDimSize]});
+  const variance = builder.input(
+      'variance', {dataType: input.dataType, shape: [kExampleDimSize]});
+  return builder.batchNormalization(input, mean, variance, {axis: 0});
+});

@@ -1,5 +1,4 @@
-/* -*- Mode: Java; c-basic-offset: 4; tab-width: 4; indent-tabs-mode: nil; -*-
- * This Source Code Form is subject to the terms of the Mozilla Public
+/* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
@@ -233,9 +232,9 @@ public class ClientAuthCertificateManager {
   // identifying the curve of the key.
   private static class ClientAuthCertificate extends JNIObject {
     private static final String LOGTAG = "ClientAuthCertificate";
-    // Mirrors kIPCClientCertsObjectTypeRSAKey in nsNSSIOLayer.h
+    // Object type value for RSA keys
     private static int sRSAKey = 2;
-    // Mirrors kIPCClientCertsObjectTypeECKey in nsNSSIOLayer.h
+    // Object type value for EC keys
     private static int sECKey = 3;
 
     private String mAlias;

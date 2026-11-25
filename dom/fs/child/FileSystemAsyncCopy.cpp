@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -22,17 +20,18 @@ nsresult AsyncCopy(nsIInputStream* aSource, nsIOutputStream* aSink,
   struct CallbackClosure {
     CallbackClosure(std::function<void(uint32_t)>&& aProgressCallback,
                     MoveOnlyFunction<void(nsresult)>&& aCompleteCallback) {
-      mProgressCallbackWrapper = MakeUnique<std::function<void(uint32_t)>>(
-          [progressCallback = std::move(aProgressCallback)](uint32_t count) {
-            progressCallback(count);
-          });
+      mProgressCallbackWrapper =
+          std::make_unique<std::function<void(uint32_t)>>(
+              [progressCallback = std::move(aProgressCallback)](
+                  uint32_t count) { progressCallback(count); });
 
-      mCompleteCallbackWrapper = MakeUnique<MoveOnlyFunction<void(nsresult)>>(
-          [completeCallback =
-               std::move(aCompleteCallback)](nsresult rv) mutable {
-            auto callback = std::move(completeCallback);
-            callback(rv);
-          });
+      mCompleteCallbackWrapper =
+          std::make_unique<MoveOnlyFunction<void(nsresult)>>(
+              [completeCallback =
+                   std::move(aCompleteCallback)](nsresult rv) mutable {
+                auto callback = std::move(completeCallback);
+                callback(rv);
+              });
     }
 
     UniquePtr<std::function<void(uint32_t)>> mProgressCallbackWrapper;

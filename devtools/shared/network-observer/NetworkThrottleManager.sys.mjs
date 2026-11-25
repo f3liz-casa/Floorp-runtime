@@ -20,12 +20,16 @@ XPCOMUtils.defineLazyServiceGetter(
   lazy,
   "gActivityDistributor",
   "@mozilla.org/network/http-activity-distributor;1",
-  "nsIHttpActivityDistributor"
+  Ci.nsIHttpActivityDistributor
 );
 
-ChromeUtils.defineESModuleGetters(lazy, {
-  setTimeout: "resource://gre/modules/Timer.sys.mjs",
-});
+ChromeUtils.defineESModuleGetters(
+  lazy,
+  {
+    setTimeout: "resource://gre/modules/Timer.sys.mjs",
+  },
+  { global: "contextual" }
+);
 
 class NetworkThrottleListener {
   #activities;
@@ -107,9 +111,9 @@ class NetworkThrottleListener {
    * Allow some buffered data from this object to be forwarded to this
    * object's originalListener.
    *
-   * @param {Number} bytesPermitted The maximum number of bytes
+   * @param {number} bytesPermitted The maximum number of bytes
    *        permitted to be sent.
-   * @return {Object} an object of the form {length, done}, where
+   * @return {object} an object of the form {length, done}, where
    *         |length| is the number of bytes actually forwarded, and
    *         |done| is a boolean indicating whether this particular
    *         request has been completed.  (A NetworkThrottleListener
@@ -276,7 +280,7 @@ class NetworkThrottleListener {
 }
 
 class NetworkThrottleQueue {
-  #downloadQueue;
+  #destroyed;
   #latencyMax;
   #latencyMean;
   #maxBPS;
@@ -284,6 +288,7 @@ class NetworkThrottleQueue {
   #pendingRequests;
   #previousReads;
   #pumping;
+  #throttleListeners;
 
   /**
    * Construct a new queue that can be used to throttle the network for
@@ -301,10 +306,23 @@ class NetworkThrottleQueue {
     this.#latencyMax = latencyMax;
 
     this.#pendingRequests = new Set();
-    this.#downloadQueue = [];
+    this.#throttleListeners = [];
     this.#previousReads = [];
 
     this.#pumping = false;
+    this.#destroyed = false;
+  }
+
+  /**
+   * Stop throttling: skip the latency of pending requests and send all
+   * buffered data immediately, including for requests which start later.
+   */
+  destroy() {
+    this.#destroyed = true;
+    for (const listener of [...this.#pendingRequests]) {
+      this.#allowDataFrom(listener);
+    }
+    this.#pump();
   }
 
   /**
@@ -313,11 +331,14 @@ class NetworkThrottleQueue {
    * listener has elapsed.
    */
   #allowDataFrom(throttleListener) {
+    if (!this.#pendingRequests.has(throttleListener)) {
+      return;
+    }
     throttleListener.responseStart();
     this.#pendingRequests.delete(throttleListener);
     const count = throttleListener.pendingCount();
     for (let i = 0; i < count; ++i) {
-      this.#downloadQueue.push(throttleListener);
+      this.#throttleListeners.push(throttleListener);
     }
     this.#pump();
   }
@@ -349,17 +370,19 @@ class NetworkThrottleQueue {
       return sum + elt.numBytes;
     }, 0);
 
-    let thisSliceBytes = this.#random(this.#meanBPS, this.#maxBPS);
+    let thisSliceBytes = this.#destroyed
+      ? Infinity
+      : this.#random(this.#meanBPS, this.#maxBPS);
     if (totalBytes < thisSliceBytes) {
       thisSliceBytes -= totalBytes;
       let readThisTime = 0;
-      while (thisSliceBytes > 0 && this.#downloadQueue.length) {
+      while (thisSliceBytes > 0 && this.#throttleListeners.length) {
         const { length, done } =
-          this.#downloadQueue[0].sendSomeData(thisSliceBytes);
+          this.#throttleListeners[0].sendSomeData(thisSliceBytes);
         thisSliceBytes -= length;
         readThisTime += length;
         if (done) {
-          this.#downloadQueue.shift();
+          this.#throttleListeners.shift();
         }
       }
       this.#previousReads.push({ when: now, numBytes: readThisTime });
@@ -367,7 +390,7 @@ class NetworkThrottleQueue {
 
     // If there is more data to download, then schedule ourselves for
     // one second after the oldest previous read.
-    if (this.#downloadQueue.length) {
+    if (this.#throttleListeners.length) {
       const when = this.#previousReads[0].when + 1000;
       lazy.setTimeout(this.#pump.bind(this), when - now);
     }
@@ -393,7 +416,9 @@ class NetworkThrottleQueue {
    */
   start(throttleListener) {
     this.#pendingRequests.add(throttleListener);
-    const delay = this.#random(this.#latencyMean, this.#latencyMax);
+    const delay = this.#destroyed
+      ? 0
+      : this.#random(this.#latencyMean, this.#latencyMax);
     if (delay > 0) {
       lazy.setTimeout(() => this.#allowDataFrom(throttleListener), delay);
     } else {
@@ -410,7 +435,7 @@ class NetworkThrottleQueue {
    */
   dataAvailable(throttleListener) {
     if (!this.#pendingRequests.has(throttleListener)) {
-      this.#downloadQueue.push(throttleListener);
+      this.#throttleListeners.push(throttleListener);
       this.#pump();
     }
   }
@@ -420,7 +445,7 @@ class NetworkThrottleQueue {
  * Construct a new object that can be used to throttle the network for
  * a group of related network requests.
  *
- * @param {Object} An object with the following attributes:
+ * @param {object} An object with the following attributes:
  * latencyMean {Number} Mean latency in milliseconds.
  * latencyMax {Number} Maximum latency in milliseconds.
  * downloadBPSMean {Number} Mean bytes per second for downloads.
@@ -434,6 +459,7 @@ class NetworkThrottleQueue {
  */
 export class NetworkThrottleManager {
   #downloadQueue;
+  #uploadQueue;
 
   constructor({
     latencyMean,
@@ -454,12 +480,21 @@ export class NetworkThrottleManager {
       );
     }
     if (uploadBPSMax <= 0 && uploadBPSMean <= 0) {
-      this.uploadQueue = null;
+      this.#uploadQueue = null;
     } else {
-      this.uploadQueue = Cc[
+      this.#uploadQueue = Cc[
         "@mozilla.org/network/throttlequeue;1"
       ].createInstance(Ci.nsIInputChannelThrottleQueue);
-      this.uploadQueue.init(uploadBPSMean, uploadBPSMax);
+      this.#uploadQueue.init(uploadBPSMean, uploadBPSMax);
+    }
+  }
+
+  destroy() {
+    // The #uploadQueue is not a NetworkThrottleQueue and at the moment, there
+    // is no way to destroy it.
+    if (this.#downloadQueue !== null) {
+      this.#downloadQueue.destroy();
+      this.#downloadQueue = null;
     }
   }
 
@@ -487,9 +522,9 @@ export class NetworkThrottleManager {
    * @param {nsITraceableChannel} channel the channel to manage
    */
   manageUpload(channel) {
-    if (this.uploadQueue) {
+    if (this.#uploadQueue) {
       channel = channel.QueryInterface(Ci.nsIThrottledInputChannel);
-      channel.throttleQueue = this.uploadQueue;
+      channel.throttleQueue = this.#uploadQueue;
     }
   }
 }

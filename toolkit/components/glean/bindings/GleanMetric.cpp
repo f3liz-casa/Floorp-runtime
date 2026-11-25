@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -31,7 +29,7 @@ Maybe<SubmetricToMirrorMutex::AutoLock> GetLabeledMirrorLock() {
     return Nothing();
   }
   if (!*lock) {
-    *lock = MakeUnique<SubmetricToLabeledMirrorMapType>();
+    *lock = std::make_unique<SubmetricToLabeledMirrorMapType>();
     RefPtr<nsIRunnable> cleanupFn = NS_NewRunnableFunction(__func__, [&] {
       if (AppShutdown::IsInOrBeyond(ShutdownPhase::XPCOMWillShutdown)) {
         auto lock = sLabeledMirrors.Lock();
@@ -78,7 +76,7 @@ GetLabeledDistributionMirrorLock() {
     return Nothing();
   }
   if (!*lock) {
-    *lock = MakeUnique<SubmetricToLabeledDistributionMirrorMapType>();
+    *lock = std::make_unique<SubmetricToLabeledDistributionMirrorMapType>();
     RefPtr<nsIRunnable> cleanupFn = NS_NewRunnableFunction(__func__, [&] {
       if (AppShutdown::IsInOrBeyond(ShutdownPhase::XPCOMWillShutdown)) {
         auto lock = sLabeledDistributionMirrors.Lock();
@@ -125,7 +123,7 @@ GetDualLabeledDistributionMirrorLock() {
     return Nothing();
   }
   if (!*lock) {
-    *lock = MakeUnique<SubmetricToDualLabeledDistributionMirrorMapType>();
+    *lock = std::make_unique<SubmetricToDualLabeledDistributionMirrorMapType>();
     RefPtr<nsIRunnable> cleanupFn = NS_NewRunnableFunction(__func__, [&] {
       if (AppShutdown::IsInOrBeyond(ShutdownPhase::XPCOMWillShutdown)) {
         auto lock = sDualLabeledDistributionMirrors.Lock();

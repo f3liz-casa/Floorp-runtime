@@ -15,6 +15,8 @@ change-password-token = Security Device: { $tokenName }
 change-password-old = Current password:
 change-password-new = New password:
 change-password-reenter = New password (again):
+change-password-not-set =
+  .value = (not set)
 
 pippki-failed-pw-change = Unable to change password.
 pippki-incorrect-pw = You did not enter the correct current password. Please try again.
@@ -44,6 +46,11 @@ download-cert-window2 =
   .title = Downloading Certificate
   .style = min-width: 46em
 download-cert-message = You have been asked to trust a new Certificate Authority (CA).
+# Variables:
+#   $caName (string) - The name of the Certificate Authority
+download-cert-trust-header = Do you want to trust “{ $caName }” for the following purposes?
+# Used as $caName in download-cert-trust-header when the Certificate Authority has no name
+download-cert-unnamed-ca = Certificate Authority (unnamed)
 download-cert-trust-ssl =
   .label = Trust this CA to identify websites.
 download-cert-trust-email =
@@ -106,8 +113,15 @@ set-password-repeat-backup-pw =
   .value = Certificate backup password (again):
 set-password-reminder = Important: If you forget your certificate backup password, you will not be able to restore this backup later. Please record it in a safe location.
 
-## Protected authentication alert
+## Certificate backup import prompt
+
+pippki-get-pkcs12-password-message = Please enter the password that was used to encrypt this certificate backup:
+
+## Protected authentication dialog
+
+protected-auth-window =
+  .title = Protected Authentication
 
 # Variables:
-# $tokenName (String) - The name of the token to authenticate to (for example, "OS Client Cert Token (Modern)")
-protected-auth-alert = Please authenticate to the token “{ $tokenName }”. How to do so depends on the token (for example, using a fingerprint reader or entering a code with a keypad).
+# $tokenName (String) - The name of the token to authenticate to (for example, “OS Client Cert Token (Modern)”)
+protected-auth-prompt = Please authenticate to the security device ({ $tokenName }). How to do so depends on the device (for example, using a fingerprint reader or entering a code with a keypad).

@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -23,8 +21,7 @@ using namespace mozilla::dom;
 
 nsIFrame* NS_NewSVGFilterFrame(mozilla::PresShell* aPresShell,
                                mozilla::ComputedStyle* aStyle) {
-  return new (aPresShell)
-      mozilla::SVGFilterFrame(aStyle, aPresShell->GetPresContext());
+  return new mozilla::SVGFilterFrame(aStyle, aPresShell->GetPresContext());
 }
 
 namespace mozilla {
@@ -139,7 +136,7 @@ SVGFilterFrame* SVGFilterFrame::GetReferencedFilter() {
 
 nsresult SVGFilterFrame::AttributeChanged(int32_t aNameSpaceID,
                                           nsAtom* aAttribute,
-                                          int32_t aModType) {
+                                          AttrModType aModType) {
   if (aNameSpaceID == kNameSpaceID_None &&
       (aAttribute == nsGkAtoms::x || aAttribute == nsGkAtoms::y ||
        aAttribute == nsGkAtoms::width || aAttribute == nsGkAtoms::height ||

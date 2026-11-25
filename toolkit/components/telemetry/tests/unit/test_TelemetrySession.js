@@ -211,10 +211,10 @@ function checkPayloadInfo(data, reason) {
     );
   }
 
-  // Check for a valid revision.
+  // Check for a valid revision: an hg.mozilla.org changeset or a GitHub commit.
   if (data.revision != "") {
     const revisionUrlRegEx =
-      /^http[s]?:\/\/hg.mozilla.org(\/[a-z\S]+)+(\/rev\/[0-9a-z]+)$/g;
+      /^https?:\/\/(hg\.mozilla\.org(\/[a-z\S]+)+\/rev\/[0-9a-z]+|github\.com\/[\w.-]+\/[\w.-]+\/commit\/[0-9a-f]+)$/;
     Assert.ok(revisionUrlRegEx.test(data.revision));
   }
 
@@ -334,22 +334,15 @@ function checkPayload(payload, reason, successfulPings) {
   checkPayloadInfo(payload.info, reason);
 
   Assert.greaterOrEqual(payload.simpleMeasurements.totalTime, 0);
-  Assert.equal(payload.simpleMeasurements.shutdownDuration, SHUTDOWN_TIME);
 
   let activeTicks = payload.simpleMeasurements.activeTicks;
   Assert.greaterOrEqual(activeTicks, 0);
 
-  if ("browser.timings.last_shutdown" in payload.processes.parent.scalars) {
-    Assert.equal(
-      payload.processes.parent.scalars["browser.timings.last_shutdown"],
-      SHUTDOWN_TIME
-    );
+  const lastShutdown = Glean.browserTimings.lastShutdown.testGetValue();
+  if (lastShutdown !== null) {
+    Assert.equal(lastShutdown, SHUTDOWN_TIME);
   }
 
-  Assert.equal(
-    payload.simpleMeasurements.failedProfileLockCount,
-    FAILED_PROFILE_LOCK_ATTEMPTS
-  );
   let profileDirectory = Services.dirsvc.get("ProfD", Ci.nsIFile);
   let failedProfileLocksFile = profileDirectory.clone();
   failedProfileLocksFile.append("Telemetry.FailedProfileLocks.txt");
@@ -357,14 +350,6 @@ function checkPayload(payload, reason, successfulPings) {
 
   let isWindows = "@mozilla.org/windows-registry-key;1" in Cc;
   if (isWindows) {
-    Assert.greater(
-      payload.simpleMeasurements.startupSessionRestoreReadBytes,
-      0
-    );
-    Assert.greater(
-      payload.simpleMeasurements.startupSessionRestoreWriteBytes,
-      0
-    );
     Assert.greater(Glean.startupIo.read.sessionRestore.testGetValue(), 0);
     Assert.greater(Glean.startupIo.write.sessionRestore.testGetValue(), 0);
   }
@@ -415,13 +400,8 @@ function checkPayload(payload, reason, successfulPings) {
   // Telemetry doesn't touch a memory reporter with these units that's
   // available on all platforms.
 
-  Assert.ok("MEMORY_TOTAL" in payload.histograms); // UNITS_BYTES
-  Assert.ok("MEMORY_JS_GC_HEAP" in payload.histograms); // UNITS_BYTES
-  Assert.ok("MEMORY_JS_COMPARTMENTS_SYSTEM" in payload.histograms); // UNITS_COUNT
-
-  Assert.ok(
-    "mainThread" in payload.slowSQL && "otherThreads" in payload.slowSQL
-  );
+  Assert.notEqual(Glean.memory.total.testGetValue(), null); // UNITS_BYTES
+  Assert.notEqual(Glean.memory.jsCompartmentsSystem.testGetValue(), null); // UNITS_COUNT
 
   // Check keyed histogram payload.
 
@@ -1742,10 +1722,7 @@ add_task(async function test_abortedSession() {
   );
 
   // Make sure the aborted sessions directory does not exist to test its creation.
-  await IOUtils.remove(DATAREPORTING_PATH, {
-    ignoreAbsent: true,
-    recursive: true,
-  });
+  await IOUtils.remove(ABORTED_FILE, { ignoreAbsent: true });
 
   let schedulerTickCallback = null;
   let now = new Date(2040, 1, 1, 0, 0, 0);
@@ -1863,10 +1840,7 @@ add_task(async function test_abortedDailyCoalescing() {
   );
 
   // Make sure the aborted sessions directory does not exist to test its creation.
-  await IOUtils.remove(DATAREPORTING_PATH, {
-    ignoreAbsent: true,
-    recursive: true,
-  });
+  await IOUtils.remove(ABORTED_FILE, { ignoreAbsent: true });
 
   let schedulerTickCallback = null;
   PingServer.clearRequests();
@@ -1939,10 +1913,7 @@ add_task(async function test_schedulerComputerSleep() {
   PingServer.clearRequests();
 
   // Remove any aborted-session ping from the previous tests.
-  await IOUtils.remove(DATAREPORTING_PATH, {
-    ignoreAbsent: true,
-    recursive: true,
-  });
+  await IOUtils.remove(ABORTED_FILE, { ignoreAbsent: true });
 
   // Set a fake current date and start Telemetry.
   let nowDate = fakeNow(2009, 10, 18, 0, 0, 0);
@@ -2081,10 +2052,7 @@ add_task(async function test_schedulerNothingDue() {
   );
 
   // Remove any aborted-session ping from the previous tests.
-  await IOUtils.remove(DATAREPORTING_PATH, {
-    ignoreAbsent: true,
-    recursive: true,
-  });
+  await IOUtils.remove(ABORTED_FILE, { ignoreAbsent: true });
   await TelemetryStorage.testClearPendingPings();
   await TelemetryController.testReset();
 
@@ -2126,12 +2094,7 @@ add_task(async function test_schedulerNothingDue() {
 });
 
 add_task(async function test_pingExtendedStats() {
-  const EXTENDED_PAYLOAD_FIELDS = [
-    "log",
-    "slowSQL",
-    "fileIOReports",
-    "addonDetails",
-  ];
+  const EXTENDED_PAYLOAD_FIELDS = ["log", "fileIOReports", "addonDetails"];
 
   // Reset telemetry and disable sending extended statistics.
   await TelemetryStorage.testClearPendingPings();
@@ -2152,13 +2115,6 @@ add_task(async function test_pingExtendedStats() {
         " must not be in the payload if the extended set is off."
     );
   }
-
-  // We check this one separately so that we can reuse EXTENDED_PAYLOAD_FIELDS below, since
-  // slowSQLStartup might not be there.
-  Assert.ok(
-    !("slowSQLStartup" in ping.payload),
-    "slowSQLStartup must not be sent if the extended set is off"
-  );
 
   Assert.ok(
     !("addonManager" in ping.payload.simpleMeasurements),
@@ -2186,10 +2142,6 @@ add_task(async function test_pingExtendedStats() {
     );
   }
 
-  Assert.ok(
-    "addonManager" in ping.payload.simpleMeasurements,
-    "addonManager must be sent if the extended set is on."
-  );
   Assert.ok(
     !("UITelemetry" in ping.payload.simpleMeasurements),
     "UITelemetry must not be sent."

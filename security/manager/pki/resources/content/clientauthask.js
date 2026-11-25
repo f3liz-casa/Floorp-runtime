@@ -1,5 +1,4 @@
-/* -*- tab-width: 2; indent-tabs-mode: nil; js-indent-level: 2 -*-
- *
+/*
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -88,6 +87,7 @@ async function onLoad() {
   }
 
   await setDetails();
+  await document.l10n.translateRoots();
   document.addEventListener("dialogaccept", doOK);
   document.addEventListener("dialogcancel", doCancel);
   document
@@ -180,4 +180,9 @@ function doCancel() {
   retVals.rememberDuration = getRememberSetting();
 }
 
-window.addEventListener("load", () => onLoad());
+// Finish populating and translating the dialog before SubDialog measures it.
+document.mozSubdialogReady = new Promise((resolve, reject) => {
+  window.addEventListener("load", () => onLoad().then(resolve, reject), {
+    once: true,
+  });
+});

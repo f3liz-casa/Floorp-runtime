@@ -2,6 +2,7 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  */
+#include <memory>
 
 #include "StreamFunctions.h"
 #include "MainThreadUtils.h"
@@ -11,7 +12,6 @@
 #include "nsComponentManagerUtils.h"
 #include "nsCRT.h"
 #include "plstr.h"
-#include "mozilla/UniquePtr.h"
 
 #define ZLIB_TYPE "deflate"
 #define GZIP_TYPE "gzip"
@@ -107,7 +107,7 @@ NS_IMETHODIMP nsDeflateConverter::OnDataAvailable(nsIRequest* aRequest,
                                                   uint32_t aCount) {
   if (!mListener) return NS_ERROR_NOT_INITIALIZED;
 
-  auto buffer = MakeUnique<char[]>(aCount);
+  auto buffer = std::make_unique<char[]>(aCount);
   NS_ENSURE_TRUE(buffer, NS_ERROR_OUT_OF_MEMORY);
 
   nsresult rv = ZW_ReadData(aInputStream, buffer.get(), aCount);
@@ -141,7 +141,8 @@ nsDeflateConverter::MaybeRetarget(nsIRequest* request) {
 NS_IMETHODIMP nsDeflateConverter::OnStartRequest(nsIRequest* aRequest) {
   if (!mListener) return NS_ERROR_NOT_INITIALIZED;
 
-  return mListener->OnStartRequest(aRequest);
+  nsCOMPtr<nsIStreamListener> listener = mListener;
+  return listener->OnStartRequest(aRequest);
 }
 
 NS_IMETHODIMP
@@ -174,7 +175,8 @@ NS_IMETHODIMP nsDeflateConverter::OnStopRequest(nsIRequest* aRequest,
 
   deflateEnd(&mZstream);
 
-  return mListener->OnStopRequest(aRequest, aStatusCode);
+  nsCOMPtr<nsIStreamListener> listener = mListener;
+  return listener->OnStopRequest(aRequest, aStatusCode);
 }
 
 nsresult nsDeflateConverter::PushAvailableData(nsIRequest* aRequest) {
@@ -189,7 +191,8 @@ nsresult nsDeflateConverter::PushAvailableData(nsIRequest* aRequest) {
                                       NS_ASSIGNMENT_DEPEND);
   NS_ENSURE_SUCCESS(rv, rv);
 
-  rv = mListener->OnDataAvailable(aRequest, stream, mOffset, bytesToWrite);
+  nsCOMPtr<nsIStreamListener> listener = mListener;
+  rv = listener->OnDataAvailable(aRequest, stream, mOffset, bytesToWrite);
 
   // now set the state for 'deflate'
   mZstream.next_out = mWriteBuffer;

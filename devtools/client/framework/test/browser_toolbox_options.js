@@ -14,6 +14,9 @@ const L10N = new LocalizationHelper(
   "devtools/client/locales/toolbox.properties"
 );
 const { PrefObserver } = require("resource://devtools/client/shared/prefs.js");
+const {
+  CONFIGURATION_PREFS,
+} = require("resource://devtools/client/framework/toolbox.js");
 
 add_task(async function () {
   const URL =
@@ -138,6 +141,10 @@ async function testOptions() {
   const prefNodes = tool.panelDoc.querySelectorAll(
     "input[type=checkbox][data-pref]"
   );
+  ok(
+    [...prefNodes].some(prefNode => prefNode.hasAttribute("data-force-reload")),
+    "There's at least one checkbox with the data-force-reload attribute"
+  );
 
   // Store modified pref names so that they can be cleared on error.
   for (const node of tool.panelDoc.querySelectorAll("[data-pref]")) {
@@ -216,6 +223,17 @@ async function testMouseClick(node, prefValue) {
     });
   });
 
+  // if changing the setting reloads the page, waits for the toolbox to be reloaded
+  const waitForDevToolsReload = node.hasAttribute("data-force-reload")
+    ? await watchForDevToolsReload(gBrowser.selectedBrowser)
+    : null;
+
+  const onNewConfigurationApplied = Object.keys(CONFIGURATION_PREFS).includes(
+    pref
+  )
+    ? toolbox.once("new-configuration-applied")
+    : null;
+
   node.scrollIntoView();
 
   // We use executeSoon here to ensure that the element is in view and
@@ -228,12 +246,23 @@ async function testMouseClick(node, prefValue) {
   await changeSeenPromise;
 
   ok(changeSeen, "Correct pref was changed");
+
+  if (onNewConfigurationApplied) {
+    await onNewConfigurationApplied;
+    ok(true, `Configuration was changed when updating pref "${pref}"`);
+  }
+
+  if (waitForDevToolsReload) {
+    await waitForDevToolsReload();
+    ok(true, `The page was reloaded when toggling ${node.outerHTML}`);
+  }
+
   observer.destroy();
 }
 
 async function testToggleWebExtensions() {
   const disabledExtensions = new Set();
-  const toggleableWebExtensions = toolbox.listWebExtensions();
+  const toggleableWebExtensions = toolbox.listWebExtensions().toArray();
 
   function toggleWebExtension(node) {
     node.scrollIntoView();
@@ -271,6 +300,7 @@ async function testToggleWebExtensions() {
   function assertAllExtensionsEnabled() {
     const disabledUUIDs = toolbox
       .listWebExtensions()
+      .toArray()
       .filter(ext => !toolbox.isWebExtensionEnabled(ext.uuid))
       .map(ext => ext.uuid);
 
@@ -348,12 +378,15 @@ async function testToggleWebExtensions() {
   // ones have been unregistered, and the remaining onea are still listed.
   for (const ext of toggleableWebExtensions) {
     ok(
-      !!toolbox.listWebExtensions().length,
+      !!toolbox.listWebExtensions().toArray().length,
       "There should still be extensions registered"
     );
     toolbox.unregisterWebExtension(ext.uuid);
 
-    const registeredUUIDs = toolbox.listWebExtensions().map(item => item.uuid);
+    const registeredUUIDs = toolbox
+      .listWebExtensions()
+      .toArray()
+      .map(item => item.uuid);
     ok(
       !registeredUUIDs.includes(ext.uuid),
       `the WebExtension "${ext.name}" should have been unregistered`
@@ -378,7 +411,7 @@ async function testToggleWebExtensions() {
   }
 
   is(
-    toolbox.listWebExtensions().length,
+    toolbox.listWebExtensions().toArray().length,
     0,
     "All WebExtensions have been unregistered"
   );

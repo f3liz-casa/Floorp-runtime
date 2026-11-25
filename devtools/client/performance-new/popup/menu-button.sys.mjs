@@ -8,6 +8,7 @@
  * Care should be taken to keep it minimal as it can be run with browser initialization.
  */
 
+import { AppConstants } from "resource://gre/modules/AppConstants.sys.mjs";
 import { createLazyLoaders } from "resource://devtools/client/performance-new/shared/typescript-lazy-load.sys.mjs";
 
 const lazy = createLazyLoaders({
@@ -61,6 +62,10 @@ function remove() {
  * @return {boolean}
  */
 function isInNavbar() {
+  if (AppConstants.MOZ_APP_NAME == "thunderbird") {
+    return false;
+  }
+
   const { CustomizableUI } = lazy.CustomizableUI();
   return Boolean(CustomizableUI.getPlacementOfWidget("profiler-button"));
 }
@@ -89,6 +94,7 @@ function ensureButtonInNavbar() {
 
 /**
  * Opens the popup for the profiler.
+ *
  * @param {Document} document
  */
 function openPopup(document) {
@@ -104,13 +110,14 @@ function openPopup(document) {
   // will make CustomizableUI show the view.
   const cmdEvent = document.createEvent("xulcommandevent");
   // @ts-ignore - Bug 1674368
-  cmdEvent.initCommandEvent("command", true, true, button.ownerGlobal);
+  cmdEvent.initCommandEvent("command", true, true, button.documentGlobal);
   button.dispatchEvent(cmdEvent);
 }
 
 /**
  * This function creates the widget definition for the CustomizableUI. It should
  * only be run if the profiler button is enabled.
+ *
  * @param {(isEnabled: boolean) => void} toggleProfilerKeyShortcuts
  * @return {void}
  */
@@ -129,7 +136,7 @@ function initialize(toggleProfilerKeyShortcuts) {
   /**
    * This is mutable state that will be shared between panel displays.
    *
-   * @type {import("devtools/client/performance-new/popup/logic.sys.mjs").State}
+   * @type {import("resource://devtools/client/performance-new/popup/logic.sys.mjs").State}
    */
   const panelState = {
     cleanup: [],
@@ -285,7 +292,7 @@ function initialize(toggleProfilerKeyShortcuts) {
           "profiler-popup-button-recording"
         );
         buttonElement.classList.toggle("profiler-active", true);
-        buttonElement.classList.toggle("profiler-paused", false);
+        buttonElement.toggleAttribute("disabled", false);
       }
       function setButtonPaused() {
         document.l10n.setAttributes(
@@ -293,7 +300,7 @@ function initialize(toggleProfilerKeyShortcuts) {
           "profiler-popup-button-capturing"
         );
         buttonElement.classList.toggle("profiler-active", false);
-        buttonElement.classList.toggle("profiler-paused", true);
+        buttonElement.toggleAttribute("disabled", true);
       }
       function setButtonInactive() {
         document.l10n.setAttributes(
@@ -301,7 +308,7 @@ function initialize(toggleProfilerKeyShortcuts) {
           "profiler-popup-button-idle"
         );
         buttonElement.classList.toggle("profiler-active", false);
-        buttonElement.classList.toggle("profiler-paused", false);
+        buttonElement.toggleAttribute("disabled", false);
       }
 
       if (Services.profiler.IsPaused()) {

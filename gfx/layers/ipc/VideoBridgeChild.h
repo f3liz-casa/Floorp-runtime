@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -7,10 +5,11 @@
 #ifndef MOZILLA_GFX_VIDEOBRIDGECHILD_H
 #define MOZILLA_GFX_VIDEOBRIDGECHILD_H
 
-#include "mozilla/layers/PVideoBridgeChild.h"
-#include "mozilla/layers/VideoBridgeUtils.h"
 #include "ISurfaceAllocator.h"
 #include "TextureForwarder.h"
+#include "mozilla/MozPromise.h"
+#include "mozilla/layers/PVideoBridgeChild.h"
+#include "mozilla/layers/VideoBridgeUtils.h"
 
 namespace mozilla {
 namespace layers {
@@ -25,16 +24,12 @@ class VideoBridgeChild final : public PVideoBridgeChild,
   static void StartupForGPUProcess();
   static void Shutdown();
 
-  static VideoBridgeChild* GetSingleton();
+  static RefPtr<VideoBridgeChild> GetSingleton();
 
-  // PVideoBridgeChild
-  PTextureChild* AllocPTextureChild(const SurfaceDescriptor& aSharedData,
-                                    ReadLockDescriptor& aReadLock,
-                                    const LayersBackend& aLayersBackend,
-                                    const TextureFlags& aFlags,
-                                    const dom::ContentParentId& aContentId,
-                                    const uint64_t& aSerial);
-  bool DeallocPTextureChild(PTextureChild* actor);
+  // Resolved once the singleton can send, e.g. after we are given a new
+  // endpoint because the compositor was recreated. Rejected if we are shut
+  // down.
+  static RefPtr<GenericNonExclusivePromise> WaitUntilReady();
 
   mozilla::ipc::IPCResult RecvPing(PingResolver&& aResolver);
 
@@ -46,17 +41,17 @@ class VideoBridgeChild final : public PVideoBridgeChild,
   bool DeallocShmem(mozilla::ipc::Shmem& aShmem) override;
 
   // TextureForwarder
-  PTextureChild* CreateTexture(
+  already_AddRefed<PTextureChild> CreateTexture(
       const SurfaceDescriptor& aSharedData, ReadLockDescriptor&& aReadLock,
       LayersBackend aLayersBackend, TextureFlags aFlags,
       const dom::ContentParentId& aContentId, uint64_t aSerial,
       wr::MaybeExternalImageId& aExternalImageId) override;
 
-  // ClientIPCAllocator
+  // LayersIPCChannel
   base::ProcessId GetParentPid() const override { return OtherPid(); }
   nsISerialEventTarget* GetThread() const override { return mThread; }
   void CancelWaitForNotifyNotUsed(uint64_t aTextureId) override {
-    MOZ_ASSERT(false, "NO RECYCLING HERE");
+    MOZ_ASSERT_UNREACHABLE("NO RECYCLING HERE");
   }
 
   // ISurfaceAllocator
@@ -82,6 +77,9 @@ class VideoBridgeChild final : public PVideoBridgeChild,
 
   nsCOMPtr<nsISerialEventTarget> mThread;
   bool mCanSend;
+  // Settled when we are replaced by a new instance, or shut down. Guarded by
+  // sVideoBridgeLock.
+  MozPromiseHolder<GenericNonExclusivePromise> mReplacedHolder;
 };
 
 }  // namespace layers

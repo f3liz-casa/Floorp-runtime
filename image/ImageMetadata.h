@@ -1,5 +1,4 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- *
+/*
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -8,7 +7,7 @@
 #define mozilla_image_ImageMetadata_h
 
 #include <stdint.h>
-#include <utility>
+
 #include "FrameTimeout.h"
 #include "Orientation.h"
 #include "mozilla/Maybe.h"
@@ -19,6 +18,10 @@
 #include "nsTArray.h"
 
 namespace mozilla::image {
+
+// The color space of JPEG data that other formats (like PDF) can embed as-is.
+// That is, 8-bit Huffman-coded JPEG data in one of these color spaces.
+enum class EmbeddableJPEGColorSpace : uint8_t { Grayscale, YCbCr };
 
 // The metadata about an image that decoders accumulate as they decode.
 class ImageMetadata {
@@ -85,6 +88,13 @@ class ImageMetadata {
   void SetHasAnimation() { mHasAnimation = true; }
   bool HasAnimation() const { return mHasAnimation; }
 
+  void SetEmbeddableJPEGColorSpace(EmbeddableJPEGColorSpace aColorSpace) {
+    mEmbeddableJPEGColorSpace = Some(aColorSpace);
+  }
+  Maybe<EmbeddableJPEGColorSpace> GetEmbeddableJPEGColorSpace() const {
+    return mEmbeddableJPEGColorSpace;
+  }
+
  private:
   /// The hotspot found on cursors, if present.
   Maybe<gfx::IntPoint> mHotspot;
@@ -113,6 +123,9 @@ class ImageMetadata {
 
   // Sizes the image can natively decode to.
   CopyableTArray<OrientedIntSize> mNativeSizes;
+
+  // Set for JPEG images whose data can be embedded as-is in other formats.
+  Maybe<EmbeddableJPEGColorSpace> mEmbeddableJPEGColorSpace;
 
   bool mHasAnimation = false;
 };

@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim:set ts=2 sw=2 sts=2 et cindent: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -7,12 +5,14 @@
 #ifndef MediaCache_h_
 #define MediaCache_h_
 
+#include <limits>
+#include <memory>
+
 #include "DecoderDoctorLogger.h"
 #include "Intervals.h"
 #include "MediaChannelStatistics.h"
 #include "mozilla/Monitor.h"
 #include "mozilla/Result.h"
-#include "mozilla/UniquePtr.h"
 #include "mozilla/dom/MediaDebugInfoBinding.h"
 #include "nsCOMPtr.h"
 #include "nsHashKeys.h"
@@ -195,7 +195,13 @@ class MediaCacheStream : public DecoderDoctorLifeLogger<MediaCacheStream> {
 
  public:
   // This needs to be a power of two
-  static const int64_t BLOCK_SIZE = 32768;
+  static constexpr int64_t BLOCK_SIZE = 32768;
+
+  static constexpr bool IsOffsetAllowed(int64_t aOffset) {
+    constexpr int64_t kMaxOffset =
+        (int64_t(std::numeric_limits<int32_t>::max()) + 1) * BLOCK_SIZE;
+    return aOffset >= 0 && aOffset < kMaxOffset;
+  }
 
   enum ReadMode { MODE_METADATA, MODE_PLAYBACK };
 
@@ -345,10 +351,10 @@ class MediaCacheStream : public DecoderDoctorLifeLogger<MediaCacheStream> {
   // These methods must be called on a different thread from the main
   // thread. They should always be called on the same thread for a given
   // stream.
-  // *aBytes gets the number of bytes that were actually read. This can
-  // be less than aCount. If the first byte of data is not in the cache,
-  // this will block until the data is available or the stream is
-  // closed, otherwise it won't block.
+  // On success, *aBytes returns the number of bytes that were actually read.
+  // This can be less than aCount on end of stream or when remaining bytes will
+  // not be available because a network error has occurred.
+  // This will block until the data is available or the stream is closed.
   nsresult Read(AutoLock&, char* aBuffer, uint32_t aCount, uint32_t* aBytes);
   // Seeks to aOffset in the stream then performs a Read operation. See
   // 'Read' for argument and return details.
@@ -451,9 +457,9 @@ class MediaCacheStream : public DecoderDoctorLifeLogger<MediaCacheStream> {
   // any thread.
   int64_t GetNextCachedDataInternal(AutoLock&, int64_t aOffset);
   // Used by |NotifyDataEnded| to write |mPartialBlock| to disk.
-  // If |aNotifyAll| is true, this function will wake up readers who may be
+  // This function will wake up readers who may be
   // waiting on the media cache monitor. Called on the media cache thread only.
-  void FlushPartialBlockInternal(AutoLock&, bool aNotifyAll);
+  void FlushPartialBlockInternal(AutoLock&);
 
   void NotifyDataStartedInternal(uint32_t aLoadID, int64_t aOffset,
                                  bool aSeekable, int64_t aLength);
@@ -539,8 +545,8 @@ class MediaCacheStream : public DecoderDoctorLifeLogger<MediaCacheStream> {
   // Heap allocate this buffer since the exact power-of-2 will cause allocation
   // slop when combined with the rest of the object members.
   // This partial buffer should always be read/write within the cache's monitor.
-  const UniquePtr<uint8_t[]> mPartialBlockBuffer =
-      MakeUnique<uint8_t[]>(BLOCK_SIZE);
+  const std::unique_ptr<uint8_t[]> mPartialBlockBuffer =
+      std::make_unique<uint8_t[]>(BLOCK_SIZE);
 
   // True if associated with a private browsing window.
   const bool mIsPrivateBrowsing;

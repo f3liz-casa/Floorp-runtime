@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set sw=2 ts=8 et tw=80 : */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -17,9 +15,8 @@
 
 #include "Http2Compression.h"
 #include "Http2Session.h"
-#include "Http2StreamBase.h"
 #include "Http2Stream.h"
-
+#include "Http2StreamBase.h"
 #include "mozilla/BasePrincipal.h"
 #include "mozilla/Components.h"
 #include "mozilla/StaticPrefs_network.h"
@@ -27,7 +24,9 @@
 #include "nsHttp.h"
 #include "nsHttpHandler.h"
 #include "nsHttpRequestHead.h"
+#include "nsHttpTransaction.h"
 #include "nsIClassOfService.h"
+#include "nsISocketTransport.h"
 #include "prnetdb.h"
 
 namespace mozilla::net {
@@ -73,7 +72,7 @@ void Http2StreamBase::DeleteSelfOnSocketThread() {
   nsCOMPtr<nsIEventTarget> sts =
       mozilla::components::SocketTransport::Service();
   nsCOMPtr<nsIRunnable> event = new DeleteHttp2StreamBase(this);
-  Unused << NS_WARN_IF(
+  (void)NS_WARN_IF(
       NS_FAILED(sts->Dispatch(event.forget(), NS_DISPATCH_NORMAL)));
 }
 
@@ -110,7 +109,7 @@ Http2StreamBase::Http2StreamBase(uint64_t aTransactionBrowserId,
   mServerReceiveWindow = session->GetServerInitialStreamWindow();
   mClientReceiveWindow = session->PushAllowance();
 
-  mTxInlineFrame = MakeUnique<uint8_t[]>(mTxInlineFrameSize);
+  mTxInlineFrame = std::make_unique<uint8_t[]>(mTxInlineFrameSize);
 
   static_assert(nsISupportsPriority::PRIORITY_LOWEST <= kNormalPriority,
                 "Lowest Priority should be less than kNormalPriority");
@@ -191,6 +190,9 @@ nsresult Http2StreamBase::ReadSegments(nsAHttpSegmentReader* reader,
       mSegmentReader = reader;
       rv = CallToReadData(count, countRead);
       mSegmentReader = nullptr;
+      if (NS_FAILED(mTransmitError)) {
+        break;
+      }
 
       LOG3(("Http2StreamBase::ReadSegments %p trans readsegments rv %" PRIx32
             " read=%d\n",
@@ -253,6 +255,11 @@ nsresult Http2StreamBase::ReadSegments(nsAHttpSegmentReader* reader,
              "complete, "
              "mUpstreamState=%x\n",
              this, mStreamID, mUpstreamState));
+        // Retire the "length unknown" sentinel now the body is over, so that
+        // UpdateTransportSendEvents() fires NS_NET_STATUS_WAITING_FOR.
+        if (mRequestBodyLenRemaining < 0) {
+          mRequestBodyLenRemaining = 0;
+        }
         if (mSentFin) {
           ChangeState(UPSTREAM_COMPLETE);
         } else {
@@ -295,6 +302,10 @@ nsresult Http2StreamBase::ReadSegments(nsAHttpSegmentReader* reader,
       break;
   }
 
+  if (NS_FAILED(mTransmitError) &&
+      (NS_SUCCEEDED(rv) || rv == NS_BASE_STREAM_WOULD_BLOCK)) {
+    rv = mTransmitError;
+  }
   return rv;
 }
 
@@ -528,8 +539,6 @@ nsresult Http2StreamBase::GenerateOpen() {
     outputOffset += frameLen;
   }
 
-  glean::spdy::syn_size.Accumulate(compressedData.Length());
-
   mFlatHttpRequestHeaders.Truncate();
 
   return NS_OK;
@@ -681,6 +690,10 @@ nsresult Http2StreamBase::TransmitFrame(const char* buf, uint32_t* countUsed,
   if (rv == NS_BASE_STREAM_WOULD_BLOCK) {
     MOZ_ASSERT(!forceCommitment, "forceCommitment with WOULD_BLOCK");
     session->TransactionHasDataToWrite(this);
+  } else if (NS_FAILED(rv)) {
+    // The request stream that called OnReadSegment drops this error, so
+    // ReadSegments reports it instead.
+    mTransmitError = rv;
   }
   if (NS_FAILED(rv)) {  // this will include WOULD_BLOCK
     return rv;
@@ -823,7 +836,7 @@ nsresult Http2StreamBase::ConvertResponseHeaders(
     LOG3(
         ("Http2StreamBase::ConvertResposeHeaders %p status %s is not just a "
          "code",
-         this, statusString.BeginReading()));
+         this, statusString.get()));
     // Results in stream reset with PROTOCOL_ERROR
     return NS_ERROR_ILLEGAL_VALUE;
   }
@@ -837,18 +850,13 @@ nsresult Http2StreamBase::ConvertResponseHeaders(
     session->Received421(ConnectionInfo());
   }
 
-  if (aHeadersIn.Length() && aHeadersOut.Length()) {
-    glean::spdy::syn_reply_size.Accumulate(aHeadersIn.Length());
-    uint32_t ratio = aHeadersIn.Length() * 100 / aHeadersOut.Length();
-    glean::spdy::syn_reply_ratio.AccumulateSingleSample(ratio);
-  }
-
   // The decoding went ok. Now we can customize and clean up.
 
   aHeadersIn.Truncate();
   aHeadersOut.AppendLiteral("X-Firefox-Spdy: h2");
   aHeadersOut.AppendLiteral("\r\n\r\n");
-  LOG(("decoded response headers are:\n%s", aHeadersOut.BeginReading()));
+  LOG(("decoded response headers are:\n%s",
+       PromiseFlatCString(aHeadersOut).get()));
   HandleResponseHeaders(aHeadersOut, httpResponseCode);
 
   return NS_OK;
@@ -1210,8 +1218,12 @@ nsresult Http2StreamBase::OnReadSegment(const char* buf, uint32_t count,
       if (mOpenGenerated) {
         SetHTTPState(OPEN);
         AdjustInitialWindow();
-        // This version of TransmitFrame cannot block
+        // This version of TransmitFrame cannot block, but it fails when the
+        // output queue would grow beyond its limit.
         rv = TransmitFrame(nullptr, nullptr, true);
+        if (NS_FAILED(rv)) {
+          return rv;
+        }
         ChangeState(GENERATING_BODY);
         break;
       }
@@ -1269,11 +1281,18 @@ nsresult Http2StreamBase::OnReadSegment(const char* buf, uint32_t count,
       if (!dataLength && mRequestBodyLenRemaining) {
         return NS_BASE_STREAM_WOULD_BLOCK;
       }
-      if (dataLength > mRequestBodyLenRemaining) {
-        return NS_ERROR_UNEXPECTED;
+      // mRequestBodyLenRemaining < 0 means streaming upload with unknown
+      // length; skip the length-bookkeeping and let END_STREAM be driven by
+      // the 0-byte read that ends the body, via the FIN path in ReadSegments().
+      if (mRequestBodyLenRemaining >= 0) {
+        if (static_cast<int64_t>(dataLength) > mRequestBodyLenRemaining) {
+          return NS_ERROR_UNEXPECTED;
+        }
+        mRequestBodyLenRemaining -= dataLength;
+        GenerateDataFrameHeader(dataLength, !mRequestBodyLenRemaining);
+      } else {
+        GenerateDataFrameHeader(dataLength, false);
       }
-      mRequestBodyLenRemaining -= dataLength;
-      GenerateDataFrameHeader(dataLength, !mRequestBodyLenRemaining);
       ChangeState(SENDING_BODY);
       [[fallthrough]];
 

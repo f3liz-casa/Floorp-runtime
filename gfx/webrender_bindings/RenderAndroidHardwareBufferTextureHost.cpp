@@ -1,19 +1,17 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "RenderAndroidHardwareBufferTextureHost.h"
 
-#include "mozilla/layers/AndroidHardwareBuffer.h"
-#include "mozilla/layers/TextureHostOGL.h"
-#include "mozilla/webrender/RenderThread.h"
-#include "mozilla/gfx/2D.h"
 #include "GLContextEGL.h"
 #include "GLLibraryEGL.h"
 #include "GLReadTexImageHelper.h"
 #include "OGLShaderConfig.h"
+#include "mozilla/gfx/2D.h"
+#include "mozilla/layers/AndroidHardwareBuffer.h"
+#include "mozilla/layers/TextureHostOGL.h"
+#include "mozilla/webrender/RenderThread.h"
 
 namespace mozilla {
 namespace wr {
@@ -53,15 +51,14 @@ bool RenderAndroidHardwareBufferTextureHost::EnsureLockable() {
     const auto& gle = gl::GLContextEGL::Cast(mGL);
     const auto& egl = gle->mEgl;
 
+    // eglCreateSyncKHR takes ownership of the fd even on failure.
+    // Release it here to avoid closing the fd again.
     const EGLint attribs[] = {LOCAL_EGL_SYNC_NATIVE_FENCE_FD_ANDROID,
-                              fenceFd.get(), LOCAL_EGL_NONE};
+                              fenceFd.release(), LOCAL_EGL_NONE};
 
     EGLSync sync =
-        egl->fCreateSync(LOCAL_EGL_SYNC_NATIVE_FENCE_ANDROID, attribs);
+        egl->fCreateSyncKHR(LOCAL_EGL_SYNC_NATIVE_FENCE_ANDROID, attribs);
     if (sync) {
-      // Release fd here, since it is owned by EGLSync
-      Unused << fenceFd.release();
-
       if (egl->IsExtensionSupported(gl::EGLExtension::KHR_wait_sync)) {
         egl->fWaitSync(sync, 0);
       } else {
@@ -148,8 +145,11 @@ void RenderAndroidHardwareBufferTextureHost::DeleteTextureHandle() {
   if (!mTextureHandle) {
     return;
   }
-  MOZ_ASSERT(mGL);
-  mGL->fDeleteTextures(1, &mTextureHandle);
+  MOZ_RELEASE_ASSERT(mGL);
+  // Deferred destruction may run with a different GL context current.
+  if (mGL->MakeCurrent()) {
+    mGL->fDeleteTextures(1, &mTextureHandle);
+  }
   mTextureHandle = 0;
 }
 
@@ -157,7 +157,7 @@ void RenderAndroidHardwareBufferTextureHost::DestroyEGLImage() {
   if (!mEGLImage) {
     return;
   }
-  MOZ_ASSERT(mGL);
+  MOZ_RELEASE_ASSERT(mGL);
   const auto& gle = gl::GLContextEGL::Cast(mGL);
   const auto& egl = gle->mEgl;
   egl->fDestroyImage(mEGLImage);

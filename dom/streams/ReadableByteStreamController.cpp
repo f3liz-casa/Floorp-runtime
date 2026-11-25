@@ -1,14 +1,12 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim:set ts=2 sw=2 sts=2 et cindent: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#include "mozilla/dom/ReadableByteStreamController.h"
-
 #include <algorithm>  // std::min
 
 #include "ReadIntoRequest.h"
+#include "ReadableByteStreamControllerAbstract.h"
+#include "ReadableStreamAbstract.h"
 #include "js/ArrayBuffer.h"
 #include "js/ErrorReport.h"
 #include "js/Exception.h"
@@ -25,7 +23,6 @@
 #include "mozilla/dom/Promise-inl.h"
 #include "mozilla/dom/Promise.h"
 #include "mozilla/dom/ReadableByteStreamControllerBinding.h"
-#include "mozilla/dom/ReadableStream.h"
 #include "mozilla/dom/ReadableStreamBYOBReader.h"
 #include "mozilla/dom/ReadableStreamBYOBRequest.h"
 #include "mozilla/dom/ReadableStreamControllerBase.h"
@@ -233,6 +230,10 @@ ReadableByteStreamControllerGetBYOBRequest(
     // Step 1.2:
     aRv.MightThrowJSException();
     JS::Rooted<JSObject*> buffer(aCx, firstDescriptor->Buffer());
+    if (!JS_WrapObject(aCx, &buffer)) {
+      aRv.StealExceptionFromJSContext(aCx);
+      return nullptr;
+    }
     JS::Rooted<JSObject*> view(
         aCx, JS_NewUint8ArrayWithBuffer(
                  aCx, buffer,
@@ -349,8 +350,8 @@ void ReadableByteStreamControllerClearAlgorithms(
 
 // https://streams.spec.whatwg.org/#readable-byte-stream-controller-error
 void ReadableByteStreamControllerError(
-    ReadableByteStreamController* aController, JS::Handle<JS::Value> aValue,
-    ErrorResult& aRv) {
+    JSContext* aCx, ReadableByteStreamController* aController,
+    JS::Handle<JS::Value> aValue, ErrorResult& aRv) {
   // Step 1. Let stream be controller.[[stream]].
   ReadableStream* stream = aController->Stream();
 
@@ -369,12 +370,15 @@ void ReadableByteStreamControllerError(
   // Step 5. Perform !ReadableByteStreamControllerClearAlgorithms(controller).
   ReadableByteStreamControllerClearAlgorithms(aController);
 
-  // Step 6. Perform !ReadableStreamError(stream, e).
-  AutoJSAPI jsapi;
-  if (!jsapi.Init(aController->GetParentObject())) {
+  JS::Rooted<JS::Value> value(aCx, aValue);
+  if (!JS_WrapValue(aCx, &value)) {
+    aRv.MightThrowJSException();
+    aRv.StealExceptionFromJSContext(aCx);
     return;
   }
-  ReadableStreamError(jsapi.cx(), stream, aValue, aRv);
+
+  // Step 6. Perform !ReadableStreamError(stream, e).
+  ReadableStreamError(aCx, stream, value, aRv);
 }
 
 // https://streams.spec.whatwg.org/#readable-byte-stream-controller-close
@@ -416,7 +420,7 @@ void ReadableByteStreamControllerClose(
       MOZ_ALWAYS_TRUE(ToJSValue(aCx, std::move(rv), &exception));
 
       // Step 4.2.2
-      ReadableByteStreamControllerError(aController, exception, aRv);
+      ReadableByteStreamControllerError(aCx, aController, exception, aRv);
       if (aRv.Failed()) {
         return;
       }
@@ -494,7 +498,7 @@ void ReadableByteStreamControllerEnqueueClonedChunkToQueue(
 
     // Step 2.1. Perform ! ReadableByteStreamControllerError(controller,
     // cloneResult.[[Value]]).
-    ReadableByteStreamControllerError(aController, exception, aRv);
+    ReadableByteStreamControllerError(aCx, aController, exception, aRv);
     if (aRv.Failed()) {
       return;
     }
@@ -653,7 +657,7 @@ void ReadableByteStreamControllerCallPullIfNeeded(
       [](JSContext* aCx, JS::Handle<JS::Value> aValue, ErrorResult& aRv,
          ReadableByteStreamController* aController) {
         // Step 8.1
-        ReadableByteStreamControllerError(aController, aValue, aRv);
+        ReadableByteStreamControllerError(aCx, aController, aValue, aRv);
       },
       RefPtr(aController));
 }
@@ -678,7 +682,7 @@ void ReadableStreamFulfillReadIntoRequest(JSContext* aCx,
   ReadableStreamBYOBReader* reader = aStream->GetReader()->AsBYOB();
 
   // Step 3. Assert: reader.[[readIntoRequests]] is not empty.
-  MOZ_ASSERT(!reader->ReadIntoRequests().isEmpty());
+  MOZ_RELEASE_ASSERT(!reader->ReadIntoRequests().isEmpty());
 
   // Step 4. Let readIntoRequest be reader.[[readIntoRequests]][0].
   // Step 5. Remove readIntoRequest from reader.[[readIntoRequests]].
@@ -829,6 +833,10 @@ MOZ_CAN_RUN_SCRIPT void ReadableByteStreamControllerFillReadRequestFromQueue(
   // byte offset, entry’s byte length »).
   aRv.MightThrowJSException();
   JS::Rooted<JSObject*> buffer(aCx, entry->Buffer());
+  if (!JS_WrapObject(aCx, &buffer)) {
+    aRv.StealExceptionFromJSContext(aCx);
+    return;
+  }
   JS::Rooted<JSObject*> view(
       aCx, JS_NewUint8ArrayWithBuffer(aCx, buffer, entry->ByteOffset(),
                                       int64_t(entry->ByteLength())));
@@ -1111,7 +1119,7 @@ void ReadableByteStreamController::Error(JSContext* aCx,
                                          JS::Handle<JS::Value> aErrorValue,
                                          ErrorResult& aRv) {
   // Step 1.
-  ReadableByteStreamControllerError(this, aErrorValue, aRv);
+  ReadableByteStreamControllerError(aCx, this, aErrorValue, aRv);
 }
 
 // https://streams.spec.whatwg.org/#rbs-controller-private-cancel
@@ -1448,14 +1456,15 @@ static void ReadableByteStreamControllerRespondInReadableState(
       return;
     }
 
+    RefPtr<ReadableStream> stream(aController->Stream());
+
     // Step 3.3. For each filledPullInto of filledPullIntos,
     for (auto& filledPullInto : filledPullIntos) {
       // Step 3.3.1. Perform !
       // ReadableByteStreamControllerCommitPullIntoDescriptor(controller.[[stream]],
       // filledPullInto).
       ReadableByteStreamControllerCommitPullIntoDescriptor(
-          aCx, MOZ_KnownLive(aController->Stream()),
-          MOZ_KnownLive(filledPullInto), aRv);
+          aCx, stream, MOZ_KnownLive(filledPullInto), aRv);
       if (aRv.Failed()) {
         return;
       }
@@ -1594,7 +1603,7 @@ void ReadableByteStreamControllerRespond(
     JSContext* aCx, ReadableByteStreamController* aController,
     uint64_t aBytesWritten, ErrorResult& aRv) {
   // Step 1.
-  MOZ_ASSERT(!aController->PendingPullIntos().isEmpty());
+  MOZ_RELEASE_ASSERT(!aController->PendingPullIntos().isEmpty());
 
   // Step 2.
   PullIntoDescriptor* firstDescriptor =
@@ -1651,7 +1660,7 @@ void ReadableByteStreamControllerRespondWithNewView(
   aRv.MightThrowJSException();
 
   // Step 1.
-  MOZ_ASSERT(!aController->PendingPullIntos().isEmpty());
+  MOZ_RELEASE_ASSERT(!aController->PendingPullIntos().isEmpty());
 
   // Step 2.
   bool isSharedMemory;
@@ -2094,7 +2103,7 @@ void ReadableByteStreamControllerPullInto(
       MOZ_RELEASE_ASSERT(ToJSValue(aCx, std::move(typeError), &e));
 
       // Step 16.2.2. Perform !ReadableByteStreamControllerError(controller, e).
-      ReadableByteStreamControllerError(aController, e, aRv);
+      ReadableByteStreamControllerError(aCx, aController, e, aRv);
       if (aRv.Failed()) {
         return;
       }
@@ -2177,7 +2186,7 @@ void SetUpReadableByteStreamController(
   // Let startPromise be a promise resolved with startResult.
   RefPtr<Promise> startPromise =
       Promise::CreateInfallible(aStream->GetParentObject());
-  startPromise->MaybeResolve(startResult);
+  startPromise->MaybeSafeResolve(startResult);
 
   // Step 16+17
   startPromise->AddCallbacksWithCycleCollectedArgs(
@@ -2202,7 +2211,7 @@ void SetUpReadableByteStreamController(
       [](JSContext* aCx, JS::Handle<JS::Value> aValue, ErrorResult& aRv,
          ReadableByteStreamController* aController) {
         // Step 17.1
-        ReadableByteStreamControllerError(aController, aValue, aRv);
+        ReadableByteStreamControllerError(aCx, aController, aValue, aRv);
       },
       RefPtr(aController));
 }

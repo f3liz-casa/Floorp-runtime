@@ -3,11 +3,10 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include <objectarray.h>
+#include <propkey.h>
+#include <propvarutil.h>
 #include <shobjidl.h>
 #include <windows.h>
-#include <string.h>
-#include <propvarutil.h>
-#include <propkey.h>
 
 #ifdef __MINGW32__
 // MinGW-w64 headers are missing PropVariantToString.
@@ -15,17 +14,17 @@
 PSSTDAPI PropVariantToString(REFPROPVARIANT propvar, PWSTR psz, UINT cch);
 #endif
 
-#include "gtest/gtest.h"
+#include "JumpListBuilder.h"
 #include "gmock/gmock.h"
-
+#include "gtest/gtest.h"
+#include "mozilla/CmdLineAndEnvUtils.h"
+#include "mozilla/SpinEventLoopUntil.h"
 #include "mozilla/dom/BindingDeclarations.h"
 #include "mozilla/dom/Promise.h"
 #include "mozilla/dom/PromiseNativeHandler.h"
 #include "mozilla/dom/ScriptSettings.h"
 #include "mozilla/dom/ToJSValue.h"
 #include "mozilla/dom/WindowsJumpListShortcutDescriptionBinding.h"
-#include "mozilla/SpinEventLoopUntil.h"
-#include "JumpListBuilder.h"
 
 using namespace mozilla;
 using namespace testing;
@@ -115,7 +114,17 @@ MATCHER_P(ShellLinksEq, descs,
     }
 
     if (desc.mArguments.WasPassed()) {
-      if (!desc.mArguments.Value().Equals(argsBuf)) {
+      mozilla::CommandLineParserWin<char16_t> parser;
+      parser.HandleCommandLine(nsDependentString(argsBuf));
+
+      const mozilla::dom::Sequence<nsString>& args = desc.mArguments.Value();
+
+      bool same = std::equal(
+          parser.Argv(), parser.Argv() + parser.Argc(), args.cbegin(),
+          args.cend(), [](const char16_t* aParsed, const nsAString& aExpected) {
+            return aExpected == nsDependentString(aParsed);
+          });
+      if (!same) {
         return false;
       }
     } else {
@@ -312,8 +321,8 @@ void GenerateWindowsJumpListShortcutDescriptions(
     desc.mFallbackIconIndex = 0;
 
     if (!(i % 2)) {
-      nsAutoString arguments(u"-arg1 -arg2 -arg3");
-      desc.mArguments.Construct(arguments);
+      desc.mArguments.Construct(nsTArray<nsString>{
+          u"-arg1"_ns, u"argument with a space"_ns, u"-arg3"_ns});
       nsAutoString iconPath(u"C:\\Some\\icon.png");
       desc.mIconPath.Construct(iconPath);
     }
@@ -352,7 +361,7 @@ TEST(JumpListBuilder, Construction)
   });
 
   nsCOMPtr<nsIJumpListBuilder> builder =
-      new JumpListBuilder(aumid, testBackend);
+      new JumpListBuilder(aumid, /* aPrivateBrowsing */ false, testBackend);
   ASSERT_TRUE(builder);
 
   // This is the amount of time that we will wait for the background thread to
@@ -383,7 +392,7 @@ TEST(JumpListBuilder, CheckForRemovals)
   EXPECT_CALL(*testBackend, SetAppID(_)).Times(1);
 
   nsCOMPtr<nsIJumpListBuilder> builder =
-      new JumpListBuilder(aumid, testBackend);
+      new JumpListBuilder(aumid, /* aPrivateBrowsing */ false, testBackend);
   ASSERT_TRUE(builder);
 
   EXPECT_CALL(*testBackend, AbortList()).Times(2);
@@ -412,12 +421,17 @@ TEST(JumpListBuilder, CheckForRemovals)
 
         collection->AddObject(link);
 
-        // Let's re-use the same IShellLink, but change the URL to add our
-        // second entry. The values of the IShellLink are ultimately copied
-        // over to the items being added to the collection.
+        // AddObject stores the interface pointer rather than copying the
+        // link's values, so the second entry needs its own IShellLink.
+        RefPtr<IShellLinkW> secondLink;
+        hr = CoCreateInstance(CLSID_ShellLink, nullptr, CLSCTX_INPROC_SERVER,
+                              IID_IShellLinkW, getter_AddRefs(secondLink));
+        MOZ_RELEASE_ASSERT(SUCCEEDED(hr));
+
         nsAutoString secondLinkHref(u"https://mozilla.org"_ns);
-        link->SetArguments(secondLinkHref.get());
-        collection->AddObject(link);
+        secondLink->SetArguments(secondLinkHref.get());
+        secondLink->SetIconLocation(appPath.get(), 0);
+        collection->AddObject(secondLink);
 
         RefPtr<IObjectArray> pArray;
         hr = collection->QueryInterface(IID_IObjectArray,
@@ -442,7 +456,7 @@ TEST(JumpListBuilder, CheckForRemovals)
   ASSERT_TRUE(NS_SUCCEEDED(rv));
   ASSERT_TRUE(promise);
 
-  RefPtr<WaitForResolver> resolver = new WaitForResolver();
+  auto resolver = MakeRefPtr<WaitForResolver>();
   promise->AppendNativeHandler(resolver);
   JS::Rooted<JS::Value> result(cx);
   resolver->SpinUntilResolvedWithResult(&result);
@@ -498,7 +512,7 @@ TEST(JumpListBuilder, CheckForRemovalsLongURL)
   EXPECT_CALL(*testBackend, SetAppID(_)).Times(1);
 
   nsCOMPtr<nsIJumpListBuilder> builder =
-      new JumpListBuilder(aumid, testBackend);
+      new JumpListBuilder(aumid, /* aPrivateBrowsing */ false, testBackend);
   ASSERT_TRUE(builder);
 
   EXPECT_CALL(*testBackend, AbortList()).Times(2);
@@ -559,7 +573,7 @@ TEST(JumpListBuilder, CheckForRemovalsLongURL)
   ASSERT_TRUE(NS_SUCCEEDED(rv));
   ASSERT_TRUE(promise);
 
-  RefPtr<WaitForResolver> resolver = new WaitForResolver();
+  auto resolver = MakeRefPtr<WaitForResolver>();
   promise->AppendNativeHandler(resolver);
   JS::Rooted<JS::Value> result(cx);
   resolver->SpinUntilResolvedWithResult(&result);
@@ -608,7 +622,7 @@ TEST(JumpListBuilder, PopulateJumpListEmpty)
   EXPECT_CALL(*testBackend, SetAppID(_)).Times(1);
 
   nsCOMPtr<nsIJumpListBuilder> builder =
-      new JumpListBuilder(aumid, testBackend);
+      new JumpListBuilder(aumid, /* aPrivateBrowsing */ false, testBackend);
   ASSERT_TRUE(builder);
 
   AutoJSAPI jsapi;
@@ -635,7 +649,7 @@ TEST(JumpListBuilder, PopulateJumpListEmpty)
   ASSERT_TRUE(NS_SUCCEEDED(rv));
   ASSERT_TRUE(promise);
 
-  RefPtr<WaitForResolver> resolver = new WaitForResolver();
+  auto resolver = MakeRefPtr<WaitForResolver>();
   promise->AppendNativeHandler(resolver);
   JS::Rooted<JS::Value> result(cx);
   resolver->SpinUntilResolved();
@@ -664,7 +678,7 @@ TEST(JumpListBuilder, PopulateJumpListOnlyTasks)
   EXPECT_CALL(*testBackend, SetAppID(_)).Times(1);
 
   nsCOMPtr<nsIJumpListBuilder> builder =
-      new JumpListBuilder(aumid, testBackend);
+      new JumpListBuilder(aumid, /* aPrivateBrowsing */ false, testBackend);
   ASSERT_TRUE(builder);
 
   AutoJSAPI jsapi;
@@ -696,7 +710,7 @@ TEST(JumpListBuilder, PopulateJumpListOnlyTasks)
   ASSERT_TRUE(NS_SUCCEEDED(rv));
   ASSERT_TRUE(promise);
 
-  RefPtr<WaitForResolver> resolver = new WaitForResolver();
+  auto resolver = MakeRefPtr<WaitForResolver>();
   promise->AppendNativeHandler(resolver);
   JS::Rooted<JS::Value> result(cx);
   resolver->SpinUntilResolved();
@@ -725,7 +739,7 @@ TEST(JumpListBuilder, PopulateJumpListOnlyCustomItems)
   EXPECT_CALL(*testBackend, SetAppID(_)).Times(1);
 
   nsCOMPtr<nsIJumpListBuilder> builder =
-      new JumpListBuilder(aumid, testBackend);
+      new JumpListBuilder(aumid, /* aPrivateBrowsing */ false, testBackend);
   ASSERT_TRUE(builder);
 
   AutoJSAPI jsapi;
@@ -761,7 +775,7 @@ TEST(JumpListBuilder, PopulateJumpListOnlyCustomItems)
   ASSERT_TRUE(NS_SUCCEEDED(rv));
   ASSERT_TRUE(promise);
 
-  RefPtr<WaitForResolver> resolver = new WaitForResolver();
+  auto resolver = MakeRefPtr<WaitForResolver>();
   promise->AppendNativeHandler(resolver);
   JS::Rooted<JS::Value> result(cx);
   resolver->SpinUntilResolved();
@@ -791,7 +805,7 @@ TEST(JumpListBuilder, PopulateJumpList)
   EXPECT_CALL(*testBackend, SetAppID(_)).Times(1);
 
   nsCOMPtr<nsIJumpListBuilder> builder =
-      new JumpListBuilder(aumid, testBackend);
+      new JumpListBuilder(aumid, /* aPrivateBrowsing */ false, testBackend);
   ASSERT_TRUE(builder);
 
   AutoJSAPI jsapi;
@@ -829,7 +843,7 @@ TEST(JumpListBuilder, PopulateJumpList)
   ASSERT_TRUE(NS_SUCCEEDED(rv));
   ASSERT_TRUE(promise);
 
-  RefPtr<WaitForResolver> resolver = new WaitForResolver();
+  auto resolver = MakeRefPtr<WaitForResolver>();
   promise->AppendNativeHandler(resolver);
   JS::Rooted<JS::Value> result(cx);
   resolver->SpinUntilResolved();
@@ -860,7 +874,7 @@ TEST(JumpListBuilder, PopulateJumpListNoOpenedItems)
   EXPECT_CALL(*testBackend, SetAppID(_)).Times(1);
 
   nsCOMPtr<nsIJumpListBuilder> builder =
-      new JumpListBuilder(aumid, testBackend);
+      new JumpListBuilder(aumid, /* aPrivateBrowsing */ false, testBackend);
   ASSERT_TRUE(builder);
 
   AutoJSAPI jsapi;
@@ -899,7 +913,7 @@ TEST(JumpListBuilder, PopulateJumpListNoOpenedItems)
   ASSERT_TRUE(NS_SUCCEEDED(rv));
   ASSERT_TRUE(promise);
 
-  RefPtr<WaitForResolver> resolver = new WaitForResolver();
+  auto resolver = MakeRefPtr<WaitForResolver>();
   promise->AppendNativeHandler(resolver);
   JS::Rooted<JS::Value> result(cx);
   resolver->SpinUntilResolved();
@@ -923,7 +937,7 @@ TEST(JumpListBuilder, ClearJumpList)
   EXPECT_CALL(*testBackend, SetAppID(_)).Times(1);
 
   nsCOMPtr<nsIJumpListBuilder> builder =
-      new JumpListBuilder(aumid, testBackend);
+      new JumpListBuilder(aumid, /* aPrivateBrowsing */ false, testBackend);
   ASSERT_TRUE(builder);
 
   AutoJSAPI jsapi;
@@ -943,7 +957,7 @@ TEST(JumpListBuilder, ClearJumpList)
   ASSERT_TRUE(NS_SUCCEEDED(rv));
   ASSERT_TRUE(promise);
 
-  RefPtr<WaitForResolver> resolver = new WaitForResolver();
+  auto resolver = MakeRefPtr<WaitForResolver>();
   promise->AppendNativeHandler(resolver);
   JS::Rooted<JS::Value> result(cx);
   resolver->SpinUntilResolved();
@@ -964,7 +978,7 @@ TEST(JumpListBuilder, TruncateDescription)
   EXPECT_CALL(*testBackend, SetAppID(_)).Times(1);
 
   nsCOMPtr<nsIJumpListBuilder> builder =
-      new JumpListBuilder(aumid, testBackend);
+      new JumpListBuilder(aumid, /* aPrivateBrowsing */ false, testBackend);
   ASSERT_TRUE(builder);
 
   AutoJSAPI jsapi;
@@ -1011,7 +1025,7 @@ TEST(JumpListBuilder, TruncateDescription)
   ASSERT_TRUE(NS_SUCCEEDED(rv));
   ASSERT_TRUE(promise);
 
-  RefPtr<WaitForResolver> resolver = new WaitForResolver();
+  auto resolver = MakeRefPtr<WaitForResolver>();
   promise->AppendNativeHandler(resolver);
   JS::Rooted<JS::Value> result(cx);
   resolver->SpinUntilResolved();

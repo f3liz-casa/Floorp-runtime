@@ -35,9 +35,12 @@ add_task(async function () {
   const source = findSource(dbg, "doc-debugger-statements.html");
   await assertPausedAtSourceAndLine(dbg, source.id, 16);
 
+  const onResumed = toolbox.once("toolbox-resumed");
   await resume(dbg);
   info("Wait for the paused code to complete after resume");
   await pausedRun;
+  info("Wait for the toolbox to acknowledge the resume");
+  await onResumed;
 
   ok(
     !toolbox.isHighlighted("jsdebugger"),
@@ -54,7 +57,7 @@ add_task(async function () {
   info(
     "Reload the test page, which will trigger the debugger statement in the iframe"
   );
-  const pausedReload = reloadBrowser();
+  const pausedReload = reloadSelectedTab();
 
   const dbg = await assertDebuggerIsHighlightedAndPaused(toolbox);
   const source = findSource(dbg, IFRAME_TEST_COM_URI);
@@ -79,7 +82,7 @@ add_task(async function () {
   info(
     "Reload the test page, which will trigger the debugger statement in the iframe"
   );
-  const pausedReload = reloadBrowser();
+  const pausedReload = reloadSelectedTab();
 
   const dbg = await assertDebuggerIsHighlightedAndPaused(toolbox);
   const topLevelThread =

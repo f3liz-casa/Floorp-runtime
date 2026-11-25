@@ -1,5 +1,3 @@
-/* -*- Mode: indent-tabs-mode: nil; js-indent-level: 2 -*- */
-/* vim: set sts=2 sw=2 et tw=80: */
 "use strict";
 
 /**
@@ -40,19 +38,23 @@ async function testIsDark(win, expectDark) {
  * @param {Window} options.win - Window object to test.
  * @param {boolean} options.colorScheme - Whether expected chrome color scheme
  * is dark (true) or light (false).
- * @param {boolean} options.expectLWTAttributes - Whether the window  should
- * have the LWT attributes set matching the color scheme.
+ * @param {boolean} options.expectNonNativeTheme - Whether the window should not
+ * be using the system appearance.
  */
-async function testWindowColorScheme({ win, expectDark, expectLWTAttributes }) {
+async function testWindowColorScheme({
+  win,
+  expectDark,
+  expectNonNativeTheme,
+  expectLWT = false,
+}) {
   let docEl = win.document.documentElement;
 
   await testIsDark(win, expectDark);
 
-  if (expectLWTAttributes) {
+  if (expectLWT) {
     ok(docEl.hasAttribute("lwtheme"), "Window should have LWT attribute.");
-    is(
+    ok(
       docEl.hasAttribute("lwtheme-brighttext"),
-      expectDark,
       "LWT text color attribute should be set."
     );
   } else {
@@ -62,6 +64,11 @@ async function testWindowColorScheme({ win, expectDark, expectLWTAttributes }) {
       "LWT text color attribute should not be set."
     );
   }
+  is(
+    win.document.forceNonNativeTheme,
+    expectNonNativeTheme,
+    `Document should have forceNonNativeTheme: ${expectNonNativeTheme}`
+  );
 }
 
 /**
@@ -128,7 +135,7 @@ add_task(async function test_default_theme_light() {
   await testWindowColorScheme({
     win: window,
     expectDark: false,
-    expectLWTAttributes: false,
+    expectNonNativeTheme: false,
   });
 
   let windowB = await BrowserTestUtils.openNewBrowserWindow();
@@ -137,7 +144,7 @@ add_task(async function test_default_theme_light() {
   await testWindowColorScheme({
     win: windowB,
     expectDark: false,
-    expectLWTAttributes: false,
+    expectNonNativeTheme: false,
   });
 
   let pbmWindowA = await BrowserTestUtils.openNewBrowserWindow({
@@ -148,7 +155,9 @@ add_task(async function test_default_theme_light() {
   await testWindowColorScheme({
     win: pbmWindowA,
     expectDark: true,
-    expectLWTAttributes: false,
+    // We expect a dark in-app (LWT) theme to be loaded.
+    expectLWT: true,
+    expectNonNativeTheme: true,
   });
 
   let prefersColorScheme = await getPrefersColorSchemeInfo({ win: pbmWindowA });
@@ -164,7 +173,9 @@ add_task(async function test_default_theme_light() {
   await testWindowColorScheme({
     win: pbmWindowB,
     expectDark: true,
-    expectLWTAttributes: false,
+    // We expect a dark in-app (LWT) theme to be loaded.
+    expectLWT: true,
+    expectNonNativeTheme: true,
   });
 
   await BrowserTestUtils.closeWindow(windowB);
@@ -183,7 +194,7 @@ add_task(async function test_default_theme_dark() {
   await testWindowColorScheme({
     win: window,
     expectDark: true,
-    expectLWTAttributes: false,
+    expectNonNativeTheme: false,
   });
 
   let pbmWindow = await BrowserTestUtils.openNewBrowserWindow({
@@ -194,7 +205,9 @@ add_task(async function test_default_theme_dark() {
   await testWindowColorScheme({
     win: pbmWindow,
     expectDark: true,
-    expectLWTAttributes: false,
+    // We expect a dark in-app (LWT) theme to be loaded.
+    expectLWT: true,
+    expectNonNativeTheme: true,
   });
 
   await BrowserTestUtils.closeWindow(pbmWindow);
@@ -202,8 +215,9 @@ add_task(async function test_default_theme_dark() {
   await SpecialPowers.popPrefEnv();
 });
 
-// For the light theme both normal and private browsing windows should have a
-// bright color scheme applied.
+// With the default light theme the normal window should have
+// bright color scheme applied and the private browsing window
+// we expect a dark in-app (LWT) theme to be applied.
 add_task(async function test_light_theme_builtin() {
   let lightTheme = await AddonManager.getAddonByID(LIGHT_THEME_ID);
   await lightTheme.enable();
@@ -212,17 +226,19 @@ add_task(async function test_light_theme_builtin() {
   await testWindowColorScheme({
     win: window,
     expectDark: false,
-    expectLWTAttributes: true,
+    expectNonNativeTheme: true,
   });
 
   let pbmWindow = await BrowserTestUtils.openNewBrowserWindow({
     private: true,
   });
-  info("Private browsing window should not be in dark mode.");
+  info("Private browsing window should be in dark mode.");
   await testWindowColorScheme({
     win: pbmWindow,
-    expectDark: false,
-    expectLWTAttributes: true,
+    expectDark: true,
+    // We expect a dark in-app (LWT) theme to be loaded.
+    expectLWT: true,
+    expectNonNativeTheme: true,
   });
 
   await BrowserTestUtils.closeWindow(pbmWindow);
@@ -239,7 +255,7 @@ add_task(async function test_dark_theme_builtin() {
   await testWindowColorScheme({
     win: window,
     expectDark: true,
-    expectLWTAttributes: true,
+    expectNonNativeTheme: true,
   });
 
   let pbmWindow = await BrowserTestUtils.openNewBrowserWindow({
@@ -250,7 +266,9 @@ add_task(async function test_dark_theme_builtin() {
   await testWindowColorScheme({
     win: pbmWindow,
     expectDark: true,
-    expectLWTAttributes: true,
+    // We expect a dark in-app (LWT) theme to be loaded.
+    expectLWT: true,
+    expectNonNativeTheme: true,
   });
 
   await BrowserTestUtils.closeWindow(pbmWindow);
@@ -269,14 +287,16 @@ add_task(async function test_theme_switch_updates_existing_pbm_win() {
   await testWindowColorScheme({
     win: window,
     expectDark: false,
-    expectLWTAttributes: false,
+    expectNonNativeTheme: false,
   });
 
   info("Private browsing window should be in dark mode.");
   await testWindowColorScheme({
     win: pbmWindow,
     expectDark: true,
-    expectLWTAttributes: false,
+    // We expect a dark in-app (LWT) theme to be loaded.
+    expectLWT: true,
+    expectNonNativeTheme: true,
   });
 
   info("Enabling light theme.");
@@ -287,14 +307,16 @@ add_task(async function test_theme_switch_updates_existing_pbm_win() {
   await testWindowColorScheme({
     win: window,
     expectDark: false,
-    expectLWTAttributes: true,
+    expectNonNativeTheme: true,
   });
 
-  info("Private browsing window should not be in dark mode.");
+  info("Private browsing window should be in dark mode.");
   await testWindowColorScheme({
     win: pbmWindow,
-    expectDark: false,
-    expectLWTAttributes: true,
+    expectDark: true,
+    // We expect a dark in-app (LWT) theme to be loaded.
+    expectLWT: true,
+    expectNonNativeTheme: true,
   });
 
   await lightTheme.disable();
@@ -307,14 +329,16 @@ add_task(async function test_theme_switch_updates_existing_pbm_win() {
   await testWindowColorScheme({
     win: window,
     expectDark: true,
-    expectLWTAttributes: true,
+    expectNonNativeTheme: true,
   });
 
   info("Private browsing window should be in dark mode.");
   await testWindowColorScheme({
     win: pbmWindow,
     expectDark: true,
-    expectLWTAttributes: true,
+    // We expect a dark in-app (LWT) theme to be loaded.
+    expectLWT: true,
+    expectNonNativeTheme: true,
   });
 
   await darkTheme.disable();
@@ -401,17 +425,18 @@ add_task(async function test_pbm_dark_prompts() {
         chrome: true,
       });
 
-      if (isPBM) {
-        ok(
-          !prefersColorScheme.light && prefersColorScheme.dark,
-          "Prompt from private window should be themed dark."
-        );
-      } else {
-        ok(
-          prefersColorScheme.light && !prefersColorScheme.dark,
-          "Prompt from normal window should be themed light."
-        );
-      }
+      // Content prompts use content's preferred color scheme, which the
+      // ui.systemUsesDarkTheme pref from add_setup pins to light even in a
+      // dark themed private window.
+      let expectDark = isPBM && modalType == MODAL_TYPE_TAB;
+
+      ok(
+        prefersColorScheme.dark == expectDark &&
+          prefersColorScheme.light != expectDark,
+        `${modalTypeStr} prompt from ${windowTypeStr} window should be themed ${
+          expectDark ? "dark" : "light"
+        }.`
+      );
 
       await PromptTestUtils.handlePrompt(dialog);
       await promptPromise;

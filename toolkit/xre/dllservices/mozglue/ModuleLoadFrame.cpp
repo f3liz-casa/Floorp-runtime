@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -8,8 +6,6 @@
 #include "mozilla/NativeNt.h"
 #include "mozilla/UniquePtr.h"
 #include "NtLoaderAPI.h"
-
-#include <string.h>
 
 #include "WindowsFallbackLoaderAPI.h"
 
@@ -56,6 +52,13 @@ void ModuleLoadFrame::StaticInit(nt::LoaderObserver* aNewObserver,
         sLoaderAPI->GetHandleLauncherErrorFn();
     aOutWinLauncher->mSharedSection = sLoaderAPI->GetSharedSection();
   }
+
+  // An executable of another version may lay out ModuleLoadInfo differently,
+  // so it must not build ours.  Its services above are still needed.
+  if (!ModuleLoadInfo::IsLayoutCompatible(::GetModuleHandleW(nullptr))) {
+    gFallbackLoaderAPI.SetObserver(aNewObserver);
+    sLoaderAPI = &gFallbackLoaderAPI;
+  }
 }
 
 ModuleLoadFrame::ModuleLoadFrame(PCUNICODE_STRING aRequestedDllName)
@@ -76,7 +79,7 @@ ModuleLoadFrame::ModuleLoadFrame(PCUNICODE_STRING aRequestedDllName)
   } else {
     USHORT charLenExclNul = aRequestedDllName->Length / sizeof(WCHAR);
     USHORT charLenInclNul = charLenExclNul + 1;
-    nameBuf = MakeUnique<WCHAR[]>(charLenInclNul);
+    nameBuf = std::make_unique<WCHAR[]>(charLenInclNul);
     if (!wcsncpy_s(nameBuf.get(), charLenInclNul, aRequestedDllName->Buffer,
                    charLenExclNul)) {
       name = nameBuf.get();

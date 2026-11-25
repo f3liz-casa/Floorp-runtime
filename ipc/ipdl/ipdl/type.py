@@ -1,4 +1,3 @@
-# vim: set ts=4 sw=4 tw=99 et:
 # This Source Code Form is subject to the terms of the Mozilla Public
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
@@ -6,20 +5,37 @@
 import os
 import sys
 
-from ipdl.ast import CxxInclude, Decl, Loc, QualifiedId, StructDecl
-from ipdl.ast import UnionDecl, UsingStmt, Visitor, StringLiteral
-from ipdl.ast import ASYNC, SYNC
-from ipdl.ast import IN, OUT, INOUT
-from ipdl.ast import NOT_NESTED, INSIDE_SYNC_NESTED, INSIDE_CPOW_NESTED
-from ipdl.ast import priorityList
-import ipdl.builtin as builtin
-from ipdl.util import hash_str
-
 # Used to get the list of Gecko process types
 # xpcom/geckoprocesstypes_generator/geckoprocesstypes/__init__.py
 import geckoprocesstypes
 
+from ipdl import builtin
+from ipdl.ast import (
+    ASYNC,
+    IN,
+    INOUT,
+    INSIDE_CPOW_NESTED,
+    INSIDE_SYNC_NESTED,
+    NOT_NESTED,
+    OUT,
+    SYNC,
+    CxxInclude,
+    Decl,
+    Loc,
+    QualifiedId,
+    StringLiteral,
+    StructDecl,
+    UnionDecl,
+    UsingStmt,
+    Visitor,
+    priorityList,
+)
+from ipdl.util import hash_str
+
 _DELETE_MSG = "__delete__"
+
+# Process attribute values which may include the parent process.
+_MAYBE_PARENT_PROCS = ("any", "anydom", "compositor", "Parent")
 
 
 class TypeVisitor:
@@ -105,7 +121,7 @@ class TypeVisitor:
 
 class Type:
     def __cmp__(self, o):
-        return cmp(self.fullname(), o.fullname())
+        return (self.fullname() > o.fullname()) - (self.fullname() < o.fullname())
 
     def __eq__(self, o):
         return self.__class__ == o.__class__ and self.fullname() == o.fullname()
@@ -128,6 +144,9 @@ class Type:
         return False
 
     def isRefcounted(self):
+        return False
+
+    def isTainted(self):
         return False
 
     # Should this type be wrapped in `NotNull<T>` unless marked `nullable`?
@@ -197,13 +216,14 @@ class BuiltinCType(Type):
 
 
 class ImportedCxxType(Type):
-    def __init__(self, qname, refcounted, sendmoveonly, datamoveonly):
+    def __init__(self, qname, refcounted, sendmoveonly, datamoveonly, tainted=False):
         assert isinstance(qname, QualifiedId)
         self.loc = qname.loc
         self.qname = qname
         self.refcounted = refcounted
         self.sendmoveonly = sendmoveonly
         self.datamoveonly = datamoveonly
+        self.tainted = tainted
 
     def isCxx(self):
         return True
@@ -216,6 +236,9 @@ class ImportedCxxType(Type):
 
     def supportsNullable(self):
         return self.refcounted
+
+    def isTainted(self):
+        return self.tainted
 
     def isSendMoveOnly(self):
         return self.sendmoveonly
@@ -388,7 +411,16 @@ class MessageType(SendSemanticsType):
 
 
 class ProtocolType(SendSemanticsType):
-    def __init__(self, qname, nested, sendSemantics, refcounted, needsotherpid):
+    def __init__(
+        self,
+        qname,
+        nested,
+        sendSemantics,
+        refcounted,
+        needsotherpid,
+        parentproc=None,
+        childproc=None,
+    ):
         SendSemanticsType.__init__(self, (NOT_NESTED, nested), sendSemantics)
         self.qname = qname
         self.managers = []  # ProtocolType
@@ -396,6 +428,7 @@ class ProtocolType(SendSemanticsType):
         self.hasDelete = False
         self.refcounted = refcounted
         self.needsotherpid = needsotherpid
+        self.procs = {"parent": parentproc, "child": childproc}
 
     def isProtocol(self):
         return True
@@ -405,6 +438,17 @@ class ProtocolType(SendSemanticsType):
 
     def hasOtherPid(self):
         return all(top.needsotherpid for top in self.toplevels())
+
+    def mayReceiveFromLessTrusted(self, side):
+        """Whether |side| may live in the parent process while the other side
+        lives in a different process."""
+        other = "child" if side == "parent" else "parent"
+        for top in self.toplevels():
+            recvproc = top.procs[side] or "any"
+            sendproc = top.procs[other] or "any"
+            if recvproc in _MAYBE_PARENT_PROCS and sendproc != "Parent":
+                return True
+        return False
 
     def name(self):
         return self.qname.baseid
@@ -532,8 +576,7 @@ class StructType(_CompoundType):
         return True
 
     def itercomponents(self):
-        for f in self.fields:
-            yield f
+        yield from self.fields
 
     def name(self):
         return self.qname.baseid
@@ -552,8 +595,7 @@ class UnionType(_CompoundType):
         return True
 
     def itercomponents(self):
-        for c in self.components:
-            yield c
+        yield from self.components
 
     def name(self):
         return self.qname.baseid
@@ -732,6 +774,15 @@ def iteractortypes(t, visited=None):
         for c in t.itercomponents():
             for actor in iteractortypes(c, visited):
                 yield actor
+
+
+def hasTaintedBaseType(t):
+    """Return true iff |t|, or the type wrapped by a nullable/maybe/array/
+    uniqueptr modifier, is a [Tainted] imported C++ type. Does not look inside
+    structs or unions."""
+    while t.isIPDL() and t.hasBaseType():
+        t = t.basetype
+    return t.isTainted()
 
 
 def hasshmem(type):
@@ -997,6 +1048,13 @@ class GatherDecls(TcheckVisitor):
                 },
             )
 
+            if not p.name.startswith("P"):
+                self.error(
+                    p.loc,
+                    "invalid protocol name `%s': name must begin with `P'",
+                    p.name,
+                )
+
             # FIXME/cjones: it's a little weird and counterintuitive
             # to put both the namespace and non-namespaced name in the
             # global scope.  try to figure out something better; maybe
@@ -1012,6 +1070,8 @@ class GatherDecls(TcheckVisitor):
                     p.sendSemantics,
                     "ManualDealloc" not in p.attributes,
                     "NeedsOtherPid" in p.attributes,
+                    p.procAttribute("parent"),
+                    p.procAttribute("child"),
                 ),
                 shortname=p.name,
                 fullname=fullname,
@@ -1156,14 +1216,14 @@ class GatherDecls(TcheckVisitor):
         self.checkAttributes(sd.attributes, {"Comparable": None})
 
         for f in sd.fields:
-            ftypedecl = self.symtab.lookup(str(f.typespec))
+            ftypedecl = self.symtab.lookup(f.typespec.basename())
             if ftypedecl is None:
                 self.error(
                     f.loc,
                     "field `%s' of struct `%s' has unknown type `%s'",
                     f.name,
                     sd.name,
-                    str(f.typespec),
+                    f.typespec.basename(),
                 )
                 continue
 
@@ -1187,10 +1247,13 @@ class GatherDecls(TcheckVisitor):
         self.checkAttributes(ud.attributes, {"Comparable": None})
 
         for c in ud.components:
-            cdecl = self.symtab.lookup(str(c))
+            cdecl = self.symtab.lookup(c.basename())
             if cdecl is None:
                 self.error(
-                    c.loc, "unknown component type `%s' of union `%s'", str(c), ud.name
+                    c.loc,
+                    "unknown component type `%s' of union `%s'",
+                    c.basename(),
+                    ud.name,
                 )
                 continue
             utype.components.append(self._canonicalType(cdecl.type, c))
@@ -1203,6 +1266,7 @@ class GatherDecls(TcheckVisitor):
             {
                 "MoveOnly": (None, "data", "send"),
                 "RefCounted": None,
+                "Tainted": None,
             },
         )
 
@@ -1218,6 +1282,7 @@ class GatherDecls(TcheckVisitor):
                 using.isRefcounted(),
                 using.isSendMoveOnly(),
                 using.isDataMoveOnly(),
+                using.isTainted(),
             )
             existingType = self.symtab.lookup(ipdltype.fullname())
             if existingType and existingType.fullname == ipdltype.fullname():
@@ -1234,6 +1299,12 @@ class GatherDecls(TcheckVisitor):
                     self.error(
                         using.loc,
                         "inconsistent moveonly status of type `%s`",
+                        str(using.type),
+                    )
+                if ipdltype.isTainted() != existingType.type.isTainted():
+                    self.error(
+                        using.loc,
+                        "inconsistent tainted status of type `%s`",
                         str(using.type),
                     )
                 using.decl = existingType
@@ -1442,14 +1513,6 @@ class GatherDecls(TcheckVisitor):
             ptname = param.typespec.basename()
             ploc = param.typespec.loc
 
-            if "NoTaint" in param.attributes and "Tainted" not in md.attributes:
-                self.error(
-                    ploc,
-                    "argument typename `%s' of message `%s' has a NoTaint attribute, but the message lacks the Tainted attribute",
-                    ptname,
-                    msgname,
-                )
-
             ptdecl = self.symtab.lookup(ptname)
             if ptdecl is None:
                 self.error(
@@ -1461,6 +1524,17 @@ class GatherDecls(TcheckVisitor):
                 ptype = VOID
             else:
                 ptype = self._canonicalType(ptdecl.type, param.typespec)
+
+            if "NoTaint" in param.attributes and not (
+                "Tainted" in md.attributes or hasTaintedBaseType(ptype)
+            ):
+                self.error(
+                    ploc,
+                    "argument typename `%s' of message `%s' has a NoTaint attribute, but neither the message nor the type is Tainted",
+                    ptname,
+                    msgname,
+                )
+
             return self.declare(
                 loc=ploc, type=ptype, progname=param.name, attributes=param.attributes
             )
@@ -1481,10 +1555,6 @@ class GatherDecls(TcheckVisitor):
         md.decl._md = md
 
     def _canonicalType(self, itype, typespec):
-        loc = typespec.loc
-        if typespec.uniqueptr:
-            itype = UniquePtrType(itype)
-
         if itype.isIPDL() and itype.isProtocol():
             itype = ActorType(itype)
 
@@ -1493,14 +1563,19 @@ class GatherDecls(TcheckVisitor):
                 itype = NotNullType(itype)
         elif typespec.nullable:
             self.error(
-                loc, "`nullable' qualifier for type `%s' is unsupported", itype.name()
+                typespec.loc,
+                "`nullable' qualifier for type `%s' is unsupported",
+                itype.name(),
             )
 
-        if typespec.array:
-            itype = ArrayType(itype)
-
-        if typespec.maybe:
-            itype = MaybeType(itype)
+        for modifier in typespec.modifiers:
+            if modifier == "uniqueptr":
+                itype = UniquePtrType(itype)
+            elif modifier == "array":
+                itype = ArrayType(itype)
+            else:
+                assert modifier == "maybe"
+                itype = MaybeType(itype)
 
         return itype
 

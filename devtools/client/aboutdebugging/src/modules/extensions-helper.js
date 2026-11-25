@@ -43,7 +43,7 @@ exports.getExtensionUuid = function (extension) {
  *         Note: We cannot use the global window object here because it is undefined if
  *         this module is loaded from a file outside of devtools/client/aboutdebugging/.
  *         See browser-loader.sys.mjs `uri.startsWith(baseURI)` for more details.
- * @param  {String} message
+ * @param  {string} message
  *         The help message that should be displayed to the user in the filepicker.
  * @return {Promise} returns a promise that resolves a File object corresponding to the
  *         file selected by the user.
@@ -59,7 +59,10 @@ exports.openTemporaryExtension = function (win, message) {
         PREFERENCES.TEMPORARY_EXTENSION_PATH,
         ""
       );
-      const lastDir = new lazy.FileUtils.File(lastDirPath);
+      let lastDir = new lazy.FileUtils.File(lastDirPath);
+      if (lastDir.exists() && !lastDir.isDirectory()) {
+        lastDir = lastDir.parent;
+      }
       fp.displayDirectory = lastDir;
     } catch (e) {
       // Empty or invalid value, nothing to handle.
@@ -80,10 +83,12 @@ exports.openTemporaryExtension = function (win, message) {
         file = file.parent;
       }
 
-      // We are about to resolve, store the path to the file for the next call.
+      // We are about to resolve, store the path to the directory for the next
+      // call.
+      const dir = file.isDirectory() ? file : file.parent;
       Services.prefs.setCharPref(
         PREFERENCES.TEMPORARY_EXTENSION_PATH,
-        file.path
+        dir.path
       );
 
       resolve(file);

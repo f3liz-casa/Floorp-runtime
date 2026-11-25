@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -14,14 +12,19 @@
 #ifndef mozilla_FStream_h
 #define mozilla_FStream_h
 
-#include "mozilla/Char16.h"
-#include <istream>
-#include <ostream>
-#include <fstream>
 #if defined(__MINGW32__) && defined(__GLIBCXX__)
-#  include "mozilla/UniquePtr.h"
 #  include <fcntl.h>
+
 #  include <ext/stdio_filebuf.h>
+#  include <istream>
+#  include <ostream>
+
+#  include "mozilla/UniquePtr.h"
+#else
+#  if defined(XP_WIN)
+#    include "mozilla/Char16.h"
+#  endif
+#  include <fstream>
 #endif
 
 namespace mozilla {
@@ -56,7 +59,7 @@ inline void IFStream::open(char16ptr_t filename, openmode mode) {
     fmode |= _O_TEXT;
   }
   int fd = _wopen(filename, fmode);
-  mFileBuf = MakeUnique<__gnu_cxx::stdio_filebuf<char>>(fd, mode);
+  mFileBuf = std::make_unique<__gnu_cxx::stdio_filebuf<char>>(fd, mode);
   std::istream::rdbuf(mFileBuf.get());
 }
 
@@ -90,7 +93,7 @@ inline void OFStream::open(char16ptr_t filename, openmode mode) {
     fmode |= _O_CREAT | _O_TRUNC;
   }
   int fd = _wopen(filename, fmode);
-  mFileBuf = MakeUnique<__gnu_cxx::stdio_filebuf<char>>(fd, mode);
+  mFileBuf = std::make_unique<__gnu_cxx::stdio_filebuf<char>>(fd, mode);
   std::ostream::rdbuf(mFileBuf.get());
 }
 

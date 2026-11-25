@@ -2,11 +2,11 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-import sdl from "@microsoft/eslint-plugin-sdl";
-import eslintConfigPrettier from "eslint-config-prettier";
+import sdl from "eslint-plugin-sdl";
+import eslintConfigPrettier from "eslint-config-prettier/flat";
 import html from "eslint-plugin-html";
-import importPlugin from "eslint-plugin-import";
-import json from "eslint-plugin-json";
+import { importX } from "eslint-plugin-import-x";
+import json from "@eslint/json";
 import lit from "eslint-plugin-lit";
 import mozilla from "eslint-plugin-mozilla";
 import reactHooks from "eslint-plugin-react-hooks";
@@ -84,8 +84,8 @@ let config = [
   {
     name: "import-plugin-settings",
     settings: {
-      "import/extensions": [".mjs"],
-      "import/resolver": {
+      "import-x/extensions": [".mjs"],
+      "import-x/resolver": {
         [path.resolve(import.meta.dirname, "srcdir-resolver.js")]: {},
         node: {},
       },
@@ -126,13 +126,14 @@ let config = [
       // rule is able to be automatically fixed, then ESLint will remove the
       // inline comment and apply the fix. We don't want this because we have
       // some rules that intentionally need to be turned off in specific cases,
-      // e.g. @microsoft/sdl/no-insecure-url.
+      // e.g. sdl/no-insecure-url.
       reportUnusedDisableDirectives: "off",
     },
     plugins: { lit },
     rules: {
       "lit/quoted-expressions": ["error", "never"],
       "lit/no-invalid-html": "error",
+      "lit/no-value-attribute": "error",
     },
   },
   {
@@ -146,7 +147,33 @@ let config = [
   {
     name: "json-recommended-with-comments",
     files: ["**/*.json"],
-    ...json.configs["recommended-with-comments"],
+    language: "json/jsonc",
+    ...json.configs.recommended,
+  },
+  {
+    name: "json-recommended-no-comments",
+    files: ["**/package.json"],
+    language: "json/json",
+    ...json.configs.recommended,
+  },
+  {
+    name: "json-empty-keys-off-for-image_builder",
+    files: ["taskcluster/docker/image_builder/policy.json"],
+    rules: {
+      "json/no-empty-keys": "off",
+    },
+  },
+  {
+    name: "figma-code-connect",
+    files: ["**/*.figma.ts"],
+    languageOptions: {
+      ecmaVersion: "latest",
+      sourceType: "module",
+    },
+    plugins: { "import-x": importX },
+    rules: {
+      "import-x/no-unresolved": "off",
+    },
   },
   {
     name: "eslint-plugin-html",
@@ -170,7 +197,19 @@ let config = [
       "tools/lint/eslint/**",
     ],
     languageOptions: {
-      globals: globals.browser,
+      // `when` is a global that has been added by Google Chrome as a result of
+      // adding it to `EventTarget.prototype`. `window` is an `EventTarget`, hence
+      // it is available in the global scope.
+      // This is part of the Observable proposal
+      // https://wicg.github.io/observable/#event-target-integration
+      // If Firefox implements the proposal (bug 1871732), then we may need to
+      // reconsider this exclusion.
+      // For now, it is conflicting with Lit's definition of `when`, and hence
+      // to avoid having to disable no-shadow on a lot of files using lit, we
+      // instead skip it here for now.
+      globals: Object.fromEntries(
+        Object.entries(globals.browser).filter(([key]) => key != "when")
+      ),
     },
   },
   {
@@ -227,27 +266,27 @@ let config = [
   {
     name: "eslint-plugin-import-rules",
     files: ["**/*.mjs"],
-    plugins: { import: importPlugin },
+    plugins: { "import-x": importX },
     rules: {
-      "import/default": "error",
-      "import/export": "error",
-      "import/named": "error",
-      "import/namespace": "error",
-      "import/newline-after-import": "error",
-      "import/no-duplicates": "error",
-      "import/no-absolute-path": "error",
-      "import/no-named-default": "error",
-      "import/no-named-as-default": "error",
-      "import/no-named-as-default-member": "error",
-      "import/no-self-import": "error",
-      "import/no-unassigned-import": "error",
-      "import/no-unresolved": [
+      "import-x/default": "error",
+      "import-x/export": "error",
+      "import-x/named": "error",
+      "import-x/namespace": "error",
+      "import-x/newline-after-import": "error",
+      "import-x/no-duplicates": "error",
+      "import-x/no-absolute-path": "error",
+      "import-x/no-named-default": "error",
+      "import-x/no-named-as-default": "error",
+      "import-x/no-named-as-default-member": "error",
+      "import-x/no-self-import": "error",
+      "import-x/no-unassigned-import": "error",
+      "import-x/no-unresolved": [
         "error",
         // Bug 1773473 - Ignore resolver URLs for chrome and resource as we
         // do not yet have a resolver for them.
         { ignore: ["chrome://", "resource://"] },
       ],
-      "import/no-useless-path-segments": "error",
+      "import-x/no-useless-path-segments": "error",
     },
   },
   {
@@ -257,14 +296,39 @@ let config = [
     // the custom element being registered) rather than any particular
     // export:
     files: ["**/*.stories.mjs"],
-    plugins: { import: importPlugin },
+    plugins: { "import-x": importX },
     rules: {
-      "import/no-unassigned-import": "off",
+      "import-x/no-unassigned-import": "off",
     },
   },
   {
     ...mozilla.configs["flat/general-test"],
     files: wrapPaths({ paths: ["**/test/**", "**/tests/**"] }),
+    plugins: { sdl },
+    rules: {
+      // No using of insecure url, so no http urls.
+      // Note: This is turned off for xpcshell-tests as it is not considered
+      // necessary for xpcshell level tests.
+      "sdl/no-insecure-url": [
+        "error",
+        {
+          exceptions: [
+            "^http:\\/\\/mochi\\.test?.*",
+            "^http:\\/\\/mochi\\.xorigin-test?.*",
+            "^http:\\/\\/localhost?.*",
+            "^http:\\/\\/127\\.0\\.0\\.1?.*",
+            // Exempt xmlns urls
+            "^http:\\/\\/www\\.w3\\.org?.*",
+            "^http:\\/\\/www\\.mozilla\\.org\\/keymaster\\/gatekeeper?.*",
+            // Exempt urls that start with ftp or ws.
+            "^ws:?.*",
+            "^ftp:?.*",
+          ],
+          varExceptions: ["insecure?.*"],
+        },
+      ],
+      ...mozilla.configs["flat/general-test"].rules,
+    },
   },
   {
     ...mozilla.configs["flat/xpcshell-test"],
@@ -272,6 +336,14 @@ let config = [
       paths: testPaths.xpcshell,
       excludedExtensions: ["mjs", "sjs"],
     }),
+    plugins: { sdl },
+    rules: {
+      // No using of insecure url, so no http urls.
+      // Note: This is turned off for xpcshell-tests as it is not considered
+      // necessary for xpcshell level tests.
+      "sdl/no-insecure-url": "off",
+      ...mozilla.configs["flat/xpcshell-test"].rules,
+    },
   },
   {
     name: "no-unused-vars-disable-on-headjs",
@@ -398,9 +470,9 @@ let config = [
     name: "disable-no-insecure-url-for-http-testing",
     // Exempt files with these paths since they have to use http for full coverage
     files: httpTestingPaths,
-    plugins: { "@microsoft/sdl": sdl },
+    plugins: { sdl },
     rules: {
-      "@microsoft/sdl/no-insecure-url": "off",
+      "sdl/no-insecure-url": "off",
     },
   },
   {
@@ -411,7 +483,49 @@ let config = [
   {
     name: "mozilla/require-jsdoc",
     files: wrapPaths({ paths: ["**"] }),
-    ...mozilla.configs["flat/valid-jsdoc"],
+    ...mozilla.configs["flat/require-jsdoc"],
+  },
+  {
+    name: "rollout-no-browser-refs-in-toolkit",
+    files: ["toolkit/**"],
+    ignores: ["toolkit/**/test/**", "toolkit/**/tests/**"],
+    plugins: { mozilla },
+    rules: {
+      "mozilla/no-browser-refs-in-toolkit": "error",
+    },
+  },
+  {
+    name: "no-newtab-refs-outside-newtab",
+    files: ["**/*.mjs", "**/*.js", "**/*.sys.mjs"],
+    ignores: [
+      "tools/@types/generated/**",
+      "browser/base/content/test/browser-static/browser_all_files_referenced.js",
+      "tools/lint/eslint/eslint-plugin-mozilla/lib/rules/no-newtab-refs-outside-newtab.mjs",
+      "tools/lint/eslint/eslint-plugin-mozilla/tests/no-newtab-refs-outside-newtab.mjs",
+    ],
+    plugins: { mozilla },
+    rules: {
+      "mozilla/no-newtab-refs-outside-newtab": "error",
+    },
+  },
+  {
+    name: "preferences-heading-level-via-config",
+    // Remove once typechecking is enabled and violations fail patches
+    files: [
+      "browser/components/preferences/config/**/*.mjs",
+      "browser/extensions/newtab/lib/AboutPreferences.sys.mjs",
+    ],
+    rules: {
+      "no-restricted-syntax": [
+        "error",
+        {
+          selector:
+            ":matches(Property[key.name='controlAttrs'], Property[key.value='controlAttrs']) > ObjectExpression > :matches(Property[key.name=/^(?:headinglevel|headingLevel)$/], Property[key.value=/^\\.?(?:headinglevel|headingLevel)$/])",
+          message:
+            "Set heading levels via the top-level `headingLevel` property on the setting config, not through `controlAttrs`.",
+        },
+      ],
+    },
   },
 
   ...wrapPathsInConfig(subdirConfigs),

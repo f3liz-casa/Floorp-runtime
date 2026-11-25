@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -8,8 +6,6 @@
 
 #include "FileSystemEntryMetadataArray.h"
 #include "fs/FileSystemConstants.h"
-#include "mozilla/ResultVariant.h"
-#include "mozilla/StaticPrefs_dom.h"
 #include "mozilla/dom/BlobImpl.h"
 #include "mozilla/dom/File.h"
 #include "mozilla/dom/FileSystemAccessHandleChild.h"
@@ -214,18 +210,17 @@ void ResolveCallback(
   HandleFailedStatus(aResponse.get_nsresult(), aPromise);
 }
 
-template <>
 void ResolveCallback(
     FileSystemMoveEntryResponse&& aResponse,
     RefPtr<Promise> aPromise,  // NOLINT(performance-unnecessary-value-param)
-    FileSystemEntryMetadata* const& aEntry, const Name& aName) {
+    const RefPtr<FileSystemHandle>& aHandle, const Name& aName) {
   MOZ_ASSERT(aPromise);
+  MOZ_ASSERT(aHandle);
   QM_TRY(OkIf(Promise::PromiseState::Pending == aPromise->State()), QM_VOID);
 
   if (FileSystemMoveEntryResponse::TEntryId == aResponse.type()) {
-    if (aEntry) {
-      aEntry->entryId() = std::move(aResponse.get_EntryId());
-      aEntry->entryName() = aName;
+    if (aHandle) {
+      aHandle->UpdateMetadata(std::move(aResponse.get_EntryId()), aName);
     }
 
     aPromise->MaybeResolveWithUndefined();
@@ -260,7 +255,7 @@ void ResolveCallback(FileSystemResolveResponse&& aResponse,
 }
 
 template <class TResponse, class TReturns, class... Args,
-          std::enable_if_t<std::is_same<TReturns, void>::value, bool> = true>
+          std::enable_if_t<std::is_same_v<TReturns, void>, bool> = true>
 mozilla::ipc::ResolveCallback<TResponse> SelectResolveCallback(
     RefPtr<Promise> aPromise,  // NOLINT(performance-unnecessary-value-param)
     Args&&... args) {
@@ -272,7 +267,7 @@ mozilla::ipc::ResolveCallback<TResponse> SelectResolveCallback(
 }
 
 template <class TResponse, class TReturns, class... Args,
-          std::enable_if_t<!std::is_same<TReturns, void>::value, bool> = true>
+          std::enable_if_t<!std::is_same_v<TReturns, void>, bool> = true>
 mozilla::ipc::ResolveCallback<TResponse> SelectResolveCallback(
     RefPtr<Promise> aPromise,  // NOLINT(performance-unnecessary-value-param)
     Args&&... args) {
@@ -444,12 +439,6 @@ void FileSystemRequestHandler::GetWritable(RefPtr<FileSystemManager>& aManager,
   LOG(("GetWritable %s keep %d", NS_ConvertUTF16toUTF8(aFile.entryName()).get(),
        aKeepData));
 
-  // XXX This should be removed once bug 1798513 is fixed.
-  if (!StaticPrefs::dom_fs_writable_file_stream_enabled()) {
-    aError.Throw(NS_ERROR_NOT_IMPLEMENTED);
-    return;
-  }
-
   if (aManager->IsShutdown()) {
     aError.Throw(NS_ERROR_ILLEGAL_DURING_SHUTDOWN);
     return;
@@ -553,7 +542,7 @@ void FileSystemRequestHandler::RemoveEntry(
 }
 
 void FileSystemRequestHandler::MoveEntry(
-    RefPtr<FileSystemManager>& aManager, FileSystemHandle* aHandle,
+    RefPtr<FileSystemManager>& aManager, RefPtr<FileSystemHandle> aHandle,
     FileSystemEntryMetadata* const aEntry,
     const FileSystemChildMetadata& aNewEntry,
     RefPtr<Promise> aPromise,  // NOLINT(performance-unnecessary-value-param)
@@ -574,10 +563,11 @@ void FileSystemRequestHandler::MoveEntry(
     return;
   }
 
+  const RefPtr<FileSystemHandle> handle(aHandle);
   aManager->BeginRequest(
       [request = FileSystemMoveEntryRequest(*aEntry, aNewEntry),
        onResolve = SelectResolveCallback<FileSystemMoveEntryResponse, void>(
-           aPromise, aEntry, aNewEntry.childName()),
+           aPromise, handle, aNewEntry.childName()),
        onReject = GetRejectCallback(aPromise)](const auto& actor) mutable {
         actor->SendMoveEntry(request, std::move(onResolve),
                              std::move(onReject));
@@ -586,7 +576,7 @@ void FileSystemRequestHandler::MoveEntry(
 }
 
 void FileSystemRequestHandler::RenameEntry(
-    RefPtr<FileSystemManager>& aManager, FileSystemHandle* aHandle,
+    RefPtr<FileSystemManager>& aManager, RefPtr<FileSystemHandle> aHandle,
     FileSystemEntryMetadata* const aEntry, const Name& aName,
     RefPtr<Promise> aPromise,  // NOLINT(performance-unnecessary-value-param)
     ErrorResult& aError) {
@@ -606,10 +596,11 @@ void FileSystemRequestHandler::RenameEntry(
     return;
   }
 
+  const RefPtr<FileSystemHandle> handle(aHandle);
   aManager->BeginRequest(
       [request = FileSystemRenameEntryRequest(*aEntry, aName),
        onResolve = SelectResolveCallback<FileSystemMoveEntryResponse, void>(
-           aPromise, aEntry, aName),
+           aPromise, handle, aName),
        onReject = GetRejectCallback(aPromise)](const auto& actor) mutable {
         actor->SendRenameEntry(request, std::move(onResolve),
                                std::move(onReject));

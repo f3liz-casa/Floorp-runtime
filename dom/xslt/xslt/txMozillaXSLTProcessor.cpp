@@ -1,9 +1,10 @@
-/* -*- Mode: C++; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "txMozillaXSLTProcessor.h"
+
+#include <memory>
 
 #include "XPathResult.h"
 #include "jsapi.h"
@@ -79,8 +80,8 @@ nsresult txToDocHandlerFactory::createHandlerWith(
     }
 
     case eHTMLOutput: {
-      UniquePtr<txMozillaXMLOutput> handler(
-          new txMozillaXMLOutput(mSourceDocument, aFormat, mObserver));
+      auto handler = std::make_unique<txMozillaXMLOutput>(mSourceDocument,
+                                                          aFormat, mObserver);
 
       nsresult rv = handler->createResultDocument(
           u""_ns, kNameSpaceID_None, mSourceDocument, mDocumentIsData);
@@ -92,8 +93,8 @@ nsresult txToDocHandlerFactory::createHandlerWith(
     }
 
     case eTextOutput: {
-      UniquePtr<txMozillaTextOutput> handler(
-          new txMozillaTextOutput(mSourceDocument, mObserver));
+      auto handler =
+          std::make_unique<txMozillaTextOutput>(mSourceDocument, mObserver);
 
       nsresult rv = handler->createResultDocument(mDocumentIsData);
       if (NS_SUCCEEDED(rv)) {
@@ -121,8 +122,8 @@ nsresult txToDocHandlerFactory::createHandlerWith(
 
     case eXMLOutput:
     case eHTMLOutput: {
-      UniquePtr<txMozillaXMLOutput> handler(
-          new txMozillaXMLOutput(mSourceDocument, aFormat, mObserver));
+      auto handler = std::make_unique<txMozillaXMLOutput>(mSourceDocument,
+                                                          aFormat, mObserver);
 
       nsresult rv = handler->createResultDocument(aName, aNsID, mSourceDocument,
                                                   mDocumentIsData);
@@ -134,8 +135,8 @@ nsresult txToDocHandlerFactory::createHandlerWith(
     }
 
     case eTextOutput: {
-      UniquePtr<txMozillaTextOutput> handler(
-          new txMozillaTextOutput(mSourceDocument, mObserver));
+      auto handler =
+          std::make_unique<txMozillaTextOutput>(mSourceDocument, mObserver);
 
       nsresult rv = handler->createResultDocument(mDocumentIsData);
       if (NS_SUCCEEDED(rv)) {
@@ -449,8 +450,7 @@ txMozillaXSLTProcessor::AddXSLTParam(const nsString& aName,
     return error.StealNSResult();
   }
 
-  UniquePtr<OwningXSLTParameterValue> varValue =
-      MakeUnique<OwningXSLTParameterValue>();
+  auto varValue = std::make_unique<OwningXSLTParameterValue>();
   varValue->SetAsXPathResult() = xpathResult.forget();
 
   txExpandedName varName(nsId, name);
@@ -599,7 +599,7 @@ class XSLTProcessRequest final : public nsIRequest {
   void Done() { mState = nullptr; }
 
  private:
-  ~XSLTProcessRequest() {}
+  ~XSLTProcessRequest() = default;
   txExecutionState* mState;
 };
 NS_IMPL_ISUPPORTS(XSLTProcessRequest, nsIRequest)
@@ -880,7 +880,7 @@ void txMozillaXSLTProcessor::SetParameter(const nsAString& aNamespaceURI,
     return;
   }
 
-  UniquePtr<txVariable> newVar = MakeUnique<txVariable>(std::move(value));
+  auto newVar = std::make_unique<txVariable>(std::move(value));
   mVariables.add(varName, newVar.release());
 }
 
@@ -1140,7 +1140,7 @@ void txMozillaXSLTProcessor::notifyError() {
 
   IgnoredErrorResult rv;
   ElementCreationOptionsOrString options;
-  Unused << options.SetAsString();
+  (void)options.SetAsString();
 
   nsCOMPtr<Element> element =
       document->CreateElementNS(ns, u"parsererror"_ns, options, rv);
@@ -1162,7 +1162,7 @@ void txMozillaXSLTProcessor::notifyError() {
 
   if (!mSourceText.IsEmpty()) {
     ElementCreationOptionsOrString options;
-    Unused << options.SetAsString();
+    (void)options.SetAsString();
 
     nsCOMPtr<Element> sourceElement =
         document->CreateElementNS(ns, u"sourcetext"_ns, options, rv);
@@ -1228,8 +1228,7 @@ void txMozillaXSLTProcessor::CharacterDataChanged(
 
 void txMozillaXSLTProcessor::AttributeChanged(Element* aElement,
                                               int32_t aNameSpaceID,
-                                              nsAtom* aAttribute,
-                                              int32_t aModType,
+                                              nsAtom* aAttribute, AttrModType,
                                               const nsAttrValue* aOldValue) {
   mStylesheet = nullptr;
 }
@@ -1262,8 +1261,14 @@ DocGroup* txMozillaXSLTProcessor::GetDocGroup() const {
 /* static */
 already_AddRefed<txMozillaXSLTProcessor> txMozillaXSLTProcessor::Constructor(
     const GlobalObject& aGlobal) {
+  nsISupports* supports = aGlobal.GetAsSupports();
+  nsCOMPtr<nsPIDOMWindowInner> win = do_QueryInterface(supports);
+  if (win && win->GetExtantDoc()) {
+    win->GetExtantDoc()->WarnOnceAndReportAbout(
+        DeprecatedOperations::eXSLTDeprecated);
+  }
   RefPtr<txMozillaXSLTProcessor> processor =
-      new txMozillaXSLTProcessor(aGlobal.GetAsSupports());
+      new txMozillaXSLTProcessor(supports);
   return processor.forget();
 }
 
@@ -1282,8 +1287,7 @@ void txMozillaXSLTProcessor::Shutdown() { txXSLTProcessor::shutdown(); }
 /* static */
 UniquePtr<txVariable::OwningXSLTParameterValue> txVariable::convertToOwning(
     const XSLTParameterValue& aValue, ErrorResult& aError) {
-  UniquePtr<OwningXSLTParameterValue> value =
-      MakeUnique<OwningXSLTParameterValue>();
+  auto value = std::make_unique<OwningXSLTParameterValue>();
   if (aValue.IsUnrestrictedDouble()) {
     value->SetAsUnrestrictedDouble() = aValue.GetAsUnrestrictedDouble();
   } else if (aValue.IsBoolean()) {

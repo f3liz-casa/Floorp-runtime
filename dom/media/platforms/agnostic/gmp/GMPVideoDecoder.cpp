@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim:set ts=2 sw=2 sts=2 et cindent: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -28,7 +26,8 @@ GMPVideoDecoderParams::GMPVideoDecoderParams(const CreateDecoderParams& aParams)
       mImageContainer(aParams.mImageContainer),
       mCrashHelper(aParams.mCrashHelper),
       mKnowsCompositor(aParams.mKnowsCompositor),
-      mTrackingId(aParams.mTrackingId) {}
+      mTrackingId(aParams.mTrackingId),
+      mOptions(aParams.mOptions) {}
 
 nsCString GMPVideoDecoder::GetCodecName() const {
   if (MP4Decoder::IsH264(mConfig.mMimeType)) {
@@ -71,9 +70,9 @@ void GMPVideoDecoder::Decoded(GMPVideoi420Frame* aDecodedFrame) {
     entryHandle.Remove();
   } else {
     GMP_LOG_DEBUG(
-        "GMPVideoDecoder::Decoded(this=%p) missing sample metadata for "
-        "time %" PRIu64,
-        this, decodedFrame->Timestamp());
+        "GMPVideoDecoder::Decoded(this={}) missing sample metadata for "
+        "time {}",
+        fmt::ptr(this), decodedFrame->Timestamp());
     if (mSamples.IsEmpty()) {
       // If we have no remaining samples in the table, then we have processed
       // all outstanding decode requests.
@@ -222,7 +221,9 @@ GMPVideoDecoder::GMPVideoDecoder(const GMPVideoDecoderParams& aParams)
       mKnowsCompositor(aParams.mKnowsCompositor),
       mTrackingId(aParams.mTrackingId),
       mCanDecodeBatch(StaticPrefs::media_gmp_decoder_decode_batch()),
-      mReorderFrames(StaticPrefs::media_gmp_decoder_reorder_frames()) {}
+      mReorderFrames(StaticPrefs::media_gmp_decoder_reorder_frames()),
+      mLowLatency(
+          aParams.mOptions.contains(CreateDecoderParams::Option::LowLatency)) {}
 
 void GMPVideoDecoder::InitTags(nsTArray<nsCString>& aTags) {
   if (MP4Decoder::IsH264(mConfig.mMimeType)) {
@@ -311,7 +312,13 @@ void GMPVideoDecoder::GMPInitDone(GMPVideoDecoderProxy* aGMP,
     // OpenH264 expects pseudo-AVCC, but others must be passed
     // AnnexB for H264.
     mConvertToAnnexB = !isOpenH264;
-    mMaxRefFrames = H264::ComputeMaxRefFrames(mConfig.mExtraData);
+    // Frames must still be output in presentation order, but when low latency
+    // is requested, we only hold back as many as the stream may reorder.
+    SPSData spsdata;
+    mMaxRefFrames =
+        mLowLatency && H264::DecodeSPSFromExtraData(mConfig.mExtraData, spsdata)
+            ? spsdata.max_num_reorder_frames
+            : H264::ComputeMaxRefFrames(mConfig.mExtraData);
   } else if (VPXDecoder::IsVP8(mConfig.mMimeType)) {
     codec.mCodecType = kGMPVideoCodecVP8;
   } else if (VPXDecoder::IsVP9(mConfig.mMimeType)) {
@@ -424,7 +431,7 @@ RefPtr<MediaDataDecoder::DecodePromise> GMPVideoDecoder::Decode(
   // requested twice, if the old frame is still outstanding. We will simply drop
   // the extra decoded frame and request more input if the last outstanding.
   mSamples.WithEntryHandle(frameTimestamp, [&](auto entryHandle) {
-    auto sampleData = MakeUnique<SampleMetadata>(sample);
+    auto sampleData = std::make_unique<SampleMetadata>(sample);
     entryHandle.InsertOrUpdate(std::move(sampleData));
   });
 

@@ -10,6 +10,7 @@
   --promo-light-icon-border: var(--color-violet-50);
   --promo-dark-icon-border: var(--color-violet-0);
   --icon-height: 52px;
+  position: relative;
 }
 
 .promo-card {
@@ -28,6 +29,12 @@
     outline-color: var(--border-color);
   }
 
+  @media (forced-colors) {
+    background-color: ButtonFace;
+    color: ButtonText;
+    outline-color: ButtonText;
+  }
+
   &[dragactive] {
     outline-style: solid;
   }
@@ -37,6 +44,27 @@
   font-size: var(--font-size-large);
   text-align: center;
   margin-block: var(--space-xlarge);
+}
+
+.pinned-tabs-promo {
+  --promo-border-color: light-dark(var(--color-violet-50), var(--color-violet-30));
+  --promo-border: var(--promo-border-width) dashed var(--promo-border-color);
+  container-type: inline-size;
+  margin: var(--space-small);
+
+  @media (prefers-contrast) {
+    --promo-border-color: var(--border-color);
+  }
+
+  @media (forced-colors) {
+    /* TODO: This is a temporary fix for poor text color contrast
+     * with Windows HCM. See Bug 2084375. */
+    --promo-message-text-color-vibrant: CanvasText;
+  }
+
+  &[dragactive] {
+    --promo-border: var(--promo-border-width) solid var(--promo-border-color);
+  }
 }
 
 .icon-row {
@@ -101,6 +129,38 @@
   }
 }
 
+@media -moz-pref("browser.nova.enabled") {
+  .icon-row {
+    align-self: stretch;
+  }
+
+  .icon-cell {
+    height: 32px;
+    background: none;
+    border: var(--border-width) dashed var(--promo-border-color);
+    border-radius: var(--border-radius-circle);
+
+    > img {
+      -moz-context-properties: fill, stroke;
+      /* stylelint-disable-next-line stylelint-plugin-mozilla/no-base-design-tokens */
+      fill: light-dark(var(--color-violet-50), var(--color-violet-30));
+
+      @media (prefers-contrast) {
+        fill: currentColor;
+        stroke: currentColor;
+      }
+    }
+  }
+
+  .icon-foxy {
+    align-items: flex-end;
+
+    @media not (prefers-contrast) {
+      background-color: light-dark(#c8b2f6, #3a0f6e);
+    }
+  }
+}
+
 .close-button {
   --icon-size: var(--icon-size-xsmall);
   position: absolute;
@@ -109,5 +169,17 @@
 
   @media not (prefers-contrast) {
     color: light-dark(var(--promo-light-text), var(--promo-dark-text));
+  }
+
+  @media (forced-colors) {
+    background-color: ButtonFace;
+    color: ButtonText;
+  }
+
+  &:hover {
+    @media (forced-colors) {
+      background-color: SelectedItem;
+      color: SelectedItemText;
+    }
   }
 }

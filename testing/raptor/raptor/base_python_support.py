@@ -1,6 +1,9 @@
 # This Source Code Form is subject to the terms of the Mozilla Public
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
+import os
+import platform
+
 import filters
 from cmdline import FIREFOX_APPS
 from utils import flatten
@@ -14,12 +17,22 @@ ADDITIONAL_METRICS = [
 ]
 
 
+def test_platform_from_label(task_label):
+    """The test platform a task runs on, e.g. windows11-64-24h2-hw-ref-shippable."""
+    if not task_label.startswith("test-"):
+        return ""
+    return task_label[len("test-") :].split("/")[0]
+
+
 class BasePythonSupport:
     def __init__(self, **kwargs):
         self.power_test = None
         self.app = None
         self.raw_result = []
         self.bt_result = []
+        self.platform = platform.system()
+        self.task_label = os.environ.get("RAPTOR_TASK_LABEL", "")
+        self.test_platform = test_platform_from_label(self.task_label)
 
     def save_data(self, raw_result, bt_result):
         """
@@ -62,6 +75,16 @@ class BasePythonSupport:
         The `test` arg is the test itself with all of its current settings.
         It can be modified as needed to add additional information to the
         test that will run.
+        """
+        pass
+
+    def modify_env(self, env, test):
+        """Used to modify the environment of the Browsertime process.
+
+        The `env` arg holds the environment variables browsertime will run
+        with. It can be changed directly.
+
+        The `test` arg is the test itself with all of its current settings.
         """
         pass
 
@@ -273,9 +296,9 @@ class BasePythonSupport:
                 power_usage_measurements.setdefault(
                     "powerUsage", dict(default_power_settings)
                 ).setdefault("replicates", []).extend(
-                    __convert_from_pico_to_micro(
-                        [vals["powerUsage"] for vals in power_vals]
-                    )
+                    __convert_from_pico_to_micro([
+                        vals["powerUsage"] for vals in power_vals
+                    ])
                 )
 
         return power_usage_measurements

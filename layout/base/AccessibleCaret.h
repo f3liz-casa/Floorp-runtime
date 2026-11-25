@@ -1,11 +1,9 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef AccessibleCaret_h__
-#define AccessibleCaret_h__
+#ifndef AccessibleCaret_h_
+#define AccessibleCaret_h_
 
 #include "mozilla/Attributes.h"
 #include "mozilla/RefPtr.h"
@@ -118,7 +116,11 @@ class AccessibleCaret {
   // Is the point within the caret's rect? The point should be relative to root
   // frame.
   enum class TouchArea {
-    Full,  // Contains both text overlay and caret image.
+    // Full contains both text overlay and caret image.
+    //
+    // Currently unused. It might need to change to TextOverlay when
+    // implementing bug 1671530 or bug 2082580.
+    Full,
     CaretImage
   };
   bool Contains(const nsPoint& aPoint, TouchArea aTouchArea) const;
@@ -227,4 +229,4 @@ std::ostream& operator<<(std::ostream& aStream,
 
 }  // namespace mozilla
 
-#endif  // AccessibleCaret_h__
+#endif  // AccessibleCaret_h_

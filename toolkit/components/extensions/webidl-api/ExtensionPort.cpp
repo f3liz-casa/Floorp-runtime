@@ -1,4 +1,3 @@
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -62,7 +61,7 @@ UniquePtr<dom::ExtensionPortDescriptor> ExtensionPort::ToPortDescriptor(
 
   dom::AutoEntryScript aes(&aDescriptorValue.toObject(), __func__);
   JSContext* acx = aes.cx();
-  auto portDescriptor = MakeUnique<dom::ExtensionPortDescriptor>();
+  auto portDescriptor = std::make_unique<dom::ExtensionPortDescriptor>();
   if (!portDescriptor->Init(acx, aDescriptorValue, __func__)) {
     aRv.Throw(NS_ERROR_UNEXPECTED);
     return nullptr;

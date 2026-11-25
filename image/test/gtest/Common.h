@@ -1,4 +1,3 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -6,22 +5,21 @@
 #ifndef mozilla_image_test_gtest_Common_h
 #define mozilla_image_test_gtest_Common_h
 
+#include <memory>
 #include <vector>
 
-#include "gtest/gtest.h"
-
-#include "mozilla/Attributes.h"
-#include "mozilla/gtest/MozAssertions.h"
-#include "mozilla/Maybe.h"
-#include "mozilla/UniquePtr.h"
-#include "mozilla/gfx/2D.h"
 #include "Decoder.h"
-#include "gfxColor.h"
-#include "gfxPlatform.h"
-#include "nsCOMPtr.h"
 #include "SurfaceFlags.h"
 #include "SurfacePipe.h"
 #include "SurfacePipeFactory.h"
+#include "gfxColor.h"
+#include "gfxPlatform.h"
+#include "gtest/gtest.h"
+#include "mozilla/Attributes.h"
+#include "mozilla/Maybe.h"
+#include "mozilla/gfx/2D.h"
+#include "mozilla/gtest/MozAssertions.h"
+#include "nsCOMPtr.h"
 
 class nsIInputStream;
 
@@ -313,7 +311,8 @@ already_AddRefed<Decoder> CreateTrivialDecoder();
 template <typename Func, typename... Configs>
 void WithFilterPipeline(Decoder* aDecoder, Func aFunc, bool aFinish,
                         const Configs&... aConfigs) {
-  auto pipe = MakeUnique<typename detail::FilterPipeline<Configs...>::Type>();
+  auto pipe =
+      std::make_unique<typename detail::FilterPipeline<Configs...>::Type>();
   nsresult rv = pipe->Configure(aConfigs...);
   ASSERT_NS_SUCCEEDED(rv);
 
@@ -344,7 +343,8 @@ void WithFilterPipeline(Decoder* aDecoder, Func aFunc,
 template <typename... Configs>
 void AssertConfiguringPipelineFails(Decoder* aDecoder,
                                     const Configs&... aConfigs) {
-  auto pipe = MakeUnique<typename detail::FilterPipeline<Configs...>::Type>();
+  auto pipe =
+      std::make_unique<typename detail::FilterPipeline<Configs...>::Type>();
   nsresult rv = pipe->Configure(aConfigs...);
 
   // Callers expect configuring the pipeline to fail.
@@ -527,11 +527,18 @@ ImageTestCase GreenFirstFrameAnimatedGIFTestCase();
 ImageTestCase GreenFirstFrameAnimatedPNGTestCase();
 ImageTestCase GreenFirstFrameAnimatedWebPTestCase();
 ImageTestCase GreenFirstFrameAnimatedAVIFTestCase();
+#ifdef MOZ_JXL
+ImageTestCase GreenFirstFrameAnimatedJXLTestCase();
+ImageTestCase LongAnimatedJXLTestCase();
+#endif
 
 ImageTestCase BlendAnimatedGIFTestCase();
 ImageTestCase BlendAnimatedPNGTestCase();
 ImageTestCase BlendAnimatedWebPTestCase();
 ImageTestCase BlendAnimatedAVIFTestCase();
+#ifdef MOZ_JXL
+ImageTestCase BlendAnimatedJXLTestCase();
+#endif
 
 ImageTestCase CorruptTestCase();
 ImageTestCase CorruptBMPWithTruncatedHeader();
@@ -559,6 +566,7 @@ ImageTestCase DownscaledBMPTestCase();
 ImageTestCase DownscaledICOTestCase();
 ImageTestCase DownscaledIconTestCase();
 ImageTestCase DownscaledWebPTestCase();
+ImageTestCase DownscaledLossyWebPTestCase();
 ImageTestCase DownscaledTransparentICOWithANDMaskTestCase();
 
 ImageTestCase TruncatedSmallGIFTestCase();
@@ -588,12 +596,22 @@ ImageTestCase TransparentAVIFTestCase();
 
 #ifdef MOZ_JXL
 ImageTestCase GreenJXLTestCase();
+ImageTestCase ProgressiveJXLTestCase();
 ImageTestCase DownscaledJXLTestCase();
 ImageTestCase LargeJXLTestCase();
+ImageTestCase LargeJXLReferenceWebPTestCase();
 ImageTestCase TransparentJXLTestCase();
+ImageTestCase CorruptJXLTestCase();
+ImageTestCase PerfRgbLosslessJXLTestCase();
+ImageTestCase PerfRgbAlphaLosslessJXLTestCase();
+ImageTestCase PerfRgbLossyJXLTestCase();
+ImageTestCase PerfRgbAlphaLossyJXLTestCase();
+ImageTestCase ProgressiveAlphaMultiGroupJXLTestCase();
 #endif
 
 ImageTestCase ExifResolutionTestCase();
+
+ImageTestCase ExifOrientationDownscaleJPGTestCase();
 
 RefPtr<Image> TestCaseToDecodedImage(const ImageTestCase&);
 

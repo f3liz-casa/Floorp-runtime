@@ -10,13 +10,14 @@ XPCOMUtils.defineLazyServiceGetter(
   lazy,
   "dragService",
   "@mozilla.org/widget/dragservice;1",
-  "nsIDragService"
+  Ci.nsIDragService
 );
 
 const HTML_NS = "http://www.w3.org/1999/xhtml";
 
 /**
  * The SubDialog resize callback.
+ *
  * @callback SubDialog~resizeCallback
  * @param {DOMNode} title - The title element of the dialog.
  * @param {xul:browser} frame - The browser frame of the dialog.
@@ -25,13 +26,14 @@ const HTML_NS = "http://www.w3.org/1999/xhtml";
 /**
  * SubDialog constructor creates a new subdialog from a template and appends
  * it to the parentElement.
+ *
  * @param {DOMNode} template - The template is copied to create a new dialog.
  * @param {DOMNode} parentElement - New dialog is appended onto parentElement.
- * @param {String}  id - A unique identifier for the dialog.
- * @param {Object}  dialogOptions - Dialog options object.
- * @param {String[]} [dialogOptions.styleSheets] - An array of URLs to additional
+ * @param {string}  id - A unique identifier for the dialog.
+ * @param {object}  dialogOptions - Dialog options object.
+ * @param {string[]} [dialogOptions.styleSheets] - An array of URLs to additional
  * stylesheets to inject into the frame.
- * @param {Boolean} [consumeOutsideClicks] - Whether to close the dialog when
+ * @param {boolean} [consumeOutsideClicks] - Whether to close the dialog when
  * its background overlay is clicked.
  * @param {SubDialog~resizeCallback} [resizeCallback] - Function to be called on
  * dialog resize.
@@ -79,6 +81,31 @@ export function SubDialog({
   this._overlay.hidden = false;
 }
 
+/**
+ * Whether an event that opens a dialog came from the keyboard. This follows
+ * the event, then the events that caused it, e.g. the keypress or the <key>
+ * element behind a command.
+ *
+ * @param {Event} [event]
+ * @returns {boolean}
+ */
+function isKeyboardEvent(event) {
+  while (event) {
+    // Commands of <key> elements don't carry the keypress as sourceEvent.
+    if (KeyboardEvent.isInstance(event) || event.target?.localName == "key") {
+      return true;
+    }
+    // Events with a known input source tell us directly. Others, like
+    // synthesized commands, may say through the event that caused them.
+    let inputSource = event.inputSource ?? MouseEvent.MOZ_SOURCE_UNKNOWN;
+    if (inputSource != MouseEvent.MOZ_SOURCE_UNKNOWN) {
+      return inputSource == MouseEvent.MOZ_SOURCE_KEYBOARD;
+    }
+    event = event.sourceEvent;
+  }
+  return false;
+}
+
 SubDialog.prototype = {
   _closingCallback: null,
   _closingEvent: null,
@@ -94,13 +121,16 @@ SubDialog.prototype = {
   _id: null,
   _titleElement: null,
   _closeButton: null,
+  // Whether the user opened the dialog with the keyboard, in which case its
+  // initial focus shows a focus ring.
+  _openedByKeyboard: false,
 
   get frameContentWindow() {
     return this._frame?.contentWindow;
   },
 
   get _window() {
-    return this._overlay?.ownerGlobal;
+    return this._overlay?.documentGlobal;
   },
 
   updateTitle(aEvent) {
@@ -140,14 +170,24 @@ SubDialog.prototype = {
     doc.insertBefore(contentStylesheet, doc.documentElement);
   },
 
+  /**
+   * @param {string} aURL - URL of the dialog document.
+   * @param {object} [options]
+   * @param {Event} [options.triggeringEvent] - The event that made the user
+   * open the dialog. If it came from the keyboard, the initial focus shows a
+   * focus ring.
+   * @param {...any} aParams - Arguments for the dialog's window.
+   */
   async open(
     aURL,
-    { features, closingCallback, closedCallback, sizeTo } = {},
+    { features, closingCallback, closedCallback, sizeTo, triggeringEvent } = {},
     ...aParams
   ) {
     if (["available", "limitheight"].includes(sizeTo)) {
       this._box.setAttribute("sizeto", sizeTo);
     }
+
+    this._openedByKeyboard = isKeyboardEvent(triggeringEvent);
 
     // Create a promise so consumers can tell when we're done setting up.
     this._dialogReady = new Promise(resolve => {
@@ -311,8 +351,12 @@ SubDialog.prototype = {
   handleEvent(aEvent) {
     switch (aEvent.type) {
       case "click":
-        // Close the dialog if the user clicked the overlay background, just
-        // like when the user presses the ESC key (case "command" below).
+        // Clicks on the close button close the dialog directly.
+        if (aEvent.target === this._closeButton) {
+          this._frame.contentWindow.close();
+          break;
+        }
+        // Otherwise, only clicks on the overlay background close the dialog.
         if (aEvent.target !== this._overlay) {
           break;
         }
@@ -321,9 +365,6 @@ SubDialog.prototype = {
           break;
         }
         this._frame.focus();
-        break;
-      case "command":
-        this._frame.contentWindow.close();
         break;
       case "dialogclosing":
         this._onDialogClosing(aEvent);
@@ -489,8 +530,10 @@ SubDialog.prototype = {
   },
 
   async resizeDialog() {
-    this.resizeHorizontally();
-    this.resizeVertically();
+    if (this._box.getAttribute("fixedsize") != "false") {
+      this.resizeHorizontally();
+      this.resizeVertically();
+    }
 
     this._overlay.dispatchEvent(
       new CustomEvent("dialogopen", {
@@ -663,9 +706,9 @@ SubDialog.prototype = {
    * Helper for converting em to px because an em value from the dialog window could
    * translate to something else in the host window, as font sizes may vary.
    *
-   * @param {String} val
+   * @param {string} val
    *                 A CSS length value.
-   * @return {String} The converted CSS length value, or the original value if
+   * @return {string} The converted CSS length value, or the original value if
    *                  no conversion took place.
    */
   _emToPx(val) {
@@ -758,7 +801,7 @@ SubDialog.prototype = {
       aEvent.preventDefault();
       aEvent.stopImmediatePropagation();
 
-      let parentWin = this._window.docShell.chromeEventHandler.ownerGlobal;
+      let parentWin = this._window.docShell.chromeEventHandler.documentGlobal;
       if (forward) {
         fm.moveFocus(parentWin, null, fm.MOVEFOCUS_FIRST, fm.FLAG_BYKEY);
       } else {
@@ -783,7 +826,8 @@ SubDialog.prototype = {
 
   /**
    * Setup dialog event listeners.
-   * @param {Boolean} [includeLoad] - Whether to register load/unload listeners.
+   *
+   * @param {boolean} [includeLoad] - Whether to register load/unload listeners.
    */
   _addDialogEventListeners(includeLoad = true) {
     if (this._window.isChromeWindow) {
@@ -808,9 +852,6 @@ SubDialog.prototype = {
       }
     }
 
-    // Make the close button work.
-    this._closeButton?.addEventListener("command", this);
-
     if (includeLoad) {
       // DOMFrameContentLoaded only fires on the top window
       this._window.addEventListener("DOMFrameContentLoaded", this, true);
@@ -832,7 +873,8 @@ SubDialog.prototype = {
 
   /**
    * Remove dialog event listeners.
-   * @param {Boolean} [includeLoad] - Whether to remove load/unload listeners.
+   *
+   * @param {boolean} [includeLoad] - Whether to remove load/unload listeners.
    */
   _removeDialogEventListeners(includeLoad = true) {
     if (this._window.isChromeWindow) {
@@ -850,12 +892,12 @@ SubDialog.prototype = {
       chromeBrowser.removeEventListener("DOMTitleChanged", this, true);
     }
 
-    this._closeButton?.removeEventListener("command", this);
-
     if (includeLoad) {
       this._window.removeEventListener("DOMFrameContentLoaded", this, true);
       this._frame.removeEventListener("load", this, true);
-      this._frame.contentWindow.removeEventListener("dialogclosing", this);
+      if (this._frame.contentWindow) {
+        this._frame.contentWindow.removeEventListener("dialogclosing", this);
+      }
     }
 
     this._window.removeEventListener("keydown", this, true);
@@ -872,30 +914,34 @@ SubDialog.prototype = {
 
   /**
    * Focus the dialog content.
-   * If the embedded document defines a custom focus handler it will be called.
-   * Otherwise we will focus the first focusable element in the content window.
+   * If the embedded document defines a custom focus handler it will be called
+   * with isInitialFocus and `{ focusVisible }`, which says whether the focused
+   * element should show a focus ring (because the user opened the dialog with
+   * the keyboard) and can be passed as is to Element.focus(). Otherwise we
+   * will focus the first focusable element in the content window.
+   *
    * @param {boolean} [isInitialFocus] - Whether the dialog is focused for the
    * first time after opening.
    */
   focus(isInitialFocus = false) {
+    let focusVisible = this._openedByKeyboard;
     // If the content window has its own focus logic, hand off the focus call.
     let focusHandler = this._frame?.contentDocument?.subDialogSetDefaultFocus;
     if (focusHandler) {
-      focusHandler(isInitialFocus);
+      focusHandler(isInitialFocus, { focusVisible });
       return;
     }
     // Handle focus ourselves. Try to move the focus to the first element in
     // the content window.
     let fm = Services.focus;
 
-    // We're intentionally hiding the focus ring here for now per bug 1704882,
-    // but we aim to have a better fix that retains the focus ring for users
-    // that had brought up the dialog by keyboard in bug 1708261.
+    // The focus ring is hidden for mouse users per bug 1704882, but shown for
+    // users who brought up the dialog with the keyboard (bug 1708261).
     let focusedElement = fm.moveFocus(
       this._frame.contentWindow,
       null,
       fm.MOVEFOCUS_FIRST,
-      fm.FLAG_NOSHOWRING
+      focusVisible ? fm.FLAG_SHOWRING : fm.FLAG_NOSHOWRING
     );
     if (!focusedElement) {
       // Ensure the focus is pulled out of the content document even if there's
@@ -927,17 +973,17 @@ SubDialog.prototype = {
  */
 export class SubDialogManager {
   /**
-   * @param {Object} options - Dialog manager options.
+   * @param {object} options - Dialog manager options.
    * @param {DOMNode} options.dialogStack - Container element for all dialogs
    * this instance manages.
    * @param {DOMNode} options.dialogTemplate - Element to use as template for
    * constructing new dialogs.
-   * @param {Number} [options.orderType] - Whether dialogs should be ordered as
+   * @param {number} [options.orderType] - Whether dialogs should be ordered as
    * a stack or a queue.
-   * @param {Boolean} [options.allowDuplicateDialogs] - Whether to allow opening
+   * @param {boolean} [options.allowDuplicateDialogs] - Whether to allow opening
    * duplicate dialogs (same URI) at the same time. If disabled, opening a
    * dialog with the same URI as an existing dialog will be a no-op.
-   * @param {Object} options.dialogOptions - Options passed to every
+   * @param {object} options.dialogOptions - Options passed to every
    * SubDialog instance.
    * @see {@link SubDialog} for a list of dialog options.
    */
@@ -952,6 +998,7 @@ export class SubDialogManager {
      * New dialogs are pushed to the end of the _dialogs array.
      * Depending on the orderType either the last element (stack) or the first
      * element (queue) in the array will be the top and visible.
+     *
      * @type {SubDialog[]}
      */
     this._dialogs = [];
@@ -993,6 +1040,7 @@ export class SubDialogManager {
       allowDuplicateDialogs,
       sizeTo,
       hideContent,
+      triggeringEvent,
     } = {},
     ...aParams
   ) {
@@ -1040,6 +1088,7 @@ export class SubDialogManager {
         closingCallback,
         closedCallback,
         sizeTo,
+        triggeringEvent,
       },
       ...aParams
     );
@@ -1077,7 +1126,8 @@ export class SubDialogManager {
 
   /**
    * Abort open dialogs.
-   * @param {function} [filterFn] - Function which should return true for
+   *
+   * @param {Function} [filterFn] - Function which should return true for
    * dialogs that should be aborted and false for dialogs that should remain
    * open. Defaults to aborting all dialogs.
    */
@@ -1110,6 +1160,25 @@ export class SubDialogManager {
         this._onDialogClose(aEvent.detail.dialog);
         break;
       }
+      case "click": {
+        this._onClickSplitViewPanel(aEvent);
+        break;
+      }
+    }
+  }
+
+  _onClickSplitViewPanel(aEvent) {
+    const splitViewPanel =
+      aEvent.currentTarget.offsetParent.closest(".split-view-panel");
+    // If the dialog is within a split view panel and the panel is currently not
+    // selected, select corresponding tab.
+    if (splitViewPanel) {
+      const browser = splitViewPanel.querySelector("browser");
+      const tabbrowser = browser.getTabBrowser();
+      const tabbox = aEvent.currentTarget.offsetParent.closest("tabbox");
+      const tab = tabbrowser.getTabForBrowser(browser);
+      const tabstrip = tabbox.tabs;
+      tabstrip.selectedItem = tab;
     }
   }
 
@@ -1166,11 +1235,13 @@ export class SubDialogManager {
   _ensureStackEventListeners() {
     this._dialogStack.addEventListener("dialogopen", this);
     this._dialogStack.addEventListener("dialogclose", this);
+    this._dialogStack.addEventListener("click", this);
   }
 
   _removeStackEventListeners() {
     this._dialogStack.removeEventListener("dialogopen", this);
     this._dialogStack.removeEventListener("dialogclose", this);
+    this._dialogStack.removeEventListener("click", this);
   }
 }
 

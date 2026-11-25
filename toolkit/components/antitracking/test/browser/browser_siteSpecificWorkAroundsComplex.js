@@ -11,6 +11,7 @@ let db;
 
 /**
  * Load a tracker in third-party context.
+ *
  * @param {string} topLevelURL - The URL of the top level page to load.
  * @param {boolean} usePrivateWindow - Whether to use a private window.
  * @returns {Promise} A promise that resolves when the tracker is loaded or
@@ -65,6 +66,14 @@ async function loadTracker({ topLevelURL, usePrivateWindow }) {
 add_setup(async function () {
   await SpecialPowers.pushPrefEnv({
     set: [
+      // The url-classifier-exceptions allow list is url-classifier only, so
+      // keep it as the channel classifier where the content classifier is
+      // the default engine.
+      ["privacy.trackingprotection.content.mirror.mode", 0],
+      [
+        "privacy.trackingprotection.urlclassifier.disable_for_channel_classifier",
+        false,
+      ],
       // Add test tracker.
       ["urlclassifier.trackingTable.testEntries", "tracking.example.org"],
       [

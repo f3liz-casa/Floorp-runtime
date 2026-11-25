@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -9,16 +7,17 @@
 
 #include "InputData.h"  // for MultiTouchInput
 #include "Units.h"
+#include "apz/src/OverscrollHandoffState.h"
 #include "mozilla/RefCounted.h"  // for RefCounted
 #include "mozilla/RefPtr.h"      // for RefPtr
 #include "mozilla/StaticPrefs_apz.h"
+#include "mozilla/TimeStamp.h"   // for TimeStamp
 #include "mozilla/gfx/Matrix.h"  // for Matrix4x4
 #include "mozilla/layers/APZUtils.h"
-#include "mozilla/layers/LayersTypes.h"  // for TouchBehaviorFlags
 #include "mozilla/layers/AsyncDragMetrics.h"
+#include "mozilla/layers/LayersTypes.h"  // for TouchBehaviorFlags
 #include "mozilla/layers/TouchCounter.h"
-#include "mozilla/TimeStamp.h"  // for TimeStamp
-#include "nsTArray.h"           // for nsTArray
+#include "nsTArray.h"  // for nsTArray
 
 namespace mozilla {
 namespace layers {
@@ -26,6 +25,7 @@ namespace layers {
 class AsyncPanZoomController;
 class OverscrollHandoffChain;
 class CancelableBlockState;
+class BrowserGesturableBlockState;
 class TouchBlockState;
 class WheelBlockState;
 class DragBlockState;
@@ -58,6 +58,9 @@ class InputBlockState : public RefCounted<InputBlockState> {
   virtual ~InputBlockState() = default;
 
   virtual CancelableBlockState* AsCancelableBlock() { return nullptr; }
+  virtual BrowserGesturableBlockState* AsBrowserGesturableBlock() {
+    return nullptr;
+  }
   virtual TouchBlockState* AsTouchBlock() { return nullptr; }
   virtual const TouchBlockState* AsTouchBlock() const { return nullptr; }
   virtual WheelBlockState* AsWheelBlock() { return nullptr; }
@@ -79,7 +82,8 @@ class InputBlockState : public RefCounted<InputBlockState> {
 
   virtual bool ShouldDropEvents() const;
 
-  void SetScrolledApzc(AsyncPanZoomController* aApzc);
+  void SetScrolledApzc(AsyncPanZoomController* aApzc,
+                       const OverscrollHandoffState& aOverscrollHandoffState);
   AsyncPanZoomController* GetScrolledApzc() const;
   bool IsDownchainOfScrolledApzc(AsyncPanZoomController* aApzc) const;
 
@@ -209,6 +213,36 @@ class CancelableBlockState : public InputBlockState {
   bool mHasStateBeenReset;
 };
 
+// This class is for a gesture that may be used for browser's gesture such as
+// swipe. Before consuming this type of gesture, APZ needs to wait for the
+// response from the browser whether the gesture has been used for browser's
+// gesture.
+class BrowserGesturableBlockState : public CancelableBlockState {
+ public:
+  BrowserGesturableBlockState* AsBrowserGesturableBlock() override {
+    return this;
+  }
+
+  void SetNeedsToWaitForBrowserGestureResponse(
+      bool aWaitForBrowserGestureResponse);
+
+  bool IsWaitingForBrowserGestureResponse() const;
+
+  void SetBrowserGestureResponse(const BrowserGestureResponse aResponse);
+
+  bool ShouldDropEvents() const override;
+
+ protected:
+  // This is an intermediate class.
+  BrowserGesturableBlockState(const RefPtr<AsyncPanZoomController>& aTargetApzc,
+                              TargetConfirmationFlags aFlags);
+  // The waiting state
+  bool mWaitingForBrowserGestureResponse;
+  // Whether the browser is consuming this block as a gesture and so APZ should
+  // drop its events.
+  bool mStartedBrowserGesture;
+};
+
 /**
  * A single block of wheel events.
  */
@@ -270,9 +304,15 @@ class WheelBlockState : public CancelableBlockState {
   /**
    * Called to check and possibly end the transaction due to a timeout.
    *
+   * NOTE: This is marked as MOZ_CAN_RUN_SCRIPT_BOUNDARY because this may
+   * dispatch a chrome only event for some automated tests. However, it's
+   * enabled only with a pref and the content cannot listen to the event.
+   * Therefore, this may run script, but shouldn't cause any problems except
+   * when the specific tests does something tricky.
+   *
    * @return True if the transaction ended, false otherwise.
    */
-  bool MaybeTimeout(const TimeStamp& aTimeStamp);
+  MOZ_CAN_RUN_SCRIPT_BOUNDARY bool MaybeTimeout(const TimeStamp& aTimeStamp);
 
   /**
    * Update the wheel transaction state for a new event.
@@ -330,7 +370,7 @@ class DragBlockState : public CancelableBlockState {
 /**
  * A single block of pan gesture events.
  */
-class PanGestureBlockState : public CancelableBlockState {
+class PanGestureBlockState : public BrowserGesturableBlockState {
  public:
   PanGestureBlockState(const RefPtr<AsyncPanZoomController>& aTargetApzc,
                        TargetConfirmationFlags aFlags,
@@ -347,8 +387,6 @@ class PanGestureBlockState : public CancelableBlockState {
 
   PanGestureBlockState* AsPanGestureBlock() override { return this; }
 
-  bool ShouldDropEvents() const override;
-
   bool TimeoutContentResponse() override;
 
   /**
@@ -359,17 +397,11 @@ class PanGestureBlockState : public CancelableBlockState {
   bool WasInterrupted() const { return mInterrupted; }
 
   void SetNeedsToWaitForContentResponse(bool aWaitForContentResponse);
-  void SetNeedsToWaitForBrowserGestureResponse(
-      bool aWaitForBrowserGestureResponse);
-  void SetBrowserGestureResponse(BrowserGestureResponse aResponse);
 
   ScrollDirections GetAllowedScrollDirections() const {
     return mAllowedScrollDirections;
   }
 
-  bool IsWaitingForBrowserGestureResponse() const {
-    return mWaitingForBrowserGestureResponse;
-  }
   bool IsWaitingForContentResponse() const {
     return mWaitingForContentResponse;
   }
@@ -386,13 +418,6 @@ class PanGestureBlockState : public CancelableBlockState {
  private:
   bool mInterrupted;
   bool mWaitingForContentResponse;
-  // A pan gesture may be used for browser's swipe gestures so APZ needs to wait
-  // for the response from the browser whether the gesture has been used for
-  // swipe or not. This `mWaitingForBrowserGestureResponse` flag represents the
-  // waiting state. And below `mStartedBrowserGesture` represents the response
-  // from the browser.
-  bool mWaitingForBrowserGestureResponse;
-  bool mStartedBrowserGesture;
   ScrollDirections mAllowedScrollDirections;
 };
 
@@ -447,7 +472,7 @@ class PinchGestureBlockState : public CancelableBlockState {
  * be populated with some latency. The mAllowedTouchBehaviorSet and
  * mAllowedTouchBehaviors variables track this information.
  */
-class TouchBlockState : public CancelableBlockState {
+class TouchBlockState : public BrowserGesturableBlockState {
  public:
   explicit TouchBlockState(const RefPtr<AsyncPanZoomController>& aTargetApzc,
                            TargetConfirmationFlags aFlags,
@@ -533,7 +558,8 @@ class TouchBlockState : public CancelableBlockState {
    */
   bool UpdateSlopState(const MultiTouchInput& aInput,
                        bool aApzcCanConsumeEvents);
-  bool IsInSlop() const;
+  enum class InSlop : bool { No, Yes };
+  InSlop IsInSlop() const;
   bool ForLongTap() const { return mForLongTap; }
   void SetForLongTap() { mForLongTap = true; }
   bool WasLongTapProcessed() const { return mLongTapWasProcessed; }
@@ -567,11 +593,37 @@ class TouchBlockState : public CancelableBlockState {
    */
   uint32_t GetActiveTouchCount() const;
 
-  void DispatchEvent(const InputData& aEvent) const override;
+  /**
+   * Update the active touch count with the given input. This needs to be
+   * called for every input in this block, whether it is dispatched or dropped.
+   */
+  void UpdateTouchCounter(const MultiTouchInput& aInput) const;
+
   bool MustStayActive() override;
   const char* Type() override;
   TimeDuration GetTimeSinceBlockStart() const;
   bool IsTargetOriginallyConfirmed() const;
+
+  /**
+   * Returns true iff |aEvent| is the touchmove on which this block needs
+   * to wait for a content response (again) because:
+   *   1) this is the first touchmove bailing out of slop (|aWasInSlop|
+   *      is Yes), i.e. the block was in slop before |aEvent| arrived;
+   *   2) a long-tap event was already fired (or is waiting for its content
+   *      response);
+   *   3) there are APZ-aware event listeners (i.e. the target was not
+   *      originally confirmed) and;
+   *   4) the event block has not yet been prevented.
+   *
+   * Example scenario: content has two event listeners, one for `touchstart`
+   * and one for `touchmove`, and the `touchmove` handler calls
+   * preventDefault(). If the user keeps touching at a point until a long-tap
+   * event fires and then starts moving their finger, APZ has to wait for a
+   * content response twice -- once for `touchstart` and once for the first
+   * `touchmove` after the long-tap.
+   */
+  bool NeedsContentResponseAfterLongTap(const MultiTouchInput& aEvent,
+                                        InSlop aWasInSlop) const;
 
  private:
   nsTArray<TouchBehaviorFlags> mAllowedTouchBehaviors;

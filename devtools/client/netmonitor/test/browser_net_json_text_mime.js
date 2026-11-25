@@ -32,7 +32,7 @@ add_task(async function () {
   const requestsListStatus = requestItem.querySelector(".status-code");
   EventUtils.sendMouseEvent({ type: "mouseover" }, requestsListStatus);
   await waitUntil(() => requestsListStatus.title);
-  await waitForDOMIfNeeded(requestItem, ".requests-list-timings-total");
+  await waitForDOM(requestItem, ".requests-list-timings-total");
 
   await verifyRequestItemTarget(
     document,
@@ -50,7 +50,7 @@ add_task(async function () {
     }
   );
 
-  let wait = waitForDOM(document, "#response-panel .data-header");
+  let onDomUpdated = waitForDOM(document, "#response-panel .data-header");
   const waitForPropsView = waitForDOM(
     document,
     "#response-panel .properties-view",
@@ -59,25 +59,25 @@ add_task(async function () {
 
   store.dispatch(Actions.toggleNetworkDetails());
   clickOnSidebarTab(document, "response");
-  await Promise.all([wait, waitForPropsView]);
+  await Promise.all([onDomUpdated, waitForPropsView]);
 
   testJsonSectionInResponseTab();
 
-  wait = waitForDOM(document, "#response-panel .CodeMirror-code");
+  onDomUpdated = waitForDOM(document, "#response-panel .cm-content");
   const rawResponseToggle = document.querySelector(
     "#response-panel .raw-data-toggle-input .devtools-checkbox-toggle"
   );
   clickElement(rawResponseToggle, monitor);
-  await wait;
+  await onDomUpdated;
 
   testResponseTab();
 
   // Uncheck the toggle with the keyboard so we test Bug 1917296
   ok(rawResponseToggle.checked, "Raw toggle is checked");
-  wait = waitForDOM(document, "#response-panel .data-header");
+  onDomUpdated = waitForDOM(document, "#response-panel .data-header");
   rawResponseToggle.focus();
-  EventUtils.synthesizeKey("VK_SPACE", {}, rawResponseToggle.ownerGlobal);
-  await wait;
+  EventUtils.synthesizeKey("VK_SPACE", {}, rawResponseToggle.documentGlobal);
+  await onDomUpdated;
   ok(!rawResponseToggle.checked, "Raw toggle is unchecked");
 
   await teardown(monitor);
@@ -120,7 +120,7 @@ add_task(async function () {
       "The response json view has the intended visibility."
     );
     is(
-      tabpanel.querySelector(".CodeMirror-code") === null,
+      tabpanel.querySelector(".cm-content") === null,
       false,
       "The response editor has the intended visibility."
     );

@@ -158,6 +158,32 @@ void av1_nonrd_pick_inter_mode_sb(struct AV1_COMP *cpi,
                                   struct RD_STATS *rd_cost, BLOCK_SIZE bsize,
                                   PICK_MODE_CONTEXT *ctx);
 
+/*!\brief Sets the mode of a SEG_LVL_SKIP block for non-RD, without a search.
+ *
+ * \ingroup nonrd_mode_search
+ * Used for blocks in a skip segment, set by the active map or by an ROI map.
+ * The block is coded as inter GLOBALMV from the segment reference, or from
+ * LAST_FRAME if the segment has none, with no residual. The decoder infers
+ * the mode, the reference and skip. The motion mode is still coded, so its
+ * inputs are derived from the neighbors the same way the decoder does it.
+ *
+ * \param[in]    cpi            Top-level encoder structure
+ * \param[in]    x              Pointer to structure holding all the data for
+ *                              the current macroblock
+ * \param[in]    rd_cost        Struct to keep track of the RD information
+ * \param[in]    bsize          Current block size
+ * \param[in]    ctx            Structure to hold snapshot of coding context
+ *                              during the mode picking process
+ *
+ * \remark Nothing is returned. The MB_MODE_INFO struct inside x and ctx are
+ * set to the mode above, and rd_cost is set to zero rate and distortion.
+ */
+void av1_nonrd_pick_inter_mode_sb_seg_skip(const struct AV1_COMP *cpi,
+                                           struct macroblock *x,
+                                           struct RD_STATS *rd_cost,
+                                           BLOCK_SIZE bsize,
+                                           PICK_MODE_CONTEXT *ctx);
+
 void av1_rd_pick_inter_mode_sb_seg_skip(
     const struct AV1_COMP *cpi, struct TileDataEnc *tile_data,
     struct macroblock *x, int mi_row, int mi_col, struct RD_STATS *rd_cost,
@@ -291,11 +317,18 @@ static inline int prune_ref_by_selective_ref_frame(
     int closest_ref_frames = has_closest_ref_frames(
         ref_frame, cpi->ref_frame_dist_info.nearest_past_ref,
         cpi->ref_frame_dist_info.nearest_future_ref);
-    if (closest_ref_frames == 0) {
+    const int ref_idx0 = ref_frame[0] - LAST_FRAME;
+    const int ref_idx1 = ref_frame[1] - LAST_FRAME;
+    const int keep_comp_ref_pair_mask =
+        (cpi->keep_comp_ref_frame_mask & (1 << ref_idx0)) &&
+        (cpi->keep_comp_ref_frame_mask & (1 << ref_idx1));
+
+    // Don't prune references frame pairs which are important or closest.
+    if (!(keep_comp_ref_pair_mask || closest_ref_frames)) {
       // Prune reference frames which are not the closest to the current frame.
-      if (sf->inter_sf.prune_comp_ref_frames >= 2) {
+      if (sf->inter_sf.prune_comp_ref_frames >= 3) {
         return 1;
-      } else if (sf->inter_sf.prune_comp_ref_frames == 1) {
+      } else if (sf->inter_sf.prune_comp_ref_frames >= 1) {
         // Prune reference frames with non minimum pred_mv_sad.
         if (has_best_pred_mv_sad(ref_frame, x) == 0) return 1;
       }

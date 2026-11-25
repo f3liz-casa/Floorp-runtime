@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -8,18 +6,20 @@
 #define SwipeTracker_h
 
 #include "EventForwards.h"
-#include "mozilla/layers/AxisPhysicsMSDModel.h"
+#include "InputData.h"
+#include "Units.h"
 #include "mozilla/RefPtr.h"
 #include "mozilla/TimeStamp.h"
+#include "mozilla/layers/AxisPhysicsMSDModel.h"
+#include "nsIWeakReferenceUtils.h"
 #include "nsRefreshObservers.h"
-#include "Units.h"
 
 class nsIWidget;
 class nsRefreshDriver;
 
 namespace mozilla {
 
-class PanGestureInput;
+enum class SwipeInputSource : uint8_t { Touchscreen, Touchpad };
 
 /**
  * SwipeTracker turns PanGestureInput events into swipe events
@@ -50,13 +50,18 @@ class SwipeTracker final : public nsARefreshObserver {
   NS_INLINE_DECL_REFCOUNTING(SwipeTracker, override)
 
   SwipeTracker(nsIWidget& aWidget, const PanGestureInput& aSwipeStartEvent,
-               uint32_t aAllowedDirections, uint32_t aSwipeDirection);
+               uint32_t aAllowedDirections, uint32_t aSwipeDirection,
+               SwipeInputSource aInputSource);
 
   void Destroy();
 
+  void StartTracking(const PanGestureInput& aSwipeStartEvent);
+
   nsEventStatus ProcessEvent(const PanGestureInput& aEvent,
+                             SwipeInputSource aInputSource,
                              bool aProcessingFirstEvent = false);
   void CancelSwipe(const TimeStamp& aTimeStamp);
+  bool EventsAreControllingSwipe() const { return mEventsAreControllingSwipe; }
 
   static WidgetSimpleGestureEvent CreateSwipeGestureEvent(
       EventMessage aMsg, nsIWidget* aWidget,
@@ -65,7 +70,8 @@ class SwipeTracker final : public nsARefreshObserver {
   // nsARefreshObserver
   void WillRefresh(mozilla::TimeStamp aTime) override;
 
-  static bool CanTriggerSwipe(const PanGestureInput& aPanInput);
+  static bool CanTriggerSwipe(const PanGestureInput& aPanInput,
+                              SwipeInputSource aInputSource);
 
  protected:
   ~SwipeTracker();
@@ -79,10 +85,10 @@ class SwipeTracker final : public nsARefreshObserver {
   void StartAnimating(double aStartValue, double aTargetValue);
   void SwipeFinished(const TimeStamp& aTimeStamp);
   void UnregisterFromRefreshDriver();
-  bool SendSwipeEvent(EventMessage aMsg, uint32_t aDirection, double aDelta,
+  void SendSwipeEvent(EventMessage aMsg, uint32_t aDirection, double aDelta,
                       const TimeStamp& aTimeStamp);
 
-  nsIWidget& mWidget;
+  nsWeakPtr mWidget;
   RefPtr<nsRefreshDriver> mRefreshDriver;
   layers::AxisPhysicsMSDModel mAxis;
   const LayoutDeviceIntPoint mEventPosition;
@@ -90,12 +96,14 @@ class SwipeTracker final : public nsARefreshObserver {
   TimeStamp mLastAnimationFrameTime;
   const uint32_t mAllowedDirections;
   const uint32_t mSwipeDirection;
+  const SwipeInputSource mInputSource;
   double mGestureAmount = 0.0;
   double mCurrentVelocity = 0.0;
   bool mDeltaTypeIsPage = false;
   bool mEventsAreControllingSwipe = true;
   bool mEventsHaveStartedNewGesture = false;
   bool mRegisteredWithRefreshDriver = false;
+  bool mLastComputedSwipeSuccess = false;
 };
 
 struct SwipeEventQueue {

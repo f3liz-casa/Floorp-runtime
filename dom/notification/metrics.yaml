@@ -67,19 +67,94 @@ web_notification:
     notification_emails:
       - krosylight@mozilla.com
     expires: never
-  icon_url_encoding:
+  push_subscribe_origin:
     type: labeled_counter
     description: >
-      The encoding of the notification icon URL
+      The category of the origin that calls PushManager.subscribe().
     labels:
-      - utf8
-      - document_charset
-      - either_way
-      - neither_way
+      - first_party
+      - third_party
+      - nested_first_party
     bugs:
       - https://bugzilla.mozilla.org/show_bug.cgi?id=1914203
     data_reviews:
       - https://bugzilla.mozilla.org/show_bug.cgi?id=1914203
     notification_emails:
       - krosylight@mozilla.com
-    expires: 156
+    expires: never
+  shown:
+    type: event
+    description: >
+      The event of a notification being shown to the user.
+    extra_keys:
+      site_category:
+        description: Category of the site that triggered the notification
+        type: string
+    bugs:
+      - https://bugzilla.mozilla.org/show_bug.cgi?id=2046221
+    data_reviews:
+      - https://bugzilla.mozilla.org/show_bug.cgi?id=2046221
+    notification_emails:
+      - krosylight@mozilla.com
+    expires: 189
+  clicked:
+    type: event
+    description: >
+      The event of a notification being clicked by the user.
+    extra_keys:
+      site_category:
+        description: Category of the site that triggered the notification
+        type: string
+      action:
+        description: How this click happened
+        type: string
+      app_state_before_click:
+        description: >
+          The state of the application before the notification was clicked.
+          One of `foreground`, `background_with_window`,
+          `background_no_window`, `closed` or `unknown`. Only determined on
+          Windows and macOS. `background_no_window` means Firefox was running
+          with no browser windows open. `closed` means the click launched
+          Firefox because it wasn't running, and is only reported on Windows,
+          as macOS removes Firefox's notifications when it quits.
+        type: string
+    bugs:
+      - https://bugzilla.mozilla.org/show_bug.cgi?id=2046221
+      - https://bugzilla.mozilla.org/show_bug.cgi?id=2082836
+    data_reviews:
+      - https://bugzilla.mozilla.org/show_bug.cgi?id=2046221
+      - https://bugzilla.mozilla.org/show_bug.cgi?id=2082836
+    notification_emails:
+      - krosylight@mozilla.com
+    expires: 189
+  ignored:
+    type: event
+    description: >
+      The event of a notification being ignored by the user, letting the
+      notification enter the notification center.
+    extra_keys:
+      site_category:
+        description: Category of the site that triggered the notification
+        type: string
+    bugs:
+      - https://bugzilla.mozilla.org/show_bug.cgi?id=2046221
+    data_reviews:
+      - https://bugzilla.mozilla.org/show_bug.cgi?id=2046221
+    notification_emails:
+      - krosylight@mozilla.com
+    expires: 189
+  dismissed:
+    type: event
+    description: >
+      The event of a notification being dismissed by the user.
+    extra_keys:
+      site_category:
+        description: Category of the site that triggered the notification
+        type: string
+    bugs:
+      - https://bugzilla.mozilla.org/show_bug.cgi?id=2046221
+    data_reviews:
+      - https://bugzilla.mozilla.org/show_bug.cgi?id=2046221
+    notification_emails:
+      - krosylight@mozilla.com
+    expires: 189

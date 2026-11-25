@@ -15,58 +15,48 @@ def make_differential_metrics(
     metrics = []
 
     # Setup memory differentials
-    metrics.extend(
-        [
-            {
-                "name": f"{mem_type}-{category}-{differential_name}",
-                "unit": "Kb",
-                "values": [
-                    round(mem_usage - base_measures["mem"][mem_type][category], 2)
-                ],
-            }
-            for mem_type, mem_info in mem_measures.items()
-            for category, mem_usage in mem_info.items()
-        ]
-    )
-    metrics.extend(
-        [
-            {
-                "name": f"{mem_type}-total-{differential_name}",
-                "unit": "Kb",
-                "values": [
-                    round(
-                        sum(mem_info.values())
-                        - sum(base_measures["mem"][mem_type].values()),
-                        2,
-                    )
-                ],
-            }
-            for mem_type, mem_info in mem_measures.items()
-        ]
-    )
-
-    # Setup cpuTime differentials
-    metrics.extend(
-        [
-            {
-                "name": f"cpuTime-{category}-{differential_name}",
-                "unit": "ms",
-                "values": [cpu_time - base_measures["cpu"][category]],
-            }
-            for category, cpu_time in cpu_measures.items()
-        ]
-    )
-    metrics.append(
+    metrics.extend([
         {
-            "name": f"cpuTime-total-{differential_name}",
-            "unit": "ms",
+            "name": f"{mem_type}-{category}-{differential_name}",
+            "unit": "Kb",
+            "values": [round(mem_usage - base_measures["mem"][mem_type][category], 2)],
+        }
+        for mem_type, mem_info in mem_measures.items()
+        for category, mem_usage in mem_info.items()
+        if category in base_measures["mem"].get(mem_type, {})
+    ])
+    metrics.extend([
+        {
+            "name": f"{mem_type}-total-{differential_name}",
+            "unit": "Kb",
             "values": [
                 round(
-                    sum(cpu_measures.values()) - sum(base_measures["cpu"].values()), 2
+                    sum(mem_info.values())
+                    - sum(base_measures["mem"][mem_type].values()),
+                    2,
                 )
             ],
         }
-    )
+        for mem_type, mem_info in mem_measures.items()
+    ])
+
+    # Setup cpuTime differentials
+    metrics.extend([
+        {
+            "name": f"cpuTime-{category}-{differential_name}",
+            "unit": "ms",
+            "values": [cpu_time - base_measures["cpu"][category]],
+        }
+        for category, cpu_time in cpu_measures.items()
+        if category in base_measures.get("cpu", {})
+    ])
+    metrics.append({
+        "name": f"cpuTime-total-{differential_name}",
+        "unit": "ms",
+        "values": [
+            round(sum(cpu_measures.values()) - sum(base_measures["cpu"].values()), 2)
+        ],
+    })
 
     return metrics
 
@@ -82,14 +72,18 @@ def get_chrome_process_category(process, binary):
 
 
 def get_fenix_process_category(process, binary):
-    # In the future, we'll also need to catch media/utility procs
+    # In the future, we'll also need to catch media procs
     if "tab" in process:
         return "tab"
+    elif "utility" in process:
+        return "utility"
     elif f"{binary}" in process:
         return "main"
     elif "zygote" in process:
         return "zygote"
-    return process
+    # Process names may be tagged with "_disable_art_image_" (see bug 2005825)
+    # but that should be ignored for our category names.
+    return process.replace("_disable_art_image_", "")
 
 
 def get_category_for_process(process, binary):
@@ -143,13 +137,9 @@ def parse_memory_usage(mem_file, binary):
     for mem_type, mem_info in final_mems.items():
         for name, mem_usage in mem_info.items():
             final_name = get_category_for_process(name, binary)
-            if (
-                final_name == "zygote"
-                and measurements[mem_type].get("zygote", None) is None
-            ):
-                # Only add this process if it exists (it doesn't exist on fenix)
-                measurements[mem_type]["zygote"] = 0
-            measurements[mem_type][final_name] += mem_usage
+            measurements[mem_type][final_name] = (
+                measurements[mem_type].get(final_name, 0) + mem_usage
+            )
 
     return measurements
 
@@ -188,11 +178,7 @@ def parse_cpu_usage(cpu_file, binary):
         milliseconds = (((dt.minute * 60) + dt.second) * 1000) + (dt.microsecond / 1000)
 
         final_name = get_category_for_process(name, binary)
-        if final_name == "zygote" and cpu_times.get("zygote", None) is None:
-            # Only add this process if it exists (it doesn't exist on fenix)
-            cpu_times["zygote"] = 0
-
-        cpu_times[final_name] += milliseconds
+        cpu_times[final_name] = cpu_times.get(final_name, 0) + milliseconds
 
     return cpu_times
 
@@ -208,7 +194,11 @@ def main():
 
     perf_metrics = []
     base_measures = {}
-    for i, measurement_time in enumerate(("start", "10%", "50%", "end")):
+    measuring_intervals = ("start", "10%", "50%", "end")
+    if binary == "com.android.chrome":
+        measuring_intervals = ("start", "10%", "50%")
+
+    for i, measurement_time in enumerate(measuring_intervals):
         cpu_measures = parse_cpu_usage(cpu_info_files[i], binary)
         mem_measures = parse_memory_usage(mem_info_files[i], binary)
 
@@ -216,45 +206,37 @@ def main():
             base_measures["cpu"] = cpu_measures
             base_measures["mem"] = mem_measures
 
-        perf_metrics.extend(
-            [
-                {
-                    "name": f"cpuTime-{category}-{measurement_time}",
-                    "unit": "ms",
-                    "values": [cpu_time],
-                }
-                for category, cpu_time in cpu_measures.items()
-            ]
-        )
-        perf_metrics.append(
+        perf_metrics.extend([
             {
-                "name": f"cpuTime-total-{measurement_time}",
+                "name": f"cpuTime-{category}-{measurement_time}",
                 "unit": "ms",
-                "values": [round(sum(cpu_measures.values()), 2)],
+                "values": [cpu_time],
             }
-        )
+            for category, cpu_time in cpu_measures.items()
+        ])
+        perf_metrics.append({
+            "name": f"cpuTime-total-{measurement_time}",
+            "unit": "ms",
+            "values": [round(sum(cpu_measures.values()), 2)],
+        })
 
-        perf_metrics.extend(
-            [
-                {
-                    "name": f"{mem_type}-{category}-{measurement_time}",
-                    "unit": "Kb",
-                    "values": [round(mem_usage, 2)],
-                }
-                for mem_type, mem_info in mem_measures.items()
-                for category, mem_usage in mem_info.items()
-            ]
-        )
-        perf_metrics.extend(
-            [
-                {
-                    "name": f"{mem_type}-total-{measurement_time}",
-                    "unit": "Kb",
-                    "values": [round(sum(mem_info.values()), 2)],
-                }
-                for mem_type, mem_info in mem_measures.items()
-            ]
-        )
+        perf_metrics.extend([
+            {
+                "name": f"{mem_type}-{category}-{measurement_time}",
+                "unit": "Kb",
+                "values": [round(mem_usage, 2)],
+            }
+            for mem_type, mem_info in mem_measures.items()
+            for category, mem_usage in mem_info.items()
+        ])
+        perf_metrics.extend([
+            {
+                "name": f"{mem_type}-total-{measurement_time}",
+                "unit": "Kb",
+                "values": [round(sum(mem_info.values()), 2)],
+            }
+            for mem_type, mem_info in mem_measures.items()
+        ])
 
         if base_measures and run_background:
             if measurement_time == "10%":

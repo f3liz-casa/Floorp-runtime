@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim:set ts=2 sw=2 sts=2 et cindent: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -62,7 +60,7 @@ bool GetTaskDescription(mozilla::UniquePtr<wchar_t[]>& description) {
     return false;
   }
   NS_ConvertUTF8toUTF16 daTaskDescW(daTaskDesc);
-  description = mozilla::MakeUnique<wchar_t[]>(daTaskDescW.Length() + 1);
+  description = std::make_unique<wchar_t[]>(daTaskDescW.Length() + 1);
   wcsncpy(description.get(), daTaskDescW.get(), daTaskDescW.Length() + 1);
   return true;
 }
@@ -208,8 +206,7 @@ HRESULT RegisterTask(const wchar_t* uniqueToken,
       return hr;
     }
 
-    mozilla::UniquePtr<wchar_t[]> timeStr =
-        mozilla::MakeUnique<wchar_t[]>(kTimeStrMaxLen + 1);
+    auto timeStr = std::make_unique<wchar_t[]>(kTimeStrMaxLen + 1);
 
     if (wcsftime(timeStr.get(), kTimeStrMaxLen + 1, kTimeFormat, &now_tm) ==
         0) {

@@ -19,10 +19,18 @@ const {
 const {
   manifestReducer,
 } = require("resource://devtools/client/application/src/reducers/manifest-state.js");
+const {
+  sessionHistoryReducer,
+} = require("resource://devtools/client/application/src/reducers/session-history-state.js");
+const {
+  speculativeLoadsReducer,
+} = require("resource://devtools/client/application/src/reducers/speculative-loads-state.js");
 
 module.exports = combineReducers({
   manifest: manifestReducer,
   page: pageReducer,
-  workers: workersReducer,
+  sessionHistory: sessionHistoryReducer,
+  speculativeLoads: speculativeLoadsReducer,
   ui: uiReducer,
+  workers: workersReducer,
 });

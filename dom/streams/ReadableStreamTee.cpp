@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim:set ts=2 sw=2 sts=2 et cindent: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -7,6 +5,11 @@
 #include "ReadableStreamTee.h"
 
 #include "ReadIntoRequest.h"
+#include "ReadableByteStreamControllerAbstract.h"
+#include "ReadableStreamAbstract.h"
+#include "ReadableStreamBYOBReaderAbstract.h"
+#include "ReadableStreamDefaultControllerAbstract.h"
+#include "ReadableStreamDefaultReaderAbstract.h"
 #include "TeeState.h"
 #include "js/Exception.h"
 #include "js/TypeDecls.h"
@@ -14,11 +17,6 @@
 #include "mozilla/CycleCollectedJSContext.h"
 #include "mozilla/dom/ByteStreamHelpers.h"
 #include "mozilla/dom/Promise-inl.h"
-#include "mozilla/dom/ReadableByteStreamController.h"
-#include "mozilla/dom/ReadableStream.h"
-#include "mozilla/dom/ReadableStreamBYOBReader.h"
-#include "mozilla/dom/ReadableStreamDefaultController.h"
-#include "mozilla/dom/ReadableStreamDefaultReader.h"
 #include "mozilla/dom/ReadableStreamGenericReader.h"
 #include "mozilla/dom/UnderlyingSourceBinding.h"
 #include "mozilla/dom/UnderlyingSourceCallbackHelpers.h"
@@ -37,6 +35,14 @@ NS_IMPL_RELEASE_INHERITED(ReadableStreamDefaultTeeSourceAlgorithms,
 NS_INTERFACE_MAP_BEGIN_CYCLE_COLLECTION(
     ReadableStreamDefaultTeeSourceAlgorithms)
 NS_INTERFACE_MAP_END_INHERITING(UnderlyingSourceAlgorithmsBase)
+
+ReadableStreamDefaultTeeSourceAlgorithms::
+    ReadableStreamDefaultTeeSourceAlgorithms(TeeState* aTeeState,
+                                             TeeBranch aBranch)
+    : mTeeState(aTeeState), mBranch(aBranch) {}
+
+ReadableStreamDefaultTeeSourceAlgorithms::
+    ~ReadableStreamDefaultTeeSourceAlgorithms() = default;
 
 already_AddRefed<Promise>
 ReadableStreamDefaultTeeSourceAlgorithms::PullCallback(
@@ -67,6 +73,10 @@ NS_IMPL_RELEASE_INHERITED(ReadableStreamDefaultTeeReadRequest, ReadRequest)
 
 NS_INTERFACE_MAP_BEGIN_CYCLE_COLLECTION(ReadableStreamDefaultTeeReadRequest)
 NS_INTERFACE_MAP_END_INHERITING(ReadRequest)
+
+ReadableStreamDefaultTeeReadRequest::ReadableStreamDefaultTeeReadRequest(
+    TeeState* aTeeState)
+    : mTeeState(aTeeState) {}
 
 void ReadableStreamDefaultTeeReadRequest::ChunkSteps(
     JSContext* aCx, JS::Handle<JS::Value> aChunk, ErrorResult& aRv) {
@@ -292,13 +302,21 @@ class ByteStreamTeeSourceAlgorithms final
         return nullptr;
       }
 
-      JS::Rooted<JS::Value> reason1(aCx, mTeeState->Reason1());
+      JS::Rooted<JS::Value> reason1(aCx);
+      mTeeState->GetReason1(aCx, &reason1, aRv);
+      if (aRv.Failed()) {
+        return nullptr;
+      }
       if (!JS_SetElement(aCx, compositeReason, 0, reason1)) {
         aRv.StealExceptionFromJSContext(aCx);
         return nullptr;
       }
 
-      JS::Rooted<JS::Value> reason2(aCx, mTeeState->Reason2());
+      JS::Rooted<JS::Value> reason2(aCx);
+      mTeeState->GetReason2(aCx, &reason2, aRv);
+      if (aRv.Failed()) {
+        return nullptr;
+      }
       if (!JS_SetElement(aCx, compositeReason, 1, reason2)) {
         aRv.StealExceptionFromJSContext(aCx);
         return nullptr;
@@ -315,7 +333,7 @@ class ByteStreamTeeSourceAlgorithms final
       }
 
       // Step 3.3
-      mTeeState->CancelPromise()->MaybeResolve(cancelResult);
+      mTeeState->CancelPromise()->MaybeSafeResolve(cancelResult);
     }
 
     // Step 4.
@@ -408,8 +426,8 @@ struct PullWithDefaultReaderReadRequest final : public ReadRequest {
 
             ErrorResult rv;
             ReadableByteStreamControllerError(
-                mTeeState->Branch1()->Controller()->AsByte(), exceptionValue,
-                rv);
+                cx, mTeeState->Branch1()->Controller()->AsByte(),
+                exceptionValue, rv);
             if (rv.MaybeSetPendingException(
                     cx, "Error during ReadableByteStreamControllerError")) {
               return;
@@ -419,8 +437,8 @@ struct PullWithDefaultReaderReadRequest final : public ReadRequest {
             // ReadableByteStreamControllerError(branch2.[[controller]],
             // cloneResult.[[Value]]).
             ReadableByteStreamControllerError(
-                mTeeState->Branch2()->Controller()->AsByte(), exceptionValue,
-                rv);
+                cx, mTeeState->Branch2()->Controller()->AsByte(),
+                exceptionValue, rv);
             if (rv.MaybeSetPendingException(
                     cx, "Error during ReadableByteStreamControllerError")) {
               return;
@@ -435,7 +453,7 @@ struct PullWithDefaultReaderReadRequest final : public ReadRequest {
                     cx, "Error during ReadableByteStreamControllerError")) {
               return;
             }
-            mTeeState->CancelPromise()->MaybeResolve(promise);
+            mTeeState->CancelPromise()->MaybeSafeResolve(promise);
 
             // Step 4.2.4. Return.
             return;
@@ -696,14 +714,14 @@ class PullWithBYOBReader_ReadIntoRequest final : public ReadIntoRequest {
             // Step 5.2.1
 
             ReadableByteStreamControllerError(
-                byobBranch->Controller()->AsByte(), exception, rv);
+                cx, byobBranch->Controller()->AsByte(), exception, rv);
             if (rv.MaybeSetPendingException(cx)) {
               return;
             }
 
             // Step 5.2.2.
             ReadableByteStreamControllerError(
-                otherBranch->Controller()->AsByte(), exception, rv);
+                cx, otherBranch->Controller()->AsByte(), exception, rv);
             if (rv.MaybeSetPendingException(cx)) {
               return;
             }
@@ -715,7 +733,7 @@ class PullWithBYOBReader_ReadIntoRequest final : public ReadIntoRequest {
             if (rv.MaybeSetPendingException(cx)) {
               return;
             }
-            mTeeState->CancelPromise()->MaybeResolve(cancelPromise);
+            mTeeState->CancelPromise()->MaybeSafeResolve(cancelPromise);
 
             // Step 5.2.4.
             return;
@@ -937,7 +955,7 @@ void ForwardReaderError(TeeState* aTeeState,
         // !ReadableByteStreamControllerError(branch1.[[controller]], r).
         MOZ_ASSERT(aTeeState->Branch1()->Controller()->IsByte());
         ReadableByteStreamControllerError(
-            aTeeState->Branch1()->Controller()->AsByte(), aValue, aRv);
+            aCx, aTeeState->Branch1()->Controller()->AsByte(), aValue, aRv);
         if (aRv.Failed()) {
           return;
         }
@@ -946,7 +964,7 @@ void ForwardReaderError(TeeState* aTeeState,
         // !ReadableByteStreamControllerError(branch2.[[controller]], r).
         MOZ_ASSERT(aTeeState->Branch2()->Controller()->IsByte());
         ReadableByteStreamControllerError(
-            aTeeState->Branch2()->Controller()->AsByte(), aValue, aRv);
+            aCx, aTeeState->Branch2()->Controller()->AsByte(), aValue, aRv);
         if (aRv.Failed()) {
           return;
         }

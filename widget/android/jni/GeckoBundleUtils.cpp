@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -7,11 +5,10 @@
 #include "mozilla/jni/GeckoBundleUtils.h"
 
 #include "JavaBuiltins.h"
-#include "js/Warnings.h"
-#include "nsJSUtils.h"
-
 #include "js/Array.h"
+#include "js/Warnings.h"
 #include "js/experimental/TypedData.h"
+#include "nsJSUtils.h"
 
 namespace mozilla::jni {
 namespace detail {
@@ -74,7 +71,7 @@ nsresult BoxArrayPrimitive(JSContext* aCx, JS::Handle<JSObject*> aData,
                            jni::Object::LocalRef& aOut, size_t aLength,
                            JS::Handle<JS::Value> aElement) {
   JS::Rooted<JS::Value> element(aCx);
-  auto data = MakeUnique<Type[]>(aLength);
+  auto data = std::make_unique<Type[]>(aLength);
   data[0] = (aElement.get().*ToType)();
 
   for (size_t i = 1; i < aLength; i++) {

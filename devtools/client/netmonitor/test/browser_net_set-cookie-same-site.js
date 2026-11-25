@@ -17,16 +17,13 @@ add_task(async function () {
 
   store.dispatch(Actions.batchEnable(false));
 
-  let wait = waitForNetworkEvents(monitor, 1);
-  await reloadBrowser();
-  await wait;
+  const onNetworkEvents = waitForNetworkEvents(monitor, 1);
+  await reloadSelectedTab();
+  await onNetworkEvents;
 
-  wait = waitForDOM(document, ".headers-overview");
-  EventUtils.sendMouseEvent(
-    { type: "mousedown" },
-    document.querySelectorAll(".request-list-item")[0]
-  );
-  await wait;
+  const onDomUpdated = waitForDOM(document, ".headers-overview");
+  clickOnRequestRow(document.querySelectorAll(".request-list-item")[0]);
+  await onDomUpdated;
 
   clickOnSidebarTab(document, "cookies");
 

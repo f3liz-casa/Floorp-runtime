@@ -19,7 +19,7 @@ add_task(async function () {
 
   store.dispatch(Actions.batchEnable(false));
 
-  const beaconTab = await addTab(SEND_BEACON_URL);
+  const beaconTab = await addTab(SEND_BEACON_URL, { background: true });
   info("Beacon tab added successfully.");
 
   is(
@@ -28,12 +28,13 @@ add_task(async function () {
     "The requests menu should be empty."
   );
 
-  const wait = waitForNetworkEvents(monitor, 1);
+  const onNetworkEvents = waitForNetworkEvents(monitor, 1);
   await SpecialPowers.spawn(beaconTab.linkedBrowser, [], async function () {
     content.wrappedJSObject.performRequests();
   });
-  await reloadBrowser({ browser: tab.linkedBrowser });
-  await wait;
+  is(gBrowser.selectedTab, tab, "The test page is still the selected tab");
+  await reloadSelectedTab();
+  await onNetworkEvents;
 
   is(
     store.getState().requests.requests.length,

@@ -1,14 +1,12 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 #include "CompositorThread.h"
 
 #include "CompositorBridgeParent.h"
-#include "gfxGradientCache.h"
 #include "MainThreadUtils.h"
 #include "VRManagerParent.h"
+#include "gfxGradientCache.h"
 #include "mozilla/BackgroundHangMonitor.h"
 #include "mozilla/SpinEventLoopUntil.h"
 #include "mozilla/gfx/gfxVars.h"
@@ -18,6 +16,9 @@
 #include "mozilla/media/MediaSystemResourceService.h"
 #include "nsThread.h"
 #include "nsThreadUtils.h"
+#ifdef XP_WIN
+#  include "mozilla/WindowsUserHandleValidation.h"
+#endif
 
 namespace mozilla {
 namespace layers {
@@ -39,7 +40,7 @@ CompositorThreadHolder* CompositorThreadHolder::GetSingleton() {
 
 CompositorThreadHolder::CompositorThreadHolder()
     : mCompositorThread(CreateCompositorThread()) {
-  MOZ_ASSERT(NS_IsMainThread());
+  MOZ_RELEASE_ASSERT(NS_IsMainThread());
 }
 
 CompositorThreadHolder::~CompositorThreadHolder() {
@@ -48,10 +49,10 @@ CompositorThreadHolder::~CompositorThreadHolder() {
 
 /* static */ already_AddRefed<nsIThread>
 CompositorThreadHolder::CreateCompositorThread() {
-  MOZ_ASSERT(NS_IsMainThread());
+  MOZ_RELEASE_ASSERT(NS_IsMainThread());
 
-  MOZ_ASSERT(!sCompositorThreadHolder,
-             "The compositor thread has already been started!");
+  MOZ_RELEASE_ASSERT(!sCompositorThreadHolder,
+                     "The compositor thread has already been started!");
 
   // When the CanvasRenderer thread is disabled, WebGL may be handled on this
   // thread, requiring a bigger stack size. See: CanvasManagerParent::Init
@@ -96,6 +97,9 @@ CompositorThreadHolder::CreateCompositorThread() {
                 2048);
             nsCOMPtr<nsIThread> thread = NS_GetCurrentThread();
             static_cast<nsThread*>(thread.get())->SetUseHangMonitor(true);
+#ifdef XP_WIN
+            mozilla::ForceToGuiThreadAndFixTebValidateHandlesFlag();
+#endif
           }),
       {.stackSize = stackSize});
 
@@ -109,9 +113,9 @@ CompositorThreadHolder::CreateCompositorThread() {
 }
 
 void CompositorThreadHolder::Start() {
-  MOZ_ASSERT(NS_IsMainThread(), "Should be on the main Thread!");
-  MOZ_ASSERT(!sCompositorThreadHolder,
-             "The compositor thread has already been started!");
+  MOZ_RELEASE_ASSERT(NS_IsMainThread(), "Should be on the main Thread!");
+  MOZ_RELEASE_ASSERT(!sCompositorThreadHolder,
+                     "The compositor thread has already been started!");
 
   // We unset the holder instead of asserting because failing to start the
   // compositor thread may not be a fatal error. As long as this succeeds in
@@ -128,7 +132,7 @@ void CompositorThreadHolder::Start() {
 }
 
 void CompositorThreadHolder::Shutdown() {
-  MOZ_ASSERT(NS_IsMainThread(), "Should be on the main Thread!");
+  MOZ_RELEASE_ASSERT(NS_IsMainThread(), "Should be on the main Thread!");
   if (!sCompositorThreadHolder) {
     // We've already shutdown or never started.
     return;
@@ -136,7 +140,9 @@ void CompositorThreadHolder::Shutdown() {
 
   ImageBridgeParent::Shutdown();
   gfx::VRManagerParent::Shutdown();
-  MediaSystemResourceService::Shutdown();
+  CompositorThread()->Dispatch(
+      NS_NewRunnableFunction("MediaSystemResourceService::Shutdown",
+                             []() { MediaSystemResourceService::Shutdown(); }));
   CompositorManagerParent::Shutdown();
   gfx::gfxGradientCache::Shutdown();
 

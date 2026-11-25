@@ -2,6 +2,9 @@
 # License, v. 2.0. If a copy of the MPL was not distributed with this file,
 # You can obtain one at http://mozilla.org/MPL/2.0/.
 import json
+import logging
+import threading
+import time
 from collections import defaultdict, namedtuple
 
 from mozsystemmonitor.resourcemonitor import SystemResourceMonitor
@@ -15,8 +18,24 @@ from mozharness.mozilla.automation import (
     TBPL_WARNING,
     TBPL_WORST_LEVEL_TUPLE,
 )
-from mozharness.mozilla.testing.errors import TinderBoxPrintRe
+from mozharness.mozilla.testing.errors import TinderBoxPrintRe, TreeherderErrorParser
 from mozharness.mozilla.testing.unittest import tbox_print_summary
+
+
+class _ConsoleLineHandler(logging.Handler):
+    """Shows each record mozharness logs to a callback. The callback runs with
+    the handler lock held: it must not log.
+    """
+
+    def __init__(self, callback):
+        super().__init__()
+        self._callback = callback
+
+    def emit(self, record):
+        try:
+            self._callback(record)
+        except Exception:
+            self.handleError(record)
 
 
 class StructuredOutputParser(OutputParser):
@@ -34,13 +53,26 @@ class StructuredOutputParser(OutputParser):
             self.strict = True
 
         self.suite_category = kwargs.pop("suite_category", None)
+        # Path of the summary.jsonl to append test records to, or None.
+        self.test_summary_file = kwargs.pop("test_summary_file", None)
 
         tbpl_compact = kwargs.pop("log_compact", False)
-        super(StructuredOutputParser, self).__init__(**kwargs)
+        super().__init__(**kwargs)
         self.allow_crashes = kwargs.pop("allow_crashes", False)
 
         mozlog = self._get_mozlog_module()
         self.formatter = mozlog.formatters.TbplFormatter(compact=tbpl_compact)
+        self.test_summary_formatter = (
+            mozlog.formatters.TestSummaryFormatter() if self.test_summary_file else None
+        )
+        self._test_summary_fh = None
+        self._error_parser = TreeherderErrorParser()
+        self._error_lines = []
+        self._summary_lock = threading.RLock()
+        self._parsing = False
+        self._last_error_line = None
+        self._console_formatter = None
+        self._console_line_handler = None
         self.handler = mozlog.handlers.StatusHandler()
         self.log_actions = mozlog.structuredlog.log_actions()
 
@@ -61,13 +93,21 @@ class StructuredOutputParser(OutputParser):
 
     def _handle_unstructured_output(self, line, log_output=True):
         self.log_output = log_output
-        return super(StructuredOutputParser, self).parse_single_line(line)
+        return super().parse_single_line(line)
 
     def parse_single_line(self, line):
         """Parses a line of log output from the child process and passes
         it to mozlog to update the overall status of the run.
         Re-emits the logged line in human-readable format.
         """
+        self._ensure_observing()
+        self._parsing = True
+        try:
+            self._parse_single_line(line)
+        finally:
+            self._flush_error_lines()
+
+    def _parse_single_line(self, line):
         level = INFO
         tbpl_level = TBPL_SUCCESS
 
@@ -99,13 +139,38 @@ class StructuredOutputParser(OutputParser):
 
         self.prev_was_unstructured = False
 
+        if "time" not in data:
+            data["time"] = int(time.time() * 1000)
+
         self.handler(data)
 
         action = data["action"]
         if action == "test_start":
-            SystemResourceMonitor.begin_marker("test", data["test"])
+            SystemResourceMonitor.begin_test(data)
         elif action == "test_end":
-            SystemResourceMonitor.end_marker("test", data["test"])
+            SystemResourceMonitor.end_test(data)
+        elif action == "test_status":
+            SystemResourceMonitor.test_status(data)
+        elif action == "log":
+            SystemResourceMonitor.test_status(data)
+        elif action == "process_output":
+            SystemResourceMonitor.test_status(data)
+        elif action == "crash":
+            SystemResourceMonitor.crash(data)
+        elif action == "lsan_leak":
+            SystemResourceMonitor.lsan_leak(data)
+        elif action == "lsan_summary":
+            SystemResourceMonitor.lsan_summary(data)
+        elif action == "tsan_error":
+            SystemResourceMonitor.tsan_error(data)
+        elif action == "assertion_failure":
+            SystemResourceMonitor.assertion_failure(data)
+        elif action == "ubsan_error":
+            SystemResourceMonitor.ubsan_error(data)
+        elif action == "mozleak_object":
+            SystemResourceMonitor.mozleak_object(data)
+        elif action == "mozleak_total":
+            SystemResourceMonitor.mozleak_total(data)
         elif action == "suite_start":
             SystemResourceMonitor.begin_marker("suite", data["source"])
         elif action == "suite_end":
@@ -114,8 +179,6 @@ class StructuredOutputParser(OutputParser):
             SystemResourceMonitor.begin_marker("test", data["name"])
         elif action == "group_end":
             SystemResourceMonitor.end_marker("test", data["name"])
-        if line.startswith("TEST-UNEXPECTED-FAIL"):
-            SystemResourceMonitor.record_event(line)
 
         if action in ("log", "process_output"):
             if action == "log":
@@ -140,6 +203,91 @@ class StructuredOutputParser(OutputParser):
         if log_data is not None:
             self.log(log_data, level=level)
             self.update_levels(tbpl_level, level)
+        self._write_test_summary(data)
+
+    def _write_test_summary(self, data):
+        """Append the record to the summary file, if one was requested."""
+        if self.test_summary_formatter is None:
+            return
+        record = self.test_summary_formatter(data)
+        if record is None:
+            return
+        self._write_summary_text(record)
+
+    def _write_summary_text(self, text):
+        with self._summary_lock:
+            if self._test_summary_fh is None:
+                self._test_summary_fh = open(
+                    self.test_summary_file, "a", encoding="utf-8"
+                )
+            self._test_summary_fh.write(text)
+            self._test_summary_fh.flush()
+
+    def _observe_console_line(self, record):
+        """Add an `error_line` summary record for each console line
+        Treeherder's failure summary would show.
+
+        The record carries the mozharness `level` and `message` of the line
+        (its text without the `HH:MM:SS LEVEL - ` prefix, right-stripped as
+        Treeherder stores it) and its `time` in milliseconds, like the other
+        records: consumers find the line in the task log from its text and
+        time. Every selected line gets one, including lines whose
+        structured record is already in the file, so the records alone
+        reproduce the failure summary. Lines identical to the previous
+        selected line, prefix included, are skipped, as Treeherder does.
+        A line logged while a structured record is parsed is written after
+        that record; any other line is written at once, so a FATAL line is
+        kept although SystemExit is raised right after it is logged.
+        Lines are observed from the first line the parser parses, or from
+        evaluate_parser(), until finish(): the worker preamble and the lines
+        mozharness logs between two harness runs are not.
+        """
+        message = record.getMessage()
+        if not self._error_parser.is_error_line(record.levelname, message):
+            return
+        line = self._console_formatter.format(record).rstrip()
+        with self._summary_lock:
+            if line == self._last_error_line:
+                return
+            self._last_error_line = line
+            error_line = {
+                "action": "error_line",
+                "time": int(record.created * 1000),
+                "level": record.levelname,
+                "message": message.rstrip(),
+            }
+            if self._parsing:
+                self._error_lines.append(error_line)
+            else:
+                self._write_summary_text(json.dumps(error_line) + "\n")
+
+    def _ensure_observing(self):
+        if self._console_line_handler or not self.test_summary_file:
+            return
+        logger = getattr(self.log_obj, "logger", None)
+        if logger is None:
+            return
+        self._console_formatter = self.log_obj.get_log_formatter()
+        self._console_line_handler = _ConsoleLineHandler(self._observe_console_line)
+        logger.addHandler(self._console_line_handler)
+
+    def _flush_error_lines(self):
+        with self._summary_lock:
+            self._parsing = False
+            records, self._error_lines = self._error_lines, []
+            for record in records:
+                self._write_summary_text(json.dumps(record) + "\n")
+
+    def finish(self):
+        """Release per-run resources; call from a finally block once the
+        harness process has exited and its results have been evaluated."""
+        if self._console_line_handler:
+            self.log_obj.logger.removeHandler(self._console_line_handler)
+            self._console_line_handler = None
+        self._last_error_line = None
+        if self._test_summary_fh is not None:
+            self._test_summary_fh.close()
+            self._test_summary_fh = None
 
     def _subtract_tuples(self, old, new):
         items = set(list(old.keys()) + list(new.keys()))
@@ -151,6 +299,7 @@ class StructuredOutputParser(OutputParser):
         return merged
 
     def evaluate_parser(self, return_code, success_codes=None, previous_summary=None):
+        self._ensure_observing()
         success_codes = success_codes or [0]
         summary = self.handler.summarize()
 

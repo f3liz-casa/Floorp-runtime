@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -17,13 +15,11 @@
 #include <utility>
 
 #include "mozilla/Assertions.h"
-#include "mozilla/Attributes.h"
 #include "mozilla/BasePrincipal.h"
+#include "mozilla/ChromeScriptPath.h"
 #include "mozilla/HangTypes.h"
 #include "mozilla/IntegerPrintfMacros.h"
-#include "mozilla/MemoryChecking.h"
 #include "mozilla/Sprintf.h"
-#include "mozilla/UniquePtr.h"
 #include "nsThread.h"
 
 #ifdef __GNUC__
@@ -36,8 +32,6 @@
 #endif
 
 #include <string.h>
-#include <vector>
-#include <cstdlib>
 
 #ifdef XP_LINUX
 #  include <ucontext.h>
@@ -205,9 +199,13 @@ void ThreadStackHelper::CollectJitReturnAddr(void* aAddr) {
   TryAppendFrame(HangEntryJit());
 }
 
-void ThreadStackHelper::CollectWasmFrame(JS::ProfilingCategoryPair aCategory,
-                                         const char* aLabel) {
+void ThreadStackHelper::CollectWasmOrSyncJITFrame(
+    JS::ProfilingCategoryPair aCategory, const char* aLabel,
+    uint32_t aSourceId) {
   MOZ_RELEASE_ASSERT(mStackToFill);
+  // BHR performs asynchronous sampling as the stack collection happens on the
+  // "BHMgr Monitor" thread. That's why, this method only receives WASM frames,
+  // never sync JIT frames.
   // We don't want to collect WASM frames, as they are probably for content, so
   // we just add a "(content wasm)" frame.
   TryAppendFrame(HangEntryWasm());
@@ -221,35 +219,6 @@ bool IsChromeJSScript(JSScript* aScript) {
 
   JSPrincipals* const principals = JS_GetScriptPrincipals(aScript);
   return nsJSPrincipals::get(principals)->IsSystemPrincipal();
-}
-
-// Get the full path after the URI scheme, if the URI matches the scheme.
-// For example, GetFullPathForScheme("a://b/c/d/e", "a://") returns "b/c/d/e".
-template <size_t LEN>
-const char* GetFullPathForScheme(const char* filename,
-                                 const char (&scheme)[LEN]) {
-  // Account for the null terminator included in LEN.
-  if (!strncmp(filename, scheme, LEN - 1)) {
-    return filename + LEN - 1;
-  }
-  return nullptr;
-}
-
-// Get the full path after a URI component, if the URI contains the component.
-// For example, GetPathAfterComponent("a://b/c/d/e", "/c/") returns "d/e".
-template <size_t LEN>
-const char* GetPathAfterComponent(const char* filename,
-                                  const char (&component)[LEN]) {
-  const char* found = nullptr;
-  const char* next = strstr(filename, component);
-  while (next) {
-    // Move 'found' to end of the component, after the separator '/'.
-    // 'LEN - 1' accounts for the null terminator included in LEN,
-    found = next + LEN - 1;
-    // Resume searching before the separator '/'.
-    next = strstr(found - 1, component);
-  }
-  return found;
 }
 
 }  // namespace
@@ -352,33 +321,7 @@ void ThreadStackHelper::CollectProfilingStackFrame(
 
   unsigned lineno = JS_PCToLineNumber(aFrame.script(), aFrame.pc());
 
-  // Some script names are in the form "foo -> bar -> baz".
-  // Here we find the origin of these redirected scripts.
-  const char* basename = GetPathAfterComponent(filename, " -> ");
-  if (basename) {
-    filename = basename;
-  }
-
-  // Strip chrome:// or resource:// off of the filename if present.
-  basename = GetFullPathForScheme(filename, "chrome://");
-  if (!basename) {
-    basename = GetFullPathForScheme(filename, "resource://");
-  }
-  if (!basename) {
-    // If we're in an add-on script, under the {profile}/extensions
-    // directory, extract the path after the /extensions/ part.
-    basename = GetPathAfterComponent(filename, "/extensions/");
-  }
-  if (!basename) {
-    // Only keep the file base name for paths outside the above formats.
-    basename = strrchr(filename, '/');
-    basename = basename ? basename + 1 : filename;
-    // Look for Windows path separator as well.
-    filename = strrchr(basename, '\\');
-    if (filename) {
-      basename = filename + 1;
-    }
-  }
+  const char* basename = GetReportableChromeScriptPath(filename);
 
   len +=
       SprintfBuf(buffer + len, sizeof(buffer) - len, "%s:%u", basename, lineno);

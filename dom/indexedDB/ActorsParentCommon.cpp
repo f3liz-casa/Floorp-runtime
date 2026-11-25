@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -22,7 +20,6 @@
 
 #include <algorithm>
 #include <numeric>
-#include <type_traits>
 
 #include "MainThreadUtils.h"
 #include "SafeRefPtr.h"
@@ -66,7 +63,7 @@ class nsIFile;
 
 namespace mozilla::dom::indexedDB {
 
-static_assert(SNAPPY_VERSION == 0x010200);
+static_assert(SNAPPY_VERSION == 0x010300);
 
 using mozilla::ipc::IsOnBackgroundThread;
 
@@ -416,11 +413,11 @@ GetStructuredCloneReadInfoFromExternalBlob(
 
   Maybe<CipherKey> maybeKey;
 
-  if (aFileManager.IsInPrivateBrowsingMode()) {
-    nsCString fileKeyId;
-    fileKeyId.AppendInt(file.FileInfo().Id());
-
-    maybeKey = aFileManager.MutableCipherKeyManagerRef().Get(fileKeyId);
+  if (aFileManager.UsesEncryption()) {
+    QM_TRY_UNWRAP(maybeKey,
+                  aFileManager.MutableCipherKeyManagerRef().Get(
+                      aFileManager.CipherKeyIdForFile(file.FileInfo().Id())));
+    QM_TRY(OkIf(maybeKey.isSome()), Err(NS_ERROR_FAILURE));
   }
 
   auto data = JSStructuredCloneData{JS::StructuredCloneScope::DifferentProcess};

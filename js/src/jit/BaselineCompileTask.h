@@ -1,6 +1,4 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- * vim: set ts=8 sts=2 et sw=2 tw=80:
- * This Source Code Form is subject to the terms of the Mozilla Public
+/* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
@@ -27,12 +25,14 @@ class BaselineSnapshot {
   uint32_t baseWarmUpThreshold_;
   bool isIonCompileable_;
   bool compileDebugInstrumentation_;
+  bool compileDebugModeOSRResumeTargets_;
 
  public:
   BaselineSnapshot(JSScript* script,
                    GlobalLexicalEnvironmentObject* globalLexical,
                    JSObject* globalThis, uint32_t baseWarmUpThreshold,
-                   bool isIonCompileable, bool compileDebugInstrumentation)
+                   bool isIonCompileable, bool compileDebugInstrumentation,
+                   bool compileDebugModeOSRResumeTargets)
       : script_(script),
         globalLexical_(globalLexical),
         globalThis_(globalThis),
@@ -41,7 +41,8 @@ class BaselineSnapshot {
         nargs_(script->function() ? script->function()->nargs() : 0),
         baseWarmUpThreshold_(baseWarmUpThreshold),
         isIonCompileable_(isIonCompileable),
-        compileDebugInstrumentation_(compileDebugInstrumentation) {
+        compileDebugInstrumentation_(compileDebugInstrumentation),
+        compileDebugModeOSRResumeTargets_(compileDebugModeOSRResumeTargets) {
     if (script->needsFunctionEnvironmentObjects()) {
       auto [callObjectTemplate, namedLambdaTemplate] =
           script->jitScript()->functionEnvironmentTemplates(script->function());
@@ -65,6 +66,9 @@ class BaselineSnapshot {
   bool compileDebugInstrumentation() const {
     return compileDebugInstrumentation_;
   }
+  bool compileDebugModeOSRResumeTargets() const {
+    return compileDebugModeOSRResumeTargets_;
+  }
   void trace(JSTracer* trc);
 };
 
@@ -76,9 +80,11 @@ class OffThreadBaselineSnapshot
                             GlobalLexicalEnvironmentObject* globalLexical,
                             JSObject* globalThis, uint32_t baseWarmUpThreshold,
                             bool isIonCompileable,
-                            bool compileDebugInstrumentation)
+                            bool compileDebugInstrumentation,
+                            bool compileDebugModeOSRResumeTargets)
       : BaselineSnapshot(script, globalLexical, globalThis, baseWarmUpThreshold,
-                         isIonCompileable, compileDebugInstrumentation) {}
+                         isIonCompileable, compileDebugInstrumentation,
+                         compileDebugModeOSRResumeTargets) {}
   explicit OffThreadBaselineSnapshot(BaselineSnapshot other)
       : BaselineSnapshot(other) {}
 
@@ -104,6 +110,10 @@ class BaselineCompileTask final : public HelperThreadTask {
     }
 #endif
   }
+
+  static bool OffThreadBaselineCompilationAvailable(JSContext* cx,
+                                                    JSScript* script,
+                                                    bool isEager = false);
 
   ThreadType threadType() override { return THREAD_TYPE_BASELINE; }
   void runTask();

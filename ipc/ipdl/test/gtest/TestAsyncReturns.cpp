@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -31,11 +29,11 @@ class TestAsyncReturnsChild : public PTestAsyncReturnsChild {
           EXPECT_EQ(std::get<1>(aParam), sMagic2);
           resolve(true);
         },
-        [](ResponseRejectReason&& aReason) { FAIL() << "sending Pong"; });
+        [](ResponseRejectReason&& /*aReason*/) { FAIL() << "sending Pong"; });
     return IPC_OK();
   }
 
-  IPCResult RecvNoReturn(NoReturnResolver&& resolve) final override {
+  IPCResult RecvNoReturn(NoReturnResolver&& /*resolve*/) final override {
     // Not calling `resolve` intentionally
     return IPC_OK();
   }
@@ -56,8 +54,8 @@ class TestAsyncReturnsParent : public PTestAsyncReturnsParent {
 
 IPDL_TEST(TestAsyncReturns, NoReturn) {
   mActor->SendNoReturn(
-      [](bool unused) { FAIL() << "resolve handler should not be called"; },
-      [=](ResponseRejectReason&& aReason) {
+      [](bool /*unused*/) { FAIL() << "resolve handler should not be called"; },
+      [this](ResponseRejectReason&& aReason) {
         if (aReason != ResponseRejectReason::ResolverDestroyed) {
           FAIL() << "reject with wrong reason";
         }
@@ -67,11 +65,11 @@ IPDL_TEST(TestAsyncReturns, NoReturn) {
 
 IPDL_TEST(TestAsyncReturns, PingPong) {
   mActor->SendPing(
-      [=](bool one) {
+      [this](bool one) {
         EXPECT_TRUE(one);
         mActor->Close();
       },
-      [](ResponseRejectReason&& aReason) { FAIL() << "sending Ping"; });
+      [](ResponseRejectReason&& /*aReason*/) { FAIL() << "sending Ping"; });
 }
 
 }  // namespace mozilla::_ipdltest

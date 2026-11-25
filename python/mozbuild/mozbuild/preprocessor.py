@@ -184,7 +184,6 @@ class Expression:
     def __ignore_whitespace(self):
         ws_len = re.match(r"\s*", self.content).end()
         self.__strip(ws_len)
-        return
 
     def __strip(self, length):
         """
@@ -506,14 +505,22 @@ class Preprocessor:
         p = self.getCommandLineParser()
         options, args = p.parse_args(args=args)
         out = self.out
+        encoded_out = None
         depfile = None
 
         if options.output:
             out = get_output_file(options.output, options.output_encoding)
         elif options.output_encoding:
-            raise Preprocessor.Error(
-                self, "--output-encoding doesn't work without --output", None
-            )
+            if isinstance(out, io.TextIOBase):
+                raise Preprocessor.Error(
+                    self,
+                    "--output-encoding without --output requires a binary output stream",
+                    None,
+                )
+            # No --output to open ourselves, so buffer the result and encode it
+            # into the caller-provided stream, which must accept bytes.
+            encoded_out = out
+            out = io.StringIO()
         if defaultToStdin and len(args) == 0:
             args = [sys.stdin]
             if options.depend:
@@ -539,18 +546,16 @@ class Preprocessor:
 
         if options.output:
             out.close()
+        elif encoded_out is not None:
+            encoded_out.write(out.getvalue().encode(options.output_encoding))
 
-    def getCommandLineParser(self, unescapeDefines=False):
-        escapedValue = re.compile('".*"$')
+    def getCommandLineParser(self):
         numberValue = re.compile(r"\d+$")
 
         def handleD(option, opt, value, parser):
             vals = value.split("=", 1)
             if len(vals) == 1:
                 vals.append(1)
-            elif unescapeDefines and escapedValue.match(vals[1]):
-                # strip escaped string values
-                vals[1] = vals[1][1:-1]
             elif numberValue.match(vals[1]):
                 vals[1] = int(vals[1])
             self.context[vals[0]] = vals[1]
@@ -815,7 +820,6 @@ class Preprocessor:
             if f in current:
                 del current[f]
         self.filters = [(fn, current[fn]) for fn in sorted(current.keys())]
-        return
 
     # Filters
     #

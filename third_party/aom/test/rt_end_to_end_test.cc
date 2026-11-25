@@ -16,8 +16,11 @@
 
 #include "gtest/gtest.h"
 
+#include "config/aom_config.h"
+
 #include "test/codec_factory.h"
 #include "test/encode_test_driver.h"
+#include "test/i420_video_source.h"
 #include "test/util.h"
 #include "test/y4m_video_source.h"
 #include "test/yuv_video_source.h"
@@ -33,40 +36,40 @@ std::unordered_map<std::string,
                    std::unordered_map<int, std::unordered_map<int, double>>>
     kPsnrThreshold = { { "park_joy_90p_8_420.y4m",
                          { { 5, { { 0, 34.0 }, { 3, 35.0 } } },
-                           { 6, { { 0, 34.0 }, { 3, 35.0 } } },
+                           { 6, { { 0, 33.8 }, { 3, 34.8 } } },
                            { 7, { { 0, 33.0 }, { 3, 34.0 } } },
                            { 8, { { 0, 33.0 }, { 3, 34.0 } } },
                            { 9, { { 0, 33.0 }, { 3, 34.0 } } },
                            { 10, { { 0, 33.0 }, { 3, 34.0 } } } } },
                        { "paris_352_288_30.y4m",
                          { { 5, { { 0, 35.0 }, { 3, 35.0 } } },
-                           { 6, { { 0, 35.0 }, { 3, 35.0 } } },
+                           { 6, { { 0, 34.4 }, { 3, 34.8 } } },
                            { 7, { { 0, 34.0 }, { 3, 34.0 } } },
                            { 8, { { 0, 34.0 }, { 3, 35.0 } } },
                            { 9, { { 0, 34.0 }, { 3, 34.0 } } },
                            { 10, { { 0, 34.0 }, { 3, 34.0 } } } } },
                        { "niklas_1280_720_30.y4m",
                          { { 5, { { 0, 32.0 }, { 3, 32.0 } } },
-                           { 6, { { 0, 32.0 }, { 3, 32.0 } } },
+                           { 6, { { 0, 31.8 }, { 3, 31.8 } } },
                            { 7, { { 0, 31.0 }, { 3, 31.0 } } },
                            { 8, { { 0, 31.0 }, { 3, 31.0 } } },
                            { 9, { { 0, 31.0 }, { 3, 31.0 } } },
                            { 10, { { 0, 31.0 }, { 3, 31.0 } } } } },
                        { "hantro_collage_w352h288_nv12.yuv",
                          { { 5, { { 0, 32.0 }, { 3, 32.0 } } },
-                           { 6, { { 0, 32.0 }, { 3, 32.0 } } },
-                           { 7, { { 0, 32.0 }, { 3, 32.0 } } },
-                           { 8, { { 0, 32.0 }, { 3, 32.0 } } },
+                           { 6, { { 0, 31.8 }, { 3, 31.8 } } },
+                           { 7, { { 0, 31.8 }, { 3, 31.8 } } },
+                           { 8, { { 0, 31.8 }, { 3, 31.8 } } },
                            { 9, { { 0, 31.0 }, { 3, 31.0 } } },
                            { 10, { { 0, 31.0 }, { 3, 31.0 } } } } } };
 
-typedef struct {
+struct TestVideoParam {
   const char *filename;
   unsigned int input_bit_depth;
   aom_img_fmt fmt;
   aom_bit_depth_t bit_depth;
   unsigned int profile;
-} TestVideoParam;
+};
 
 std::ostream &operator<<(std::ostream &os, const TestVideoParam &test_arg) {
   return os << "TestVideoParam { filename:" << test_arg.filename
@@ -205,4 +208,44 @@ AV1_INSTANTIATE_TEST_SUITE(RTEndToEndTestThreaded,
                            ::testing::Values<unsigned int>(0, 3),
                            ::testing::Range(2, 6), ::testing::Range(1, 5),
                            ::testing::Range(1, 5));
+
+#if !CONFIG_REALTIME_ONLY
+// Keeps warped motion and OBMC at their defaults, so motion mode symbols are
+// coded.
+class RTMotionModeTest : public ::libaom_test::CodecTestWithParam<int>,
+                         public ::libaom_test::EncoderTest {
+ protected:
+  RTMotionModeTest() : EncoderTest(GET_PARAM(0)), cpu_used_(GET_PARAM(1)) {}
+  ~RTMotionModeTest() override = default;
+
+  void SetUp() override {
+    InitializeConfig(::libaom_test::kRealTime);
+    cfg_.g_threads = 1;
+    cfg_.rc_end_usage = AOM_CBR;
+    cfg_.rc_target_bitrate = 150;
+  }
+
+  void PreEncodeFrameHook(::libaom_test::VideoSource *video,
+                          ::libaom_test::Encoder *encoder) override {
+    if (video->frame() == 0) {
+      encoder->Control(AOME_SET_CPUUSED, cpu_used_);
+      encoder->Control(AV1E_SET_TUNE_CONTENT, AOM_CONTENT_DEFAULT);
+      // Partition merging only runs on frames without CDF updates.
+      encoder->Control(AV1E_SET_CDF_UPDATE_MODE, 0);
+    }
+  }
+
+  int cpu_used_;
+};
+
+// A rejected partition merge must not change the motion mode inputs of the
+// block it tried to merge.
+TEST_P(RTMotionModeTest, RejectedMergeKeepsEncoderDecoderMatch) {
+  ::libaom_test::I420VideoSource video("niklas_640_480_30.yuv", 640, 480, 30, 1,
+                                       0, 100);
+  ASSERT_NO_FATAL_FAILURE(RunLoop(&video));
+}
+
+AV1_INSTANTIATE_TEST_SUITE(RTMotionModeTest, ::testing::Values(8));
+#endif  // !CONFIG_REALTIME_ONLY
 }  // namespace

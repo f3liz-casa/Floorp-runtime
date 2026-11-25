@@ -1,13 +1,11 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 // Original author: ekr@rtfm.com
 
-#ifndef runnable_utils_h__
-#define runnable_utils_h__
+#ifndef runnable_utils_h_
+#define runnable_utils_h_
 
 #include <functional>
 #include <tuple>
@@ -24,9 +22,9 @@ namespace detail {
 
 enum RunnableResult { NoResult, ReturnsResult };
 
-static inline nsresult RunOnThreadInternal(nsIEventTarget* thread,
-                                           nsIRunnable* runnable,
-                                           uint32_t flags) {
+static inline nsresult RunOnThreadInternal(
+    nsIEventTarget* thread, nsIRunnable* runnable,
+    nsIEventTarget::DispatchFlags flags) {
   return thread->Dispatch(runnable, flags);
 }
 
@@ -142,7 +140,7 @@ class runnable_args_memfn_ret
     : public detail::runnable_args_base<detail::ReturnsResult> {
  public:
   template <typename... Arguments>
-  runnable_args_memfn_ret(Ret* ret, Class&& obj, M method, Arguments... args)
+  runnable_args_memfn_ret(Ret* ret, Class&& obj, M method, Arguments&&... args)
       : mReturn(ret),
         mObj(std::forward<Class>(obj)),
         mMethod(method),
@@ -161,6 +159,8 @@ class runnable_args_memfn_ret
   std::decay_t<Class> mObj;
   M mMethod;
   std::tuple<Args...> mArgs;
+  static_assert((std::is_same_v<std::decay_t<Args>, Args> && ...),
+                "runnable args cannot be references");
 };
 
 template <typename R, typename Class, typename M, typename... Args>
@@ -172,7 +172,8 @@ runnable_args_memfn_ret<R, Class, M, std::decay_t<Args>...>* WrapRunnableRet(
 
 static inline nsresult RUN_ON_THREAD(
     nsIEventTarget* thread,
-    detail::runnable_args_base<detail::NoResult>* runnable, uint32_t flags) {
+    detail::runnable_args_base<detail::NoResult>* runnable,
+    nsIEventTarget::DispatchFlags flags) {
   return detail::RunOnThreadInternal(
       thread, static_cast<nsIRunnable*>(runnable), flags);
 }
@@ -213,7 +214,7 @@ class DispatchedRelease : public detail::runnable_args_base<detail::NoResult> {
 };
 
 template <typename T>
-DispatchedRelease<T>* WrapRelease(already_AddRefed<T>&& ref) {
+DispatchedRelease<T>* WrapRelease(already_AddRefed<T> ref) {
   return new DispatchedRelease<T>(ref);
 }
 

@@ -4,13 +4,13 @@ MAINTAINER Nick Alexander <nalexander@mozilla.com>
 VOLUME /builds/worker/checkouts
 VOLUME /builds/worker/workspace
 VOLUME /builds/worker/tooltool-cache
+VOLUME /builds/worker/gradle-user-home
 
 # rsync is required for l10n single locale repacks.  less, screen, and
 # vim, help debugging interactive tasks in Task Cluster.
 # git and openssh-client are used to upload GeckoView javadoc to Github.
 RUN apt-get update && \
     apt-get install \
-      autoconf2.13 \
       build-essential \
       base-files \
       ccache \

@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -9,6 +7,7 @@
 #include <utility>
 
 #include "mozilla/dom/DOMString.h"
+#include "mozilla/dom/Document.h"
 #include "mozilla/dom/TrustedTypePolicyFactory.h"
 #include "mozilla/dom/TrustedTypesBinding.h"
 
@@ -34,12 +33,22 @@ void TrustedTypePolicy::GetName(DOMString& aResult) const {
   aResult.SetKnownLiveString(mName);
 }
 
+// Bug 2072122: Trusted Types readiness experiment only, to be removed: the
+// UsedPolicy signal set by this macro.
 #define IMPL_CREATE_TRUSTED_TYPE(_trustedTypeSuffix)                         \
   already_AddRefed<Trusted##_trustedTypeSuffix>                              \
       TrustedTypePolicy::Create##_trustedTypeSuffix(                         \
           JSContext* aJSContext, const nsAString& aInput,                    \
           const Sequence<JS::Value>& aArguments, ErrorResult& aErrorResult)  \
           const {                                                            \
+    if (auto* piDOMWindowInner =                                             \
+            mParentObject->GetParentObject()->GetAsInnerWindow()) {          \
+      if (Document* doc = piDOMWindowInner->GetExtantDoc()) {                \
+        doc->SetTrustedTypesReadinessSignal(                                 \
+            TrustedTypesReadinessSignal::UsedPolicy);                        \
+      }                                                                      \
+    }                                                                        \
+                                                                             \
     /* Invoking the callback could delete the policy and hence the callback. \
      * Hence keep a strong reference to it on the stack.                     \
      */                                                                      \

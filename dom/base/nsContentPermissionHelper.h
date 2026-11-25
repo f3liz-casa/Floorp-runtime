@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -8,10 +6,14 @@
 #define nsContentPermissionHelper_h
 
 #include "mozilla/PermissionDelegateHandler.h"
+#include "mozilla/WeakPtr.h"
 #include "mozilla/dom/PContentPermissionRequestChild.h"
+#include "mozilla/dom/PContentPermissionRequestParent.h"
 #include "mozilla/dom/ipc/IdType.h"
 #include "nsIContentPermissionPrompt.h"
-#include "nsIMutableArray.h"
+#include "nsIPrincipal.h"
+#include "nsPIDOMWindow.h"
+#include "nsStringFwd.h"
 #include "nsTArray.h"
 
 // Microsoft's API Name hackery sucks
@@ -19,15 +21,16 @@
 // https://bugzilla.mozilla.org/show_bug.cgi?id=932421#c3 for why.
 #undef LoadImage
 
+class nsIMutableArray;
 class nsPIDOMWindowInner;
 class nsContentPermissionRequestProxy;
+class RemotePermissionRequest;
 
 namespace mozilla::dom {
 
 class Element;
 class PermissionRequest;
 class ContentPermissionRequestParent;
-class PContentPermissionRequestParent;
 
 class ContentPermissionType : public nsIContentPermissionType {
  public:
@@ -62,26 +65,28 @@ class nsContentPermissionUtils {
 
   // @param aIsRequestDelegatedToUnsafeThirdParty see
   // ContentPermissionRequestParent.
-  static PContentPermissionRequestParent* CreateContentPermissionRequestParent(
-      const nsTArray<PermissionRequest>& aRequests, Element* aElement,
-      nsIPrincipal* aPrincipal, nsIPrincipal* aTopLevelPrincipal,
+  static already_AddRefed<ContentPermissionRequestParent>
+  CreateContentPermissionRequestParent(
+      Element* aElement, nsIPrincipal* aPrincipal,
+      nsIPrincipal* aTopLevelPrincipal,
       const bool aHasValidTransientUserGestureActivation,
-      const bool aIsRequestDelegatedToUnsafeThirdParty, const TabId& aTabId);
+      const bool aIsRequestDelegatedToUnsafeThirdParty, const TabId& aTabId,
+      const bool aIgnoreAllowSitePermission);
 
   static nsresult AskPermission(nsIContentPermissionRequest* aRequest,
                                 nsPIDOMWindowInner* aWindow);
 
-  static nsTArray<PContentPermissionRequestParent*>
+  static nsTArray<RefPtr<ContentPermissionRequestParent>>
   GetContentPermissionRequestParentById(const TabId& aTabId);
 
   static void NotifyRemoveContentPermissionRequestParent(
-      PContentPermissionRequestParent* aParent);
+      ContentPermissionRequestParent* aParent);
 
-  static nsTArray<PContentPermissionRequestChild*>
+  static nsTArray<RefPtr<RemotePermissionRequest>>
   GetContentPermissionRequestChildById(const TabId& aTabId);
 
   static void NotifyRemoveContentPermissionRequestChild(
-      PContentPermissionRequestChild* aChild);
+      RemotePermissionRequest* aChild);
 };
 
 nsresult TranslateChoices(
@@ -89,22 +94,70 @@ nsresult TranslateChoices(
     const nsTArray<PermissionRequest>& aPermissionRequests,
     nsTArray<PermissionChoice>& aTranslatedChoices);
 
-class ContentPermissionRequestBase : public nsIContentPermissionRequest {
+class ContentPermissionRequestBaseNoWindow
+    : public nsIContentPermissionRequest {
+ public:
+  ContentPermissionRequestBaseNoWindow(
+      nsIPrincipal* aPrincipal, nsIPrincipal* aTopLevelPrincipal,
+      const nsACString& aType, bool aHasValidTransientUserGestureActivation,
+      bool aIsRequestDelegatedToUnsafeThirdParty)
+      : mPrincipal(aPrincipal),
+        mTopLevelPrincipal(aTopLevelPrincipal),
+        mType(aType),
+        mHasValidTransientUserGestureActivation(
+            aHasValidTransientUserGestureActivation),
+        mIsRequestDelegatedToUnsafeThirdParty(
+            aIsRequestDelegatedToUnsafeThirdParty) {}
+
+  NS_IMETHOD GetTypes(nsIArray** aTypes) final;
+  virtual void GetPermissionOptions(nsTArray<nsString>& aOptions) const {}
+
+  NS_IMETHOD GetPrincipal(nsIPrincipal** aPrincipal) final;
+  nsIPrincipal* Principal() const { return mPrincipal; }
+  NS_IMETHOD GetDelegatePrincipal(const nsACString& aType,
+                                  nsIPrincipal** aPrincipal) final;
+  NS_IMETHOD GetTopLevelPrincipal(nsIPrincipal** aTopLevelPrincipal) final;
+  NS_IMETHOD GetWindow(mozIDOMWindow** aWindow) override {
+    *aWindow = nullptr;
+    return NS_OK;
+  }
+  NS_IMETHOD GetElement(mozilla::dom::Element** aElement) override {
+    *aElement = nullptr;
+    return NS_OK;
+  }
+  NS_IMETHOD GetHasValidTransientUserGestureActivation(
+      bool* aHasValidTransientUserGestureActivation) final;
+  NS_IMETHOD GetIsRequestDelegatedToUnsafeThirdParty(
+      bool* aIsRequestDelegatedToUnsafeThirdParty) final;
+  NS_IMETHOD GetIgnoreAllowSitePermission(
+      bool* aIgnoreAllowSitePermission) override;
+  NS_IMETHOD NotifyShown(void) override { return NS_OK; }
+  // Overrides for Allow() and Cancel() aren't provided by this class.
+  // That is the responsibility of the subclasses.
+
+ protected:
+  virtual ~ContentPermissionRequestBaseNoWindow() = default;
+
+  nsCOMPtr<nsIPrincipal> mPrincipal;
+
+  nsCOMPtr<nsIPrincipal> mTopLevelPrincipal;
+
+  // The type of the request, such as "autoplay-media-audible".
+  const nsCString mType;
+
+  bool mHasValidTransientUserGestureActivation;
+
+  // See nsIPermissionDelegateHandler.maybeUnsafePermissionDelegate`.
+  bool mIsRequestDelegatedToUnsafeThirdParty;
+};
+
+class ContentPermissionRequestBase
+    : public ContentPermissionRequestBaseNoWindow {
  public:
   NS_DECL_CYCLE_COLLECTING_ISUPPORTS
   NS_DECL_CYCLE_COLLECTION_CLASS(ContentPermissionRequestBase)
 
-  NS_IMETHOD GetTypes(nsIArray** aTypes) override;
-  NS_IMETHOD GetPrincipal(nsIPrincipal** aPrincipal) override;
-  NS_IMETHOD GetDelegatePrincipal(const nsACString& aType,
-                                  nsIPrincipal** aPrincipal) override;
-  NS_IMETHOD GetTopLevelPrincipal(nsIPrincipal** aTopLevelPrincipal) override;
   NS_IMETHOD GetWindow(mozIDOMWindow** aWindow) override;
-  NS_IMETHOD GetElement(mozilla::dom::Element** aElement) override;
-  NS_IMETHOD GetHasValidTransientUserGestureActivation(
-      bool* aHasValidTransientUserGestureActivation) override;
-  NS_IMETHOD GetIsRequestDelegatedToUnsafeThirdParty(
-      bool* aIsRequestDelegatedToUnsafeThirdParty) override;
   // Overrides for Allow() and Cancel() aren't provided by this class.
   // That is the responsibility of the subclasses.
 
@@ -136,8 +189,6 @@ class ContentPermissionRequestBase : public nsIContentPermissionRequest {
                                const nsACString& aType);
   virtual ~ContentPermissionRequestBase() = default;
 
-  nsCOMPtr<nsIPrincipal> mPrincipal;
-  nsCOMPtr<nsIPrincipal> mTopLevelPrincipal;
   nsCOMPtr<nsPIDOMWindowInner> mWindow;
   RefPtr<PermissionDelegateHandler> mPermissionHandler;
 
@@ -148,14 +199,48 @@ class ContentPermissionRequestBase : public nsIContentPermissionRequest {
   // to either true or false. If no such testing is required, mPrefName may be
   // empty.
   const nsCString mPrefName;
+};
 
-  // The type of the request, such as "autoplay-media-audible".
-  const nsCString mType;
+class ContentPermissionRequestParent final
+    : public PContentPermissionRequestParent,
+      public SupportsWeakPtr {
+  friend class PContentPermissionRequestParent;
 
+ public:
+  NS_INLINE_DECL_REFCOUNTING(ContentPermissionRequestParent, override)
+
+  // @param aIsRequestDelegatedToUnsafeThirdParty see
+  // mIsRequestDelegatedToUnsafeThirdParty.
+  ContentPermissionRequestParent(
+      Element* aElement, nsIPrincipal* aPrincipal,
+      nsIPrincipal* aTopLevelPrincipal,
+      const bool aHasValidTransientUserGestureActivation,
+      const bool aIsRequestDelegatedToUnsafeThirdParty,
+      const bool aIgnoreAllowSitePermission = false);
+
+  MOZ_CAN_RUN_SCRIPT_BOUNDARY
+  void Init(nsTArray<PermissionRequest>&& aRequests);
+
+  bool IsBeingDestroyed();
+
+  nsCOMPtr<nsIPrincipal> mPrincipal;
+  nsCOMPtr<nsIPrincipal> mTopLevelPrincipal;
+  nsCOMPtr<Element> mElement;
   bool mHasValidTransientUserGestureActivation;
 
-  // See nsIPermissionDelegateHandler.maybeUnsafePermissionDelegate`.
+  // See nsIPermissionDelegateHandler.maybeUnsafePermissionDelegate.
   bool mIsRequestDelegatedToUnsafeThirdParty;
+
+  bool mIgnoreAllowSitePermission;
+
+  RefPtr<nsContentPermissionRequestProxy> mProxy;
+  nsTArray<PermissionRequest> mRequests;
+
+ private:
+  ~ContentPermissionRequestParent();
+
+  mozilla::ipc::IPCResult RecvDestroy();
+  void ActorDestroy(ActorDestroyReason why) override;
 };
 
 }  // namespace mozilla::dom
@@ -177,9 +262,8 @@ class nsContentPermissionRequestProxy : public nsIContentPermissionRequest {
  private:
   virtual ~nsContentPermissionRequestProxy();
 
-  // Non-owning pointer to the ContentPermissionRequestParent object which owns
-  // this proxy.
-  ContentPermissionRequestParent* mParent;
+  // The ContentPermissionRequestParent object which owns this proxy.
+  mozilla::WeakPtr<ContentPermissionRequestParent> mParent;
   nsTArray<mozilla::dom::PermissionRequest> mPermissionRequests;
 };
 
@@ -190,7 +274,7 @@ class nsContentPermissionRequestProxy : public nsIContentPermissionRequest {
 class RemotePermissionRequest final
     : public mozilla::dom::PContentPermissionRequestChild {
  public:
-  NS_INLINE_DECL_REFCOUNTING(RemotePermissionRequest)
+  NS_INLINE_DECL_REFCOUNTING(RemotePermissionRequest, override)
 
   RemotePermissionRequest(nsIContentPermissionRequest* aRequest,
                           nsPIDOMWindowInner* aWindow);
@@ -201,19 +285,11 @@ class RemotePermissionRequest final
   mozilla::ipc::IPCResult RecvNotifyResult(
       const bool& aAllow, nsTArray<PermissionChoice>&& aChoices);
 
-  void IPDLAddRef() {
-    mIPCOpen = true;
-    AddRef();
-  }
-
-  void IPDLRelease() {
-    mIPCOpen = false;
-    Release();
-  }
+  void ActorDestroy(ActorDestroyReason aWhy) override;
 
   void Destroy();
 
-  bool IPCOpen() const { return mIPCOpen && !mDestroyed; }
+  bool IPCOpen() const { return CanSend() && !mDestroyed; }
 
  private:
   virtual ~RemotePermissionRequest();
@@ -225,7 +301,6 @@ class RemotePermissionRequest final
 
   nsCOMPtr<nsIContentPermissionRequest> mRequest;
   nsCOMPtr<nsPIDOMWindowInner> mWindow;
-  bool mIPCOpen;
   bool mDestroyed;
 };
 

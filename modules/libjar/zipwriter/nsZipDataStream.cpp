@@ -60,7 +60,7 @@ NS_IMETHODIMP nsZipDataStream::OnDataAvailable(nsIRequest* aRequest,
                                                uint32_t aCount) {
   if (!mOutput) return NS_ERROR_NOT_INITIALIZED;
 
-  auto buffer = MakeUnique<char[]>(aCount);
+  auto buffer = std::make_unique<char[]>(aCount);
   NS_ENSURE_TRUE(buffer, NS_ERROR_OUT_OF_MEMORY);
 
   nsresult rv = ZW_ReadData(aInputStream, buffer.get(), aCount);
@@ -72,14 +72,16 @@ NS_IMETHODIMP nsZipDataStream::OnDataAvailable(nsIRequest* aRequest,
 NS_IMETHODIMP nsZipDataStream::OnStartRequest(nsIRequest* aRequest) {
   if (!mOutput) return NS_ERROR_NOT_INITIALIZED;
 
-  return mOutput->OnStartRequest(aRequest);
+  nsCOMPtr<nsIStreamListener> output = mOutput;
+  return output->OnStartRequest(aRequest);
 }
 
 NS_IMETHODIMP nsZipDataStream::OnStopRequest(nsIRequest* aRequest,
                                              nsresult aStatusCode) {
   if (!mOutput) return NS_ERROR_NOT_INITIALIZED;
 
-  nsresult rv = mOutput->OnStopRequest(aRequest, aStatusCode);
+  nsCOMPtr<nsIStreamListener> output = mOutput;
+  nsresult rv = output->OnStopRequest(aRequest, aStatusCode);
   mOutput = nullptr;
   if (NS_FAILED(rv)) {
     mWriter->EntryCompleteCallback(mHeader, rv);
@@ -120,7 +122,8 @@ nsresult nsZipDataStream::ProcessData(nsIRequest* aRequest,
       getter_AddRefs(stream), Span(aBuffer, aCount), NS_ASSIGNMENT_DEPEND);
   NS_ENSURE_SUCCESS(rv, rv);
 
-  rv = mOutput->OnDataAvailable(aRequest, stream, aOffset, aCount);
+  nsCOMPtr<nsIStreamListener> output = mOutput;
+  rv = output->OnDataAvailable(aRequest, stream, aOffset, aCount);
   mHeader->mUSize += aCount;
 
   return rv;
@@ -132,7 +135,7 @@ nsresult nsZipDataStream::ReadStream(nsIInputStream* aStream) {
   nsresult rv = OnStartRequest(nullptr);
   NS_ENSURE_SUCCESS(rv, rv);
 
-  auto buffer = MakeUnique<char[]>(4096);
+  auto buffer = std::make_unique<char[]>(4096);
   NS_ENSURE_TRUE(buffer, NS_ERROR_OUT_OF_MEMORY);
 
   uint32_t read = 0;

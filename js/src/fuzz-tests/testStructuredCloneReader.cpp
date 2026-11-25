@@ -1,15 +1,13 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- * vim: set ts=8 sts=2 et sw=2 tw=80:
- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
+
+#include "fuzz-tests/tests.h"
 
 #include "mozilla/ScopeExit.h"
 
 #include "jsapi.h"
 
-#include "fuzz-tests/tests.h"
 #include "js/StructuredClone.h"
 #include "vm/Interpreter.h"
 
@@ -56,8 +54,8 @@ static int testStructuredCloneReaderFuzz(const uint8_t* buf, size_t size) {
 
   JS::CloneDataPolicy policy;
   RootedValue deserialized(gCx);
-  if (!JS_ReadStructuredClone(gCx, *clonebuf, JS_STRUCTURED_CLONE_VERSION,
-                              scope, &deserialized, policy, nullptr, nullptr)) {
+  if (!JS_ReadStructuredClone(gCx, *clonebuf, scope, &deserialized, policy,
+                              nullptr, nullptr)) {
     return 0;
   }
 
@@ -70,10 +68,9 @@ static int testStructuredCloneReaderFuzz(const uint8_t* buf, size_t size) {
 
      Tests show that this also doesn't cause a serious performance penalty.
   */
-  mozilla::Maybe<JSAutoStructuredCloneBuffer> clonebufOut;
-
-  clonebufOut.emplace(scope, nullptr, nullptr);
-  if (!clonebufOut->write(gCx, deserialized, UndefinedHandleValue, policy)) {
+  JSStructuredCloneData dataOut(scope);
+  if (!JS_WriteStructuredClone(gCx, deserialized, &dataOut, scope, policy,
+                               nullptr, nullptr, UndefinedHandleValue)) {
     return 0;
   }
 

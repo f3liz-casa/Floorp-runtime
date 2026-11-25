@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim:set ts=2 sw=2 sts=2 et cindent: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -10,9 +8,9 @@
 #include "js/ColumnNumber.h"  // JS::ColumnNumberOneOrigin
 #include "js/ErrorReport.h"
 #include "js/TypeDecls.h"
-#include "mozilla/Attributes.h"
 #include "mozilla/dom/BindingDeclarations.h"
 #include "mozilla/dom/NonRefcountedDOMObject.h"
+#include "mozilla/dom/Nullable.h"
 #include "mozilla/dom/StructuredCloneHolder.h"
 #include "nsISupportsImpl.h"
 
@@ -39,6 +37,7 @@ class ClonedErrorHolder final : public NonRefcountedDOMObject {
     JSError,
     Exception,
     DOMException,
+    QuotaExceededError,
     Max_,
   };
 
@@ -92,6 +91,9 @@ class ClonedErrorHolder final : public NonRefcountedDOMObject {
   uint16_t mCode = 0;                 // DOMException only
   JSExnType mExnType = JSExnType(0);  // JSError only
   nsresult mResult = NS_OK;           // Exception, DOMException
+
+  Nullable<double> mQuota;      // QuotaExceededError only
+  Nullable<double> mRequested;  // QuotaExceededError only
 
   // JSError, Exception, DOMException
   Holder mStack{Holder::CloningSupported, Holder::TransferringNotSupported,

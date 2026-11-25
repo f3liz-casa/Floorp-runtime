@@ -8,9 +8,9 @@ import json
 import os
 import platform
 import ssl
-
-from six.moves import urllib
-from six.moves.urllib.parse import ParseResult, urlparse
+import urllib.parse
+import urllib.request
+from urllib.parse import ParseResult, urlparse
 
 from mozharness.base.errors import BaseErrorList
 from mozharness.base.log import FATAL, WARNING
@@ -22,7 +22,6 @@ from mozharness.base.python import (
 from mozharness.lib.python.authentication import get_credentials
 from mozharness.mozilla.automation import TBPL_WARNING, AutomationMixin
 from mozharness.mozilla.structuredlog import StructuredOutputParser
-from mozharness.mozilla.testing.try_tools import TryToolsMixin, try_config_options
 from mozharness.mozilla.testing.unittest import DesktopUnittestOutputParser
 from mozharness.mozilla.testing.verify_tools import (
     VerifyToolsMixin,
@@ -42,7 +41,7 @@ INSTALLER_SUFFIXES = (
     ".zip",  # Windows
 )
 
-# https://searchfox.org/mozilla-central/source/testing/config/tooltool-manifests
+# https://searchfox.org/firefox-main/source/testing/config/tooltool-manifests
 TOOLTOOL_PLATFORM_DIR = {
     "linux": "linux32",
     "linux64": "linux64",
@@ -137,9 +136,17 @@ testing_config_options = (
                 "help": "Instruct the test harness to terminate on failure and restart where it left off",
             },
         ],
+        [
+            ["--restart-between-tests"],
+            {
+                "action": "store_true",
+                "default": False,
+                "dest": "restartBetweenTests",
+                "help": "Restart the browser between each test to identify tests with undocumented dependencies",
+            },
+        ],
     ]
     + copy.deepcopy(virtualenv_config_options)
-    + copy.deepcopy(try_config_options)
     + copy.deepcopy(verify_config_options)
 )
 
@@ -150,13 +157,23 @@ class TestingMixin(
     AutomationMixin,
     ResourceMonitoringMixin,
     TooltoolMixin,
-    TryToolsMixin,
     VerifyToolsMixin,
 ):
     """
     The steps to identify + download the proper bits for [browser] unit
     tests and Talos.
     """
+
+    python_constraints = "requirements-mozbase.txt"
+
+    def query_python_constraints(self):
+        return [
+            os.path.join(
+                self.query_abs_dirs()["abs_test_install_dir"],
+                "config",
+                self.python_constraints,
+            )
+        ]
 
     installer_url = None
     installer_path = None
@@ -165,6 +182,7 @@ class TestingMixin(
     test_packages_url = None
     symbols_url = None
     symbols_path = None
+    gtest_symbols_path = None
     jsshell_url = None
     minidump_stackwalk_path = None
     ssl_context = None
@@ -248,6 +266,33 @@ class TestingMixin(
             )
 
         return self.symbols_url
+
+    def query_gtest_symbols_url(self):
+        """Return the URL of the symbols for the gtest libxul, or None if the
+        build doesn't have them."""
+        if not self.installer_url and not self.test_packages_url:
+            return None
+        gtest_symbols_url = self.query_prefixed_build_dir_url(
+            ".crashreporter-symbols-gtest.zip"
+        )
+        if not gtest_symbols_url:
+            return None
+        try:
+            self._urlopen(gtest_symbols_url, timeout=120)
+        except Exception as ex:
+            self.info(
+                f"Cannot open gtest symbols url {gtest_symbols_url}: {ex}; "
+                "gtest crashes may lack symbols"
+            )
+            return None
+        return gtest_symbols_url
+
+    def query_gtest_symbols_options(self):
+        """Return the harness options for the gtest symbols that aren't
+        already part of self.symbols_path."""
+        if not self.gtest_symbols_path:
+            return []
+        return [f"--symbols-path={self.gtest_symbols_path}"]
 
     def _pre_config_lock(self, rw_config):
         for i, (target_file, target_dict) in enumerate(
@@ -334,17 +379,16 @@ class TestingMixin(
         # URLs to the right place and enable http authentication
         if "developer_config.py" in self.config["config_files"]:
             return _urlopen_basic_auth(url, **kwargs)
+        # windows certificates need to be refreshed (https://bugs.python.org/issue36011)
+        elif self.platform_name() in ("win64",) and platform.architecture()[0] in (
+            "x64",
+        ):
+            if self.ssl_context is None:
+                self.ssl_context = ssl.SSLContext(ssl.PROTOCOL_TLS)
+                self.ssl_context.load_default_certs()
+            return urllib.request.urlopen(url, context=self.ssl_context, **kwargs)
         else:
-            # windows certificates need to be refreshed (https://bugs.python.org/issue36011)
-            if self.platform_name() in ("win64",) and platform.architecture()[0] in (
-                "x64",
-            ):
-                if self.ssl_context is None:
-                    self.ssl_context = ssl.SSLContext(ssl.PROTOCOL_TLS)
-                    self.ssl_context.load_default_certs()
-                return urllib.request.urlopen(url, context=self.ssl_context, **kwargs)
-            else:
-                return urllib.request.urlopen(url, **kwargs)
+            return urllib.request.urlopen(url, **kwargs)
 
     def _query_binary_version(self, regex, cmd):
         output = self.get_output_from_command(cmd, silent=False)
@@ -479,14 +523,8 @@ You can set this by specifying --test-url URL
         self.download_unpack(self.test_url, test_install_dir, extract_dirs=extract_dirs)
 
     def structured_output(self, suite_category):
-        """Defines whether structured logging is in use in this configuration. This
-        may need to be replaced with data from a different config at the resolution
-        of bug 1070041 and related bugs.
-        """
-        return (
-            "structured_suites" in self.config
-            and suite_category in self.config["structured_suites"]
-        )
+        unstructured_suites = self.config.get("unstructured_suites", [])
+        return suite_category not in unstructured_suites
 
     def get_test_output_parser(
         self,
@@ -523,7 +561,7 @@ You can set this by specifying --test-url URL
         )
         self.installer_path = os.path.realpath(source)
 
-    def _download_and_extract_symbols(self):
+    def _download_and_extract_symbols(self, include_gtest=False):
         dirs = self.query_abs_dirs()
         if self.config.get("download_symbols") == "ondemand":
             self.symbols_url = self.retry(
@@ -533,6 +571,10 @@ You can set this by specifying --test-url URL
                 failure_status=None,
             )
             self.symbols_path = self.symbols_url
+            if include_gtest:
+                # The harness passes both URLs to mozcrash, which only
+                # downloads them if there is a crash.
+                self.gtest_symbols_path = self.query_gtest_symbols_url()
             return
 
         else:
@@ -549,8 +591,32 @@ You can set this by specifying --test-url URL
             if not self.symbols_path:
                 self.symbols_path = os.path.join(dirs["abs_work_dir"], "symbols")
 
-            if self.symbols_url:
+            fetched_symbols = None
+            if "abs_fetches_dir" in dirs:
+                fetched_symbols = os.path.join(
+                    dirs["abs_fetches_dir"], "target.crashreporter-symbols.zip"
+                )
+
+            if fetched_symbols and os.path.isfile(fetched_symbols):
+                self.unpack(fetched_symbols, self.symbols_path)
+            elif self.symbols_url:
                 self.download_unpack(self.symbols_url, self.symbols_path)
+
+            if include_gtest:
+                # Extract the gtest symbols into the same directory, so that
+                # the harness only needs a single symbols path.
+                fetched_gtest_symbols = None
+                if "abs_fetches_dir" in dirs:
+                    fetched_gtest_symbols = os.path.join(
+                        dirs["abs_fetches_dir"],
+                        "target.crashreporter-symbols-gtest.zip",
+                    )
+                if fetched_gtest_symbols and os.path.isfile(fetched_gtest_symbols):
+                    self.unpack(fetched_gtest_symbols, self.symbols_path)
+                else:
+                    gtest_symbols_url = self.query_gtest_symbols_url()
+                    if gtest_symbols_url:
+                        self.download_unpack(gtest_symbols_url, self.symbols_path)
 
     def download_and_extract(self, extract_dirs=None, suite_categories=None):
         """
@@ -593,7 +659,9 @@ You can set this by specifying --test-url URL
 
         self._download_installer()
         if self.config.get("download_symbols"):
-            self._download_and_extract_symbols()
+            self._download_and_extract_symbols(
+                include_gtest="gtest" in (suite_categories or [])
+            )
 
     # create_virtualenv is in VirtualenvMixin.
 
@@ -631,6 +699,8 @@ Did you run with --create-virtualenv? Is mozinstall in virtualenv_modules?"""
         self.mkdir_p(target_dir)
         if not installer_path:
             installer_path = self.installer_path
+        if installer_path.endswith(".dmg"):
+            cmd.append("--no-verify")
         cmd.extend([installer_path, "--destination", target_dir])
         # TODO we'll need some error checking here
         return self.get_output_from_command(
@@ -768,7 +838,7 @@ Did you run with --create-virtualenv? Is mozinstall in virtualenv_modules?"""
             self._run_cmd_checks(c.get("postflight_run_cmd_suites", []))
 
     def query_abs_dirs(self):
-        abs_dirs = super(TestingMixin, self).query_abs_dirs()
+        abs_dirs = super().query_abs_dirs()
         if "MOZ_FETCHES_DIR" in os.environ:
             abs_dirs["abs_fetches_dir"] = os.environ["MOZ_FETCHES_DIR"]
         return abs_dirs

@@ -220,8 +220,10 @@ class RaplDomain final : public BaseProfilerCount {
 };
 
 class RAPL {
-  bool mIsGpuSupported;  // Is the GPU domain supported by the processor?
-  bool mIsRamSupported;  // Is the RAM domain supported by the processor?
+  // Is the GPU domain supported by the processor?
+  bool mIsGpuSupported = false;
+  // Is the RAM domain supported by the processor?
+  bool mIsRamSupported = false;
 
   // The DRAM domain on Haswell servers has a fixed energy unit (1/65536 J ==
   // 15.3 microJoules) which is different to the power unit MSR. (See the
@@ -234,7 +236,7 @@ class RAPL {
   static constexpr double kQuirkyRamEnergyStatusUnits = 16;
 
   // The struct passed to diagCall64().
-  pkg_energy_statistics_t* mPkes;
+  pkg_energy_statistics_t* mPkes = nullptr;
 
   RaplDomain* mPkg = nullptr;
   RaplDomain* mCores = nullptr;
@@ -247,7 +249,7 @@ class RAPL {
     // Work out which RAPL MSRs this CPU model supports.
     int cpuModel;
     size_t size = sizeof(cpuModel);
-    if (sysctlbyname("machdep.cpu.model", &cpuModel, &size, NULL, 0) != 0) {
+    if (sysctlbyname("machdep.cpu.model", &cpuModel, &size, nullptr, 0) != 0) {
       NS_WARNING("sysctlbyname(\"machdep.cpu.model\") failed");
       return;
     }
@@ -317,7 +319,7 @@ class RAPL {
     // |mPkes|.
     int logicalcpu_max;
     size = sizeof(logicalcpu_max);
-    if (sysctlbyname("hw.logicalcpu_max", &logicalcpu_max, &size, NULL, 0) !=
+    if (sysctlbyname("hw.logicalcpu_max", &logicalcpu_max, &size, nullptr, 0) !=
         0) {
       NS_WARNING("sysctlbyname(\"hw.logicalcpu_max\") failed");
       return;
@@ -401,13 +403,13 @@ class RAPL {
 PowerCounters::PowerCounters() {
   // RAPL values are global, so only sample them on the parent.
   if (XRE_IsParentProcess()) {
-    mRapl = mozilla::MakeUnique<RAPL>(mCounters);
+    mRapl = std::make_unique<RAPL>(mCounters);
   }
 }
 
 // This default destructor can not be defined in the header file as it depends
 // on the full definition of RAPL which lives in this file.
-PowerCounters::~PowerCounters() {}
+PowerCounters::~PowerCounters() = default;
 
 void PowerCounters::Sample() {
   if (mRapl) {

@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -15,8 +13,6 @@
 #include "mozilla/UniquePtrExtensions.h"
 #include "mozilla/Vector.h"
 
-using mozilla::DefaultDelete;
-using mozilla::MakeUnique;
 using mozilla::UniqueFreePtr;
 using mozilla::UniquePtr;
 using mozilla::Vector;
@@ -80,7 +76,7 @@ static void TestDeleterType() {
 }
 
 static bool TestDefaultFreeGuts() {
-  static_assert(std::is_same_v<NewInt::deleter_type, DefaultDelete<int> >,
+  static_assert(std::is_same_v<NewInt::deleter_type, std::default_delete<int> >,
                 "weird deleter?");
 
   NewInt n1(new int);
@@ -264,9 +260,9 @@ static bool TestFreeClass() {
   return true;
 }
 
-typedef UniquePtr<int, DefaultDelete<int>&> IntDeleterRef;
-typedef UniquePtr<A, DefaultDelete<A>&> ADeleterRef;
-typedef UniquePtr<B, DefaultDelete<A>&> BDeleterRef;
+typedef UniquePtr<int, std::default_delete<int>&> IntDeleterRef;
+typedef UniquePtr<A, std::default_delete<A>&> ADeleterRef;
+typedef UniquePtr<B, std::default_delete<A>&> BDeleterRef;
 
 static_assert(sizeof(IntDeleterRef) > sizeof(int*),
               "has to be heavier than an int* to store the reference");
@@ -276,7 +272,7 @@ static_assert(sizeof(BDeleterRef) > sizeof(int*),
               "has to be heavier than a B* to store the reference");
 
 static bool TestReferenceDeleterGuts() {
-  DefaultDelete<int> delInt;
+  std::default_delete<int> delInt;
   IntDeleterRef id1(new int, delInt);
 
   IntDeleterRef id2(std::move(id1));
@@ -286,7 +282,7 @@ static bool TestReferenceDeleterGuts() {
 
   IntDeleterRef id3(std::move(id2));
 
-  DefaultDelete<A> delA;
+  std::default_delete<A> delA;
   ADeleterRef a1(new A, delA);
   a1.reset(nullptr);
   a1.reset(new B);
@@ -316,30 +312,32 @@ static bool TestReferenceDeleter() {
   return true;
 }
 
-typedef void (&FreeSignature)(void*);
+struct Free {
+  void operator()(void* aPtr) { free(aPtr); }
+};
 
 static size_t DeleteIntFunctionCallCount = 0;
+struct DeleteIntFunction {
+  void operator()(void* aPtr) {
+    DeleteIntFunctionCallCount++;
+    delete[] static_cast<int*>(aPtr);
+  }
+};
 
-static void DeleteIntFunction(void* aPtr) {
-  DeleteIntFunctionCallCount++;
-  delete[] static_cast<int*>(aPtr);
-}
-
-static void SetMallocedInt(UniquePtr<int, FreeSignature>& aPtr, int aI) {
+static void SetMallocedInt(UniquePtr<int, Free>& aPtr, int aI) {
   int* newPtr = static_cast<int*>(malloc(sizeof(int)));
   *newPtr = aI;
   aPtr.reset(newPtr);
 }
 
-static UniquePtr<int, FreeSignature> MallocedInt(int aI) {
-  UniquePtr<int, FreeSignature> ptr(static_cast<int*>(malloc(sizeof(int))),
-                                    free);
+static UniquePtr<int, Free> MallocedInt(int aI) {
+  UniquePtr<int, Free> ptr(static_cast<int*>(malloc(sizeof(int))), Free{});
   *ptr = aI;
   return ptr;
 }
 static bool TestFunctionReferenceDeleter() {
   // Look for allocator mismatches and leaks to verify these bits
-  UniquePtr<int, FreeSignature> i1(MallocedInt(17));
+  UniquePtr<int, Free> i1(MallocedInt(17));
   CHECK(*i1 == 17);
 
   SetMallocedInt(i1, 42);
@@ -347,8 +345,8 @@ static bool TestFunctionReferenceDeleter() {
 
   // These bits use a custom deleter so we can instrument deletion.
   {
-    UniquePtr<int, FreeSignature> i2 =
-        UniquePtr<int, FreeSignature>(new int[42], DeleteIntFunction);
+    UniquePtr<int, DeleteIntFunction> i2 =
+        UniquePtr<int, DeleteIntFunction>(new int[42], DeleteIntFunction{});
     CHECK(DeleteIntFunctionCallCount == 0);
 
     i2.reset(new int[76]);
@@ -415,8 +413,9 @@ typedef UniquePtr<int[]> IntArray;
 static_assert(sizeof(IntArray) == sizeof(int*), "stored most efficiently");
 
 static bool TestArray() {
-  static_assert(std::is_same_v<IntArray::deleter_type, DefaultDelete<int[]> >,
-                "weird deleter?");
+  static_assert(
+      std::is_same_v<IntArray::deleter_type, std::default_delete<int[]> >,
+      "weird deleter?");
 
   IntArray n1(new int[5]);
   CHECK(n1);
@@ -465,7 +464,7 @@ static bool TestArray() {
   UniquePtr<A[]> a1(new A[17]);
   static_assert(sizeof(a1) == sizeof(A*), "stored most efficiently");
 
-  UniquePtr<A[]> a2(new A[5], DefaultDelete<A[]>());
+  UniquePtr<A[]> a2(new A[5], std::default_delete<A[]>());
   a2.reset(nullptr);
   a2.reset(new A[17]);
   a2 = nullptr;
@@ -491,25 +490,25 @@ struct Q {
 static int randomInt() { return 4; }
 
 static bool TestMakeUnique() {
-  UniquePtr<int> a1(MakeUnique<int>());
-  UniquePtr<long> a2(MakeUnique<long>(4));
+  auto a1 = std::make_unique<int>();
+  auto a2 = std::make_unique<long>(4);
 
   // no args, easy
-  UniquePtr<Q> q0(MakeUnique<Q>());
+  auto q0 = std::make_unique<Q>();
 
   // temporary bound to const lval ref
-  UniquePtr<Q> q1(MakeUnique<Q>(Q()));
+  auto q1 = std::make_unique<Q>(Q());
 
   // passing through a non-const lval ref
-  UniquePtr<Q> q2(MakeUnique<Q>(*q1, 'c'));
+  auto q2 = std::make_unique<Q>(*q1, 'c');
 
   // pass by copying, forward a temporary, pass by value
-  UniquePtr<Q> q3(MakeUnique<Q>(Q(), UniquePtr<int>(), randomInt()));
+  auto q3 = std::make_unique<Q>(Q(), UniquePtr<int>(), randomInt());
 
   // various type mismatching to test "fuzzy" forwarding
-  UniquePtr<Q> q4(MakeUnique<Q>('s', 66LL, 3.141592654, &q3));
+  auto q4 = std::make_unique<Q>('s', 66LL, 3.141592654, &q3);
 
-  UniquePtr<char[]> c1(MakeUnique<char[]>(5));
+  auto c1 = std::make_unique<char[]>(5);
 
   return true;
 }

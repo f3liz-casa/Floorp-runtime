@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -8,8 +6,12 @@
 #include "QuotaManagerTestHelpers.h"
 #include "gtest/gtest.h"
 #include "mozilla/BasePrincipal.h"
+#include "mozilla/Preferences.h"
+#include "mozilla/ScopeExit.h"
+#include "mozilla/dom/quota/Client.h"
 #include "mozilla/dom/quota/ClientDirectoryLock.h"
 #include "mozilla/dom/quota/ClientDirectoryLockHandle.h"
+#include "mozilla/dom/quota/CommonMetadata.h"
 #include "mozilla/dom/quota/DirectoryLock.h"
 #include "mozilla/dom/quota/DirectoryLockInlines.h"
 #include "mozilla/dom/quota/OriginScope.h"
@@ -20,7 +22,10 @@
 #include "mozilla/gtest/MozAssertions.h"
 #include "mozilla/ipc/PBackgroundSharedTypes.h"
 #include "nsFmtString.h"
-#include "prtime.h"
+#include "nsIFile.h"
+#include "nsIPrefBranch.h"
+#include "nsIPrefService.h"
+#include "nsThreadUtils.h"
 
 namespace mozilla::dom::quota::test {
 
@@ -54,6 +59,36 @@ class TestQuotaManagerAndShutdownFixture
   void TearDown() override { ASSERT_NO_FATAL_FAILURE(ShutdownFixture()); }
 };
 
+class TestQuotaManagerWithShortOriginFlushIntervals
+    : public QuotaManagerDependencyFixture {
+ public:
+  static constexpr int32_t kOriginFlushIntervalMs = 1000;
+
+  void SetUp() override {
+    nsCOMPtr<nsIPrefBranch> prefs = do_GetService(NS_PREFSERVICE_CONTRACTID);
+    ASSERT_TRUE(prefs);
+    ASSERT_NS_SUCCEEDED(
+        prefs->SetIntPref("dom.quotaManager.originWriteQuiescentThresholdMs",
+                          kOriginFlushIntervalMs));
+    ASSERT_NS_SUCCEEDED(
+        prefs->SetIntPref("dom.quotaManager.originMetadataFlushCheckIntervalMs",
+                          kOriginFlushIntervalMs));
+
+    ASSERT_NO_FATAL_FAILURE(InitializeFixture());
+  }
+
+  void TearDown() override {
+    ASSERT_NO_FATAL_FAILURE(ShutdownFixture());
+
+    nsCOMPtr<nsIPrefBranch> prefs = do_GetService(NS_PREFSERVICE_CONTRACTID);
+    ASSERT_TRUE(prefs);
+    ASSERT_NS_SUCCEEDED(prefs->ClearUserPref(
+        "dom.quotaManager.originWriteQuiescentThresholdMs"));
+    ASSERT_NS_SUCCEEDED(prefs->ClearUserPref(
+        "dom.quotaManager.originMetadataFlushCheckIntervalMs"));
+  }
+};
+
 TEST_F(TestQuotaManager, GetThumbnailPrivateIdentityId) {
   PerformOnIOThread([]() {
     QuotaManager* quotaManager = QuotaManager::Get();
@@ -65,6 +100,46 @@ TEST_F(TestQuotaManager, GetThumbnailPrivateIdentityId) {
     const uint32_t id = quotaManager->GetThumbnailPrivateIdentityId();
     ASSERT_GT(id, 4u);
   });
+}
+
+TEST_F(TestQuotaManagerWithShortOriginFlushIntervals,
+       InitQuotaForOrigin_InitializesDirtyTimestamp) {
+  const auto originMetadata = GetTestOriginMetadata();
+
+  ASSERT_NO_FATAL_FAILURE(ShutdownStorage());
+  ASSERT_NO_FATAL_FAILURE(InitializeStorage());
+  ASSERT_NO_FATAL_FAILURE(InitializeTemporaryStorage());
+
+  ASSERT_NO_FATAL_FAILURE(InitializeTemporaryOrigin(originMetadata));
+
+  const auto originStateMetadata = GetOriginStateMetadata(originMetadata);
+  ASSERT_TRUE(originStateMetadata);
+  EXPECT_TRUE(originStateMetadata->mDirty);
+
+  PerformOnIOThread([]() {
+    auto* quotaManager = QuotaManager::Get();
+    ASSERT_TRUE(quotaManager);
+    quotaManager->FlushDirtyOriginInfos();
+  });
+
+  const auto originStateMetadataAfterImmediateFlush =
+      GetOriginStateMetadata(originMetadata);
+  ASSERT_TRUE(originStateMetadataAfterImmediateFlush);
+  EXPECT_TRUE(originStateMetadataAfterImmediateFlush->mDirty);
+
+  bool flushIntervalsElapsed = false;
+  RefPtr<CancelableRunnable> timer = NS_NewCancelableRunnableFunction(
+      "QuotaManager origin flush intervals elapsed",
+      [&] { flushIntervalsElapsed = true; });
+  ASSERT_NS_SUCCEEDED(NS_DelayedDispatchToCurrentThread(
+      do_AddRef(timer), 3 * kOriginFlushIntervalMs));
+  SpinEventLoopUntil("Waiting for origin flush intervals"_ns,
+                     [&] { return flushIntervalsElapsed; });
+  timer->Cancel();
+
+  const auto originStateMetadataAfter = GetOriginStateMetadata(originMetadata);
+  ASSERT_TRUE(originStateMetadataAfter);
+  EXPECT_FALSE(originStateMetadataAfter->mDirty);
 }
 
 // Test OpenStorageDirectory when an opening of the storage directory is
@@ -3814,15 +3889,15 @@ TEST_P(TestQuotaManagerAndClearStorageWithBoolPair,
 
   if (createThumbnailPrivateIdentityOrigins) {
     ASSERT_NO_FATAL_FAILURE(InitializeTemporaryOrigin(
-        GetOriginMetadata(nsFmtCString(FMT_STRING("^userContextId={}"),
-                                       thumbnailPrivateIdentityId),
-                          "mozilla.org"_ns, "http://www.mozilla.org"_ns),
+        GetOriginMetadata(
+            nsFmtCString("^userContextId={}", thumbnailPrivateIdentityId),
+            "mozilla.org"_ns, "http://www.mozilla.org"_ns),
         /* aCreateIfNonExistent */ true));
 
     ASSERT_NO_FATAL_FAILURE(InitializeTemporaryOrigin(
-        GetOriginMetadata(nsFmtCString(FMT_STRING("^userContextId={}"),
-                                       thumbnailPrivateIdentityId),
-                          "mozilla.com"_ns, "http://www.mozilla.com"_ns),
+        GetOriginMetadata(
+            nsFmtCString("^userContextId={}", thumbnailPrivateIdentityId),
+            "mozilla.com"_ns, "http://www.mozilla.com"_ns),
         /* aCreateIfNonExistent */ true));
   }
 
@@ -3832,8 +3907,8 @@ TEST_P(TestQuotaManagerAndClearStorageWithBoolPair,
 
   const auto iterationsBefore = TotalDirectoryIterations();
 
-  ClearStoragesForOriginAttributesPattern(nsFmtString(
-      FMT_STRING(u"{{ \"userContextId\": {} }}"), thumbnailPrivateIdentityId));
+  ClearStoragesForOriginAttributesPattern(
+      nsFmtString(u"{{ \"userContextId\": {} }}", thumbnailPrivateIdentityId));
 
   const auto iterationsAfter = TotalDirectoryIterations();
 
@@ -3844,12 +3919,11 @@ TEST_P(TestQuotaManagerAndClearStorageWithBoolPair,
                                                                       : 0u;
   ASSERT_EQ(iterations, expectedIterations);
 
-  const auto matchesUserContextId =
-      [thumbnailPrivateIdentityId](const auto& origin) {
-        return FindInReadable(nsFmtCString(FMT_STRING("userContextId={}"),
-                                           thumbnailPrivateIdentityId),
-                              origin);
-      };
+  const auto matchesUserContextId = [thumbnailPrivateIdentityId](
+                                        const auto& origin) {
+    return FindInReadable(
+        nsFmtCString("userContextId={}", thumbnailPrivateIdentityId), origin);
+  };
 
   const auto origins = ListOrigins();
 
@@ -3862,6 +3936,77 @@ TEST_P(TestQuotaManagerAndClearStorageWithBoolPair,
   const bool anyCachedOriginsMatch = std::any_of(
       cachedOrigins.cbegin(), cachedOrigins.cend(), matchesUserContextId);
   ASSERT_FALSE(anyCachedOriginsMatch);
+}
+
+TEST_F(TestQuotaManagerAndClearStorage,
+       InitializeTemporaryStorage_RestartAfterIncompleteRepositoryInit) {
+  const auto origin1 =
+      GetOriginMetadata(""_ns, "1.example.com"_ns, "https://1.example.com"_ns);
+  const auto origin2 =
+      GetOriginMetadata(""_ns, "2.example.com"_ns, "https://2.example.com"_ns);
+
+  nsCOMPtr<nsIPrefBranch> prefs = do_GetService(NS_PREFSERVICE_CONTRACTID);
+  ASSERT_TRUE(prefs);
+  prefs->SetBoolPref(
+      "dom.quotaManager.temporaryStorage.lazyOriginInitialization", false);
+  prefs->SetBoolPref("dom.quotaManager.loadQuotaFromCache", false);
+  prefs->SetBoolPref("dom.quotaManager.loadQuotaFromSecondaryCache", false);
+
+  ASSERT_NO_FATAL_FAILURE(ShutdownStorage());
+  ASSERT_NO_FATAL_FAILURE(InitializeStorage());
+  ASSERT_NO_FATAL_FAILURE(InitializeTemporaryStorage());
+  ASSERT_NO_FATAL_FAILURE(InitializeTemporaryOrigin(origin1, true));
+  ASSERT_NO_FATAL_FAILURE(InitializeTemporaryOrigin(origin2, true));
+
+  {
+    const auto metadata1 = LoadDirectoryMetadataHeader(origin1);
+    ASSERT_TRUE(metadata1);
+    const auto metadata2 = LoadDirectoryMetadataHeader(origin2);
+    ASSERT_TRUE(metadata2);
+  }
+
+  ASSERT_NO_FATAL_FAILURE(ShutdownStorage());
+  ASSERT_NO_FATAL_FAILURE(InitializeStorage());
+
+  PerformOnIOThread([&origin2]() {
+    QuotaManager* quotaManager = QuotaManager::Get();
+    ASSERT_TRUE(quotaManager);
+
+    auto directoryRes = quotaManager->GetOriginDirectory(origin2);
+    ASSERT_TRUE(directoryRes.isOk());
+
+    nsCOMPtr<nsIFile> metadataFile = directoryRes.unwrap();
+    nsresult rv = metadataFile->Append(nsLiteralString(METADATA_V2_FILE_NAME));
+    ASSERT_NS_SUCCEEDED(rv);
+
+    bool exists = false;
+    rv = metadataFile->Exists(&exists);
+    ASSERT_NS_SUCCEEDED(rv);
+    ASSERT_TRUE(exists);
+
+    rv = metadataFile->Remove(false);
+    ASSERT_NS_SUCCEEDED(rv);
+  });
+
+  ASSERT_NO_FATAL_FAILURE(InitializeTemporaryStorage());
+
+  {
+    const auto metadata1 = LoadDirectoryMetadataHeader(origin1);
+    ASSERT_TRUE(metadata1);
+    const auto metadata2 = LoadDirectoryMetadataHeader(origin2);
+    ASSERT_TRUE(metadata2);
+  }
+
+  {
+    const auto cachedOrigins = ListCachedOrigins();
+    ASSERT_TRUE(cachedOrigins.Contains(origin1.mOrigin));
+    ASSERT_TRUE(cachedOrigins.Contains(origin2.mOrigin));
+  }
+
+  prefs->ClearUserPref(
+      "dom.quotaManager.temporaryStorage.lazyOriginInitialization");
+  prefs->ClearUserPref("dom.quotaManager.loadQuotaFromCache");
+  prefs->ClearUserPref("dom.quotaManager.loadQuotaFromSecondaryCache");
 }
 
 INSTANTIATE_TEST_SUITE_P(
@@ -3924,17 +4069,15 @@ TEST_F(TestQuotaManagerAndShutdownFixture,
       ASSERT_EQ(quotaManager->ThumbnailPrivateIdentityTemporaryOriginCount(),
                 0u);
 
-      quotaManager->AddTemporaryOrigin(
-          GetFullOriginMetadata(nsFmtCString(FMT_STRING("^userContextId={}"),
-                                             thumbnailPrivateIdentityId),
-                                "mozilla.org"_ns, "http://www.mozilla.org"_ns));
+      quotaManager->AddTemporaryOrigin(GetFullOriginMetadata(
+          nsFmtCString("^userContextId={}", thumbnailPrivateIdentityId),
+          "mozilla.org"_ns, "http://www.mozilla.org"_ns));
       ASSERT_EQ(quotaManager->ThumbnailPrivateIdentityTemporaryOriginCount(),
                 1u);
 
-      quotaManager->AddTemporaryOrigin(
-          GetFullOriginMetadata(nsFmtCString(FMT_STRING("^userContextId={}"),
-                                             thumbnailPrivateIdentityId),
-                                "mozilla.com"_ns, "http://www.mozilla.com"_ns));
+      quotaManager->AddTemporaryOrigin(GetFullOriginMetadata(
+          nsFmtCString("^userContextId={}", thumbnailPrivateIdentityId),
+          "mozilla.com"_ns, "http://www.mozilla.com"_ns));
       ASSERT_EQ(quotaManager->ThumbnailPrivateIdentityTemporaryOriginCount(),
                 2u);
 
@@ -3955,17 +4098,15 @@ TEST_F(TestQuotaManagerAndShutdownFixture,
       ASSERT_EQ(quotaManager->ThumbnailPrivateIdentityTemporaryOriginCount(),
                 2u);
 
-      quotaManager->RemoveTemporaryOrigin(
-          GetFullOriginMetadata(nsFmtCString(FMT_STRING("^userContextId={}"),
-                                             thumbnailPrivateIdentityId),
-                                "mozilla.org"_ns, "http://www.mozilla.org"_ns));
+      quotaManager->RemoveTemporaryOrigin(GetFullOriginMetadata(
+          nsFmtCString("^userContextId={}", thumbnailPrivateIdentityId),
+          "mozilla.org"_ns, "http://www.mozilla.org"_ns));
       ASSERT_EQ(quotaManager->ThumbnailPrivateIdentityTemporaryOriginCount(),
                 1u);
 
-      quotaManager->RemoveTemporaryOrigin(
-          GetFullOriginMetadata(nsFmtCString(FMT_STRING("^userContextId={}"),
-                                             thumbnailPrivateIdentityId),
-                                "mozilla.com"_ns, "http://www.mozilla.com"_ns));
+      quotaManager->RemoveTemporaryOrigin(GetFullOriginMetadata(
+          nsFmtCString("^userContextId={}", thumbnailPrivateIdentityId),
+          "mozilla.com"_ns, "http://www.mozilla.com"_ns));
       ASSERT_EQ(quotaManager->ThumbnailPrivateIdentityTemporaryOriginCount(),
                 0u);
     }
@@ -3991,17 +4132,15 @@ TEST_F(TestQuotaManagerAndShutdownFixture,
       ASSERT_EQ(quotaManager->ThumbnailPrivateIdentityTemporaryOriginCount(),
                 0u);
 
-      quotaManager->AddTemporaryOrigin(
-          GetFullOriginMetadata(nsFmtCString(FMT_STRING("^userContextId={}"),
-                                             thumbnailPrivateIdentityId),
-                                "mozilla.org"_ns, "http://www.mozilla.org"_ns));
+      quotaManager->AddTemporaryOrigin(GetFullOriginMetadata(
+          nsFmtCString("^userContextId={}", thumbnailPrivateIdentityId),
+          "mozilla.org"_ns, "http://www.mozilla.org"_ns));
       ASSERT_EQ(quotaManager->ThumbnailPrivateIdentityTemporaryOriginCount(),
                 1u);
 
-      quotaManager->AddTemporaryOrigin(
-          GetFullOriginMetadata(nsFmtCString(FMT_STRING("^userContextId={}"),
-                                             thumbnailPrivateIdentityId),
-                                "mozilla.com"_ns, "http://www.mozilla.com"_ns));
+      quotaManager->AddTemporaryOrigin(GetFullOriginMetadata(
+          nsFmtCString("^userContextId={}", thumbnailPrivateIdentityId),
+          "mozilla.com"_ns, "http://www.mozilla.com"_ns));
       ASSERT_EQ(quotaManager->ThumbnailPrivateIdentityTemporaryOriginCount(),
                 2u);
 
@@ -4035,17 +4174,15 @@ TEST_F(TestQuotaManagerAndShutdownFixture,
       ASSERT_EQ(quotaManager->ThumbnailPrivateIdentityTemporaryOriginCount(),
                 0u);
 
-      quotaManager->AddTemporaryOrigin(
-          GetFullOriginMetadata(nsFmtCString(FMT_STRING("^userContextId={}"),
-                                             thumbnailPrivateIdentityId),
-                                "mozilla.org"_ns, "http://www.mozilla.org"_ns));
+      quotaManager->AddTemporaryOrigin(GetFullOriginMetadata(
+          nsFmtCString("^userContextId={}", thumbnailPrivateIdentityId),
+          "mozilla.org"_ns, "http://www.mozilla.org"_ns));
       ASSERT_EQ(quotaManager->ThumbnailPrivateIdentityTemporaryOriginCount(),
                 1u);
 
-      quotaManager->AddTemporaryOrigin(
-          GetFullOriginMetadata(nsFmtCString(FMT_STRING("^userContextId={}"),
-                                             thumbnailPrivateIdentityId),
-                                "mozilla.com"_ns, "http://www.mozilla.com"_ns));
+      quotaManager->AddTemporaryOrigin(GetFullOriginMetadata(
+          nsFmtCString("^userContextId={}", thumbnailPrivateIdentityId),
+          "mozilla.com"_ns, "http://www.mozilla.com"_ns));
       ASSERT_EQ(quotaManager->ThumbnailPrivateIdentityTemporaryOriginCount(),
                 2u);
 
@@ -4055,5 +4192,117 @@ TEST_F(TestQuotaManagerAndShutdownFixture,
     }
   });
 }
+
+TEST_F(TestQuotaManagerAndClearStorage,
+       FlushDirtyOriginInfos_RetainsUninitializedOrigin) {
+  constexpr uint32_t kWriteQuiescentThresholdMs = 100;
+
+  const auto originMetadata = GetTestOriginMetadata();
+  const auto restorePrefs = MakeScopeExit([&] {
+    Preferences::ClearUser("dom.quotaManager.loadQuotaFromCache");
+    Preferences::ClearUser("dom.quotaManager.originWriteQuiescentThresholdMs");
+  });
+  Preferences::SetBool("dom.quotaManager.loadQuotaFromCache", false);
+  Preferences::SetUint("dom.quotaManager.originWriteQuiescentThresholdMs",
+                       kWriteQuiescentThresholdMs);
+
+  ASSERT_NO_FATAL_FAILURE(InitializeStorage());
+  ASSERT_NO_FATAL_FAILURE(InitializeTemporaryStorage());
+  ASSERT_NO_FATAL_FAILURE(InitializeTemporaryOrigin(originMetadata));
+  const auto originalMetadata = LoadDirectoryMetadataHeader(originMetadata);
+  ASSERT_TRUE(originalMetadata);
+  const int64_t accessTime = originalMetadata->mLastAccessTime + 1;
+
+  ASSERT_NO_FATAL_FAILURE(ShutdownStorage());
+  ASSERT_NO_FATAL_FAILURE(InitializeStorage());
+  ASSERT_NO_FATAL_FAILURE(InitializeTemporaryStorage());
+  PerformOnBackgroundThread([&] {
+    EXPECT_FALSE(
+        QuotaManager::Get()->IsTemporaryOriginInitialized(originMetadata));
+  });
+
+  const auto scannedMetadata = GetOriginStateMetadata(originMetadata);
+  ASSERT_TRUE(scannedMetadata);
+
+  PerformOnIOThread([&] {
+    QuotaManager* quotaManager = QuotaManager::Get();
+    ASSERT_TRUE(quotaManager);
+
+    quotaManager->UpdateOriginAccessTime(originMetadata, accessTime);
+    quotaManager->FlushDirtyOriginInfos();
+    quotaManager->FlushDirtyOriginInfos();
+  });
+
+  const auto pendingMetadata = GetOriginStateMetadata(originMetadata);
+  ASSERT_TRUE(pendingMetadata);
+  EXPECT_TRUE(pendingMetadata->mDirty);
+  const auto unchangedMetadata = LoadDirectoryMetadataHeader(originMetadata);
+  ASSERT_TRUE(unchangedMetadata);
+  EXPECT_EQ(unchangedMetadata->mLastAccessTime,
+            originalMetadata->mLastAccessTime);
+
+  ASSERT_NO_FATAL_FAILURE(InitializeTemporaryOrigin(originMetadata));
+  bool quiescentIntervalElapsed = false;
+  RefPtr<CancelableRunnable> timer = NS_NewCancelableRunnableFunction(
+      "QuotaManager origin write quiescent interval elapsed",
+      [&] { quiescentIntervalElapsed = true; });
+  ASSERT_NS_SUCCEEDED(NS_DelayedDispatchToCurrentThread(
+      do_AddRef(timer), 2 * kWriteQuiescentThresholdMs));
+  SpinEventLoopUntil("Waiting for origin write quiescent interval"_ns,
+                     [&] { return quiescentIntervalElapsed; });
+  timer->Cancel();
+
+  PerformOnIOThread([] {
+    QuotaManager* quotaManager = QuotaManager::Get();
+    ASSERT_TRUE(quotaManager);
+
+    quotaManager->FlushDirtyOriginInfos();
+  });
+
+  const auto flushedMetadata = GetOriginStateMetadata(originMetadata);
+  ASSERT_TRUE(flushedMetadata);
+  EXPECT_FALSE(flushedMetadata->mDirty);
+  const auto persistedMetadata = LoadDirectoryMetadataHeader(originMetadata);
+  ASSERT_TRUE(persistedMetadata);
+  EXPECT_EQ(persistedMetadata->mLastAccessTime, accessTime);
+  EXPECT_FALSE(persistedMetadata->mDirty);
+}
+
+// CheckIfUsageIsConsistent is only defined in nightly and debug builds.
+#if defined(NIGHTLY_BUILD) || defined(DEBUG)
+TEST_F(TestQuotaManager, CheckIfUsageIsConsistentNoUnderflow) {
+  PerformOnIOThread([]() {
+    FullOriginMetadata fullOriginMetadata = GetFullOriginMetadata(
+        ""_ns, "mozilla.org"_ns, "http://www.mozilla.org"_ns);
+    fullOriginMetadata.mClientUsages[Client::IDB] = Some(uint64_t(10));
+    fullOriginMetadata.mOriginUsage = 10;
+
+    EXPECT_TRUE(fullOriginMetadata.CheckIfUsageIsConsistent("Test"_ns));
+  });
+}
+
+TEST_F(TestQuotaManager, CheckIfUsageIsConsistentDetectsUnderflow) {
+  PerformOnIOThread([]() {
+    FullOriginMetadata fullOriginMetadata = GetFullOriginMetadata(
+        ""_ns, "mozilla.org"_ns, "http://www.mozilla.org"_ns);
+    const uint64_t underflowed = uint64_t(INT64_MAX) + 5;
+    fullOriginMetadata.mClientUsages[Client::IDB] = Some(underflowed);
+    fullOriginMetadata.mOriginUsage = underflowed;
+
+    EXPECT_FALSE(fullOriginMetadata.CheckIfUsageIsConsistent("Test"_ns));
+  });
+}
+
+TEST_F(TestQuotaManager, CheckIfUsageIsConsistentDetectsMismatch) {
+  PerformOnIOThread([]() {
+    FullOriginMetadata fullOriginMetadata = GetFullOriginMetadata(
+        ""_ns, "mozilla.org"_ns, "http://www.mozilla.org"_ns);
+    fullOriginMetadata.mClientUsages[Client::IDB] = Some(uint64_t(10));
+    fullOriginMetadata.mOriginUsage = 999;
+
+    EXPECT_FALSE(fullOriginMetadata.CheckIfUsageIsConsistent("Test"_ns));
+  });
+}
+#endif
 
 }  // namespace mozilla::dom::quota::test

@@ -1,16 +1,16 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- * This Source Code Form is subject to the terms of the Mozilla Public
+/* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 // #include "ImageLogging.h"
-#include "nsCRT.h"
 #include "nsWebPEncoder.h"
+
+#include "mozilla/CheckedInt.h"
+#include "mozilla/UniquePtrExtensions.h"
+#include "nsCRT.h"
 #include "nsStreamUtils.h"
 #include "nsString.h"
 #include "prprf.h"
-#include "mozilla/CheckedInt.h"
-#include "mozilla/UniquePtrExtensions.h"
 
 using namespace mozilla;
 
@@ -40,17 +40,24 @@ nsWebPEncoder::~nsWebPEncoder() {
   }
 }
 
+NS_IMETHODIMP
+nsWebPEncoder::SetColorSpaceInfo(imgIEncoder::CICPColourPrimaries,
+                                 imgIEncoder::CICPTransferCharacteristics,
+                                 imgIEncoder::CICPMatrixCoefficients, bool) {
+  return NS_OK;
+}
+
 // nsWebPEncoder::InitFromData
 //
 //    One output option is supported: "quality=X" where X is an integer in the
 //    range 0-100. Higher values for X give better quality.
 
 NS_IMETHODIMP
-nsWebPEncoder::InitFromData(const uint8_t* aData,
-                            uint32_t aLength,  // (unused, req'd by JS)
+nsWebPEncoder::InitFromData(const uint8_t* aData, uint32_t /*aLength*/,
                             uint32_t aWidth, uint32_t aHeight, uint32_t aStride,
                             uint32_t aInputFormat,
-                            const nsAString& aOutputOptions) {
+                            const nsAString& aOutputOptions,
+                            const nsACString& /*aRandomizationKey*/) {
   NS_ENSURE_ARG(aData);
 
   // validate input format
@@ -178,9 +185,9 @@ nsWebPEncoder::InitFromData(const uint8_t* aData,
 //
 // See ::InitFromData for other info.
 NS_IMETHODIMP
-nsWebPEncoder::StartImageEncode(uint32_t aWidth, uint32_t aHeight,
-                                uint32_t aInputFormat,
-                                const nsAString& aOutputOptions) {
+nsWebPEncoder::StartImageEncode(uint32_t /*aWidth*/, uint32_t /*aHeight*/,
+                                uint32_t /*aInputFormat*/,
+                                const nsAString& /*aOutputOptions*/) {
   return NS_ERROR_NOT_IMPLEMENTED;
 }
 
@@ -201,11 +208,10 @@ nsWebPEncoder::GetImageBuffer(char** aOutputBuffer) {
 }
 
 NS_IMETHODIMP
-nsWebPEncoder::AddImageFrame(const uint8_t* aData,
-                             uint32_t aLength,  // (unused, req'd by JS)
-                             uint32_t aWidth, uint32_t aHeight,
-                             uint32_t aStride, uint32_t aInputFormat,
-                             const nsAString& aFrameOptions) {
+nsWebPEncoder::AddImageFrame(const uint8_t* /*aData*/, uint32_t /*aLength*/,
+                             uint32_t /*aWidth*/, uint32_t /*aHeight*/,
+                             uint32_t /*aStride*/, uint32_t /*aInputFormat*/,
+                             const nsAString& /*aFrameOptions*/) {
   return NS_ERROR_NOT_IMPLEMENTED;
 }
 
@@ -310,7 +316,7 @@ nsWebPEncoder::AsyncWait(nsIInputStreamCallback* aCallback, uint32_t aFlags,
 }
 
 NS_IMETHODIMP
-nsWebPEncoder::CloseWithStatus(nsresult aStatus) { return Close(); }
+nsWebPEncoder::CloseWithStatus(nsresult /*aStatus*/) { return Close(); }
 
 void nsWebPEncoder::NotifyListener() {
   // We might call this function on multiple threads (any threads that call

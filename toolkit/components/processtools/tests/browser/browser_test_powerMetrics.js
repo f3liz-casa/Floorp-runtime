@@ -3,9 +3,14 @@
 
 "use strict";
 
+const { UrlClassifierTestUtils } = ChromeUtils.importESModule(
+  "resource://testing-common/UrlClassifierTestUtils.sys.mjs"
+);
+
 /**
  * Return a web-based URL for a given file based on the testing directory.
- * @param {String} fileName
+ *
+ * @param {string} fileName
  *        file that caller wants its web-based url
  */
 function GetTestWebBasedURL(fileName) {
@@ -349,6 +354,10 @@ add_task(async function test_tracker_power() {
       ["privacy.trackingprotection.enabled", false],
       ["privacy.trackingprotection.annotate_channels", true],
     ],
+  });
+  await UrlClassifierTestUtils.addBuiltInTestTrackers();
+  registerCleanupFunction(async () => {
+    await UrlClassifierTestUtils.cleanupTestTrackers();
   });
   let initialValues = [];
   for (let trackerType of [

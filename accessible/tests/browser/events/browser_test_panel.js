@@ -10,6 +10,10 @@ loadScripts({ name: "role.js", dir: MOCHITESTS_DIR });
 // XUL alert is closed or opened. Mac expects both notifications to
 // properly communicate live region changes.
 async function runTests(browser) {
+  // Enable accesskey underlining on all platforms for consistent test behavior.
+  await SpecialPowers.pushPrefEnv({
+    set: [["ui.key.menuAccessKey", 1]],
+  });
   ok(PopupNotifications, "PopupNotifications object exists");
   ok(PopupNotifications.panel, "PopupNotifications panel exists");
 
@@ -27,18 +31,38 @@ async function runTests(browser) {
   );
 
   await panelShown;
-
   ok(isAccessible(PopupNotifications.panel), "Popup panel is accessible");
+
+  const primaryButton = PopupNotifications.panel.querySelector(
+    ".popup-notification-primary-button"
+  );
+  const buttonLabel = primaryButton.shadowRoot.querySelector("label");
+  await TestUtils.waitForCondition(() => {
+    try {
+      return getAccessible(buttonLabel, [nsIAccessible])?.childCount > 0;
+    } catch {
+      return false;
+    }
+  }, "Primary button accessible label has text child");
+
   testAccessibleTree(PopupNotifications.panel, {
     ALERT: [
       { LABEL: [{ TEXT_LEAF: [] }] },
       { PUSHBUTTON: [] },
-      { PUSHBUTTON: [] },
+      {
+        TEXT_CONTAINER: [
+          {
+            // The primary button label has two text leaves because of the
+            // accesskey underlining.
+            PUSHBUTTON: [{ LABEL: [{ TEXT_LEAF: [] }, { TEXT_LEAF: [] }] }],
+          },
+        ],
+      },
     ],
   });
   // Verify the popup panel is associated with the chrome window.
   is(
-    PopupNotifications.panel.ownerGlobal,
+    PopupNotifications.panel.documentGlobal,
     getMainChromeWindow(window),
     "Popup panel is associated with the chrome window"
   );

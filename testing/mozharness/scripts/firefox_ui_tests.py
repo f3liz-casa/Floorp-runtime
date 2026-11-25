@@ -83,6 +83,8 @@ firefox_ui_tests_config_options = (
 
 
 class FirefoxUIFunctionalTests(TestingMixin, VCSToolsScript, CodeCoverageMixin):
+    python_constraints = "requirements-marionette.txt"
+
     def __init__(
         self,
         config_options=None,
@@ -101,7 +103,7 @@ class FirefoxUIFunctionalTests(TestingMixin, VCSToolsScript, CodeCoverageMixin):
             "uninstall",
         ]
 
-        super(FirefoxUIFunctionalTests, self).__init__(
+        super().__init__(
             config_options=config_options,
             all_actions=all_actions or actions,
             default_actions=default_actions or actions,
@@ -141,15 +143,13 @@ class FirefoxUIFunctionalTests(TestingMixin, VCSToolsScript, CodeCoverageMixin):
             "mozpack/*",
             "mozbuild/*",
         ]
-        super(FirefoxUIFunctionalTests, self).download_and_extract(
-            extract_dirs=extract_dirs
-        )
+        super().download_and_extract(extract_dirs=extract_dirs)
 
     def query_abs_dirs(self):
         if self.abs_dirs:
             return self.abs_dirs
 
-        abs_dirs = super(FirefoxUIFunctionalTests, self).query_abs_dirs()
+        abs_dirs = super().query_abs_dirs()
         abs_tests_install_dir = os.path.join(abs_dirs["abs_work_dir"], "tests")
 
         dirs = {
@@ -198,6 +198,7 @@ class FirefoxUIFunctionalTests(TestingMixin, VCSToolsScript, CodeCoverageMixin):
     def run_test(self, binary_path, env=None, marionette_port=2828):
         """All required steps for running the tests against an installer."""
         dirs = self.query_abs_dirs()
+        self.mkdir_p(dirs["abs_blob_upload_dir"])
 
         # Import the harness to retrieve the location of the cli scripts
         import firefox_ui_harness

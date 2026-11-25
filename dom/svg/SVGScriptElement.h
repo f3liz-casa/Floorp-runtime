@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -13,7 +11,7 @@
 #include "mozilla/dom/ScriptElement.h"
 
 nsresult NS_NewSVGScriptElement(
-    nsIContent** aResult, already_AddRefed<mozilla::dom::NodeInfo>&& aNodeInfo,
+    nsIContent** aResult, already_AddRefed<mozilla::dom::NodeInfo> aNodeInfo,
     mozilla::dom::FromParser aFromParser);
 
 namespace mozilla::dom {
@@ -24,10 +22,9 @@ class SVGScriptElement final : public SVGScriptElementBase,
                                public ScriptElement {
  protected:
   friend nsresult(::NS_NewSVGScriptElement(
-      nsIContent** aResult,
-      already_AddRefed<mozilla::dom::NodeInfo>&& aNodeInfo,
+      nsIContent** aResult, already_AddRefed<mozilla::dom::NodeInfo> aNodeInfo,
       mozilla::dom::FromParser aFromParser));
-  SVGScriptElement(already_AddRefed<mozilla::dom::NodeInfo>&& aNodeInfo,
+  SVGScriptElement(already_AddRefed<mozilla::dom::NodeInfo> aNodeInfo,
                    FromParser aFromParser);
 
   JSObject* WrapNode(JSContext* aCx,
@@ -44,12 +41,14 @@ class SVGScriptElement final : public SVGScriptElementBase,
   void FreezeExecutionAttrs(const Document* aOwnerDoc) override;
   CORSMode GetCORSMode() const override;
   FetchPriority GetFetchPriority() const override;
+  mozilla::dom::ReferrerPolicy GetReferrerPolicy() override;
 
   // ScriptElement
   bool HasExternalScriptContent() override;
 
   // nsIContent specializations:
-  nsresult BindToTree(BindContext&, nsINode& aParent) override;
+  MOZ_CAN_RUN_SCRIPT_BOUNDARY nsresult BindToTree(BindContext&,
+                                                  nsINode& aParent) override;
   bool ParseAttribute(int32_t aNamespaceID, nsAtom* aAttribute,
                       const nsAString& aValue,
                       nsIPrincipal* aMaybeScriptedPrincipal,
@@ -73,6 +72,12 @@ class SVGScriptElement final : public SVGScriptElementBase,
   void GetFetchPriority(nsAString& aFetchPriority) const;
   void SetFetchPriority(const nsAString& aFetchPriority) {
     SetAttr(nsGkAtoms::fetchpriority, aFetchPriority, IgnoreErrors());
+  }
+  void SetReferrerPolicy(const nsAString& aPolicy, mozilla::ErrorResult& rv) {
+    SetAttr(nsGkAtoms::referrerpolicy, aPolicy, rv);
+  }
+  void GetReferrerPolicy(nsAString& aPolicy) {
+    GetEnumAttr(nsGkAtoms::referrerpolicy, "", aPolicy);
   }
 
  protected:

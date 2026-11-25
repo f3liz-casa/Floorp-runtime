@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -10,6 +8,7 @@
 #include "FileInfoManager.h"
 #include "IndexedDBCipherKeyManager.h"
 #include "mozilla/InitializedOnce.h"
+#include "mozilla/Result.h"
 #include "mozilla/dom/FlippedOnce.h"
 #include "mozilla/dom/quota/CommonMetadata.h"
 #include "mozilla/dom/quota/PersistenceType.h"
@@ -68,12 +67,17 @@ class DatabaseFileManager final
 
   static Result<quota::FileUsageType, nsresult> GetUsage(nsIFile* aDirectory);
 
+  static Result<RefPtr<IndexedDBCipherKeyManager>, nsresult>
+  CreateCipherKeyManager(const quota::OriginMetadata& aOriginMetadata,
+                         bool aIsInPrivateBrowsingMode);
+
   DatabaseFileManager(PersistenceType aPersistenceType,
                       const quota::OriginMetadata& aOriginMetadata,
                       const nsAString& aDatabaseName,
                       const nsCString& aDatabaseID,
                       const nsAString& aDatabaseFilePath, bool aEnforcingQuota,
-                      bool aIsInPrivateBrowsingMode);
+                      bool aIsInPrivateBrowsingMode,
+                      RefPtr<IndexedDBCipherKeyManager> aCipherKeyManager);
 
   PersistenceType Type() const { return mPersistenceType; }
 
@@ -93,11 +97,22 @@ class DatabaseFileManager final
 
   void UpdateDatabaseVersion(uint64_t aDatabaseVersion);
 
+  // True in private browsing mode and for origins with at-rest encryption.
+  bool UsesEncryption() const { return !!mCipherKeyManager; }
+
   IndexedDBCipherKeyManager& MutableCipherKeyManagerRef() const {
-    MOZ_ASSERT(mIsInPrivateBrowsingMode);
     MOZ_ASSERT(mCipherKeyManager);
 
     return *mCipherKeyManager;
+  }
+
+  nsCString CipherKeyIdForDatabase() const { return mDatabaseID + ":db"_ns; }
+
+  nsCString CipherKeyIdForFile(int64_t aFileId) const {
+    nsCString keyId(mDatabaseID);
+    keyId.Append(':');
+    keyId.AppendInt(aFileId);
+    return keyId;
   }
 
   auto IsInPrivateBrowsingMode() const { return mIsInPrivateBrowsingMode; }

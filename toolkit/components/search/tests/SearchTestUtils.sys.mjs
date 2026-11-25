@@ -9,12 +9,14 @@ ChromeUtils.defineESModuleGetters(lazy, {
   ExtensionTestUtils:
     "resource://testing-common/ExtensionXPCShellUtils.sys.mjs",
   RemoteSettings: "resource://services-settings/remote-settings.sys.mjs",
+  SearchService: "moz-src:///toolkit/components/search/SearchService.sys.mjs",
   SearchUtils: "moz-src:///toolkit/components/search/SearchUtils.sys.mjs",
   sinon: "resource://testing-common/Sinon.sys.mjs",
 });
 
 /**
  * @import {AppProvidedConfigEngine} from "ConfigSearchEngine.sys.mjs"
+ * @import {SearchEngine} from "moz-src:///toolkit/components/search/SearchEngine.sys.mjs"
  */
 
 /**
@@ -68,6 +70,7 @@ class _SearchTestUtils {
         if (this.#stubs.size) {
           this.#stubs = new Map();
 
+          lazy.SearchService._settings._testResetSettings();
           let settingsWritten = SearchTestUtils.promiseSearchNotification(
             "write-settings-to-disk-complete"
           );
@@ -79,6 +82,8 @@ class _SearchTestUtils {
           MockRegistrar.unregister(this.#idleServiceCID);
           this.#idleServiceCID = null;
         }
+
+        this.#testScope = null;
       });
     }
   }
@@ -116,36 +121,36 @@ class _SearchTestUtils {
   }) {
     // OpenSearch engines can only be added via http protocols.
     url = url.replace("chrome://mochitests/content", "https://example.com");
-    let engine = await Services.search.addOpenSearchEngine(url, faviconURL);
-    let previousEngine = Services.search.defaultEngine;
-    let previousPrivateEngine = Services.search.defaultPrivateEngine;
+    let engine = await lazy.SearchService.addOpenSearchEngine(url, faviconURL);
+    let previousEngine = lazy.SearchService.defaultEngine;
+    let previousPrivateEngine = lazy.SearchService.defaultPrivateEngine;
     if (setAsDefault) {
-      await Services.search.setDefault(
+      await lazy.SearchService.setDefault(
         engine,
-        Ci.nsISearchService.CHANGE_REASON_UNKNOWN
+        lazy.SearchService.CHANGE_REASON.UNKNOWN
       );
     }
     if (setAsDefaultPrivate) {
-      await Services.search.setDefaultPrivate(
+      await lazy.SearchService.setDefaultPrivate(
         engine,
-        Ci.nsISearchService.CHANGE_REASON_UNKNOWN
+        lazy.SearchService.CHANGE_REASON.UNKNOWN
       );
     }
     this.#testScope.registerCleanupFunction(async () => {
       if (setAsDefault && !skipReset) {
-        await Services.search.setDefault(
+        await lazy.SearchService.setDefault(
           previousEngine,
-          Ci.nsISearchService.CHANGE_REASON_UNKNOWN
+          lazy.SearchService.CHANGE_REASON.UNKNOWN
         );
       }
       if (setAsDefaultPrivate && !skipReset) {
-        await Services.search.setDefaultPrivate(
+        await lazy.SearchService.setDefaultPrivate(
           previousPrivateEngine,
-          Ci.nsISearchService.CHANGE_REASON_UNKNOWN
+          lazy.SearchService.CHANGE_REASON.UNKNOWN
         );
       }
       try {
-        await Services.search.removeEngine(engine);
+        await lazy.SearchService.removeEngine(engine);
       } catch (ex) {
         // Don't throw if the test has already removed it.
       }
@@ -184,7 +189,9 @@ class _SearchTestUtils {
           if (i == times) {
             Services.obs.removeObserver(observer, topic);
             // Let the stack unwind.
-            Services.tm.dispatchToMainThread(() => resolve(aSubject));
+            Services.tm.dispatchToMainThread(() =>
+              resolve(aSubject?.wrappedJSObject ?? aSubject)
+            );
           }
         }
       }, topic);
@@ -274,6 +281,38 @@ class _SearchTestUtils {
           if (!obj.variants) {
             obj.variants = [{ environment: { allRegionsAndLocales: true } }];
           }
+          if (lazy.SearchUtils.configV3FeatureGate) {
+            // Automatically translate instances of partnerCode & telemetrySuffix to
+            // the new format, to avoid having to transtion tests straight away.
+            if ("partnerCode" in obj.base) {
+              obj.base.partner = { default: { code: obj.base.partnerCode } };
+              delete obj.base.partnerCode;
+            }
+
+            function replacePartnerCode(section) {
+              let partner = {};
+              if ("partnerCode" in section) {
+                partner.code = section.partnerCode;
+                delete section.partnerCode;
+              }
+              if ("telemetrySuffix" in section) {
+                partner.telemetrySuffix = section.telemetrySuffix;
+                delete section.telemetrySuffix;
+              }
+              if ("code" in partner || "telemetrySuffix" in partner) {
+                section.partner = { default: partner };
+              }
+            }
+
+            for (let variant of obj.variants || []) {
+              replacePartnerCode(variant);
+
+              for (let subVariant of variant.subVariants || []) {
+                replacePartnerCode(subVariant);
+              }
+            }
+          }
+
           numEngines++;
           break;
         case "defaultEngines":
@@ -478,7 +517,7 @@ class _SearchTestUtils {
       await this.initXPCShellAddonManager();
     }
 
-    await Services.search.init();
+    await lazy.SearchService.init();
 
     let extensionInfo = {
       useAddonManager: "permanent",
@@ -488,21 +527,21 @@ class _SearchTestUtils {
 
     let extension;
 
-    let previousEngine = Services.search.defaultEngine;
-    let previousPrivateEngine = Services.search.defaultPrivateEngine;
+    let previousEngine = lazy.SearchService.defaultEngine;
+    let previousPrivateEngine = lazy.SearchService.defaultPrivateEngine;
 
     let cleanup = async () => {
       if (setAsDefault) {
-        await Services.search.setDefault(
+        await lazy.SearchService.setDefault(
           previousEngine,
-          Ci.nsISearchService.CHANGE_REASON_UNKNOWN
+          lazy.SearchService.CHANGE_REASON.UNKNOWN
         );
         this.clearDefaultSearchEngineCachedPrefs();
       }
       if (setAsDefaultPrivate) {
-        await Services.search.setDefaultPrivate(
+        await lazy.SearchService.setDefaultPrivate(
           previousPrivateEngine,
-          Ci.nsISearchService.CHANGE_REASON_UNKNOWN
+          lazy.SearchService.CHANGE_REASON.UNKNOWN
         );
       }
       await extension.unload();
@@ -517,18 +556,18 @@ class _SearchTestUtils {
     extension = this.#testScope.ExtensionTestUtils.loadExtension(extensionInfo);
     await extension.startup();
     await lazy.AddonTestUtils.waitForSearchProviderStartup(extension);
-    let engine = Services.search.getEngineByName(manifest.name);
+    let engine = lazy.SearchService.getEngineByName(manifest.name);
 
     if (setAsDefault) {
-      await Services.search.setDefault(
+      await lazy.SearchService.setDefault(
         engine,
-        Ci.nsISearchService.CHANGE_REASON_UNKNOWN
+        lazy.SearchService.CHANGE_REASON.UNKNOWN
       );
     }
     if (setAsDefaultPrivate) {
-      await Services.search.setDefaultPrivate(
+      await lazy.SearchService.setDefaultPrivate(
         engine,
-        Ci.nsISearchService.CHANGE_REASON_UNKNOWN
+        lazy.SearchService.CHANGE_REASON.UNKNOWN
       );
     }
 
@@ -683,8 +722,7 @@ class _SearchTestUtils {
   }
 
   /**
-   * Sets the search configuration and search overrides configuration without
-   * reloading the engines.
+   * Sets the search configuration without reloading the engines.
    * If parameters are not specified, the appropriate configuration is
    * reset to the data stored in remote settings.
    *
@@ -693,13 +731,10 @@ class _SearchTestUtils {
    *
    * @param {object[]} [partialConfig]
    *   The replacement configuration. Will be expanded via `expandPartialConfig`.
-   * @param {object[]} [overridesConfig]
-   *   The replacement overrides configuration.
    */
-  setRemoteSettingsConfig(partialConfig, overridesConfig) {
+  setRemoteSettingsConfig(partialConfig) {
     let config = this.expandPartialConfig(partialConfig);
     this.#stubConfig(lazy.SearchUtils.SETTINGS_KEY, config);
-    this.#stubConfig(lazy.SearchUtils.SETTINGS_OVERRIDES_KEY, overridesConfig);
   }
 
   /**
@@ -712,37 +747,22 @@ class _SearchTestUtils {
    *
    * @param {object[]} [partialConfig]
    *   The replacement configuration. Will be expanded via `expandPartialConfig`.
-   * @param {object[]} [overridesConfig]
-   *   The replacement overrides configuration.
    */
-  async updateRemoteSettingsConfig(partialConfig, overridesConfig) {
+  async updateRemoteSettingsConfig(partialConfig) {
     if (!this.#idleServiceCID) {
       this.useMockIdleService();
     }
     let config = this.expandPartialConfig(partialConfig);
     this.#stubConfig(lazy.SearchUtils.SETTINGS_KEY, config);
-    this.#stubConfig(lazy.SearchUtils.SETTINGS_OVERRIDES_KEY, overridesConfig);
 
     if (!config) {
       let settings = lazy.RemoteSettings(lazy.SearchUtils.SETTINGS_KEY);
       config = await settings.get();
     }
-    if (!overridesConfig) {
-      let settings = lazy.RemoteSettings(
-        lazy.SearchUtils.SETTINGS_OVERRIDES_KEY
-      );
-      overridesConfig = await settings.get();
-    }
     const reloadObserved = this.promiseSearchNotification("engines-reloaded");
     await lazy.RemoteSettings(lazy.SearchUtils.SETTINGS_KEY).emit("sync", {
       data: { current: config },
     });
-    await lazy
-      .RemoteSettings(lazy.SearchUtils.SETTINGS_OVERRIDES_KEY)
-      .emit("sync", {
-        data: { current: overridesConfig },
-      });
-
     this.idleService._fireObservers("idle");
     await reloadObserved;
   }
@@ -771,10 +791,10 @@ class _SearchTestUtils {
   }
 
   /**
-   * Extracts post data string from an nsISearchSubmission.
+   * Extracts post data string from the data returned by getSubmission.
    * If there is no post data, returns null.
    *
-   * @param {?nsISearchSubmission} submission
+   * @param {?{postData: nsIMIMEInputStream}} submission
    * @returns {?string}
    */
   getPostDataString(submission) {
@@ -797,13 +817,13 @@ class _SearchTestUtils {
    *   Name of the engine to wait for.
    * @param {string} expectedData
    *   Data to wait for.
-   * @returns {Promise<nsISearchEngine>}
+   * @returns {Promise<SearchEngine>}
    *   Resolves to the search engine with the expected name.
    */
   promiseEngine(expectedEngineName, expectedData = "engine-added") {
     let { promise, resolve } = Promise.withResolvers();
     Services.obs.addObserver(function obs(subject, _topic, data) {
-      let engine = subject.QueryInterface(Ci.nsISearchEngine);
+      let engine = subject.wrappedJSObject;
 
       if (data == expectedData && engine.name == expectedEngineName) {
         Services.obs.removeObserver(obs, "browser-search-engine-modified");

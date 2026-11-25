@@ -22,7 +22,7 @@
 namespace svc_test {
 namespace {
 
-typedef enum {
+enum INTER_LAYER_PRED {
   // Inter-layer prediction is on on all frames.
   INTER_LAYER_PRED_ON,
   // Inter-layer prediction is off on all frames.
@@ -33,7 +33,7 @@ typedef enum {
   // that any layer S (> 0) can only predict from previous spatial
   // layer S-1, from the same superframe.
   INTER_LAYER_PRED_ON_CONSTRAINED
-} INTER_LAYER_PRED;
+};
 
 class DatarateOnePassCbrSvc : public OnePassCbrSvc {
  public:
@@ -1268,6 +1268,8 @@ TEST_P(DatarateOnePassCbrSvcSingleBR, OnePassCbrSvc1SL2TL_DenoiseResize) {
   cfg_.rc_resize_allowed = 1;
   ::libvpx_test::I420VideoSource video("desktop_office1.1280_720-020.yuv", 1280,
                                        720, 12, 1, 0, 300);
+  cfg_.g_w = 1280;
+  cfg_.g_h = 720;
   top_sl_width_ = 1280;
   top_sl_height_ = 720;
   cfg_.rc_target_bitrate = 800;

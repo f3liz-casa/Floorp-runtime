@@ -139,7 +139,7 @@ class ProcessHandlerMixin:
                 "startupinfo": startupinfo,
                 "creationflags": creationflags,
             }
-            if sys.version_info.minor >= 6 and universal_newlines:
+            if universal_newlines:
                 kwargs["universal_newlines"] = universal_newlines
                 kwargs["encoding"] = encoding
             try:
@@ -197,22 +197,32 @@ class ProcessHandlerMixin:
                         try:
                             os.killpg(pid, sig)
                         except BaseException as e:
-                            # On Mac OSX if the process group contains zombie
-                            # processes, killpg results in an EPERM.
-                            # In this case, zombie processes need to be reaped
-                            # before continuing
-                            # Note: A negative pid refers to the entire process
-                            # group
-                            if retries < 1 and getattr(e, "errno", None) == errno.EPERM:
+                            self.debug(f"Exception from killpg({pid}, {sig}): {e}")
+                            # On MacOS, if the process group contains only zombie processes or
+                            # processes doing uninterruptible teardown, killpg results in a
+                            # PermissionError (EPERM). Sleep a bit and hope they exit. We need to
+                            # `wait` for the main process, otherwise we will get EPERM when the
+                            # process itself is all that remains and is a zombie. But `wait` only
+                            # waits on our direct child, not grandchildren, so we still want to call
+                            # `killpg` again after waiting.
+                            if retries < 3 and (
+                                isinstance(e, PermissionError)
+                                or getattr(e, "errno", None) == errno.EPERM
+                            ):
+                                time.sleep(self.TIMEOUT_BEFORE_SIGKILL)
                                 try:
-                                    os.waitpid(-pid, 0)
-                                finally:
-                                    return send_sig(sig, retries + 1)
+                                    os.waitpid(-pid, os.WNOHANG)
+                                except OSError:
+                                    pass
+                                return send_sig(sig, retries + 1)
 
-                            # ESRCH is a "no such process" failure, which is fine because the
-                            # application might already have been terminated itself. Any other
+                            # ProcessLookupError/ESRCH is a "no such process" failure, which is
+                            # fine because the application might already have terminated. Any other
                             # error would indicate a problem in killing the process.
-                            if getattr(e, "errno", None) != errno.ESRCH:
+                            if not (
+                                isinstance(e, ProcessLookupError)
+                                or getattr(e, "errno", None) == errno.ESRCH
+                            ):
                                 print(
                                     "Could not terminate process: %s" % self.pid,
                                     file=sys.stderr,
@@ -239,7 +249,7 @@ class ProcessHandlerMixin:
 
         def kill(self, sig=None, timeout=None):
             self.send_signal(sig)
-            self.returncode = self.wait(timeout)
+            self.wait(timeout)
             self._cleanup()
             return self.returncode
 
@@ -262,7 +272,7 @@ class ProcessHandlerMixin:
             Returns the main process's exit code
             """
             # This call will be different for each OS
-            self.returncode = self._custom_wait(timeout=timeout)
+            self._custom_wait(timeout=timeout)
             if self.returncode is not None:
                 self._cleanup()
             return self.returncode
@@ -536,7 +546,6 @@ falling back to not using job objects for managing child processes""",
                                 file=sys.stderr,
                             )
                             raise WinError(errcode)
-                            break
 
                     if compkey.value == winprocess.COMPKEY_TERMINATE.value:
                         self.debug("compkeyterminate detected")
@@ -587,6 +596,22 @@ falling back to not using job objects for managing child processes""",
                             self.debug("We got a message %s" % msgid.value)
                             pass
 
+            def _update_returncode(self, exited=False):
+                """Set returncode if the process has exited. Returns False if
+                its handle has already been closed by _cleanup (possibly on
+                another thread).
+
+                - exited: the caller knows the process has exited, so an exit
+                  code equal to STILL_ACTIVE is the real exit code.
+                """
+                with self._cleanup_lock:
+                    if not self._handle:
+                        return False
+                    returncode = winprocess.GetExitCodeProcess(self._handle)
+                    if exited or returncode != winprocess.STILL_ACTIVE:
+                        self.returncode = returncode
+                    return True
+
             def _custom_wait(self, timeout=None):
                 """Custom implementation of wait.
 
@@ -594,11 +619,7 @@ falling back to not using job objects for managing child processes""",
                   will wait indefinitely.
                 """
                 # First, check to see if the process is still running
-                if self._handle:
-                    returncode = winprocess.GetExitCodeProcess(self._handle)
-                    if returncode != winprocess.STILL_ACTIVE:
-                        self.returncode = returncode
-                else:
+                if not self._update_returncode():
                     # Dude, the process is like totally dead!
                     return self.returncode
 
@@ -641,10 +662,7 @@ falling back to not using job objects for managing child processes""",
                             "IO Completion Port failed to signal process shutdown"
                         )
                     finally:
-                        if self._handle:
-                            returncode = winprocess.GetExitCodeProcess(self._handle)
-                            if returncode != winprocess.STILL_ACTIVE:
-                                self.returncode = returncode
+                        self._update_returncode()
 
                 else:
                     # Not managing with job objects, so all we can reasonably do
@@ -676,8 +694,8 @@ falling back to not using job objects for managing child processes""",
                         pass
                     elif rc == winprocess.WAIT_OBJECT_0:
                         # We caught WAIT_OBJECT_0, which indicates all is well
-                        print("Single process terminated successfully")
-                        self.returncode = winprocess.GetExitCodeProcess(self._handle)
+                        self.debug("Single process terminated successfully")
+                        self._update_returncode(exited=True)
                     else:
                         # An error occured we should probably throw
                         rc = winprocess.GetLastError()
@@ -691,6 +709,33 @@ falling back to not using job objects for managing child processes""",
                 cases where we want to clean these without killing _handle
                 (i.e. if we fail to create the job object in the first place)
                 """
+                # Signal the manager thread to exit before closing handles,
+                # to avoid ERROR_ABANDONED_WAIT_0 race conditions.
+                if (
+                    getattr(self, "_io_port", None)
+                    and self._io_port != winprocess.INVALID_HANDLE_VALUE
+                ):
+                    try:
+                        winprocess.PostQueuedCompletionStatus(
+                            self._io_port,
+                            0,
+                            winprocess.COMPKEY_TERMINATE.value,
+                            None,
+                        )
+                    except Exception:
+                        self.info(
+                            "Failed to post completion status to IO port (may already be closed)"
+                        )
+
+                if getattr(self, "_procmgrthread", None):
+                    if self._procmgrthread.is_alive():
+                        self._procmgrthread.join(timeout=10)
+                        if self._procmgrthread.is_alive():
+                            self.info(
+                                "Process manager thread still alive after 10s timeout"
+                            )
+                    self._procmgrthread = None
+
                 if (
                     getattr(self, "_job")
                     and self._job != winprocess.INVALID_HANDLE_VALUE
@@ -710,9 +755,6 @@ falling back to not using job objects for managing child processes""",
                     self._io_port = None
                 else:
                     self._io_port = None
-
-                if getattr(self, "_procmgrthread", None):
-                    self._procmgrthread = None
 
             def _cleanup(self):
                 self._cleanup_lock.acquire()
@@ -917,7 +959,7 @@ falling back to not using job objects for managing child processes""",
         # processed.
         elif not self._ignore_children and self.reader.is_alive():
             return None
-        elif hasattr(self, "returncode"):
+        elif getattr(self, "returncode", None) is not None:
             return self.returncode
         else:
             return self.proc.poll()
@@ -1146,8 +1188,10 @@ class ProcessReader:
             queue_timeout = None
             if timeout:
                 queue_timeout = timeout - time.time()
+                if queue_timeout <= 0:
+                    raise Empty
             if output_timeout:
-                if queue_timeout:
+                if queue_timeout is not None:
                     queue_timeout = min(queue_timeout, output_timeout)
                 else:
                     queue_timeout = output_timeout

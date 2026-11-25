@@ -1,4 +1,3 @@
-/* -*- indent-tabs-mode: nil; js-indent-level: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -78,15 +77,6 @@ const ACTION_EDIT = 0;
 const ACTION_ADD = 1;
 
 var BookmarkPropertiesPanel = {
-  /** UI Text Strings */
-  __strings: null,
-  get _strings() {
-    if (!this.__strings) {
-      this.__strings = document.getElementById("stringBundle");
-    }
-    return this.__strings;
-  },
-
   _action: null,
   _itemType: null,
   _uri: null,
@@ -101,22 +91,13 @@ var BookmarkPropertiesPanel = {
 
   /**
    * @returns {string}
-   *   This method returns the correct label for the dialog's "accept"
-   *   button based on the variant of the dialog.
+   *   This method returns the l10n id of the correct title for the current
+   *   variant of this dialog.
    */
-  _getAcceptLabel: function BPP__getAcceptLabel() {
-    return this._strings.getString("dialogAcceptLabelSaveItem");
-  },
-
-  /**
-   * @returns {string}
-   *   This method returns the correct title for the current variant
-   *   of this dialog.
-   */
-  _getDialogTitle: function BPP__getDialogTitle() {
+  _getDialogTitleL10nId() {
     if (this._action == ACTION_ADD) {
       if (this._itemType == BOOKMARK_ITEM) {
-        return this._strings.getString("dialogTitleAddNewBookmark2");
+        return "bookmark-properties-title-add-bookmark";
       }
 
       // add folder
@@ -124,19 +105,19 @@ var BookmarkPropertiesPanel = {
         throw new Error("Unknown item type");
       }
       if (this._URIs.length) {
-        return this._strings.getString("dialogTitleAddMulti");
+        return "bookmark-properties-title-add-multiple-bookmarks";
       }
 
-      return this._strings.getString("dialogTitleAddBookmarkFolder");
+      return "bookmark-properties-title-add-folder";
     }
     if (this._action == ACTION_EDIT) {
       if (this._itemType === BOOKMARK_ITEM) {
-        return this._strings.getString("dialogTitleEditBookmark2");
+        return "bookmark-properties-title-edit-bookmark";
       }
 
-      return this._strings.getString("dialogTitleEditBookmarkFolder");
+      return "bookmark-properties-title-edit-folder";
     }
-    return "";
+    throw new TypeError("Unknown dialog action");
   },
 
   /**
@@ -178,7 +159,9 @@ var BookmarkPropertiesPanel = {
             }
           } else {
             this._uri = Services.io.newURI("about:blank");
-            this._title = this._strings.getString("newBookmarkDefault");
+            this._title = await document.l10n.formatValue(
+              "bookmark-properties-default-name-bookmark"
+            );
             this._dummyItem = true;
           }
 
@@ -198,10 +181,14 @@ var BookmarkPropertiesPanel = {
           this._itemType = BOOKMARK_FOLDER;
           if (!this._title) {
             if ("URIList" in dialogInfo) {
-              this._title = this._strings.getString("bookmarkAllTabsDefault");
+              this._title = await document.l10n.formatValue(
+                "bookmark-properties-default-name-all-tabs-folder"
+              );
               this._URIs = dialogInfo.URIList;
             } else {
-              this._title = this._strings.getString("newFolderDefault");
+              this._title = await document.l10n.formatValue(
+                "bookmark-properties-default-name-folder"
+              );
               this._dummyItem = true;
             }
           }
@@ -234,7 +221,9 @@ var BookmarkPropertiesPanel = {
       .getButton("accept");
     acceptButton.disabled = true;
     await this._determineItemInfo();
-    document.title = this._getDialogTitle();
+    document.title = await document.l10n.formatValue(
+      this._getDialogTitleL10nId()
+    );
 
     // Set adjustable title
     let title = { raw: document.title };
@@ -269,7 +258,10 @@ var BookmarkPropertiesPanel = {
     let acceptButton = document
       .getElementById("bookmarkpropertiesdialog")
       .getButton("accept");
-    acceptButton.label = this._getAcceptLabel();
+    document.l10n.setAttributes(
+      acceptButton,
+      "bookmark-properties-save-button"
+    );
     let acceptButtonDisabled = false;
 
     // Since elements can be unhidden asynchronously, we must observe their

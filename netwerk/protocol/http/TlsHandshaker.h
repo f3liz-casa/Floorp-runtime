@@ -1,12 +1,12 @@
-/* -*- Mode: C++; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef TlsHandshaker_h__
-#define TlsHandshaker_h__
+#ifndef TlsHandshaker_h_
+#define TlsHandshaker_h_
 
 #include "nsITlsHandshakeListener.h"
+#include "nsString.h"
 
 class nsISocketTransport;
 class nsITLSSocketControl;
@@ -45,6 +45,10 @@ class TlsHandshaker : public nsITlsHandshakeCallbackListener {
     return mEarlyDataState == EarlyData::CANNOT_BE_USED;
   }
   void EarlyDataDone();
+  // The early data allowance of the session ticket is used up, so nothing more
+  // can be written until the handshake completes.
+  bool EarlyDataLimitReached() const { return mEarlyDataLimitReached; }
+  void SetEarlyDataLimitReached() { mEarlyDataLimitReached = true; }
 
 #ifndef ANDROID
   void EarlyDataTelemetry(int16_t tlsVersion, bool earlyDataAccepted,
@@ -58,10 +62,7 @@ class TlsHandshaker : public nsITlsHandshakeCallbackListener {
   }
   const nsCString& EarlyNegotiatedALPN() const { return mEarlyNegotiatedALPN; }
   void SetNPNComplete() { mNPNComplete = true; }
-  void NotifyClose() {
-    mTlsHandshakeComplitionPending = false;
-    mOwner = nullptr;
-  }
+  void NotifyClose();
 
  private:
   virtual ~TlsHandshaker();
@@ -75,6 +76,7 @@ class TlsHandshaker : public nsITlsHandshakeCallbackListener {
 
   bool mSecureConnectionStartReported{false};
   bool mTlsHandshakeComplitionPending{false};
+  bool mEarlyDataLimitReached{false};
   // Helper variable for 0RTT handshake;
   // Possible 0RTT has been checked.
   bool m0RTTChecked{false};
@@ -97,4 +99,4 @@ class TlsHandshaker : public nsITlsHandshakeCallbackListener {
 
 }  // namespace mozilla::net
 
-#endif  // TlsHandshaker_h__
+#endif  // TlsHandshaker_h_

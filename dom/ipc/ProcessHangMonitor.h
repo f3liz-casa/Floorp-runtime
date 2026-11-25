@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -67,7 +65,6 @@ class ProcessHangMonitor final : public nsIObserver {
   enum SlowScriptAction {
     Continue,
     Terminate,
-    StartDebugger,
   };
   SlowScriptAction NotifySlowScript(nsIBrowserChild* aBrowserChild,
                                     const char* aFileName,
@@ -76,10 +73,8 @@ class ProcessHangMonitor final : public nsIObserver {
 
   void NotifyPluginHang(uint32_t aPluginId);
 
-  bool IsDebuggerStartupComplete();
-
-  void InitiateCPOWTimeout();
-  bool ShouldTimeOutCPOWs();
+  void InitiateReplyTimeout();
+  bool ShouldTimeOutReplies();
 
   nsresult Dispatch(already_AddRefed<nsIRunnable> aRunnable);
   bool IsOnThread();
@@ -87,7 +82,7 @@ class ProcessHangMonitor final : public nsIObserver {
  private:
   static ProcessHangMonitor* sInstance;
 
-  Atomic<bool> mCPOWTimeout;
+  Atomic<bool> mReplyTimeout;
 
   nsCOMPtr<nsIThread> mThread;
 };

@@ -1,7 +1,10 @@
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
-/* eslint-env mozilla/browser-window */
+
+// This file expects these dependencies to be loaded in the global scope.
+/* import-globals-from ../../../../toolkit/content/contentAreaUtils.js */
+/* import-globals-from ../../../../toolkit/content/globalOverlay.js */
 
 var { XPCOMUtils } = ChromeUtils.importESModule(
   "resource://gre/modules/XPCOMUtils.sys.mjs"
@@ -19,6 +22,8 @@ ChromeUtils.defineESModuleGetters(this, {
   PlacesUtils: "resource://gre/modules/PlacesUtils.sys.mjs",
 });
 
+const CLIPBOARD_URL_FLAVORS = ["text/x-moz-url", "text/plain"];
+
 /**
  * A download element shell is responsible for handling the commands and the
  * displayed data for a single download view element.
@@ -33,28 +38,30 @@ ChromeUtils.defineESModuleGetters(this, {
  *
  * The caller is also responsible for forwarding status notifications, calling
  * the onChanged method.
- *
- * @param download
- *        The Download object from the DownloadHistoryList.
  */
-function HistoryDownloadElementShell(download) {
-  this._download = download;
+class HistoryDownloadElementShell extends DownloadsViewUI.DownloadElementShell {
+  /**
+   * @param download
+   *        The Download object from the DownloadHistoryList.
+   */
+  constructor(download) {
+    super();
+    this._download = download;
 
-  this.element = document.createXULElement("richlistitem");
-  this.element._shell = this;
+    this.element = document.createXULElement("richlistitem");
+    this.element._shell = this;
 
-  this.element.classList.add("download");
-  this.element.classList.add("download-state");
-}
+    this.element.classList.add("download");
+    this.element.classList.add("download-state");
+  }
 
-HistoryDownloadElementShell.prototype = {
   /**
    * Overrides the base getter to return the Download or HistoryDownload object
    * for displaying information and executing commands in the user interface.
    */
   get download() {
     return this._download;
-  },
+  }
 
   onStateChanged() {
     // Since the state changed, we may need to check the target file again.
@@ -69,7 +76,7 @@ HistoryDownloadElementShell.prototype = {
       // this is the only command that may be affected.
       goUpdateCommand("downloadsCmd_clearDownloads");
     }
-  },
+  }
 
   onChanged() {
     // There is nothing to do if the item has always been invisible.
@@ -84,34 +91,33 @@ HistoryDownloadElementShell.prototype = {
     } else {
       this._updateStateInner();
     }
-  },
-  _downloadState: null,
+  }
+
+  _downloadState = null;
 
   isCommandEnabled(aCommand) {
     // The only valid command for inactive elements is cmd_delete.
     if (!this.active && aCommand != "cmd_delete") {
       return false;
     }
-    return DownloadsViewUI.DownloadElementShell.prototype.isCommandEnabled.call(
-      this,
-      aCommand
-    );
-  },
+    return super.isCommandEnabled(aCommand);
+  }
 
   downloadsCmd_unblock() {
     this.confirmUnblock(window, "unblock");
-  },
+  }
+
   downloadsCmd_unblockAndSave() {
     this.confirmUnblock(window, "unblock");
-  },
+  }
 
   downloadsCmd_chooseUnblock() {
     this.confirmUnblock(window, "chooseUnblock");
-  },
+  }
 
   downloadsCmd_chooseOpen() {
     this.confirmUnblock(window, "chooseOpen");
-  },
+  }
 
   // Returns whether or not the download handled by this shell should
   // show up in the search results for the given term.  Both the display
@@ -128,7 +134,7 @@ HistoryDownloadElementShell.prototype = {
         .toLowerCase()
         .includes(aTerm)
     );
-  },
+  }
 
   // Handles double-click and return keypress on the element (the keypress
   // listener is set in the DownloadsPlacesView object).
@@ -153,7 +159,7 @@ HistoryDownloadElementShell.prototype = {
     if (command && this.isCommandEnabled(command)) {
       this.doCommand(command);
     }
-  },
+  }
 
   /**
    * This method is called by the outer download view, after the controller
@@ -183,12 +189,8 @@ HistoryDownloadElementShell.prototype = {
           this._targetFileChecked = true;
         });
     }
-  },
-};
-Object.setPrototypeOf(
-  HistoryDownloadElementShell.prototype,
-  DownloadsViewUI.DownloadElementShell.prototype
-);
+  }
+}
 
 /**
  * Relays commands from the download.xml binding to the selected items.
@@ -608,7 +610,11 @@ DownloadsPlacesView.prototype = {
       case "cmd_selectAll":
         return true;
       case "cmd_paste":
-        return this._canDownloadClipboardURL();
+        // We check later whether content is valid for pasting, or ignore it.
+        return Services.clipboard.hasDataMatchingFlavors(
+          CLIPBOARD_URL_FLAVORS,
+          Ci.nsIClipboard.kGlobalClipboard
+        );
       case "downloadsCmd_clearDownloads":
         return this.canClearDownloads(this._richlistbox);
       default:
@@ -636,8 +642,7 @@ DownloadsPlacesView.prototype = {
     );
     trans.init(null);
 
-    let flavors = ["text/x-moz-url", "text/plain"];
-    flavors.forEach(trans.addDataFlavor);
+    CLIPBOARD_URL_FLAVORS.forEach(trans.addDataFlavor);
 
     Services.clipboard.getData(trans, Services.clipboard.kGlobalClipboard);
 
@@ -654,18 +659,6 @@ DownloadsPlacesView.prototype = {
     } catch (ex) {}
 
     return ["", ""];
-  },
-
-  _canDownloadClipboardURL() {
-    let [url /* ,name */] = this._getURLFromClipboardData();
-    return url != "";
-  },
-
-  _downloadURLFromClipboard() {
-    let [url, name] = this._getURLFromClipboardData();
-    let browserWin = BrowserWindowTracker.getTopWindow();
-    let initiatingDoc = browserWin ? browserWin.document : document;
-    DownloadURL(url, name, initiatingDoc);
   },
 
   // nsIController
@@ -719,7 +712,12 @@ DownloadsPlacesView.prototype = {
   },
 
   cmd_paste() {
-    this._downloadURLFromClipboard();
+    let [url, name] = this._getURLFromClipboardData();
+    if (url) {
+      let browserWin = BrowserWindowTracker.getTopWindow();
+      let initiatingDoc = browserWin ? browserWin.document : document;
+      DownloadURL(url, name, initiatingDoc);
+    }
   },
 
   downloadsCmd_clearDownloads() {
@@ -751,8 +749,13 @@ DownloadsPlacesView.prototype = {
     contextMenu.querySelector(".downloadCopyLocationMenuItem").hidden =
       !Array.prototype.some.call(
         this._richlistbox.selectedItems,
-        el => !!el._shell.download.source?.url
+        el =>
+          !!el._shell.download.source?.url &&
+          !el._shell.download.source?.isDataURICleared
       );
+    contextMenu.querySelector(".downloadLinksSeparator").hidden =
+      contextMenu.querySelector(".downloadCopyLocationMenuItem").hidden &&
+      contextMenu.querySelector(".downloadOpenReferrerMenuItem").hidden;
 
     let download = element._shell.download;
     if (!download.stopped) {
@@ -846,7 +849,6 @@ DownloadsPlacesView.prototype = {
     dt.mozSetDataAt("application/x-moz-file", file, 0);
     let url = Services.io.newFileURI(file).spec;
     dt.setData("text/uri-list", url);
-    dt.setData("text/plain", url);
     dt.effectAllowed = "copyMove";
     dt.addElement(selectedItem);
   },
@@ -899,15 +901,14 @@ for (let methodName of ["load", "applyFilter", "selectNode", "selectItems"]) {
 }
 
 function goUpdateDownloadCommands() {
-  function updateCommandsForObject(object) {
-    for (let name in object) {
-      if (DownloadsViewUI.isCommandName(name)) {
-        goUpdateCommand(name);
-      }
-    }
+  const commands = [
+    ...DownloadsViewUI.getCommandNamesFrom(DownloadsPlacesView),
+    ...DownloadsViewUI.getCommandNamesFrom(HistoryDownloadElementShell),
+  ];
+
+  for (let command of commands) {
+    goUpdateCommand(command);
   }
-  updateCommandsForObject(DownloadsPlacesView.prototype);
-  updateCommandsForObject(HistoryDownloadElementShell.prototype);
 }
 
 document.addEventListener("DOMContentLoaded", function () {

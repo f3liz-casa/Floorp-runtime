@@ -2,6 +2,8 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
+/** @import {Store} from "resource://newtab/lib/Store.sys.mjs" */
+
 const lazy = {};
 ChromeUtils.defineESModuleGetters(lazy, {
   PlacesUtils: "resource://gre/modules/PlacesUtils.sys.mjs",
@@ -14,6 +16,15 @@ const PREF_SYSTEM_SHORTCUTS_PERSONALIZATION =
 
 const PREF_SYSTEM_SHORTCUTS_LOG = "discoverystream.shortcuts.force_log.enabled";
 
+function smartshortcutsEnabled(values) {
+  // nimbus pref, if its there, overrides the local pref
+  const experimentVariable = values.trainhopConfig?.smartShortcuts?.enabled;
+  if (typeof experimentVariable === "boolean") {
+    return experimentVariable;
+  }
+  return !!values[PREF_SYSTEM_SHORTCUTS_PERSONALIZATION];
+}
+
 function timeMSToSeconds(timeMS) {
   return Math.round(timeMS / 1000);
 }
@@ -22,27 +33,24 @@ function timeMSToSeconds(timeMS) {
  * A feature that periodically generates an interest vector for personalized shortcuts.
  */
 export class SmartShortcutsFeed {
+  /** @type {Store} */
+  store = null;
+
   constructor() {
     this.loaded = false;
   }
 
   isEnabled() {
+    // enabled by smartshortcuts being enabled or force_log=true in nimbus pref
     const { values } = this.store.getState().Prefs;
-    const systemPref = values[PREF_SYSTEM_SHORTCUTS_PERSONALIZATION];
-    const experimentVariable = values.smartShortcutsConfig?.enabled;
     const systemLogPref = values[PREF_SYSTEM_SHORTCUTS_LOG];
-    const experimentLogPref = values.smartShortcutsConfig?.force_log;
+    const experimentLogPref = values.trainhopConfig?.smartShortcuts?.force_log;
 
-    return (
-      systemPref || experimentVariable || systemLogPref || experimentLogPref
-    );
+    return smartshortcutsEnabled(values) || systemLogPref || experimentLogPref;
   }
 
   async init() {
-    if (!this.isEnabled()) {
-      return;
-    }
-    this.loaded = true;
+    this.loaded = this.isEnabled();
   }
 
   async reset() {
@@ -117,7 +125,7 @@ export class SmartShortcutsFeed {
         break;
       case at.PREF_CHANGED:
         this.onPrefChangedAction(action);
-        if (action.data.name === "smartShortcutsConfig") {
+        if (action.data.name === "trainhopConfig") {
           await this.init();
         }
         break;

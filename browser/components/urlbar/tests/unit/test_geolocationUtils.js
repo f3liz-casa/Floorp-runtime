@@ -8,7 +8,7 @@
 
 ChromeUtils.defineESModuleGetters(this, {
   GeolocationUtils:
-    "resource:///modules/urlbar/private/GeolocationUtils.sys.mjs",
+    "moz-src:///browser/components/urlbar/private/GeolocationUtils.sys.mjs",
 });
 
 add_setup(async () => {
@@ -288,5 +288,30 @@ add_task(async function unexpectedMerinoGeolocation() {
   );
 
   // Reset for the next task.
+  await MerinoTestUtils.initGeolocation();
+});
+
+add_task(async function concurrentCallsShareOneRequest() {
+  MerinoTestUtils.server.reset();
+  await MerinoTestUtils.initGeolocation();
+  // Keep the first request in flight while the second one starts.
+  MerinoTestUtils.server.response.delay = 300;
+
+  let results = await Promise.all([
+    GeolocationUtils.geolocation(),
+    GeolocationUtils.geolocation(),
+  ]);
+
+  Assert.deepEqual(
+    results,
+    [MerinoTestUtils.GEOLOCATION, MerinoTestUtils.GEOLOCATION],
+    "Both concurrent callers should receive the geolocation"
+  );
+  Assert.equal(
+    MerinoTestUtils.server.requests.length,
+    1,
+    "Concurrent callers should share one Merino request"
+  );
+
   await MerinoTestUtils.initGeolocation();
 });

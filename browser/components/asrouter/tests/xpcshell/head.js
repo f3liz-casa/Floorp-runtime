@@ -56,16 +56,12 @@ async function makeValidators() {
   );
 
   const messageValidators = {
+    action_only: await schemaValidatorFor(
+      "resource://testing-common/ActionOnlyMessage.schema.json",
+      { common: true }
+    ),
     bookmarks_bar_button: await schemaValidatorFor(
       "resource://testing-common/BookmarksBarButton.schema.json",
-      { common: true }
-    ),
-    cfr_doorhanger: await schemaValidatorFor(
-      "resource://testing-common/ExtensionDoorhanger.schema.json",
-      { common: true }
-    ),
-    cfr_urlbar_chiclet: await schemaValidatorFor(
-      "resource://testing-common/CFRUrlbarChiclet.schema.json",
       { common: true }
     ),
     infobar: await schemaValidatorFor(
@@ -84,6 +80,14 @@ async function makeValidators() {
       "resource://testing-common/NewtabPromoMessage.schema.json",
       { common: true }
     ),
+    sidebar_chatbot_promo: await schemaValidatorFor(
+      "resource://testing-common/SidebarChatBotPromo.schema.json",
+      { common: true }
+    ),
+    smart_window_newtab_promo: await schemaValidatorFor(
+      "resource://testing-common/SmartWindowNewtabPromo.schema.json",
+      { common: true }
+    ),
     spotlight: await schemaValidatorFor(
       "resource://testing-common/Spotlight.schema.json",
       { common: true }
@@ -100,14 +104,16 @@ async function makeValidators() {
       "resource://testing-common/UpdateAction.schema.json",
       { common: true }
     ),
+    urlbar_action: await schemaValidatorFor(
+      "resource://testing-common/UrlbarAction.schema.json",
+      { common: true }
+    ),
     feature_callout: await schemaValidatorFor(
       // For now, Feature Callout and Spotlight share a common schema
       "resource://testing-common/Spotlight.schema.json",
       { common: true }
     ),
   };
-
-  messageValidators.milestone_message = messageValidators.cfr_doorhanger;
 
   return { experimentValidator, messageValidators };
 }

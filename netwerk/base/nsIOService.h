@@ -1,34 +1,31 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef nsIOService_h__
-#define nsIOService_h__
+#ifndef nsIOService_h_
+#define nsIOService_h_
 
-#include "nsStringFwd.h"
-#include "nsIIOService.h"
-#include "nsTArray.h"
-#include "nsCOMPtr.h"
-#include "nsIObserver.h"
-#include "nsIWeakReferenceUtils.h"
-#include "nsILoadInfo.h"
-#include "nsINetUtil.h"
-#include "nsIChannelEventSink.h"
-#include "nsCategoryCache.h"
-#include "nsISpeculativeConnect.h"
-#include "nsWeakReference.h"
+#include "SimpleURIUnknownSchemes.h"
 #include "mozilla/Atomics.h"
-#include "mozilla/Attributes.h"
 #include "mozilla/RWLock.h"
 #include "mozilla/net/ProtocolHandlerInfo.h"
-#include "prtime.h"
+#include "nsCOMPtr.h"
+#include "nsCategoryCache.h"
 #include "nsICaptivePortalService.h"
+#include "nsIChannelEventSink.h"
+#include "nsIIOService.h"
+#include "nsILoadInfo.h"
+#include "nsINetUtil.h"
+#include "nsIObserver.h"
 #include "nsIObserverService.h"
+#include "nsISpeculativeConnect.h"
+#include "nsIWeakReferenceUtils.h"
+#include "nsNetCID.h"
+#include "nsStringFwd.h"
+#include "nsTArray.h"
 #include "nsTHashSet.h"
 #include "nsWeakReference.h"
-#include "nsNetCID.h"
-#include "SimpleURIUnknownSchemes.h"
+#include "prtime.h"
 
 // We don't want to expose this observer topic.
 // Intended internal use only for remoting offline/inline events.
@@ -42,12 +39,9 @@ class nsIProtocolProxyService2;
 class nsIProxyInfo;
 class nsPISocketTransportService;
 namespace mozilla {
-class MemoryReportingProcess;
 namespace net {
 class NeckoChild;
 class nsAsyncRedirectVerifyHelper;
-class SocketProcessHost;
-class SocketProcessMemoryReporter;
 union NetAddr;
 
 class nsIOService final : public nsIIOService,
@@ -55,8 +49,7 @@ class nsIOService final : public nsIIOService,
                           public nsINetUtil,
                           public nsISpeculativeConnect,
                           public nsSupportsWeakReference,
-                          public nsIIOServiceInternal,
-                          public nsIObserverService {
+                          public nsIIOServiceInternal {
  public:
   NS_DECL_THREADSAFE_ISUPPORTS
   NS_DECL_NSIIOSERVICE
@@ -64,7 +57,6 @@ class nsIOService final : public nsIIOService,
   NS_DECL_NSINETUTIL
   NS_DECL_NSISPECULATIVECONNECT
   NS_DECL_NSIIOSERVICEINTERNAL
-  NS_DECL_NSIOBSERVERSERVICE
 
   // Gets the singleton instance of the IO Service, creating it as needed
   // Returns nullptr on out of memory or failure to initialize.
@@ -104,48 +96,13 @@ class nsIOService final : public nsIIOService,
   // it) into one which we can expose to the user, for example on the URL bar.
   static already_AddRefed<nsIURI> CreateExposableURI(nsIURI*);
 
-  // Used to count the total number of HTTP requests made
-  void IncrementRequestNumber() { mTotalRequests++; }
-  uint32_t GetTotalRequestNumber() { return mTotalRequests; }
-  // Used to keep "race cache with network" stats
-  void IncrementCacheWonRequestNumber() { mCacheWon++; }
-  uint32_t GetCacheWonRequestNumber() { return mCacheWon; }
-  void IncrementNetWonRequestNumber() { mNetWon++; }
-  uint32_t GetNetWonRequestNumber() { return mNetWon; }
-
   // Used to trigger a recheck of the captive portal status
   nsresult RecheckCaptivePortal();
-
-  void OnProcessLaunchComplete(SocketProcessHost* aHost, bool aSucceeded);
-  void OnProcessUnexpectedShutdown(SocketProcessHost* aHost);
-  bool SocketProcessReady();
-  static void NotifySocketProcessPrefsChanged(const char* aName, void* aSelf);
-  void NotifySocketProcessPrefsChanged(const char* aName);
-  static bool UseSocketProcess(bool aCheckAgain = false);
-
-  bool IsSocketProcessLaunchComplete();
-
-  // Call func immediately if socket process is launched completely. Otherwise,
-  // |func| will be queued and then executed in the *main thread* once socket
-  // process is launced.
-  void CallOrWaitForSocketProcess(const std::function<void()>& aFunc);
-
-  int32_t SocketProcessPid();
-  SocketProcessHost* SocketProcess() { return mSocketProcess; }
-
-  friend SocketProcessMemoryReporter;
-  RefPtr<MemoryReportingProcess> GetSocketProcessMemoryReporter();
 
   // Lookup the ProtocolHandlerInfo based on a given scheme.
   // Safe to call from any thread.
   ProtocolHandlerInfo LookupProtocolHandler(const nsACString& aScheme);
 
-  static void OnTLSPrefChange(const char* aPref, void* aSelf);
-
-  nsresult LaunchSocketProcess();
-
-  static bool TooManySocketProcessCrash();
-  static void IncreaseSocketProcessCrashCount();
 #ifdef MOZ_WIDGET_ANDROID
   static bool ShouldAddAdditionalSearchHeaders(nsIURI* aURI, bool* val);
 #endif
@@ -157,6 +114,11 @@ class nsIOService final : public nsIIOService,
 
   NS_IMETHODIMP GetOverridenIpAddressSpace(
       nsILoadInfo::IPAddressSpace* aIpAddressSpace, const NetAddr& aAddr);
+
+  bool ShouldSkipDomainForLNA(const nsACString& aDomain);
+
+  // Safe to call from any thread.
+  bool IsLocalPortBlocked(uint16_t aPort);
 
  private:
   // These shouldn't be called directly:
@@ -191,7 +153,8 @@ class nsIOService final : public nsIIOService,
       const mozilla::Maybe<mozilla::dom::ClientInfo>& aLoadingClientInfo,
       const mozilla::Maybe<mozilla::dom::ServiceWorkerDescriptor>& aController,
       uint32_t aSecurityFlags, nsContentPolicyType aContentPolicyType,
-      uint32_t aSandboxFlags, nsIChannel** result);
+      uint32_t aSandboxFlags, uint64_t aAssociatedBrowsingContextID,
+      nsIChannel** result);
 
   nsresult NewChannelFromURIWithProxyFlagsInternal(nsIURI* aURI,
                                                    nsIURI* aProxyURI,
@@ -204,15 +167,14 @@ class nsIOService final : public nsIIOService,
       Maybe<OriginAttributes>&& aOriginAttributes,
       nsIInterfaceRequestor* aCallbacks, bool aAnonymous);
 
-  void DestroySocketProcess();
-
-  nsresult SetOfflineInternal(bool offline, bool notifySocketProcess = true);
+  nsresult SetOfflineInternal(bool offline);
 
   bool UsesExternalProtocolHandler(const nsACString& aScheme)
       MOZ_REQUIRES_SHARED(mLock);
 
   void UpdateAddressSpaceOverrideList(const char* aPrefName,
                                       nsTArray<nsCString>& aTargetList);
+  void UpdateSkipDomainsList();
 
  private:
   mozilla::Atomic<bool, mozilla::Relaxed> mOffline{true};
@@ -224,8 +186,6 @@ class nsIOService final : public nsIIOService,
   // SetOffline() for more details.
   bool mSettingOffline{false};
   bool mSetOfflineValue{false};
-
-  bool mSocketProcessLaunchComplete{false};
 
   mozilla::Atomic<bool, mozilla::Relaxed> mShutdown{false};
   mozilla::Atomic<bool, mozilla::Relaxed> mHttpHandlerAlreadyShutingDown{false};
@@ -242,19 +202,16 @@ class nsIOService final : public nsIIOService,
 
   RWLock mLock{"nsIOService::mLock"};
   nsTArray<int32_t> mRestrictedPortList MOZ_GUARDED_BY(mLock);
+  nsTArray<uint16_t> mBlockedLocalPorts MOZ_GUARDED_BY(mLock);
   nsTArray<nsCString> mForceExternalSchemes MOZ_GUARDED_BY(mLock);
 
   nsTArray<nsCString> mPublicAddressSpaceOverridesList MOZ_GUARDED_BY(mLock);
   nsTArray<nsCString> mPrivateAddressSpaceOverridesList MOZ_GUARDED_BY(mLock);
   nsTArray<nsCString> mLocalAddressSpaceOverrideList MOZ_GUARDED_BY(mLock);
+  nsTArray<nsCString> mLNASkipDomainsList MOZ_GUARDED_BY(mLock);
 
   nsTHashMap<nsCString, RuntimeProtocolHandler> mRuntimeProtocolHandlers
       MOZ_GUARDED_BY(mLock);
-
-  uint32_t mTotalRequests{0};
-  uint32_t mCacheWon{0};
-  uint32_t mNetWon{0};
-  static uint32_t sSocketProcessCrashedCount;
 
   // These timestamps are needed for collecting telemetry on PR_Connect,
   // PR_ConnectContinue and PR_Close blocking time.  If we spend very long
@@ -266,21 +223,6 @@ class nsIOService final : public nsIIOService,
 
   // Time a network tearing down started.
   mozilla::Atomic<PRIntervalTime> mNetTearingDownStarted{0};
-
-  SocketProcessHost* mSocketProcess{nullptr};
-
-  // Events should be executed after the socket process is launched. Will
-  // dispatch these events while socket process fires OnProcessLaunchComplete.
-  // Note: this array is accessed only on the main thread.
-  nsTArray<std::function<void()>> mPendingEvents;
-
-  // The observer notifications need to be forwarded to socket process.
-  nsTHashSet<nsCString> mObserverTopicForSocketProcess;
-  // Some noticications (e.g., NS_XPCOM_SHUTDOWN_OBSERVER_ID) are triggered in
-  // socket process, so we should not send the notifications again.
-  nsTHashSet<nsCString> mSocketProcessTopicBlockedList;
-  // Used to store the topics that are already observed by IOService.
-  nsTHashSet<nsCString> mIOServiceTopicList;
 
   nsCOMPtr<nsIObserverService> mObserverService;
 
@@ -305,4 +247,4 @@ extern nsIOService* gIOService;
 }  // namespace net
 }  // namespace mozilla
 
-#endif  // nsIOService_h__
+#endif  // nsIOService_h_

@@ -23,7 +23,13 @@
 
 import("//chromium/build/config/linux/pkg_config.gni")
 import("//chromium/build/config/sanitizers/sanitizers.gni")
+import("//testing/test.gni")
 import("webrtc.gni")
+
+if (rtc_rust) {
+  import("//build/rust/rust_unit_tests_group.gni")
+}
+
 if (rtc_enable_protobuf) {
   import("//third_party/protobuf/proto_library.gni")
 }
@@ -47,48 +53,42 @@ if (!build_with_chromium && !build_with_mozilla) {
     }
     if (rtc_include_tests) {
       deps += [
+        ":audio_engine_tests",
         ":rtc_p2p_unittests",
-        ":rtc_unittests",
-        ":video_engine_tests",
+        ":rust_tests",
+        ":test_suites",
         ":voip_unittests",
-        ":webrtc_nonparallel_tests",
-        ":webrtc_perf_tests",
-        "common_audio:common_audio_unittests",
-        "common_video:common_video_unittests",
         "examples:examples_unittests",
-        "media:rtc_media_unittests",
-        "modules:modules_tests",
-        "modules:modules_unittests",
         "modules/audio_coding:audio_coding_tests",
         "modules/audio_processing:audio_processing_tests",
         "modules/remote_bitrate_estimator:rtp_to_text",
         "modules/rtp_rtcp:test_packet_masks_metrics",
         "modules/video_capture:video_capture_internal_impl",
         "modules/video_coding:video_codec_perf_tests",
-        "net/dcsctp:dcsctp_unittests",
-        "pc:peerconnection_unittests",
+        "p2p:dtls_ice_integration_bench",
         "pc:rtc_pc_unittests",
         "pc:slow_peer_connection_unittests",
         "pc:svc_tests",
-        "rtc_tools:rtp_generator",
         "rtc_tools:video_encoder",
         "rtc_tools:video_replay",
-        "stats:rtc_stats_unittests",
-        "system_wrappers:system_wrappers_unittests",
         "test",
         "video:screenshare_loopback",
         "video:sv_loopback",
         "video:video_loopback",
       ]
+      deps += [ "tools_webrtc:validate_test_registration" ]
       if (use_libfuzzer) {
         deps += [ "test/fuzzers" ]
       }
+
+      # TODO(bugs.webrtc.org/430260876): Remove once rust links with libwebrtc.
       if (!is_asan) {
         # Do not build :webrtc_lib_link_test because lld complains on some OS
         # (e.g. when target_os = "mac") when is_asan=true. For more details,
         # see bugs.webrtc.org/11027#c5.
         deps += [ ":webrtc_lib_link_test" ]
       }
+
       if (is_ios) {
         deps += [
           "examples:apprtcmobile_tests",
@@ -99,6 +99,7 @@ if (!build_with_chromium && !build_with_mozilla) {
       if (is_android) {
         deps += [
           "examples:android_examples_junit_tests",
+          "modules/video_coding:videocodec_test_mediacodec",
           "sdk/android:android_instrumentation_test_apk",
           "sdk/android:android_sdk_junit_tests",
         ]
@@ -117,6 +118,48 @@ if (!build_with_chromium && !build_with_mozilla) {
     }
     if (target_os == "android") {
       deps += [ "tools_webrtc:binary_version_check" ]
+    }
+  }
+}
+
+if (rtc_include_tests) {
+  group("test_suites") {
+    testonly = true
+    deps = [
+      ":rtc_unittests",
+      ":webrtc_nonparallel_tests",
+      ":webrtc_perf_tests",
+      "//call:call_tests",
+      "//call/adaptation:resource_adaptation_tests",
+      "//common_audio:common_audio_unittests",
+      "//common_video:common_video_unittests",
+      "//media:rtc_media_unittests",
+      "//modules:modules_unittests",
+      "//modules/audio_coding:audio_coding_unittests",
+      "//modules/audio_processing:audio_processing_unittests",
+      "//modules/rtp_rtcp:rtp_rtcp_unittests",
+      "//modules/video_coding:video_coding_unittests",
+      "//net/dcsctp:dcsctp_unittests",
+      "//pc:peerconnection_unittests",
+      "//stats:rtc_stats_unittests",
+      "//system_wrappers:system_wrappers_unittests",
+      "//test:test_support_unittests",
+      "//video:video_tests",
+      "//video/adaptation:video_adaptation_tests",
+      "//video/timing:video_timing_tests",
+    ]
+    if (rtc_desktop_capture_supported) {
+      deps += [
+        "//modules/desktop_capture:desktop_capture_modules_tests",
+        "//modules/desktop_capture:desktop_capture_unittests",
+        "//modules/desktop_capture:xvfb_capture_tests",
+      ]
+      if (is_mac) {
+        deps += [ "//modules/desktop_capture:desktop_capture_mac_unittests" ]
+      }
+      if (is_win) {
+        deps += [ "//modules/desktop_capture:desktop_capture_win_unittests" ]
+      }
     }
   }
 }
@@ -178,11 +221,19 @@ config("common_inherited_config") {
     defines += [ "RTC_ENABLE_WIN_WGC" ]
   }
 
+  if (deprecate_plan_b) {
+    defines += [ "WEBRTC_DEPRECATE_PLAN_B" ]
+  }
+
+  if (!rtc_rust) {
+    defines += [ "WEBRTC_WITHOUT_RUST" ]
+  }
+
   if (!rtc_use_perfetto) {
-    # Some tests need to declare their own trace event handlers. If this define is
-    # not set, the first time TRACE_EVENT_* is called it will store the return
-    # value for the current handler in an static variable, so that subsequent
-    # changes to the handler for that TRACE_EVENT_* will be ignored.
+    # Some tests need to declare their own trace event handlers. If this define
+    # is not set, the first time TRACE_EVENT_* is called it will store the
+    # return value for the current handler in an static variable, so that
+    # subsequent changes to the handler for that TRACE_EVENT_* will be ignored.
     # So when tests are included, we set this define, making it possible to use
     # different event handlers in different tests.
     if (rtc_include_tests) {
@@ -258,10 +309,6 @@ config("common_inherited_config") {
   if (is_ubsan) {
     cflags += [ "-fsanitize=float-cast-overflow" ]
   }
-
-  if (rtc_allow_deprecated_namespaces) {
-    defines += [ "WEBRTC_ALLOW_DEPRECATED_NAMESPACES" ]
-  }
 }
 
 # TODO(bugs.webrtc.org/9693): Remove the possibility to suppress this warning
@@ -278,35 +325,6 @@ config("rtc_prod_config") {
     cflags = [
       "-Wexit-time-destructors",
       "-Wglobal-constructors",
-    ]
-  }
-}
-
-group("tracing") {
-if (!build_with_mozilla) {
-  all_dependent_configs = [ "//third_party/perfetto/gn:public_config" ]
-  if (rtc_use_perfetto) {
-    if (build_with_chromium) {
-      public_deps =  # no-presubmit-check TODO(webrtc:8603)
-          [ "//third_party/perfetto:libperfetto" ]
-    } else {
-      public_deps = [  # no-presubmit-check TODO(webrtc:8603)
-        ":webrtc_libperfetto",
-        "//third_party/perfetto/include/perfetto/tracing",
-      ]
-    }
-  } else {
-    public_deps =  # no-presubmit-check TODO(webrtc:8603)
-        [ "//third_party/perfetto/include/perfetto/tracing" ]
-  }
-}
-}
-
-if (rtc_use_perfetto) {
-  rtc_library("webrtc_libperfetto") {
-    deps = [
-      "//third_party/perfetto/src/tracing:client_api_without_backends",
-      "//third_party/perfetto/src/tracing:platform_impl",
     ]
   }
 }
@@ -356,10 +374,6 @@ config("common_config") {
     defines += [ "WEBRTC_HAVE_SCTP" ]
   }
 
-  if (rtc_enable_external_auth) {
-    defines += [ "ENABLE_EXTERNAL_AUTH" ]
-  }
-
   if (rtc_use_h264) {
     defines += [ "WEBRTC_USE_H264" ]
   }
@@ -384,10 +398,13 @@ config("common_config") {
     defines += [ "WEBRTC_EXCLUDE_AUDIO_PROCESSING_MODULE" ]
   }
 
+  if (rtc_video_psnr) {
+    defines += [ "WEBRTC_ENCODER_PSNR_STATS" ]
+  }
+
   if (is_clang) {
     cflags += [
-      # TODO(webrtc:13219): Fix -Wshadow instances and enable.
-      "-Wno-shadow",
+      "-Wshadow",
 
       # See https://reviews.llvm.org/D56731 for details about this
       # warning.
@@ -541,14 +558,15 @@ if (!build_with_chromium) {
     ]
 
     sources = []
+
     complete_static_lib = true
     suppressed_configs += [ "//chromium/build/config/compiler:thin_archive" ]
     defines = []
 
     deps = [
+      "api:create_modular_peer_connection_factory",
       "api:create_peerconnection_factory",
       "api:enable_media",
-      "api:libjingle_peerconnection_api",
       "api:rtc_error",
       "api:transport_api",
       "api/audio_codecs:opus_audio_decoder_factory",
@@ -556,7 +574,6 @@ if (!build_with_chromium) {
       "api/rtc_event_log:rtc_event_log_factory",
       "api/task_queue",
       "api/task_queue:default_task_queue_factory",
-      "api/test/metrics",
       "api/video_codecs:video_decoder_factory_template",
       "api/video_codecs:video_decoder_factory_template_dav1d_adapter",
       "api/video_codecs:video_decoder_factory_template_libvpx_vp8_adapter",
@@ -576,13 +593,14 @@ if (!build_with_chromium) {
       "media",
       "modules",
       "modules/video_capture:video_capture_internal_impl",
-      "pc:libjingle_peerconnection",
+      "pc:peer_connection_factory",
       "pc:rtc_pc",
-      "sdk",
+      "pc:webrtc_sdp",
       "video",
     ]
     if (build_with_mozilla) {
       deps -= [
+        "api:create_modular_peer_connection_factory",
         "api:create_peerconnection_factory",
         "api:enable_media",
         "api:rtc_error",
@@ -591,7 +609,6 @@ if (!build_with_chromium) {
         "api/rtc_event_log:rtc_event_log_factory",
         "api/task_queue",
         "api/task_queue:default_task_queue_factory",
-        "api/test/metrics",
         "api/video_codecs:video_decoder_factory_template",
         "api/video_codecs:video_decoder_factory_template_dav1d_adapter",
         "api/video_codecs:video_decoder_factory_template_libvpx_vp8_adapter",
@@ -603,10 +620,9 @@ if (!build_with_chromium) {
         "api/video_codecs:video_encoder_factory_template_libvpx_vp9_adapter",
         "api/video_codecs:video_encoder_factory_template_open_h264_adapter",
         "logging:rtc_event_log_api",
-#        "p2p:rtc_p2p",
-        "pc:libjingle_peerconnection",
+        "pc:peer_connection_factory",
         "pc:rtc_pc",
-        "sdk",
+        "pc:webrtc_sdp",
       ]
     }
 
@@ -619,7 +635,10 @@ if (!build_with_chromium) {
 
     if (build_with_mozilla) {
       deps += [
+        "api:frame_transformer_factory",
         "api/audio:builtin_audio_processing_builder",
+        "api/video:adapted_video_track_source",
+        "api/video:builtin_video_bitrate_allocator_factory",
         "api/environment:environment_factory",
         "api/video:video_frame",
         "api/video:video_rtp_headers",
@@ -629,6 +648,7 @@ if (!build_with_chromium) {
       # Added when we removed deps in other places to avoid building
       # unreachable sources.  See Bug 1820869.
       deps += [
+        "api/audio:aec3_factory",
         "api/video_codecs:video_codecs_api",
         "api/video_codecs:rtc_software_fallback_wrappers",
         "media:rtc_simulcast_encoder_adapter",
@@ -641,11 +661,21 @@ if (!build_with_chromium) {
       deps += [ "sdk:videocapture_objc" ]
     }
 
-    if (rtc_enable_protobuf) {
-      deps += [ "logging:rtc_event_log_proto" ]
+    if (rtc_include_internal_audio_device) {
+      deps += [ "api/audio:create_audio_device_module" ]
+    }
+    if (!build_with_chromium && !build_with_mozilla) {
+      if (is_android) {
+        deps += [ "sdk/android" ]
+      }
+      if (is_ios) {
+        deps += [ "sdk:framework_objc" ]
+      }
     }
   }
 
+  # TODO(bugs.webrtc.org/430260876): Compile webrtc lib with rust once toolchain
+  # is working.
   if (rtc_include_tests && !is_asan) {
     rtc_executable("webrtc_lib_link_test") {
       testonly = true
@@ -664,7 +694,7 @@ if (!build_with_chromium) {
   }
 }
 
-if (use_libfuzzer || use_afl) {
+if (use_libfuzzer) {
   # This target is only here for gn to discover fuzzer build targets under
   # webrtc/test/fuzzers/.
   group("webrtc_fuzzers_dummy") {
@@ -674,162 +704,325 @@ if (use_libfuzzer || use_afl) {
 }
 
 if (rtc_include_tests && !build_with_chromium) {
-  rtc_unittests_resources = [ "resources/reference_video_640x360_30fps.y4m" ]
-
-  if (is_ios) {
-    bundle_data("rtc_unittests_bundle_data") {
-      testonly = true
-      sources = rtc_unittests_resources
-      outputs = [ "{{bundle_resources_dir}}/{{source_file_part}}" ]
-    }
-  }
-
-  rtc_test("rtc_unittests") {
-    testonly = true
-
-    deps = [
-      "api:compile_all_headers",
-      "api:rtc_api_unittests",
-      "api/audio:audio_api_unittests",
-      "api/audio_codecs/test:audio_codecs_api_unittests",
+  rtc_test_suite("rtc_unittests") {
+    tests = [
+      "api:candidate_unittest",
+      "api:field_trials_unittest",
+      "api:frame_transformer_factory_unittest",
+      "api:function_view_unittest",
+      "api:jsep_unittest",
+      "api:peer_connection_interface_api_unittest",
+      "api:peerconnection_quality_test_fixture_unittest",
+      "api:rtc_error_unittest",
+      "api:rtc_event_log_output_file_unittest",
+      "api:rtp_header_extension_id_unittest",
+      "api:rtp_packet_info_unittest",
+      "api:rtp_packet_infos_unittest",
+      "api:rtp_parameters_unittest",
+      "api:scoped_refptr_unittest",
+      "api:sequence_checker_unittest",
+      "api:webrtc_sdp_encoding_options_unittest",
+      "api:webrtc_sdp_unittest",
+      "api/audio:audio_processing_api_unittest",
+      "api/audio:builtin_audio_processing_builder_unittest",
+      "api/audio/test:audio_frame_unittest",
+      "api/audio/test:audio_view_unittest",
+      "api/audio/test:echo_canceller3_config_unittest",
+      "api/audio_codecs/opus:audio_decoder_opus_api_unittest",
+      "api/audio_codecs/test:audio_decoder_factory_template_unittest",
+      "api/audio_codecs/test:audio_encoder_factory_template_unittest",
+      "api/crypto:crypto_options_unittest",
+      "api/environment:environment_unittests",
       "api/numerics:numerics_unittests",
       "api/task_queue:pending_task_safety_flag_unittests",
-      "api/test/metrics:metrics_unittests",
+      "api/task_queue:task_queue_default_factory_unittests",
+      "api/test/metrics:global_metrics_logger_and_exporter_test",
+      "api/test/metrics:metrics_accumulator_test",
+      "api/test/metrics:metrics_logger_test",
+      "api/test/metrics:print_result_proxy_metrics_exporter_test",
+      "api/test/metrics:stdout_metrics_exporter_test",
+      "api/test/network_emulation:dual_pi2_network_queue_unittest",
+      "api/test/network_emulation:leaky_bucket_network_queue_unittest",
+      "api/transport:ecn_marking_unittest",
       "api/transport:stun_unittest",
       "api/transport/rtp:corruption_detection_message_unittest",
-      "api/video/test:rtc_api_video_unittests",
+      "api/units:data_rate_unittest",
+      "api/units:data_size_unittest",
+      "api/units:frequency_unittest",
+      "api/units:time_delta_unittest",
+      "api/units:timestamp_unittest",
+      "api/video:encoded_frame_unittest",
+      "api/video:frame_buffer_unittest",
+      "api/video:rtp_video_frame_assembler_unittests",
+      "api/video:video_adapter_unittest",
+      "api/video:video_broadcaster_unittest",
+      "api/video:video_common_unittest",
+      "api/video:video_frame_buffer_unittest",
+      "api/video:video_frame_metadata_unittest",
+      "api/video/corruption_detection:corruption_detection_settings_generator_unittest",
+      "api/video/corruption_detection:frame_instrumentation_data_reader_unittest",
+      "api/video/corruption_detection:frame_instrumentation_data_unittest",
+      "api/video/corruption_detection:frame_instrumentation_evaluation_unittest",
+      "api/video/test:color_space_unittest",
+      "api/video/test:i210_buffer_unittest",
+      "api/video/test:i410_buffer_unittest",
+      "api/video/test:i422_buffer_unittest",
+      "api/video/test:i444_buffer_unittest",
+      "api/video/test:nv12_buffer_unittest",
+      "api/video/test:video_adaptation_counters_unittest",
+      "api/video/test:video_bitrate_allocation_unittest",
       "api/video_codecs:libaom_av1_encoder_factory_test",
       "api/video_codecs:simple_encoder_wrapper_unittests",
-      "api/video_codecs/test:video_codecs_api_unittests",
-      "api/voip:compile_all_headers",
+      "api/video_codecs/test:builtin_video_encoder_factory_unittest",
+      "api/video_codecs/test:h264_profile_level_id_unittest",
+      "api/video_codecs/test:sdp_video_format_unittest",
+      "api/video_codecs/test:temporal_layer_pattern_for_test_unittest",
+      "api/video_codecs/test:video_codec_unittest",
+      "api/video_codecs/test:video_decoder_factory_template_tests",
+      "api/video_codecs/test:video_decoder_software_fallback_wrapper_unittest",
+      "api/video_codecs/test:video_encoder_factory_template_tests",
+      "api/video_codecs/test:video_encoder_factory_unittest",
+      "api/video_codecs/test:video_encoder_functional_unittest",
+      "api/video_codecs/test:video_encoder_rate_control_unittest",
+      "api/video_codecs/test:video_encoder_software_fallback_wrapper_unittest",
       "call:fake_network_pipe_unittests",
       "rtc_base:async_dns_resolver_unittests",
       "rtc_base:async_packet_socket_unittest",
+      "rtc_base:async_tcp_socket_unittest",
       "rtc_base:async_udp_socket_unittest",
+      "rtc_base:base64_unittest",
+      "rtc_base:bit_buffer_unittest",
+      "rtc_base:bitrate_tracker_unittest",
+      "rtc_base:bitstream_reader_unittest",
+      "rtc_base:bounded_inline_vector_unittest",
+      "rtc_base:buffer_queue_unittest",
+      "rtc_base:buffer_unittest",
+      "rtc_base:byte_buffer_unittest",
+      "rtc_base:byte_order_unittest",
       "rtc_base:callback_list_unittests",
-      "rtc_base:rtc_base_approved_unittests",
-      "rtc_base:rtc_base_unittests",
+      "rtc_base:checks_unittest",
+      "rtc_base:clock_aligner_unittest",
+      "rtc_base:copy_on_write_buffer_unittest",
+      "rtc_base:crc32_unittest",
+      "rtc_base:crypto_random_unittest",
+      "rtc_base:data_rate_limiter_unittest",
+      "rtc_base:denormal_disabler_unittest",
+      "rtc_base:divide_round_unittest",
+      "rtc_base:event_based_exponential_moving_average_unittest",
+      "rtc_base:event_tracer_unittest",
+      "rtc_base:event_unittest",
+      "rtc_base:exp_filter_unittest",
+      "rtc_base:fake_clock_unittest",
+      "rtc_base:frequency_tracker_unittest",
+      "rtc_base:histogram_percentile_counter_unittest",
+      "rtc_base:ip_address_unittest",
+      "rtc_base:logging_unittest",
+      "rtc_base:memory_usage_unittest",
+      "rtc_base:message_digest_unittest",
+      "rtc_base:mod_ops_unittest",
+      "rtc_base:moving_average_unittest",
+      "rtc_base:moving_max_counter_unittest",
+      "rtc_base:moving_percentile_filter_unittest",
+      "rtc_base:network_route_unittest",
+      "rtc_base:network_unittest",
+      "rtc_base:one_time_event_unittest",
+      "rtc_base:openssl_stream_adapter_unittest",
+      "rtc_base:percentile_filter_unittest",
+      "rtc_base:platform_thread_unittest",
+      "rtc_base:random_unittest",
+      "rtc_base:rate_limiter_unittest",
+      "rtc_base:rate_statistics_unittest",
+      "rtc_base:rate_tracker_unittest",
+      "rtc_base:recursive_critical_section_unittest",
+      "rtc_base:ref_counted_object_unittest",
+      "rtc_base:rolling_accumulator_unittest",
+      "rtc_base:rtc_certificate_generator_unittest",
+      "rtc_base:rtc_certificate_unittest",
       "rtc_base:rtc_json_unittests",
-      "rtc_base:rtc_numerics_unittests",
       "rtc_base:rtc_operations_chain_unittests",
-      "rtc_base:rtc_task_queue_unittests",
-      "rtc_base:sigslot_unittest",
+      "rtc_base:rtp_to_ntp_estimator_unittest",
+      "rtc_base:running_statistics_unittest",
+      "rtc_base:safe_compare_unittest",
+      "rtc_base:safe_conversions_unittest",
+      "rtc_base:safe_minmax_unittest",
+      "rtc_base:sample_counter_unittest",
+      "rtc_base:sanitizer_unittest",
+      "rtc_base:sequence_number_unwrapper_unittest",
+      "rtc_base:sequence_number_util_unittest",
+      "rtc_base:str_join_unittest",
+      "rtc_base:string_builder_unittest",
+      "rtc_base:string_encode_unittest",
+      "rtc_base:string_format_unittest",
+      "rtc_base:string_to_number_unittest",
+      "rtc_base:string_utils_unittest",
+      "rtc_base:strong_alias_unittest",
+      "rtc_base:swap_queue_unittest",
       "rtc_base:task_queue_stdlib_unittest",
+      "rtc_base:task_queue_unittest",
+      "rtc_base:test_client_unittest",
+      "rtc_base:thread_annotations_unittest",
+      "rtc_base:thread_unittest",
+      "rtc_base:time_utils_unittest",
+      "rtc_base:timestamp_aligner_unittest",
+      "rtc_base:unique_id_generator_unittest",
       "rtc_base:untyped_function_unittest",
+      "rtc_base:virtual_socket_unittest",
       "rtc_base:weak_ptr_unittests",
-      "rtc_base/experiments:experiments_unittests",
+      "rtc_base:windowed_min_filter_unittest",
+      "rtc_base:zero_memory_unittest",
+      "rtc_base/containers:flat_map_unittest",
+      "rtc_base/containers:flat_set_unittest",
+      "rtc_base/containers:flat_tree_unittest",
+      "rtc_base/experiments:balanced_degradation_settings_unittest",
+      "rtc_base/experiments:corruption_detection_frame_selector_settings_unittest",
+      "rtc_base/experiments:encoder_info_settings_unittest",
+      "rtc_base/experiments:encoder_speed_experiment_unittest",
+      "rtc_base/experiments:field_trial_list_unittest",
+      "rtc_base/experiments:field_trial_parser_unittest",
+      "rtc_base/experiments:field_trial_units_unittest",
+      "rtc_base/experiments:keyframe_interval_settings_unittest",
+      "rtc_base/experiments:min_video_bitrate_experiment_unittest",
+      "rtc_base/experiments:normalize_simulcast_size_experiment_unittest",
+      "rtc_base/experiments:quality_scaler_settings_unittest",
+      "rtc_base/experiments:quality_scaling_experiment_unittest",
+      "rtc_base/experiments:rate_control_settings_unittest",
+      "rtc_base/experiments:retransmit_flushed_packets_settings_unittest",
+      "rtc_base/experiments:struct_parameters_parser_unittest",
+      "rtc_base/memory:aligned_malloc_unittest",
+      "rtc_base/memory:always_valid_pointer_unittest",
+      "rtc_base/memory:fifo_buffer_unittest",
       "rtc_base/system:file_wrapper_unittests",
       "rtc_base/task_utils:repeating_task_unittests",
       "rtc_base/units:units_unittests",
       "sdk:sdk_tests",
-      "test:rtp_test_utils",
-      "test:test_main",
-      "test/network:network_emulation_unittests",
+      "test/network:cross_traffic_unittest",
+      "test/network:network_emulation_pc_unittest",
+      "test/network:network_emulation_unittest",
+      "test/network:simulated_network_unittest",
+      "test/network:token_bucket_network_behavior_test",
     ]
 
-    data = rtc_unittests_resources
-
-    if (rtc_enable_protobuf) {
-      deps += [
-        "api/test/network_emulation:network_config_schedule_proto",
-        "logging:rtc_event_log_tests",
+    if (rtc_use_h265) {
+      tests += [
+        "api/video:rtp_video_frame_h265_assembler_unittests",
+        "api/video_codecs/test:h265_profile_tier_level_unittest",
       ]
     }
 
-    if (is_ios) {
-      deps += [ ":rtc_unittests_bundle_data" ]
+    if (rtc_enable_protobuf) {
+      tests += [
+        "api/test/metrics:chrome_perf_dashboard_metrics_exporter_test",
+        "api/test/metrics:metrics_set_proto_file_exporter_test",
+        "logging:blob_encoding_unittest",
+        "logging:delta_encoding_unittest",
+        "logging:dependency_descriptor_encoder_decoder_unittest",
+        "logging:optional_blob_encoding_unittest",
+        "logging:rtc_event_field_encoding_unittest",
+        "logging:rtc_event_field_extraction_unittest",
+        "logging:rtc_event_log_encoder_common_unittest",
+        "logging:rtc_event_log_encoder_unittest",
+        "logging:rtc_event_log_impl_unittest",
+        "logging:rtc_event_log_unittest",
+        "logging:rtc_event_processor_unittest",
+        "test/network:feedback_generator_unittest",
+        "test/network:schedulable_network_behavior_test",
+      ]
+    }
+
+    if (rtc_rust) {
+      tests += [ "rtc_base:rate_tracker_comparison_unittest" ]
+    }
+
+    if (rtc_enable_google_benchmarks) {
+      tests += [
+        "rtc_base/synchronization:mutex_unittest",
+        "rtc_base/synchronization:yield_policy_unittest",
+      ]
+    }
+
+    if (is_mac || is_ios) {
+      tests += [ "rtc_base:task_queue_gcd_unittest" ]
+    }
+
+    if (is_win) {
+      tests += [
+        "rtc_base:win32_unittest",
+        "rtc_base/win:windows_version_unittest",
+      ]
+    }
+
+    if (is_posix || is_fuchsia || is_win) {
+      tests += [
+        "rtc_base:openssl_adapter_unittest",
+        "rtc_base:openssl_session_cache_unittest",
+        "rtc_base:openssl_utility_unittest",
+        "rtc_base:ssl_adapter_unittest",
+        "rtc_base:ssl_identity_unittest",
+        "rtc_base:ssl_stream_adapter_unittest",
+      ]
     }
 
     if (is_android) {
-      # Do not use Chromium's launcher. native_unittests defines its own JNI_OnLoad.
-      use_default_launcher = false
-
-      deps += [
-        "sdk/android:native_unittests",
-        "sdk/android:native_unittests_java",
+      tests += [
+        "sdk/android:android_audio_device_unittest",
+        "sdk/android:android_network_monitor_unittest",
+        "sdk/android:android_peer_connection_factory_unittest",
+        "sdk/android:java_types_unittest",
+        "sdk/android:stacktrace_unittest",
+        "sdk/android:video_source_unittest",
+        "sdk/android:wrapper_unittest",
       ]
-      shard_timeout = 900
     }
   }
 
   rtc_test("rtc_p2p_unittests") {
     testonly = true
 
-    deps = [
-      "p2p:rtc_p2p_unittests",
-      "test:test_main",
-    ]
+    deps = [ "p2p:rtc_p2p_unittests" ]
   }
 
   if (rtc_enable_google_benchmarks) {
-    rtc_test("benchmarks") {
+    rtc_executable("benchmarks") {
       testonly = true
       deps = [
+        "rtc_base:base64_benchmark",
         "rtc_base/synchronization:mutex_benchmark",
         "test:benchmark_main",
       ]
     }
   }
 
-  # TODO(pbos): Rename test suite, this is no longer "just" for video targets.
-  rtc_test("video_engine_tests") {
+  rtc_test("audio_engine_tests") {
     testonly = true
-    deps = [
-      "audio:audio_tests",
-
-      # TODO(eladalon): call_tests aren't actually video-specific, so we
-      # should move them to a more appropriate test suite.
-      "call:call_tests",
-      "call/adaptation:resource_adaptation_tests",
-      "test:test_common",
-      "test:test_main",
-      "test:video_test_common",
-      "video:video_tests",
-      "video/adaptation:video_adaptation_tests",
-    ]
-
-    data_deps = [ "resources:video_engine_tests_data" ]
+    deps = [ "audio:audio_tests" ]
 
     if (is_android) {
-      use_default_launcher = false
       deps += [ "//build/android/gtest_apk:native_test_instrumentation_test_runner_java" ]
-      shard_timeout = 900
-    }
-    if (is_ios) {
-      deps += [ "resources:video_engine_tests_bundle_data" ]
     }
   }
 
-  rtc_test("webrtc_perf_tests") {
-    testonly = true
-    deps = [
+  rtc_test_suite("webrtc_perf_tests") {
+    tests = [
       "call:call_perf_tests",
-      "modules/audio_coding:audio_coding_perf_tests",
-      "modules/audio_processing:audio_processing_perf_tests",
-      "pc:peerconnection_perf_tests",
-      "test:test_main",
-      "video:video_full_stack_tests",
-      "video:video_pc_full_stack_tests",
+      "call:rampup_tests",
+      "modules/audio_coding:neteq_performance_unittest",
+      "modules/audio_coding:opus_complexity_unittest",
+      "modules/audio_processing:audio_processing_performance_unittest",
+      "pc:peer_connection_callsetup_perf_tests",
+      "pc:peer_connection_rampup_tests",
+      "video:full_stack_tests",
+      "video:pc_full_stack_tests",
     ]
-
-    data_deps = [ "resources:webrtc_perf_tests_data" ]
-
-    if (is_android) {
-      use_default_launcher = false
-      deps += [ "//build/android/gtest_apk:native_test_instrumentation_test_runner_java" ]
-      shard_timeout = 4500
-    }
-    if (is_ios) {
-      deps += [ "resources:webrtc_perf_tests_bundle_data" ]
-    }
   }
 
-  rtc_test("webrtc_nonparallel_tests") {
-    testonly = true
-    deps = [ "rtc_base:rtc_base_nonparallel_tests" ]
-    if (is_android) {
-      shard_timeout = 900
-    }
+  rtc_test_suite("webrtc_nonparallel_tests") {
+    tests = [
+      "rtc_base:cpu_time_unittest",
+      "rtc_base:file_rotating_stream_unittest",
+      "rtc_base:null_socket_server_unittest",
+      "rtc_base:physical_socket_server_unittest",
+      "rtc_base:socket_address_unittest",
+    ]
   }
 
   rtc_test("voip_unittests") {
@@ -841,7 +1034,16 @@ if (rtc_include_tests && !build_with_chromium) {
       "audio/voip/test:audio_egress_unittests",
       "audio/voip/test:audio_ingress_unittests",
       "audio/voip/test:voip_core_unittests",
-      "test:test_main",
+    ]
+  }
+
+  rtc_rust_test_suite("rust_tests") {
+    testonly = true
+    deps = [
+      "api/units:units_rust_unit_tests",
+      "modules/rtp_rtcp:rust_unit_tests",
+      "rtc_base:rust_unit_tests",
+      "rust/webrtc_import:tests",
     ]
   }
 }
@@ -882,4 +1084,18 @@ group("poison_environment_construction") {
 }
 
 group("poison_software_video_codecs") {
+}
+
+group("poison_default_neural_residual_echo_estimator") {
+}
+
+if (!build_with_chromium) {
+  # Write debug logs to gn_logs.txt.
+  # This is also required for Siso builds.
+  import("//chromium/build/gn_logs.gni")
+  lines = [
+            "Generated during 'gn gen' by //BUILD.gn.",
+            "",
+          ] + build_gn_logs
+  write_file("$root_build_dir/gn_logs.txt", lines)
 }

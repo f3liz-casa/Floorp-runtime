@@ -25,7 +25,7 @@ fieldset {
     width: 100%;
     padding: 0.4em 0.7em;
     background-color: var(--background-color-box);
-    border: 1px solid var(--in-content-box-border-color);
+    border: 1px solid var(--border-color);
     border-radius: 2px 2px 0 0;
     user-select: none;
   }
@@ -41,7 +41,7 @@ option:nth-child(even) {
   height: 16.6em;
   margin: 0;
   padding-inline: 0;
-  border-top: none;
+  border-block-start: none;
   border-radius: 0 0 2px 2px;
 
   > option {
@@ -53,7 +53,7 @@ option:nth-child(even) {
 }
 
 #controls-container {
-  margin-top: 1em;
+  margin-block-start: 1em;
 }
 
 #remove {

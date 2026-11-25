@@ -1,11 +1,8 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- * vim: sw=2 ts=2 et lcs=trail\:.,tab\:>~ :
- * This Source Code Form is subject to the terms of the Mozilla Public
+/* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include <limits.h>
-#include <stdio.h>
 
 #include "nsError.h"
 #include "nsProxyRelease.h"
@@ -116,21 +113,20 @@ nsresult AsyncStatement::initialize(Connection* aDBConnection,
   // escapeStringForLIKE instead of just trusting user input.  The idea to
   // check to see if they are binding a parameter after like instead of just
   // using a string.  We only do this in debug builds because it's expensive!
-  auto c = nsCaseInsensitiveCStringComparator;
   nsACString::const_iterator start, end, e;
   aSQLStatement.BeginReading(start);
   aSQLStatement.EndReading(end);
   e = end;
-  while (::FindInReadable(" LIKE"_ns, start, e, c)) {
+  while (::CaseInsensitiveFindInReadable(" LIKE"_ns, start, e)) {
     // We have a LIKE in here, so we perform our tests
     // FindInReadable moves the iterator, so we have to get a new one for
     // each test we perform.
     nsACString::const_iterator s1, s2, s3;
     s1 = s2 = s3 = start;
 
-    if (!(::FindInReadable(" LIKE ?"_ns, s1, end, c) ||
-          ::FindInReadable(" LIKE :"_ns, s2, end, c) ||
-          ::FindInReadable(" LIKE @"_ns, s3, end, c))) {
+    if (!(::CaseInsensitiveFindInReadable(" LIKE ?"_ns, s1, end) ||
+          ::CaseInsensitiveFindInReadable(" LIKE :"_ns, s2, end) ||
+          ::CaseInsensitiveFindInReadable(" LIKE @"_ns, s3, end))) {
       // At this point, we didn't find a LIKE statement followed by ?, :,
       // or @, all of which are valid characters for binding a parameter.
       // We will warn the consumer that they may not be safely using LIKE.
@@ -192,6 +188,9 @@ mozIStorageBindingParams* AsyncStatement::getParams() {
  * last execution of a statement that already lost its main-thread refs.
  */
 AsyncStatement::~AsyncStatement() {
+  MOZ_DIAGNOSTIC_ASSERT(mRefCnt == 1, "Unexpected refcount at destruction");
+  MOZ_ASSERT(NS_IsMainThread() || mStatementParamsHolder == nullptr,
+             "Must be destroyed on the main thread if JS params helpers exist");
   destructorAsyncFinalize();
 
   // If we are getting destroyed on the wrong event target, proxy the connection
@@ -209,7 +208,19 @@ AsyncStatement::~AsyncStatement() {
 //// nsISupports
 
 NS_IMPL_ADDREF(AsyncStatement)
-NS_IMPL_RELEASE(AsyncStatement)
+NS_IMPL_RELEASE_WITH_DESTROY(AsyncStatement, Destroy())
+
+void AsyncStatement::Destroy() {
+  // The JS params helper keeps a raw pointer to us that is cleared when the
+  // params holder is released on the main thread. Delete there, so that
+  // happens as part of our destruction rather than after it.
+  if (!NS_IsMainThread() && mStatementParamsHolder != nullptr) {
+    destructorAsyncFinalize();
+    NS_PROXY_DELETE_TO_MAIN_THREAD(AsyncStatement);
+    return;
+  }
+  delete this;
+}
 
 NS_INTERFACE_MAP_BEGIN(AsyncStatement)
   NS_INTERFACE_MAP_ENTRY(mozIStorageAsyncStatement)

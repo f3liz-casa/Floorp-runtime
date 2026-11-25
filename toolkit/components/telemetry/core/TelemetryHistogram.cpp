@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -8,6 +6,7 @@
 
 #include <limits>
 #include "base/histogram.h"
+#include "ETWTools.h"
 #include "ipc/TelemetryIPCAccumulator.h"
 #include "jsapi.h"
 #include "jsfriendapi.h"
@@ -17,11 +16,8 @@
 #include "js/PropertyAndElement.h"  // JS_DefineElement, JS_DefineFunction, JS_DefineProperty, JS_DefineUCProperty, JS_Enumerate, JS_GetElement, JS_GetProperty, JS_GetPropertyById
 #include "mozilla/dom/ToJSValue.h"
 #include "mozilla/gfx/GPUProcessManager.h"
-#include "mozilla/Atomics.h"
-#include "mozilla/JSONWriter.h"
 #include "mozilla/StartupTimeline.h"
 #include "mozilla/StaticMutex.h"
-#include "mozilla/Unused.h"
 #include "nsClassHashtable.h"
 #include "nsString.h"
 #include "nsHashKeys.h"
@@ -34,7 +30,6 @@ using base::BooleanHistogram;
 using base::CountHistogram;
 using base::FlagHistogram;
 using base::LinearHistogram;
-using mozilla::MakeUnique;
 using mozilla::StaticMutex;
 using mozilla::StaticMutexAutoLock;
 using mozilla::UniquePtr;
@@ -957,7 +952,8 @@ nsresult internal_GetHistogramsSnapshot(
         continue;
       }
 
-      if (!hArray.emplaceBack(HistogramSnapshotInfo{snapshotData, id})) {
+      if (!hArray.emplaceBack(
+              HistogramSnapshotInfo{std::move(snapshotData), id})) {
         return NS_ERROR_OUT_OF_MEMORY;
       }
 
@@ -1135,7 +1131,7 @@ KeyedHistogram::KeyedHistogram(HistogramID id, const HistogramInfo& info,
     for (uint32_t i = 0; i < info.store_count; i++) {
       auto store = nsDependentCString(
           &gHistogramStringTable[gHistogramStoresTable[info.store_index + i]]);
-      mStorage.InsertOrUpdate(store, MakeUnique<KeyedHistogramMapType>());
+      mStorage.InsertOrUpdate(store, std::make_unique<KeyedHistogramMapType>());
     }
   }
 }
@@ -1501,10 +1497,26 @@ nsresult internal_GetKeyedHistogramsSnapshot(
 
 namespace geckoprofiler::markers {
 
-struct HistogramMarker {
-  static constexpr mozilla::Span<const char> MarkerTypeName() {
-    return mozilla::MakeStringSpan("Hist");
-  }
+struct HistogramMarker : public mozilla::BaseMarkerType<HistogramMarker> {
+  static constexpr const char* Name = "Hist";
+  // "Histogram::Add" and "ChildHistogram::Add" only differ by their name.
+  static constexpr bool ETWStoreName = true;
+  using MS = mozilla::MarkerSchema;
+  static constexpr MS::Location Locations[] = {
+      MS::Location::MarkerChart,
+      MS::Location::MarkerTable,
+  };
+  static constexpr MS::PayloadField PayloadFields[] = {
+      {"id", MS::InputType::CString, "Histogram Name",
+       MS::Format::UniqueString},
+      {"key", MS::InputType::CString, "Key", MS::Format::String},
+      {"val", MS::InputType::Uint32, "Sample", MS::Format::Integer},
+  };
+  static constexpr const char* TooltipLabel =
+      "{marker.data.id}[{marker.data.key}] {marker.data.val}";
+  static constexpr const char* TableLabel =
+      "{marker.data.id}[{marker.data.key}]: "
+      "{marker.data.val}";
   static void StreamJSONMarkerData(
       mozilla::baseprofiler::SpliceableJSONWriter& aWriter,
       mozilla::Telemetry::HistogramID aId, const nsCString& key,
@@ -1516,20 +1528,16 @@ struct HistogramMarker {
     }
     aWriter.IntProperty("val", aSample);
   }
-  using MS = mozilla::MarkerSchema;
-  static MS MarkerTypeDisplay() {
-    MS schema{MS::Location::MarkerChart, MS::Location::MarkerTable};
-    schema.AddKeyLabelFormatSearchable("id", "Histogram Name",
-                                       MS::Format::UniqueString,
-                                       MS::Searchable::Searchable);
-    schema.AddKeyLabelFormat("key", "Key", MS::Format::String);
-    schema.AddKeyLabelFormat("val", "Sample", MS::Format::Integer);
-    schema.SetTooltipLabel(
-        "{marker.data.id}[{marker.data.key}] {marker.data.val}");
-    schema.SetTableLabel(
-        "{marker.name} - {marker.data.id}[{marker.data.key}]: "
-        "{marker.data.val}");
-    return schema;
+
+  static void TranslateMarkerInputToSchema(void* aContext,
+                                           mozilla::Telemetry::HistogramID aId,
+                                           const nsCString& aKey,
+                                           uint32_t aSample) {
+    ETW::OutputMarkerSchema(
+        aContext, HistogramMarker{},
+        mozilla::ProfilerString8View::WrapNullTerminatedString(
+            GetHistogramName(aId)),
+        mozilla::ProfilerString8View(aKey), aSample);
   }
 };
 
@@ -1696,13 +1704,9 @@ static constexpr uint32_t HistogramObjectSlotCount =
 
 void internal_JSHistogram_finalize(JS::GCContext*, JSObject*);
 
-static const JSClassOps sJSHistogramClassOps = {nullptr, /* addProperty */
-                                                nullptr, /* delProperty */
-                                                nullptr, /* enumerate */
-                                                nullptr, /* newEnumerate */
-                                                nullptr, /* resolve */
-                                                nullptr, /* mayResolve */
-                                                internal_JSHistogram_finalize};
+static const JSClassOps sJSHistogramClassOps = {
+    .finalize = internal_JSHistogram_finalize,
+};
 
 static const JSClass sJSHistogramClass = {
     "JSHistogram", /* name */
@@ -1946,13 +1950,8 @@ namespace {
 void internal_JSKeyedHistogram_finalize(JS::GCContext*, JSObject*);
 
 static const JSClassOps sJSKeyedHistogramClassOps = {
-    nullptr, /* addProperty */
-    nullptr, /* delProperty */
-    nullptr, /* enumerate */
-    nullptr, /* newEnumerate */
-    nullptr, /* resolve */
-    nullptr, /* mayResolve */
-    internal_JSKeyedHistogram_finalize};
+    .finalize = internal_JSKeyedHistogram_finalize,
+};
 
 static const JSClass sJSKeyedHistogramClass = {
     "JSKeyedHistogram", /* name */

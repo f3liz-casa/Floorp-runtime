@@ -1,5 +1,4 @@
-/* -*- Mode: C++; tab-width: 20; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- * This Source Code Form is subject to the terms of the Mozilla Public
+/* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
@@ -7,7 +6,7 @@
 #define GFX_OTS_UTILS_H
 
 #include "gfxFontUtils.h"
-
+#include "mozilla/StaticPrefs_gfx.h"
 #include "opentype-sanitiser.h"
 
 struct gfxOTSMozAlloc {
@@ -29,8 +28,9 @@ class gfxOTSExpandingMemoryStream : public ots::OTSStream {
 
   explicit gfxOTSExpandingMemoryStream(size_t initial,
                                        size_t limit = DEFAULT_LIMIT)
-      : mLength(initial), mLimit(limit), mOff(0) {
+      : mLength(initial < limit ? initial : limit), mLimit(limit), mOff(0) {
     mPtr = mAlloc.Grow(nullptr, mLength);
+    std::memset(mPtr, 0, mLength);
   }
 
   ~gfxOTSExpandingMemoryStream() { mAlloc.Free(mPtr); }
@@ -60,6 +60,7 @@ class gfxOTSExpandingMemoryStream : public ots::OTSStream {
         newLength = mLimit;
       }
       mPtr = mAlloc.Grow(mPtr, newLength);
+      std::memset(static_cast<char*>(mPtr) + mLength, 0, newLength - mLength);
       mLength = newLength;
       return WriteRaw(data, length);
     }
@@ -91,7 +92,10 @@ class gfxOTSExpandingMemoryStream : public ots::OTSStream {
 
 class MOZ_STACK_CLASS gfxOTSContext : public ots::OTSContext {
  public:
-  gfxOTSContext() {
+  explicit gfxOTSContext(bool aDropShapingTables = false,
+                         bool aDisableValidation = false)
+      : mDropShapingTables(aDropShapingTables),
+        mDisableValidation(aDisableValidation) {
     using namespace mozilla;
 
     // Whether to apply OTS validation to OpenType Layout tables
@@ -108,6 +112,44 @@ class MOZ_STACK_CLASS gfxOTSContext : public ots::OTSContext {
   }
 
   virtual ots::TableAction GetTableAction(uint32_t aTag) override {
+    auto isShapingTable = [](uint32_t aTag) -> bool {
+      return  // Tables used by OT layout:
+          aTag == TRUETYPE_TAG('B', 'A', 'S', 'E') ||
+          aTag == TRUETYPE_TAG('G', 'D', 'E', 'F') ||
+          aTag == TRUETYPE_TAG('G', 'P', 'O', 'S') ||
+          aTag == TRUETYPE_TAG('G', 'S', 'U', 'B') ||
+          aTag == TRUETYPE_TAG('J', 'S', 'T', 'F') ||
+          aTag == TRUETYPE_TAG('k', 'e', 'r', 'n') ||
+          // Tables used by AAT layout:
+          aTag == TRUETYPE_TAG('a', 'n', 'k', 'r') ||
+          aTag == TRUETYPE_TAG('b', 's', 'l', 'n') ||
+          aTag == TRUETYPE_TAG('f', 'e', 'a', 't') ||
+          aTag == TRUETYPE_TAG('j', 'u', 's', 't') ||
+          aTag == TRUETYPE_TAG('k', 'e', 'r', 'x') ||
+          aTag == TRUETYPE_TAG('m', 'o', 'r', 't') ||
+          aTag == TRUETYPE_TAG('m', 'o', 'r', 'x') ||
+          aTag == TRUETYPE_TAG('p', 'r', 'o', 'p') ||
+          aTag == TRUETYPE_TAG('t', 'r', 'a', 'k') ||
+          // Tables used by Graphite2:
+          aTag == TRUETYPE_TAG('F', 'e', 'a', 't') ||
+          aTag == TRUETYPE_TAG('G', 'l', 'a', 't') ||
+          aTag == TRUETYPE_TAG('G', 'l', 'o', 'c') ||
+          aTag == TRUETYPE_TAG('S', 'i', 'l', 'e') ||
+          aTag == TRUETYPE_TAG('S', 'i', 'l', 'f') ||
+          aTag == TRUETYPE_TAG('S', 'i', 'l', 'l');
+    };
+    if (mDropShapingTables && isShapingTable(aTag)) {
+      return ots::TABLE_ACTION_DROP;
+    }
+    if (mDisableValidation) {
+      // Even when validation is disabled, we need to let OTS see the 'maxp'
+      // table, otherwise it will reject the entire font as broken.
+      if (aTag == TRUETYPE_TAG('m', 'a', 'x', 'p')) {
+        return ots::TABLE_ACTION_DEFAULT;
+      } else {
+        return ots::TABLE_ACTION_PASSTHRU;
+      }
+    }
     // Pass through or validate OTL and Variation tables, depending on prefs.
     if (aTag == TRUETYPE_TAG('G', 'D', 'E', 'F') ||
         aTag == TRUETYPE_TAG('G', 'P', 'O', 'S') ||
@@ -185,6 +227,12 @@ class MOZ_STACK_CLASS gfxOTSContext : public ots::OTSContext {
   bool mCheckVariationTables;
   bool mKeepColorBitmaps;
   bool mKeepSVG;
+  // Whether to discard shaping tables (OT/AAT/Graphite), leaving a resource
+  // only suitable for rasterizing already-shaped text.
+  const bool mDropShapingTables;
+  // Whether non-shaping tables should pass through without validation
+  // (because we're re-filtering an already-sanitized resource).
+  const bool mDisableValidation;
 };
 
 #endif /* GFX_OTS_UTILS_H */

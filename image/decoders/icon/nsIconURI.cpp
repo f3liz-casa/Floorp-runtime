@@ -1,26 +1,23 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- * vim: set sw=2 sts=2 ts=2 et tw=80:
- *
+/*
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "nsIconURI.h"
 
-#include "mozilla/ArrayUtils.h"
-#include "mozilla/ipc/URIUtils.h"
-#include "mozilla/Sprintf.h"
+#include <stdlib.h>
 
+#include "mozilla/Sprintf.h"
+#include "mozilla/ipc/URIUtils.h"
+#include "nsCRT.h"
 #include "nsIClassInfoImpl.h"
 #include "nsIIOService.h"
-#include "nsISerializable.h"
 #include "nsIObjectInputStream.h"
 #include "nsIObjectOutputStream.h"
+#include "nsISerializable.h"
 #include "nsIURL.h"
 #include "nsNetUtil.h"
 #include "plstr.h"
-#include "nsCRT.h"
-#include <stdlib.h>
 
 using namespace mozilla;
 using namespace mozilla::ipc;
@@ -61,6 +58,8 @@ NS_INTERFACE_MAP_BEGIN(nsMozIconURI)
   NS_INTERFACE_MAP_ENTRY(nsIURI)
   NS_INTERFACE_MAP_ENTRY_CONDITIONAL(nsINestedURI, mIconURL)
   NS_INTERFACE_MAP_ENTRY(nsISerializable)
+  NS_INTERFACE_MAP_ENTRY(nsIIPCSerializableURI)
+  NS_INTERFACE_MAP_ENTRY(nsIURIWithSizeOf)
   NS_IMPL_QUERY_CLASSINFO(nsMozIconURI)
 NS_INTERFACE_MAP_END
 
@@ -112,6 +111,12 @@ nsMozIconURI::GetSpec(nsACString& aSpec) {
   return NS_OK;
 }
 
+uint32_t nsMozIconURI::SpecHash() {
+  nsAutoCString spec;
+  (void)GetSpec(spec);
+  return CachedSpecHash(spec);
+}
+
 NS_IMETHODIMP
 nsMozIconURI::GetSpecIgnoringRef(nsACString& result) { return GetSpec(result); }
 
@@ -158,7 +163,7 @@ NS_IMPL_NSIURIMUTATOR_ISUPPORTS(nsMozIconURI::Mutator, nsIURISetters,
 
 NS_IMETHODIMP
 nsMozIconURI::Mutate(nsIURIMutator** aMutator) {
-  RefPtr<nsMozIconURI::Mutator> mutator = new nsMozIconURI::Mutator();
+  auto mutator = MakeRefPtr<nsMozIconURI::Mutator>();
   nsresult rv = mutator->InitFromURI(this);
   if (NS_FAILED(rv)) {
     return rv;
@@ -314,50 +319,58 @@ nsMozIconURI::GetScheme(nsACString& aScheme) {
   return NS_OK;
 }
 
-nsresult nsMozIconURI::SetScheme(const nsACString& aScheme) {
+nsresult nsMozIconURI::SetScheme(const nsACString& /*aScheme*/) {
   // doesn't make sense to set the scheme of a moz-icon URL
   return NS_ERROR_FAILURE;
 }
 
 NS_IMETHODIMP
-nsMozIconURI::GetUsername(nsACString& aUsername) { return NS_ERROR_FAILURE; }
+nsMozIconURI::GetUsername(nsACString& /*aUsername*/) {
+  return NS_ERROR_FAILURE;
+}
 
-nsresult nsMozIconURI::SetUsername(const nsACString& aUsername) {
+nsresult nsMozIconURI::SetUsername(const nsACString& /*aUsername*/) {
   return NS_ERROR_FAILURE;
 }
 
 NS_IMETHODIMP
-nsMozIconURI::GetPassword(nsACString& aPassword) { return NS_ERROR_FAILURE; }
+nsMozIconURI::GetPassword(nsACString& /*aPassword*/) {
+  return NS_ERROR_FAILURE;
+}
 
-nsresult nsMozIconURI::SetPassword(const nsACString& aPassword) {
+nsresult nsMozIconURI::SetPassword(const nsACString& /*aPassword*/) {
   return NS_ERROR_FAILURE;
 }
 
 NS_IMETHODIMP
-nsMozIconURI::GetUserPass(nsACString& aUserPass) { return NS_ERROR_FAILURE; }
+nsMozIconURI::GetUserPass(nsACString& /*aUserPass*/) {
+  return NS_ERROR_FAILURE;
+}
 
-nsresult nsMozIconURI::SetUserPass(const nsACString& aUserPass) {
+nsresult nsMozIconURI::SetUserPass(const nsACString& /*aUserPass*/) {
   return NS_ERROR_FAILURE;
 }
 
 NS_IMETHODIMP
-nsMozIconURI::GetHostPort(nsACString& aHostPort) { return NS_ERROR_FAILURE; }
+nsMozIconURI::GetHostPort(nsACString& /*aHostPort*/) {
+  return NS_ERROR_FAILURE;
+}
 
-nsresult nsMozIconURI::SetHostPort(const nsACString& aHostPort) {
+nsresult nsMozIconURI::SetHostPort(const nsACString& /*aHostPort*/) {
   return NS_ERROR_FAILURE;
 }
 
 NS_IMETHODIMP
-nsMozIconURI::GetHost(nsACString& aHost) { return NS_ERROR_FAILURE; }
+nsMozIconURI::GetHost(nsACString& /*aHost*/) { return NS_ERROR_FAILURE; }
 
-nsresult nsMozIconURI::SetHost(const nsACString& aHost) {
+nsresult nsMozIconURI::SetHost(const nsACString& /*aHost*/) {
   return NS_ERROR_FAILURE;
 }
 
 NS_IMETHODIMP
-nsMozIconURI::GetPort(int32_t* aPort) { return NS_ERROR_FAILURE; }
+nsMozIconURI::GetPort(int32_t* /*aPort*/) { return NS_ERROR_FAILURE; }
 
-nsresult nsMozIconURI::SetPort(int32_t aPort) { return NS_ERROR_FAILURE; }
+nsresult nsMozIconURI::SetPort(int32_t /*aPort*/) { return NS_ERROR_FAILURE; }
 
 NS_IMETHODIMP
 nsMozIconURI::GetPathQueryRef(nsACString& aPath) {
@@ -365,7 +378,7 @@ nsMozIconURI::GetPathQueryRef(nsACString& aPath) {
   return NS_OK;
 }
 
-nsresult nsMozIconURI::SetPathQueryRef(const nsACString& aPath) {
+nsresult nsMozIconURI::SetPathQueryRef(const nsACString& /*aPath*/) {
   return NS_ERROR_FAILURE;
 }
 
@@ -375,7 +388,7 @@ nsMozIconURI::GetFilePath(nsACString& aFilePath) {
   return NS_OK;
 }
 
-nsresult nsMozIconURI::SetFilePath(const nsACString& aFilePath) {
+nsresult nsMozIconURI::SetFilePath(const nsACString& /*aFilePath*/) {
   return NS_ERROR_FAILURE;
 }
 
@@ -385,12 +398,12 @@ nsMozIconURI::GetQuery(nsACString& aQuery) {
   return NS_OK;
 }
 
-nsresult nsMozIconURI::SetQuery(const nsACString& aQuery) {
+nsresult nsMozIconURI::SetQuery(const nsACString& /*aQuery*/) {
   return NS_ERROR_FAILURE;
 }
 
-nsresult nsMozIconURI::SetQueryWithEncoding(const nsACString& aQuery,
-                                            const Encoding* aEncoding) {
+nsresult nsMozIconURI::SetQueryWithEncoding(const nsACString& /*aQuery*/,
+                                            const Encoding* /*aEncoding*/) {
   return NS_ERROR_FAILURE;
 }
 
@@ -400,7 +413,7 @@ nsMozIconURI::GetRef(nsACString& aRef) {
   return NS_OK;
 }
 
-nsresult nsMozIconURI::SetRef(const nsACString& aRef) {
+nsresult nsMozIconURI::SetRef(const nsACString& /*aRef*/) {
   return NS_ERROR_FAILURE;
 }
 
@@ -463,7 +476,8 @@ nsresult nsMozIconURI::Clone(nsIURI** result) {
 }
 
 NS_IMETHODIMP
-nsMozIconURI::Resolve(const nsACString& relativePath, nsACString& result) {
+nsMozIconURI::Resolve(const nsACString& /*relativePath*/,
+                      nsACString& /*result*/) {
   return NS_ERROR_NOT_IMPLEMENTED;
 }
 
@@ -574,7 +588,7 @@ void nsMozIconURI::Serialize(URIParams& aParams) {
   params.iconScale() = mScale;
   params.iconDark() = mDark;
 
-  aParams = params;
+  aParams = std::move(params);
 }
 
 bool nsMozIconURI::Deserialize(const URIParams& aParams) {
@@ -604,6 +618,12 @@ bool nsMozIconURI::Deserialize(const URIParams& aParams) {
   return true;
 }
 
+size_t nsMozIconURI::SizeOfIncludingThis(
+    mozilla::MallocSizeOf /*aMallocSizeOf*/) {
+  // We don't need to calculate this unless it shows up in DMD.
+  return 0;
+};
+
 NS_IMETHODIMP
 nsMozIconURI::GetInnerURI(nsIURI** aURI) {
   nsCOMPtr<nsIURI> iconURL = mIconURL;
@@ -622,7 +642,7 @@ nsMozIconURI::GetInnermostURI(nsIURI** aURI) {
 }
 
 NS_IMETHODIMP
-nsMozIconURI::Read(nsIObjectInputStream* aStream) {
+nsMozIconURI::Read(nsIObjectInputStream* /*aStream*/) {
   MOZ_ASSERT_UNREACHABLE("Use nsIURIMutator.read() instead");
   return NS_ERROR_NOT_IMPLEMENTED;
 }

@@ -1,18 +1,23 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- * vim: set ts=8 sts=2 et sw=2 tw=80:
- * This Source Code Form is subject to the terms of the Mozilla Public
+/* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
+
+#include "jsapi-tests/tests.h"
 
 #include "mozilla/IntegerRange.h"
 
 #include "js/Vector.h"
-#include "jsapi-tests/tests.h"
 #include "threading/Thread.h"
 #include "util/Text.h"
 #include "vm/SharedImmutableStringsCache.h"
 
+// Use only 32 threads on 32-bit ASan builds to avoid OOMs.
+#if defined(MOZ_ASAN) && !defined(JS_64BIT)
+const int NUM_THREADS = 32;
+#else
 const int NUM_THREADS = 256;
+#endif
+
 const int NUM_ITERATIONS = 256;
 
 const int NUM_STRINGS = 4;
@@ -70,3 +75,41 @@ BEGIN_TEST(testSharedImmutableStringsCache) {
   return true;
 }
 END_TEST(testSharedImmutableStringsCache)
+
+// Strings whose last reference is dropped must be removed from the cache right
+// away, so that creating, releasing and re-creating the same string many times
+// works and keeps de-duplicating live strings.
+BEGIN_TEST(testSharedImmutableStringsCache_ReleaseAndRecreate) {
+  auto& cache = js::SharedImmutableStringsCache::getSingleton();
+
+  alignas(char16_t) static const char str[] = "ReleaseAndRecreate";
+  constexpr size_t len = sizeof(str) - 1;
+  static_assert(len % sizeof(char16_t) == 0,
+                "must be viewable as a two-byte string");
+
+  const size_t numEntries = cache.numEntriesForTesting();
+  for (int i = 0; i < 10000; i++) {
+    {
+      auto a = cache.getOrCreate(str, len);
+      CHECK(a);
+      CHECK(a.chars() != str);
+      CHECK(memcmp(a.chars(), str, len) == 0);
+
+      auto b = cache.getOrCreate(str, len);
+      CHECK(b);
+      CHECK(a.chars() == b.chars());
+
+      // The same bytes viewed as a two-byte string share the box.
+      auto c = cache.getOrCreate(reinterpret_cast<const char16_t*>(str),
+                                 len / sizeof(char16_t));
+      CHECK(c);
+      CHECK(reinterpret_cast<const char*>(c.chars()) == a.chars());
+      CHECK(cache.numEntriesForTesting() == numEntries + 1);
+    }
+
+    CHECK(cache.numEntriesForTesting() == numEntries);
+  }
+
+  return true;
+}
+END_TEST(testSharedImmutableStringsCache_ReleaseAndRecreate)

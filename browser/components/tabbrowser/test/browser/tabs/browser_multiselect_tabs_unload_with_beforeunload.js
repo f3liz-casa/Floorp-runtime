@@ -4,6 +4,9 @@
 const { PromptTestUtils } = ChromeUtils.importESModule(
   "resource://testing-common/PromptTestUtils.sys.mjs"
 );
+const { sinon } = ChromeUtils.importESModule(
+  "resource://testing-common/Sinon.sys.mjs"
+);
 
 async function openTabMenuFor(tab) {
   let tabMenu = tab.ownerDocument.getElementById("tabContextMenu");
@@ -12,7 +15,7 @@ async function openTabMenuFor(tab) {
   EventUtils.synthesizeMouseAtCenter(
     tab,
     { type: "contextmenu" },
-    tab.ownerGlobal
+    tab.documentGlobal
   );
   await tabMenuShown;
 
@@ -22,7 +25,9 @@ async function openTabMenuFor(tab) {
 async function addBrowserTabs(numberOfTabs) {
   // This is helpful to avoid some weird race conditions in the test, specifically
   // the assertion that !this.blankTab in AsyncTabSwitcher when adding a new tab.
-  //await promiseTabLoadEvent(gBrowser.selectedTab, "http://mochi.test:8888/#originalTab");
+  // await BrowserTestUtils.loadURIString({
+  //   browser: gBrowser.selectedTab, uriString: "http://mochi.test:8888/#originalTab"
+  // });
   let tabs = [];
   for (let i = 0; i < numberOfTabs; i++) {
     tabs.push(await addTab(`http://mochi.test:8888/#${i}`));
@@ -31,7 +36,7 @@ async function addBrowserTabs(numberOfTabs) {
 }
 
 function injectBeforeUnload(browser) {
-  return ContentTask.spawn(browser, null, async function () {
+  return SpecialPowers.spawn(browser, [], async function () {
     content.window.addEventListener(
       "beforeunload",
       function (event) {
@@ -58,10 +63,10 @@ function awaitAndCloseBeforeUnloadDialog(browser, doStayOnPage) {
 add_setup(async function () {
   // This is helpful to avoid some weird race conditions in the test, specifically
   // the assertion that !this.blankTab in AsyncTabSwitcher when adding a new tab.
-  await promiseTabLoadEvent(
-    gBrowser.selectedTab,
-    "http://mochi.test:8888/#originalTab"
-  );
+  await BrowserTestUtils.loadURIString({
+    browser: gBrowser.selectedTab.linkedBrowser,
+    uriString: "http://mochi.test:8888/#originalTab",
+  });
   let originalTab = gBrowser.selectedTab;
   // switch to Firefox View tab to initialize it
   FirefoxViewHandler.openTab();
@@ -113,6 +118,7 @@ add_task(async function test_unload_selected_and_block() {
 
   let menuItemUnload = document.getElementById("context_unloadTab");
   await BrowserTestUtils.switchTab(gBrowser, tab1);
+  let unloadSpy = sinon.spy(gBrowser, "explicitUnloadTabs");
   {
     let menu = await openTabMenuFor(tab1);
     let menuHiddenPromise = BrowserTestUtils.waitForPopupEvent(menu, "hidden");
@@ -120,6 +126,9 @@ add_task(async function test_unload_selected_and_block() {
     await menuHiddenPromise;
   }
   await awaitAndCloseBeforeUnloadDialog(tab1.linkedBrowser, true);
+  // Wait for the unload started by the context menu to finish.
+  await unloadSpy.firstCall.returnValue;
+  unloadSpy.restore();
   ok(tab1.linkedPanel, "tab1 should still be loaded");
   is(gBrowser.selectedTab, tab1, "tab1 should still be selected");
 
@@ -183,6 +192,7 @@ add_task(async function test_unload_selected_and_block() {
 
   let menuItemUnload = document.getElementById("context_unloadTab");
   await BrowserTestUtils.switchTab(gBrowser, tab1);
+  let unloadSpy = sinon.spy(gBrowser, "explicitUnloadTabs");
   {
     let menu = await openTabMenuFor(tab1);
     let menuHiddenPromise = BrowserTestUtils.waitForPopupEvent(menu, "hidden");
@@ -190,6 +200,8 @@ add_task(async function test_unload_selected_and_block() {
     await menuHiddenPromise;
   }
   await awaitAndCloseBeforeUnloadDialog(tab1.linkedBrowser, true);
+  await unloadSpy.firstCall.returnValue;
+  unloadSpy.restore();
   ok(tab1.linkedPanel, "tab1 should still be loaded");
   is(gBrowser.selectedTab, tab1, "tab1 should still be selected");
 
@@ -218,6 +230,7 @@ add_task(async function test_unload_multiple_and_block() {
   await BrowserTestUtils.switchTab(gBrowser, tab2);
   await triggerClickOn(tab3, { ctrlKey: true });
   let tab3Promise = awaitAndCloseBeforeUnloadDialog(tab3.linkedBrowser, true);
+  let unloadSpy = sinon.spy(gBrowser, "explicitUnloadTabs");
   {
     let menu = await openTabMenuFor(tab2);
     let menuHiddenPromise = BrowserTestUtils.waitForPopupEvent(menu, "hidden");
@@ -225,6 +238,8 @@ add_task(async function test_unload_multiple_and_block() {
     await menuHiddenPromise;
   }
   await tab3Promise;
+  await unloadSpy.firstCall.returnValue;
+  unloadSpy.restore();
 
   ok(tab1.linkedPanel, "tab1 should still be loaded");
   ok(tab2.linkedPanel, "tab2 should still be loaded");

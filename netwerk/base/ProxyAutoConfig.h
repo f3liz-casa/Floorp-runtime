@@ -1,20 +1,18 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim:set ts=2 sw=2 sts=2 et cindent: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef ProxyAutoConfig_h__
-#define ProxyAutoConfig_h__
+#ifndef ProxyAutoConfig_h_
+#define ProxyAutoConfig_h_
 
 #include <functional>
-#include "nsString.h"
+
 #include "nsCOMPtr.h"
+#include "nsString.h"
 #include "nsTArray.h"
 
 class nsIEventTarget;
 class nsITimer;
-class nsIThread;
 namespace JS {
 class CallArgs;
 }  // namespace JS
@@ -23,42 +21,24 @@ namespace mozilla {
 namespace net {
 
 class JSContextWrapper;
-class ProxyAutoConfigParent;
 union NetAddr;
-
-class ProxyAutoConfigBase {
- public:
-  virtual ~ProxyAutoConfigBase() = default;
-  virtual nsresult Init(nsIThread* aPACThread) { return NS_OK; }
-  virtual nsresult ConfigurePAC(const nsACString& aPACURI,
-                                const nsACString& aPACScriptData,
-                                bool aIncludePath, uint32_t aExtraHeapSize,
-                                nsISerialEventTarget* aEventTarget) = 0;
-  virtual void SetThreadLocalIndex(uint32_t index) {}
-  virtual void Shutdown() = 0;
-  virtual void GC() = 0;
-  virtual void GetProxyForURIWithCallback(
-      const nsACString& aTestURI, const nsACString& aTestHost,
-      std::function<void(nsresult aStatus, const nsACString& aResult)>&&
-          aCallback) = 0;
-};
 
 // The ProxyAutoConfig class is meant to be created and run on a
 // non main thread. It synchronously resolves PAC files by blocking that
 // thread and running nested event loops. GetProxyForURI is not re-entrant.
 
-class ProxyAutoConfig : public ProxyAutoConfigBase {
+class ProxyAutoConfig {
  public:
   ProxyAutoConfig();
-  virtual ~ProxyAutoConfig();
+  ~ProxyAutoConfig();
 
   nsresult ConfigurePAC(const nsACString& aPACURI,
                         const nsACString& aPACScriptData, bool aIncludePath,
                         uint32_t aExtraHeapSize,
-                        nsISerialEventTarget* aEventTarget) override;
-  void SetThreadLocalIndex(uint32_t index) override;
-  void Shutdown() override;
-  void GC() override;
+                        nsISerialEventTarget* aEventTarget);
+  void SetThreadLocalIndex(uint32_t index);
+  void Shutdown();
+  void GC();
   bool MyIPAddress(const JS::CallArgs& aArgs);
   bool ResolveAddress(const nsACString& aHostName, NetAddr* aNetAddr,
                       unsigned int aTimeout);
@@ -103,7 +83,7 @@ class ProxyAutoConfig : public ProxyAutoConfigBase {
   void GetProxyForURIWithCallback(
       const nsACString& aTestURI, const nsACString& aTestHost,
       std::function<void(nsresult aStatus, const nsACString& aResult)>&&
-          aCallback) override;
+          aCallback);
 
  private:
   // allow 665ms for myipaddress dns queries. That's 95th percentile.
@@ -128,28 +108,7 @@ class ProxyAutoConfig : public ProxyAutoConfigBase {
   nsCOMPtr<nsISerialEventTarget> mMainThreadEventTarget;
 };
 
-class RemoteProxyAutoConfig : public ProxyAutoConfigBase {
- public:
-  RemoteProxyAutoConfig();
-  virtual ~RemoteProxyAutoConfig();
-
-  nsresult Init(nsIThread* aPACThread) override;
-  nsresult ConfigurePAC(const nsACString& aPACURI,
-                        const nsACString& aPACScriptData, bool aIncludePath,
-                        uint32_t aExtraHeapSize,
-                        nsISerialEventTarget* aEventTarget) override;
-  void Shutdown() override;
-  void GC() override;
-  void GetProxyForURIWithCallback(
-      const nsACString& aTestURI, const nsACString& aTestHost,
-      std::function<void(nsresult aStatus, const nsACString& aResult)>&&
-          aCallback) override;
-
- private:
-  RefPtr<ProxyAutoConfigParent> mProxyAutoConfigParent;
-};
-
 }  // namespace net
 }  // namespace mozilla
 
-#endif  // ProxyAutoConfig_h__
+#endif  // ProxyAutoConfig_h_

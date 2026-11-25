@@ -1,13 +1,12 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "VRThread.h"
+
 #include "nsDebug.h"
-#include "nsThreadManager.h"
 #include "nsThread.h"
+#include "nsThreadManager.h"
 #include "nsThreadUtils.h"
 
 namespace mozilla {
@@ -27,10 +26,10 @@ VRThread::~VRThread() { Shutdown(); }
 void VRThread::Start() {
   if (!mThread) {
     nsresult rv = NS_NewNamedThread(mName, getter_AddRefs(mThread));
-    MOZ_ASSERT(mThread);
+    MOZ_RELEASE_ASSERT(mThread);
 
     if (NS_FAILED(rv)) {
-      MOZ_ASSERT(false, "Failed to create a vr thread.");
+      MOZ_RELEASE_ASSERT(false, "Failed to create a vr thread.");
     }
     RefPtr<Runnable> runnable =
         NewRunnableMethod<TimeStamp>("gfx::VRThread::CheckLife", this,
@@ -71,8 +70,8 @@ void VRThread::PostTask(already_AddRefed<Runnable> aTask) {
 
 void VRThread::PostDelayedTask(already_AddRefed<Runnable> aTask,
                                uint32_t aTime) {
-  MOZ_ASSERT(mStarted, "Must call Start() before posting tasks.");
-  MOZ_ASSERT(mThread);
+  MOZ_RELEASE_ASSERT(mStarted, "Must call Start() before posting tasks.");
+  MOZ_RELEASE_ASSERT(mThread);
   mLastActiveTime = TimeStamp::Now();
 
   if (!aTime) {

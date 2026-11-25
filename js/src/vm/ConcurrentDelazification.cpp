@@ -1,6 +1,4 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- * vim: set ts=8 sts=2 et sw=2 tw=80:
- * This Source Code Form is subject to the terms of the Mozilla Public
+/* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
@@ -133,7 +131,7 @@ frontend::ScriptStencilRef LargeFirstDelazification::next() {
 bool LargeFirstDelazification::insert(frontend::ScriptStencilRef& ref) {
   const frontend::ScriptStencilExtra& extra = ref.scriptExtra();
   SourceSize size = extra.extent.sourceEnd - extra.extent.sourceStart;
-  if (!heap.append(std::pair(size, ref))) {
+  if (!heap.emplaceBack(size, ref)) {
     return false;
   }
 

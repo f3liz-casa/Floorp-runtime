@@ -1,13 +1,10 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-// vim:cindent:ts=4:et:sw=4:
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#include "nsTObserverArray.h"
 #include "gtest/gtest.h"
-#include "mozilla/ArrayUtils.h"
 #include "mozilla/UniquePtr.h"
+#include "nsTObserverArray.h"
 
 using namespace mozilla;
 
@@ -267,8 +264,8 @@ TEST(ObserverArray, RangeBasedFor_Reference_Forward_NonEmpty)
 {
   const auto arr = [] {
     nsTObserverArray<UniquePtr<int>> arr;
-    arr.AppendElement(MakeUnique<int>(3));
-    arr.AppendElement(MakeUnique<int>(4));
+    arr.AppendElement(std::make_unique<int>(3));
+    arr.AppendElement(std::make_unique<int>(4));
     return arr;
   }();
 
@@ -286,8 +283,8 @@ TEST(ObserverArray, RangeBasedFor_Reference_Forward_NonEmpty)
 TEST(ObserverArray, RangeBasedFor_NonConstReference_Forward_NonEmpty)
 {
   nsTObserverArray<UniquePtr<int>> arr;
-  arr.AppendElement(MakeUnique<int>(3));
-  arr.AppendElement(MakeUnique<int>(4));
+  arr.AppendElement(std::make_unique<int>(3));
+  arr.AppendElement(std::make_unique<int>(4));
 
   size_t iterations = 0;
   int sum = 0;
@@ -392,8 +389,8 @@ TEST(ObserverArray, RangeBasedFor_Reference_Backward_NonEmpty)
 {
   const auto arr = [] {
     nsTObserverArray<UniquePtr<int>> arr;
-    arr.AppendElement(MakeUnique<int>(3));
-    arr.AppendElement(MakeUnique<int>(4));
+    arr.AppendElement(std::make_unique<int>(3));
+    arr.AppendElement(std::make_unique<int>(4));
     return arr;
   }();
 
@@ -411,8 +408,8 @@ TEST(ObserverArray, RangeBasedFor_Reference_Backward_NonEmpty)
 TEST(ObserverArray, RangeBasedFor_NonConstReference_Backward_NonEmpty)
 {
   nsTObserverArray<UniquePtr<int>> arr;
-  arr.AppendElement(MakeUnique<int>(3));
-  arr.AppendElement(MakeUnique<int>(4));
+  arr.AppendElement(std::make_unique<int>(3));
+  arr.AppendElement(std::make_unique<int>(4));
 
   size_t iterations = 0;
   int sum = 0;
@@ -517,8 +514,8 @@ TEST(ObserverArray, RangeBasedFor_Reference_EndLimited_NonEmpty)
 {
   const auto arr = [] {
     nsTObserverArray<UniquePtr<int>> arr;
-    arr.AppendElement(MakeUnique<int>(3));
-    arr.AppendElement(MakeUnique<int>(4));
+    arr.AppendElement(std::make_unique<int>(3));
+    arr.AppendElement(std::make_unique<int>(4));
     return arr;
   }();
 
@@ -536,8 +533,8 @@ TEST(ObserverArray, RangeBasedFor_Reference_EndLimited_NonEmpty)
 TEST(ObserverArray, RangeBasedFor_NonConstReference_EndLimited_NonEmpty)
 {
   nsTObserverArray<UniquePtr<int>> arr;
-  arr.AppendElement(MakeUnique<int>(3));
-  arr.AppendElement(MakeUnique<int>(4));
+  arr.AppendElement(std::make_unique<int>(3));
+  arr.AppendElement(std::make_unique<int>(4));
 
   size_t iterations = 0;
   int sum = 0;
@@ -554,8 +551,8 @@ TEST(ObserverArray, RangeBasedFor_Reference_NonObserving_NonEmpty)
 {
   const auto arr = [] {
     nsTObserverArray<UniquePtr<int>> arr;
-    arr.AppendElement(MakeUnique<int>(3));
-    arr.AppendElement(MakeUnique<int>(4));
+    arr.AppendElement(std::make_unique<int>(3));
+    arr.AppendElement(std::make_unique<int>(4));
     return arr;
   }();
 

@@ -10,10 +10,22 @@
 
 #include "common_video/include/video_frame_buffer_pool.h"
 
+#include <cstddef>
 #include <limits>
 
 #include "api/make_ref_counted.h"
+#include "api/scoped_refptr.h"
+#include "api/video/i010_buffer.h"
+#include "api/video/i210_buffer.h"
+#include "api/video/i410_buffer.h"
+#include "api/video/i420_buffer.h"
+#include "api/video/i422_buffer.h"
+#include "api/video/i444_buffer.h"
+#include "api/video/nv12_buffer.h"
+#include "api/video/video_frame_buffer.h"
 #include "rtc_base/checks.h"
+#include "rtc_base/race_checker.h"
+#include "rtc_base/ref_counted_object.h"
 
 namespace webrtc {
 
@@ -127,8 +139,10 @@ scoped_refptr<I420Buffer> VideoFrameBufferPool::CreateI420Buffer(int width,
   if (buffers_.size() >= max_number_of_buffers_)
     return nullptr;
   // Allocate new buffer.
-  scoped_refptr<I420Buffer> buffer =
-      make_ref_counted<I420Buffer>(width, height);
+  scoped_refptr<I420Buffer> buffer = I420Buffer::CreateOrNull(width, height);
+  if (!buffer) {
+    return nullptr;
+  }
 
   if (zero_initialize_)
     buffer->InitializeData();

@@ -14,10 +14,14 @@ transforms = TransformSequence()
 @transforms.add
 def resolve_keys(config, tasks):
     for task in tasks:
+        resolve_keyed_by(
+            task,
+            "description",
+            item_name=task["name"],
+            project=config.params["project"],
+        )
         env = task["worker"].setdefault("env", {})
         env["BRANCH"] = config.params["project"]
-        for envvar in env:
-            resolve_keyed_by(env, envvar, envvar, **config.params)
 
         for envvar in list(env.keys()):
             if not env.get(envvar):

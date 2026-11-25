@@ -2,6 +2,7 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
+#include "updatedefines.h"
 #if defined(XP_WIN)
 #  include <windows.h>
 #  include <winioctl.h>  // for FSCTL_GET_REPARSE_POINT
@@ -9,6 +10,10 @@
 #  ifndef RRF_SUBKEY_WOW6464KEY
 #    define RRF_SUBKEY_WOW6464KEY 0x00010000
 #  endif
+#endif
+
+#if defined(XP_MACOSX)
+#  include <os/log.h>
 #endif
 
 #include <stdio.h>
@@ -50,8 +55,6 @@ typedef struct _REPARSE_DATA_BUFFER {
 } REPARSE_DATA_BUFFER, *PREPARSE_DATA_BUFFER;
 #endif
 
-UpdateLog::UpdateLog() : logFP(nullptr) {}
-
 void UpdateLog::Init(NS_tchar* logFilePath) {
   if (logFP) {
     return;
@@ -63,7 +66,10 @@ void UpdateLog::Init(NS_tchar* logFilePath) {
   if (dstFilePathLen > 0 && dstFilePathLen < MAXPATHLEN - 1) {
     NS_tstrncpy(mDstFilePath, logFilePath, MAXPATHLEN);
 #if defined(XP_WIN) || defined(XP_MACOSX)
-    logFP = NS_tfopen(mDstFilePath, NS_T("w"));
+    logFP = CreateAndOpenFile(mDstFilePath, false);
+    if (logFP == nullptr) {
+      LogToOS(NS_T("Failed to create FILE*"));
+    }
 #else
     // On platforms that have an updates directory in the installation directory
     // (e.g. platforms other than Windows and Mac) the update log is written to
@@ -87,7 +93,11 @@ void UpdateLog::Finish() {
   fflush(logFP);
   rewind(logFP);
 
-  FILE* updateLogFP = NS_tfopen(mDstFilePath, NS_T("wb+"));
+  FILE* updateLogFP = CreateAndOpenFile(mDstFilePath, true);
+  if (updateLogFP == nullptr) {
+    return;
+  }
+
   while (!feof(logFP)) {
     size_t read = fread(buffer, 1, blockSize, logFP);
     if (ferror(logFP)) {
@@ -190,6 +200,61 @@ void UpdateLog::WarnPrintf(const char* fmt, ...) {
   fflush(logFP);
 }
 
+/**
+ * Creates and opens a file for logging in read/write mode.
+ *
+ * @param filePath  The path of the log file.
+ * @param binary  If the file should be opened as binary (ignored on
+ * macOS/Linux).
+ * @return a pointer to the FILE struct or nullptr on error.
+ */
+FILE* CreateAndOpenFile(NS_tchar* filePath, [[maybe_unused]] bool binary) {
+#ifdef XP_WIN
+  return NS_tfopen(filePath, binary ? NS_T("wb+") : NS_T("w+"));
+#else
+  LogToOS(NS_T("Opening logfile"));
+  NS_tchar* lastSeperator = NS_tstrrchr(filePath, '/');
+  if (lastSeperator == nullptr) {
+    // No separator, disable logging.
+    return nullptr;
+  }
+
+  const NS_tchar templateSuffix[] = NS_T("/temp.XXXXXX");
+  size_t templateLen = NS_tstrlen(templateSuffix);
+
+  long dirLength = lastSeperator - filePath;
+  // +1 to account for the \0 terminator
+  if (dirLength < 0 ||
+      (unsigned long)dirLength >= MAXPATHLEN - (templateLen + 1)) {
+    // Too short, or too long. Disable logging.
+    return nullptr;
+  }
+
+  NS_tchar tmpFilePath[MAXPATHLEN] = {L'\0'};
+  // Use memcpy here to only copy the directory portion of filePath
+  // and using strncpy triggered GCC's stringop-truncation error because
+  // filePath's \0 terminator wasn't being carried over. This isn't a problem
+  // here because the next strncpy adds it.
+  memcpy(tmpFilePath, filePath, dirLength);
+  NS_tstrncpy(tmpFilePath + dirLength, templateSuffix, MAXPATHLEN - dirLength);
+
+  int fd = mkstemp(tmpFilePath);
+  if (fd == -1) {
+    LogToOS(NS_T("Failed to open tmp"));
+    return nullptr;
+  }
+
+  if (rename(tmpFilePath, filePath) == -1) {
+    LogToOS(NS_T("Failed to rename"));
+    close(fd);
+    return nullptr;
+  }
+
+  LogToOS(NS_T("Opening file*"));
+  return fdopen(fd, "w+");
+#endif
+}
+
 #ifdef XP_WIN
 /**
  * Determine if a path contains symlinks or junctions to disallowed locations
@@ -221,8 +286,8 @@ bool PathContainsInvalidLinks(wchar_t* const fullPath) {
         }
       }
 
-      mozilla::UniquePtr<UINT8[]> byteBuffer =
-          mozilla::MakeUnique<UINT8[]>(MAXIMUM_REPARSE_DATA_BUFFER_SIZE);
+      auto byteBuffer =
+          std::make_unique<UINT8[]>(MAXIMUM_REPARSE_DATA_BUFFER_SIZE);
       ZeroMemory(byteBuffer.get(), MAXIMUM_REPARSE_DATA_BUFFER_SIZE);
       REPARSE_DATA_BUFFER* buffer = (REPARSE_DATA_BUFFER*)byteBuffer.get();
       DWORD bytes = 0;
@@ -286,8 +351,7 @@ bool IsProgramFilesPath(NS_tchar* fullPath) {
   if (longInstallPathChars == 0) {
     return false;
   }
-  mozilla::UniquePtr<wchar_t[]> longInstallPath =
-      mozilla::MakeUnique<wchar_t[]>(longInstallPathChars);
+  auto longInstallPath = std::make_unique<wchar_t[]>(longInstallPathChars);
   if (!GetLongPathNameW(fullPath, longInstallPath.get(),
                         longInstallPathChars)) {
     return false;
@@ -322,8 +386,8 @@ bool IsProgramFilesPath(NS_tchar* fullPath) {
       // Allocate space for a copy of the string along with a terminator and one
       // extra character for the trailing backslash.
       length += 1;
-      mozilla::UniquePtr<wchar_t[]> programFiles32PathWithSlash =
-          mozilla::MakeUnique<wchar_t[]>(length + 1);
+      auto programFiles32PathWithSlash =
+          std::make_unique<wchar_t[]>(length + 1);
 
       NS_tsnprintf(programFiles32PathWithSlash.get(), length + 1, NS_T("%s\\"),
                    programFiles32Path.get());
@@ -356,8 +420,7 @@ bool IsProgramFilesPath(NS_tchar* fullPath) {
     if (lengthChars <= 1) {
       return false;
     }
-    mozilla::UniquePtr<wchar_t[]> programFilesNativePath =
-        mozilla::MakeUnique<wchar_t[]>(lengthChars);
+    auto programFilesNativePath = std::make_unique<wchar_t[]>(lengthChars);
 
     // Now actually read the value.
     if (RegGetValueW(
@@ -382,8 +445,8 @@ bool IsProgramFilesPath(NS_tchar* fullPath) {
       // Allocate space for a copy of the string along with a terminator and one
       // extra character for the trailing backslash.
       nativePathStrLen += 1;
-      mozilla::UniquePtr<wchar_t[]> programFilesNativePathWithSlash =
-          mozilla::MakeUnique<wchar_t[]>(nativePathStrLen + 1);
+      auto programFilesNativePathWithSlash =
+          std::make_unique<wchar_t[]>(nativePathStrLen + 1);
 
       NS_tsnprintf(programFilesNativePathWithSlash.get(), nativePathStrLen + 1,
                    NS_T("%s\\"), programFilesNativePath.get());
@@ -473,4 +536,28 @@ bool IsValidFullPath(NS_tchar* origFullPath) {
   }
 #endif
   return true;
+}
+
+#if defined(XP_MACOSX)
+// This is never deallocated by the system
+MOZ_RUNINIT static os_log_t updaterLogger =
+    os_log_create("org.mozilla.updater", "Updater");
+#endif
+
+/**
+ * Logs a message to the system log for debugging purposes before our log
+ * file has been set up.
+ *
+ * @param  message
+ *         The message to log.
+ */
+void LogToOS(const NS_tchar* message) {
+#if defined(XP_MACOSX)
+  os_log(updaterLogger, "%{public}s", message);
+#endif
+}
+
+bool EnvHasValue(const char* name) {
+  const char* val = getenv(name);
+  return (val && *val);
 }

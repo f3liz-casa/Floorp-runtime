@@ -4,40 +4,26 @@
 
 package org.mozilla.fenix.home.toolbar
 
-import android.view.View
-import mozilla.components.browser.state.state.BrowserState
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.graphics.Color
 
-/**
- * Home screen toolbar.
- */
+/** Home screen toolbar. */
 interface FenixHomeToolbar {
+    /** Renders the toolbar content. */
+    @Composable fun Content()
+
     /**
-     * The root view of the toolbar.
+     * Returns the background color of the search screen while search is active, or null otherwise. Must be called from
+     * within the same theme as [Content].
      */
-    val layout: View
+    @Composable fun searchBackgroundColor(): Color? = null
 
     /**
      * Setups the home screen toolbar.
      *
-     * @param browserState [BrowserState] is used to update button visibility.
-     * @param middleSearchEnabled Whether middle search is enabled, and the address bar
-     * should be invisible.
+     * @param middleSearchEnabled Whether middle search is enabled, and the address bar should be invisible.
      */
-    fun build(browserState: BrowserState, middleSearchEnabled: Boolean)
-
-    /**
-     * Configure the toolbar top/bottom divider
-     *
-     * @param isVisible Whether the divider should be visible or not.
-     */
-    fun updateDividerVisibility(isVisible: Boolean)
-
-    /**
-     * Updates the visibility of the tab counter and menu buttons.
-     *
-     * @param browserState [BrowserState] is used to update tab counter's state.
-     */
-    fun updateButtonVisibility(browserState: BrowserState)
+    fun build(middleSearchEnabled: Boolean)
 
     /**
      * Updates the visibility of the address bar.
@@ -45,11 +31,4 @@ interface FenixHomeToolbar {
      * @param isVisible Whether the address bar should be visible or not.
      */
     fun updateAddressBarVisibility(isVisible: Boolean)
-
-    /**
-     * Updates the tab counter view based on the current browser state.
-     *
-     * @param browserState [BrowserState] is passed down to tab counter view to calculate the view state.
-     */
-    fun updateTabCounter(browserState: BrowserState)
 }

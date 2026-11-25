@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -7,7 +5,6 @@
 #ifndef mozilla_dom_HTMLLinkElement_h
 #define mozilla_dom_HTMLLinkElement_h
 
-#include "mozilla/Attributes.h"
 #include "mozilla/WeakPtr.h"
 #include "mozilla/dom/HTMLDNSPrefetch.h"
 #include "mozilla/dom/Link.h"
@@ -26,8 +23,8 @@ class HTMLLinkElement final : public nsGenericHTMLElement,
                               public LinkStyle,
                               public SupportsDNSPrefetch {
  public:
-  explicit HTMLLinkElement(
-      already_AddRefed<mozilla::dom::NodeInfo>&& aNodeInfo);
+  HTMLLinkElement(already_AddRefed<mozilla::dom::NodeInfo> aNodeInfo,
+                  FromParser aFromParser);
 
   // nsISupports
   NS_DECL_ISUPPORTS_INHERITED
@@ -169,6 +166,20 @@ class HTMLLinkElement final : public nsGenericHTMLElement,
   nsDOMTokenList* Blocking();
   bool IsPotentiallyRenderBlocking() override;
 
+  // Whether this link's rel attribute contains the "expect" keyword.
+  // https://html.spec.whatwg.org/#link-type-expect
+  bool RelContainsExpect() const;
+  // https://html.spec.whatwg.org/#process-internal-resource-link
+  // Blocks or unblocks rendering depending on whether the element indicated by
+  // this rel=expect link's href has been parsed yet.
+  void ProcessInternalResourceLink();
+
+  // Updates the owner document's expected rel=expect target set as this link
+  // starts/stops blocking on a fragment (null means no longer blocking).
+  // aDecodedFragment is the percent-decoded aFragment, if it is different.
+  void UpdateExpectBlockingFragment(nsAtom* aFragment,
+                                    nsAtom* aDecodedFragment = nullptr);
+
   void NodeInfoChanged(Document* aOldDoc) final {
     mCachedURI = nullptr;
     nsGenericHTMLElement::NodeInfoChanged(aOldDoc);
@@ -211,12 +222,21 @@ class HTMLLinkElement final : public nsGenericHTMLElement,
   // The cached href attribute value.
   nsCOMPtr<nsIURI> mCachedURI;
 
+  FromParser mCreatedByParser;
+
   // The "explicitly enabled" flag. This flag is set whenever the `disabled`
   // attribute is explicitly unset, and makes alternate stylesheets not be
   // disabled by default anymore.
   //
   // See https://github.com/whatwg/html/issues/3840#issuecomment-481034206.
   bool mExplicitlyEnabled = false;
+
+  // The fragment (id/name atom) this rel=expect link is currently blocking on,
+  // or null if it is not blocking. Mirrors an entry in the document's
+  // mExpectedInternalResourceTargets set.
+  RefPtr<nsAtom> mBlockingExpectFragment;
+  // The percent-decoded mBlockingExpectFragment, if it is different.
+  RefPtr<nsAtom> mBlockingExpectDecodedFragment;
 };
 
 }  // namespace dom

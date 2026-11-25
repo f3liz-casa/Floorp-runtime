@@ -1,5 +1,4 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2; -*-
- * This Source Code Form is subject to the terms of the Mozilla Public
+/* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
@@ -46,8 +45,6 @@ NS_IMPL_ISUPPORTS(Module, nsIXPCScriptable)
 
 Module::Module() = default;
 
-Module::~Module() = default;
-
 #define XPC_MAP_CLASSNAME Module
 #define XPC_MAP_QUOTED_CLASSNAME "Module"
 #define XPC_MAP_FLAGS XPC_SCRIPTABLE_WANT_CALL
@@ -72,8 +69,8 @@ static bool InitCTypesClassAndSetCallbacks(JSContext* cx,
 }
 
 NS_IMETHODIMP
-Module::Call(nsIXPConnectWrappedNative* wrapper, JSContext* cx, JSObject* obj,
-             const JS::CallArgs& args, bool* retval) {
+Module::Call(nsIXPConnectWrappedNative* /*wrapper*/, JSContext* cx,
+             JSObject* /*obj*/, const JS::CallArgs& args, bool* retval) {
   if (!args.get(0).isObject()) {
     JS_ReportErrorASCII(cx, "Argument must be an object");
     return NS_ERROR_FAILURE;

@@ -1,31 +1,29 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "VRManagerChild.h"
 
+#include "VRDisplayClient.h"
 #include "VRLayerChild.h"
 #include "VRManagerParent.h"
 #include "VRThread.h"
-#include "VRDisplayClient.h"
-#include "nsGlobalWindowInner.h"
 #include "mozilla/ProfilerMarkers.h"
 #include "mozilla/StaticPtr.h"
-#include "mozilla/layers/CompositorThread.h"  // for CompositorThread
+#include "mozilla/dom/ContentChild.h"
+#include "mozilla/dom/GamepadManager.h"
 #include "mozilla/dom/Navigator.h"
 #include "mozilla/dom/VREventObserver.h"
 #include "mozilla/dom/WebXRBinding.h"
 #include "mozilla/dom/WindowBinding.h"  // for FrameRequestCallback
-#include "mozilla/dom/XRSystem.h"
 #include "mozilla/dom/XRFrame.h"
-#include "mozilla/dom/ContentChild.h"
-#include "nsContentUtils.h"
-#include "mozilla/dom/GamepadManager.h"
+#include "mozilla/dom/XRSystem.h"
 #include "mozilla/ipc/Endpoint.h"
+#include "mozilla/layers/CompositorThread.h"  // for CompositorThread
 #include "mozilla/layers/SyncObject.h"
 #include "mozilla/layers/TextureForwarder.h"
+#include "nsContentUtils.h"
+#include "nsGlobalWindowInner.h"
 
 using namespace mozilla::dom;
 
@@ -45,17 +43,18 @@ static TimeDuration sAverageFrameInterval;
 
 void ReleaseVRManagerParentSingleton() { sVRManagerParentSingleton = nullptr; }
 
-VRManagerChild::VRManagerChild()
-    : mRuntimeCapabilities(VRDisplayCapabilityFlags::Cap_None),
+VRManagerChild::VRManagerChild(uint32_t aNamespace)
+    : mNamespace(aNamespace),
+      mRuntimeCapabilities(VRDisplayCapabilityFlags::Cap_None),
       mFrameRequestCallbackCounter(0),
       mWaitingForEnumeration(false),
       mBackend(layers::LayersBackend::LAYERS_NONE) {
-  MOZ_ASSERT(NS_IsMainThread());
+  MOZ_RELEASE_ASSERT(NS_IsMainThread());
 
   mStartTimeStamp = TimeStamp::Now();
 }
 
-VRManagerChild::~VRManagerChild() { MOZ_ASSERT(NS_IsMainThread()); }
+VRManagerChild::~VRManagerChild() { MOZ_RELEASE_ASSERT(NS_IsMainThread()); }
 
 /*static*/
 void VRManagerChild::IdentifyTextureHost(
@@ -71,7 +70,7 @@ layers::LayersBackend VRManagerChild::GetBackendType() const {
 
 /*static*/
 VRManagerChild* VRManagerChild::Get() {
-  MOZ_ASSERT(sVRManagerChildSingleton);
+  MOZ_RELEASE_ASSERT(sVRManagerChildSingleton);
   return sVRManagerChildSingleton;
 }
 
@@ -95,7 +94,7 @@ bool VRManagerChild::IsPresenting() {
 }
 
 TimeStamp VRManagerChild::GetIdleDeadlineHint(TimeStamp aDefault) {
-  MOZ_ASSERT(NS_IsMainThread());
+  MOZ_RELEASE_ASSERT(NS_IsMainThread());
   if (!VRManagerChild::IsCreated() || sMostRecentFrameEnd.IsNull()) {
     return aDefault;
   }
@@ -105,10 +104,11 @@ TimeStamp VRManagerChild::GetIdleDeadlineHint(TimeStamp aDefault) {
 }
 
 /* static */
-bool VRManagerChild::InitForContent(Endpoint<PVRManagerChild>&& aEndpoint) {
-  MOZ_ASSERT(NS_IsMainThread());
+bool VRManagerChild::InitForContent(Endpoint<PVRManagerChild>&& aEndpoint,
+                                    uint32_t aNamespace) {
+  MOZ_RELEASE_ASSERT(NS_IsMainThread());
 
-  RefPtr<VRManagerChild> child(new VRManagerChild());
+  RefPtr<VRManagerChild> child(new VRManagerChild(aNamespace));
   if (!aEndpoint.Bind(child)) {
     return false;
   }
@@ -117,22 +117,23 @@ bool VRManagerChild::InitForContent(Endpoint<PVRManagerChild>&& aEndpoint) {
 }
 
 /*static*/
-void VRManagerChild::InitSameProcess() {
-  MOZ_ASSERT(NS_IsMainThread());
-  MOZ_ASSERT(!sVRManagerChildSingleton);
+void VRManagerChild::InitSameProcess(uint32_t aNamespace) {
+  MOZ_RELEASE_ASSERT(NS_IsMainThread());
+  MOZ_RELEASE_ASSERT(!sVRManagerChildSingleton);
 
-  sVRManagerChildSingleton = new VRManagerChild();
-  sVRManagerParentSingleton = VRManagerParent::CreateSameProcess();
+  sVRManagerChildSingleton = new VRManagerChild(aNamespace);
+  sVRManagerParentSingleton = VRManagerParent::CreateSameProcess(aNamespace);
   sVRManagerChildSingleton->Open(sVRManagerParentSingleton, CompositorThread(),
                                  mozilla::ipc::ChildSide);
 }
 
 /* static */
-void VRManagerChild::InitWithGPUProcess(Endpoint<PVRManagerChild>&& aEndpoint) {
-  MOZ_ASSERT(NS_IsMainThread());
-  MOZ_ASSERT(!sVRManagerChildSingleton);
+void VRManagerChild::InitWithGPUProcess(Endpoint<PVRManagerChild>&& aEndpoint,
+                                        uint32_t aNamespace) {
+  MOZ_RELEASE_ASSERT(NS_IsMainThread());
+  MOZ_RELEASE_ASSERT(!sVRManagerChildSingleton);
 
-  sVRManagerChildSingleton = new VRManagerChild();
+  sVRManagerChildSingleton = new VRManagerChild(aNamespace);
   if (!aEndpoint.Bind(sVRManagerChildSingleton)) {
     MOZ_CRASH("Couldn't Open() Compositor channel.");
   }
@@ -140,7 +141,7 @@ void VRManagerChild::InitWithGPUProcess(Endpoint<PVRManagerChild>&& aEndpoint) {
 
 /*static*/
 void VRManagerChild::ShutDown() {
-  MOZ_ASSERT(NS_IsMainThread());
+  MOZ_RELEASE_ASSERT(NS_IsMainThread());
   if (!sVRManagerChildSingleton) {
     return;
   }
@@ -152,15 +153,6 @@ void VRManagerChild::ActorDestroy(ActorDestroyReason aReason) {
   if (sVRManagerChildSingleton == this) {
     sVRManagerChildSingleton = nullptr;
   }
-}
-
-PVRLayerChild* VRManagerChild::AllocPVRLayerChild(const uint32_t& aDisplayID,
-                                                  const uint32_t& aGroup) {
-  return VRLayerChild::CreateIPDLActor();
-}
-
-bool VRManagerChild::DeallocPVRLayerChild(PVRLayerChild* actor) {
-  return VRLayerChild::DestroyIPDLActor(actor);
 }
 
 void VRManagerChild::UpdateDisplayInfo(const VRDisplayInfo& aDisplayInfo) {
@@ -363,12 +355,15 @@ bool VRManagerChild::EnumerateVRDisplays() {
   return success;
 }
 
-void VRManagerChild::DetectRuntimes() { Unused << SendDetectRuntimes(); }
+void VRManagerChild::DetectRuntimes() { (void)SendDetectRuntimes(); }
 
-PVRLayerChild* VRManagerChild::CreateVRLayer(uint32_t aDisplayID,
-                                             uint32_t aGroup) {
-  PVRLayerChild* vrLayerChild = AllocPVRLayerChild(aDisplayID, aGroup);
-  return SendPVRLayerConstructor(vrLayerChild, aDisplayID, aGroup);
+already_AddRefed<VRLayerChild> VRManagerChild::CreateVRLayer(
+    uint32_t aDisplayID, uint32_t aGroup) {
+  RefPtr<VRLayerChild> vrLayerChild = VRLayerChild::CreateIPDLActor();
+  if (!SendPVRLayerConstructor(vrLayerChild, aDisplayID, aGroup)) {
+    return nullptr;
+  }
+  return vrLayerChild.forget();
 }
 
 void VRManagerChild::XRFrameRequest::Call(
@@ -403,7 +398,7 @@ void VRManagerChild::CancelFrameRequestCallback(int32_t aHandle) {
 }
 
 void VRManagerChild::RunFrameRequestCallbacks() {
-  AUTO_PROFILER_TRACING_MARKER("VR", "RunFrameRequestCallbacks", GRAPHICS);
+  AUTO_PROFILER_MARKER("RunFrameRequestCallbacks", GRAPHICS);
 
   TimeStamp nowTime = TimeStamp::Now();
   mozilla::TimeDuration duration = nowTime - mStartTimeStamp;
@@ -474,7 +469,7 @@ void VRManagerChild::FireDOMVRDisplayPresentChangeEvent(uint32_t aDisplayID) {
 
   if (!IsPresenting()) {
     sMostRecentFrameEnd = TimeStamp();
-    sAverageFrameInterval = 0;
+    sAverageFrameInterval = nullptr;
   }
 }
 
@@ -555,7 +550,7 @@ void VRManagerChild::FireDOMVRDisplayConnectEventsForLoad(
 }
 
 void VRManagerChild::AddListener(VRManagerEventObserver* aObserver) {
-  MOZ_ASSERT(aObserver);
+  MOZ_RELEASE_ASSERT(aObserver);
 
   if (mListeners.IndexOf(aObserver) != kNoIndex) {
     return;  // already exists
@@ -563,20 +558,20 @@ void VRManagerChild::AddListener(VRManagerEventObserver* aObserver) {
 
   mListeners.AppendElement(aObserver);
   if (mListeners.Length() == 1) {
-    Unused << SendSetHaveEventListener(true);
+    (void)SendSetHaveEventListener(true);
   }
 }
 
 void VRManagerChild::RemoveListener(VRManagerEventObserver* aObserver) {
-  MOZ_ASSERT(aObserver);
+  MOZ_RELEASE_ASSERT(aObserver);
 
   mListeners.RemoveElement(aObserver);
   if (mListeners.IsEmpty()) {
-    Unused << SendSetHaveEventListener(false);
+    (void)SendSetHaveEventListener(false);
   }
 }
 
-void VRManagerChild::StartActivity() { Unused << SendStartActivity(); }
+void VRManagerChild::StartActivity() { (void)SendStartActivity(); }
 
 void VRManagerChild::StopActivity() {
   for (auto& listener : mListeners) {
@@ -586,7 +581,7 @@ void VRManagerChild::StopActivity() {
     }
   }
 
-  Unused << SendStopActivity();
+  (void)SendStopActivity();
 }
 
 void VRManagerChild::HandleFatalError(const char* aMsg) {
@@ -594,7 +589,7 @@ void VRManagerChild::HandleFatalError(const char* aMsg) {
 }
 
 void VRManagerChild::AddPromise(const uint32_t& aID, dom::Promise* aPromise) {
-  MOZ_ASSERT(!mGamepadPromiseList.Contains(aID));
+  MOZ_RELEASE_ASSERT(!mGamepadPromiseList.Contains(aID));
   mGamepadPromiseList.InsertOrUpdate(aID, RefPtr{aPromise});
 }
 
@@ -612,7 +607,7 @@ mozilla::ipc::IPCResult VRManagerChild::RecvReplyGamepadVibrateHaptic(
   // VRManagerChild could be at other processes, but GamepadManager
   // only exists at the content process or the same process
   // in non-e10s mode.
-  MOZ_ASSERT(XRE_IsContentProcess() || IsSameProcess());
+  MOZ_RELEASE_ASSERT(XRE_IsContentProcess() || IsSameProcess());
 
   RefPtr<dom::Promise> p;
   if (!mGamepadPromiseList.Get(aPromiseID, getter_AddRefs(p))) {

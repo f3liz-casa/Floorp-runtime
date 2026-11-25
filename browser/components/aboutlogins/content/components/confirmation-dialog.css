@@ -6,9 +6,7 @@
   position: fixed;
   z-index: 1;
   inset: 0;
-  /* TODO: this color is used in the about:preferences overlay, but
-           why isn't it declared as a variable? */
-  background-color: rgba(0, 0, 0, 0.5);
+  background-color: var(--background-color-overlay);
   display: flex;
 }
 
@@ -21,7 +19,7 @@
   max-width: 500px;
   min-height: 200px;
   margin: auto;
-  background: var(--background-color-canvas);
+  background: var(--logins-dialog-background-color);
   color: var(--text-color);
   box-shadow: var(--logins-dialog-shadow);
   border: var(--logins-dialog-border);
@@ -40,12 +38,12 @@
 
 .message {
   color: var(--text-color-deemphasized);
-  margin-bottom: 0;
+  margin-block-end: 0;
 }
 
 .dismiss-button {
   position: absolute;
-  top: 0;
+  inset-block-start: 0;
   inset-inline-end: 0;
   min-width: 20px;
   min-height: 20px;
@@ -64,8 +62,8 @@
   -moz-context-properties: fill;
   fill: currentColor;
   user-select: none;
-  width: 40px;
-  height: 40px;
+  width: var(--size-image-xsmall);
+  height: var(--size-image-xsmall);
   margin: 16px;
 }
 

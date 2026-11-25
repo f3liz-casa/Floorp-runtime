@@ -1,13 +1,12 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "mozilla/layers/CompositorVsyncScheduler.h"
 
-#include <stdio.h>        // for fprintf, stdout
-#include <stdint.h>       // for uint64_t
+#include <stdint.h>  // for uint64_t
+#include <stdio.h>   // for fprintf, stdout
+
 #include "base/task.h"    // for CancelableTask, etc
 #include "base/thread.h"  // for Thread
 #include "gfxPlatform.h"  // for gfxPlatform
@@ -18,9 +17,11 @@
 #include "mozilla/DebugOnly.h"    // for DebugOnly
 #include "mozilla/StaticPrefs_gfx.h"
 #include "mozilla/StaticPrefs_layers.h"
+#include "mozilla/VsyncDispatcher.h"
 #include "mozilla/gfx/2D.h"     // for DrawTarget
 #include "mozilla/gfx/Point.h"  // for IntSize
 #include "mozilla/gfx/Rect.h"   // for IntSize
+#include "mozilla/glean/GfxMetrics.h"
 #include "mozilla/layers/CompositorThread.h"
 #include "mozilla/layers/CompositorVsyncSchedulerOwner.h"
 #include "mozilla/mozalloc.h"  // for operator new, etc
@@ -29,13 +30,11 @@
 #include "nsISupportsImpl.h"   // for MOZ_COUNT_CTOR, etc
 #include "nsIWidget.h"         // for nsIWidget
 #include "nsThreadUtils.h"     // for NS_IsMainThread
-#include "mozilla/glean/GfxMetrics.h"
-#include "mozilla/VsyncDispatcher.h"
 #if defined(XP_WIN) || defined(MOZ_WIDGET_GTK)
 #  include "VsyncSource.h"
 #endif
-#include "mozilla/widget/CompositorWidget.h"
 #include "VRManager.h"
+#include "mozilla/widget/CompositorWidget.h"
 
 namespace mozilla {
 
@@ -87,15 +86,15 @@ CompositorVsyncScheduler::CompositorVsyncScheduler(
 }
 
 CompositorVsyncScheduler::~CompositorVsyncScheduler() {
-  MOZ_ASSERT(!mIsObservingVsync);
-  MOZ_ASSERT(!mVsyncObserver);
+  MOZ_RELEASE_ASSERT(!mIsObservingVsync);
+  MOZ_RELEASE_ASSERT(!mVsyncObserver);
   // The CompositorVsyncDispatcher is cleaned up before this in the
-  // nsBaseWidget, which stops vsync listeners
+  // nsIWidget, which stops vsync listeners
   mVsyncSchedulerOwner = nullptr;
 }
 
 void CompositorVsyncScheduler::Destroy() {
-  MOZ_ASSERT(CompositorThreadHolder::IsInCompositorThread());
+  MOZ_RELEASE_ASSERT(CompositorThreadHolder::IsInCompositorThread());
 
   if (!mVsyncObserver) {
     // Destroy was already called on this object.
@@ -136,7 +135,7 @@ void CompositorVsyncScheduler::PostVRTask(TimeStamp aTimestamp) {
 }
 
 void CompositorVsyncScheduler::ScheduleComposition(wr::RenderReasons aReasons) {
-  MOZ_ASSERT(CompositorThreadHolder::IsInCompositorThread());
+  MOZ_RELEASE_ASSERT(CompositorThreadHolder::IsInCompositorThread());
   if (!mVsyncObserver) {
     // Destroy was already called on this object.
     return;
@@ -185,7 +184,7 @@ void CompositorVsyncScheduler::NotifyVsync(const VsyncEvent& aVsync) {
   {
     MOZ_ASSERT_IF(XRE_IsParentProcess(),
                   !CompositorThreadHolder::IsInCompositorThread());
-    MOZ_ASSERT(!NS_IsMainThread());
+    MOZ_RELEASE_ASSERT(!NS_IsMainThread());
   }
 
   MOZ_ASSERT_IF(XRE_GetProcessType() == GeckoProcessType_GPU,
@@ -205,8 +204,8 @@ void CompositorVsyncScheduler::NotifyVsync(const VsyncEvent& aVsync) {
 }
 
 void CompositorVsyncScheduler::CancelCurrentVRTask() {
-  MOZ_ASSERT(CompositorThreadHolder::IsInCompositorThread() ||
-             NS_IsMainThread());
+  MOZ_RELEASE_ASSERT(CompositorThreadHolder::IsInCompositorThread() ||
+                     NS_IsMainThread());
   MonitorAutoLock lock(mCurrentVRTaskMonitor);
   if (mCurrentVRTask) {
     mCurrentVRTask->Cancel();
@@ -215,8 +214,8 @@ void CompositorVsyncScheduler::CancelCurrentVRTask() {
 }
 
 wr::RenderReasons CompositorVsyncScheduler::CancelCurrentCompositeTask() {
-  MOZ_ASSERT(CompositorThreadHolder::IsInCompositorThread() ||
-             NS_IsMainThread());
+  MOZ_RELEASE_ASSERT(CompositorThreadHolder::IsInCompositorThread() ||
+                     NS_IsMainThread());
   MonitorAutoLock lock(mCurrentCompositeTaskMonitor);
   wr::RenderReasons canceledTaskRenderReasons = mCurrentCompositeTaskReasons;
   mCurrentCompositeTaskReasons = wr::RenderReasons::NONE;
@@ -230,8 +229,8 @@ wr::RenderReasons CompositorVsyncScheduler::CancelCurrentCompositeTask() {
 
 void CompositorVsyncScheduler::Composite(const VsyncEvent& aVsyncEvent,
                                          wr::RenderReasons aReasons) {
-  MOZ_ASSERT(CompositorThreadHolder::IsInCompositorThread());
-  MOZ_ASSERT(mVsyncSchedulerOwner);
+  MOZ_RELEASE_ASSERT(CompositorThreadHolder::IsInCompositorThread());
+  MOZ_RELEASE_ASSERT(mVsyncSchedulerOwner);
 
   {  // scope lock
     MonitorAutoLock lock(mCurrentCompositeTaskMonitor);
@@ -285,7 +284,7 @@ void CompositorVsyncScheduler::Composite(const VsyncEvent& aVsyncEvent,
 void CompositorVsyncScheduler::ForceComposeToTarget(wr::RenderReasons aReasons,
                                                     gfx::DrawTarget* aTarget,
                                                     const IntRect* aRect) {
-  MOZ_ASSERT(CompositorThreadHolder::IsInCompositorThread());
+  MOZ_RELEASE_ASSERT(CompositorThreadHolder::IsInCompositorThread());
 
   /**
    * bug 1138502 - There are cases such as during long-running window resizing
@@ -304,17 +303,17 @@ void CompositorVsyncScheduler::ForceComposeToTarget(wr::RenderReasons aReasons,
   mVsyncNotificationsSkipped = 0;
 
   mLastComposeTime = SampleTime::FromNow();
-  MOZ_ASSERT(mVsyncSchedulerOwner);
+  MOZ_RELEASE_ASSERT(mVsyncSchedulerOwner);
   mVsyncSchedulerOwner->CompositeToTarget(VsyncId(), aReasons, aTarget, aRect);
 }
 
 bool CompositorVsyncScheduler::NeedsComposite() {
-  MOZ_ASSERT(CompositorThreadHolder::IsInCompositorThread());
+  MOZ_RELEASE_ASSERT(CompositorThreadHolder::IsInCompositorThread());
   return (bool)mCompositeRequestedAt;
 }
 
 bool CompositorVsyncScheduler::FlushPendingComposite() {
-  MOZ_ASSERT(CompositorThreadHolder::IsInCompositorThread());
+  MOZ_RELEASE_ASSERT(CompositorThreadHolder::IsInCompositorThread());
   if (mCompositeRequestedAt) {
     wr::RenderReasons reasons = CancelCurrentCompositeTask();
     ForceComposeToTarget(reasons, nullptr, nullptr);
@@ -324,13 +323,13 @@ bool CompositorVsyncScheduler::FlushPendingComposite() {
 }
 
 void CompositorVsyncScheduler::ObserveVsync() {
-  MOZ_ASSERT(CompositorThreadHolder::IsInCompositorThread());
+  MOZ_RELEASE_ASSERT(CompositorThreadHolder::IsInCompositorThread());
   mWidget->ObserveVsync(mVsyncObserver);
   mIsObservingVsync = true;
 }
 
 void CompositorVsyncScheduler::UnobserveVsync() {
-  MOZ_ASSERT(CompositorThreadHolder::IsInCompositorThread());
+  MOZ_RELEASE_ASSERT(CompositorThreadHolder::IsInCompositorThread());
   mWidget->ObserveVsync(nullptr);
   mIsObservingVsync = false;
 }
@@ -353,27 +352,27 @@ void CompositorVsyncScheduler::DispatchVREvents(TimeStamp aVsyncTimestamp) {
 }
 
 const SampleTime& CompositorVsyncScheduler::GetLastComposeTime() const {
-  MOZ_ASSERT(CompositorThreadHolder::IsInCompositorThread());
+  MOZ_RELEASE_ASSERT(CompositorThreadHolder::IsInCompositorThread());
   return mLastComposeTime;
 }
 
 const TimeStamp& CompositorVsyncScheduler::GetLastVsyncTime() const {
-  MOZ_ASSERT(CompositorThreadHolder::IsInCompositorThread());
+  MOZ_RELEASE_ASSERT(CompositorThreadHolder::IsInCompositorThread());
   return mLastVsyncTime;
 }
 
 const TimeStamp& CompositorVsyncScheduler::GetLastVsyncOutputTime() const {
-  MOZ_ASSERT(CompositorThreadHolder::IsInCompositorThread());
+  MOZ_RELEASE_ASSERT(CompositorThreadHolder::IsInCompositorThread());
   return mLastVsyncOutputTime;
 }
 
 const VsyncId& CompositorVsyncScheduler::GetLastVsyncId() const {
-  MOZ_ASSERT(CompositorThreadHolder::IsInCompositorThread());
+  MOZ_RELEASE_ASSERT(CompositorThreadHolder::IsInCompositorThread());
   return mLastVsyncId;
 }
 
 void CompositorVsyncScheduler::UpdateLastComposeTime() {
-  MOZ_ASSERT(CompositorThreadHolder::IsInCompositorThread());
+  MOZ_RELEASE_ASSERT(CompositorThreadHolder::IsInCompositorThread());
   mLastComposeTime = SampleTime::FromNow();
 }
 

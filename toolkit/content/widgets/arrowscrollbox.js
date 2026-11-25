@@ -20,7 +20,10 @@
       };
     }
 
-    get markup() {
+    // DisplayPortUtils::MaybeCreateDisplayPortInFirstScrollFrameEncountered
+    // relies on the scrollbox being a direct child here, so that it can give
+    // the chrome tab bar's scroller a displayport without walking the tabs.
+    static get markup() {
       return `
       <html:link rel="stylesheet" href="chrome://global/skin/toolbarbutton.css"/>
       <html:link rel="stylesheet" href="chrome://global/skin/arrowscrollbox.css"/>
@@ -37,7 +40,7 @@
     constructor() {
       super();
       this.attachShadow({ mode: "open" });
-      this.shadowRoot.appendChild(this.fragment);
+      this.shadowRoot.appendChild(this.constructor.fragment);
 
       this.scrollbox = this.shadowRoot.querySelector("scrollbox");
       this._scrollButtonUp = this.shadowRoot.getElementById("scrollbutton-up");
@@ -84,10 +87,7 @@
       this._destination = 0;
       this._direction = 0;
 
-      this.addEventListener("wheel", this);
-      this.addEventListener("touchstart", this);
-      this.addEventListener("touchmove", this);
-      this.addEventListener("touchend", this);
+      this.#updateInputListeners();
       this.shadowRoot.addEventListener("click", this);
       this.shadowRoot.addEventListener("mousedown", this);
       this.shadowRoot.addEventListener("mouseover", this);
@@ -146,17 +146,31 @@
       this.#updateScrollButtonsDisabledState();
     }
 
-    get overflowing() {
-      return this.hasAttribute("overflowing");
+    attributeChangedCallback(name, oldValue, newValue) {
+      super.attributeChangedCallback(name, oldValue, newValue);
+
+      if (name == "orient" && oldValue != newValue) {
+        this.#updateInputListeners();
+      }
     }
 
-    get fragment() {
-      if (!this.constructor.hasOwnProperty("_fragment")) {
-        this.constructor._fragment = MozXULElement.parseXULToFragment(
-          this.markup
-        );
+    /**
+     * Wheel and touch listeners exist for horizontal mode only. Vertical mode
+     * must not register them at all: an APZ-aware listener here would make APZ
+     * wait for the main thread before it can scroll.
+     */
+    #updateInputListeners() {
+      for (let type of ["wheel", "touchstart", "touchmove", "touchend"]) {
+        if (this.#verticalMode) {
+          this.removeEventListener(type, this);
+        } else {
+          this.addEventListener(type, this);
+        }
       }
-      return document.importNode(this.constructor._fragment, true);
+    }
+
+    get overflowing() {
+      return this.hasAttribute("overflowing");
     }
 
     get #verticalMode() {

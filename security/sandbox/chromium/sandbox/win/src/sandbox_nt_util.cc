@@ -2,22 +2,28 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#ifdef UNSAFE_BUFFERS_BUILD
+// TODO(crbug.com/351564777): Remove this and convert code to safer constructs.
+#pragma allow_unsafe_buffers
+#endif
+
 #include "sandbox/win/src/sandbox_nt_util.h"
 
 #include <ntstatus.h>
 #include <stddef.h>
 #include <stdint.h>
 
+#include <optional>
 #include <string>
 
 #include "base/compiler_specific.h"
 #include "base/containers/span.h"
 #include "base/win/pe_image.h"
+#include "base/win/win_util.h"
 #include "sandbox/win/src/internal_types.h"
 #include "sandbox/win/src/nt_internals.h"
 #include "sandbox/win/src/sandbox_factory.h"
 #include "sandbox/win/src/target_services.h"
-#include "third_party/abseil-cpp/absl/types/optional.h"
 
 namespace sandbox {
 
@@ -27,6 +33,13 @@ SANDBOX_INTERCEPT NtExports g_nt;
 }  // namespace sandbox
 
 namespace {
+
+// Uses value of FILE_INFORMATION_CLASS defined in Wdm.h but not in user-mode.
+// https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdm/ne-wdm-_file_information_class
+// MinGW's winternl.h defines FILE_INFORMATION_CLASS including this value.
+#if !defined(__MINGW32__)
+constexpr uint32_t FileRenameInformation = 10;
+#endif  // !defined(__MINGW32__)
 
 #if defined(_WIN64)
 // Align a pointer to the next allocation granularity boundary.
@@ -41,53 +54,71 @@ inline char* AlignToBoundary(void* ptr, size_t increment) {
   return reinterpret_cast<char*>(ret_ptr);
 }
 
-// Allocate a memory block somewhere within 2GiB of a specified base address.
-// This is used for the DLL hooking code to get a valid trampoline location
-// which must be within +/- 2GiB of the base. We only consider +2GiB for now.
-void* AllocateNearTo(void* source, size_t size) {
-  // 2GiB, maximum upper bound the allocation address must be within.
-  const size_t kMaxSize = 0x80000000ULL;
-  // We don't support null as a base as this would just pick an arbitrary
-  // address when passed to NtAllocateVirtualMemory.
-  if (!source)
-    return nullptr;
-  // Ignore an allocation which is larger than the maximum.
-  if (size > kMaxSize)
-    return nullptr;
+// Walks the addresses where an allocation of `size` could be made within 2GiB
+// above `source`.
+class FreeSpaceNearTo {
+  // EAT hooking code needs a trampoline within +2GiB of the base.
+  static constexpr size_t kMaxNearToDistance = 0x80000000ULL;
 
-  // Ensure base address is aligned to the allocation granularity boundary.
-  char* base = AlignToBoundary(source, 0);
-  if (!base)
-    return nullptr;
-  // Set top address to be base + 2GiB.
-  const char* top_address = base + kMaxSize;
-
-  while (base < top_address) {
-    // Avoid memset inserted by -ftrivial-auto-var-init=pattern.
-    STACK_UNINITIALIZED MEMORY_BASIC_INFORMATION mem_info;
-    NTSTATUS status = sandbox::GetNtExports()->QueryVirtualMemory(
-        NtCurrentProcess, base, MemoryBasicInformation, &mem_info,
-        sizeof(mem_info), nullptr);
-    if (!NT_SUCCESS(status))
-      break;
-
-    if ((mem_info.State == MEM_FREE) && (mem_info.RegionSize >= size)) {
-      // We've found a valid free block, try and allocate it for use.
-      // Note that we need to both commit and reserve the block for the
-      // allocation to succeed as per Windows virtual memory requirements.
-      void* ret_base = mem_info.BaseAddress;
-      status = sandbox::GetNtExports()->AllocateVirtualMemory(
-          NtCurrentProcess, &ret_base, 0, &size, MEM_COMMIT | MEM_RESERVE,
-          PAGE_READWRITE);
-      // Shouldn't fail, but if it does we'll just continue and try next block.
-      if (NT_SUCCESS(status))
-        return ret_base;
+ public:
+  FreeSpaceNearTo(void* source, size_t size) : size_(size) {
+    // Null `source` is not supported, as NtAllocateVirtualMemory would then
+    // just pick an arbitrary address.
+    if (!source || size > kMaxNearToDistance) {
+      return;
     }
 
-    // Update base past current allocation region.
-    base = AlignToBoundary(mem_info.BaseAddress, mem_info.RegionSize);
-    if (!base)
-      break;
+    next_ = AlignToBoundary(source, 0);
+    if (next_) {
+      top_ = next_ + kMaxNearToDistance;
+    }
+  }
+
+  // Returns the lowest usable address not yet examined, so a caller whose
+  // allocation fails can simply call again. nullptr when there are none left.
+  void* Next() {
+    while (next_ && next_ < top_) {
+      // Avoid memset inserted by -ftrivial-auto-var-init=pattern.
+      STACK_UNINITIALIZED MEMORY_BASIC_INFORMATION mem_info;
+      NTSTATUS status = sandbox::GetNtExports()->QueryVirtualMemory(
+          NtCurrentProcess, next_, MemoryBasicInformation, &mem_info,
+          sizeof(mem_info), nullptr);
+      if (!NT_SUCCESS(status)) {
+        break;
+      }
+
+      // next_ is already page aligned, so it should match the base address.
+      DCHECK_NT(mem_info.BaseAddress == next_);
+      char* candidate = next_;
+
+      // Advance before returning, so that a repeat call moves on.
+      next_ = AlignToBoundary(mem_info.BaseAddress, mem_info.RegionSize);
+      if (mem_info.State == MEM_FREE && mem_info.RegionSize >= size_) {
+        return candidate;
+      }
+    }
+    return nullptr;
+  }
+
+ private:
+  char* next_ = nullptr;
+  const char* top_ = nullptr;
+  size_t size_;
+};
+
+// Allocate a memory block somewhere within 2GiB of a specified base address.
+void* AllocateNearTo(void* source, size_t size) {
+  FreeSpaceNearTo search(source, size);
+  while (void* candidate = search.Next()) {
+    // We need to both commit and reserve the block for the allocation to
+    // succeed as per Windows virtual memory requirements.
+    NTSTATUS status = sandbox::GetNtExports()->AllocateVirtualMemory(
+        NtCurrentProcess, &candidate, 0, &size, MEM_COMMIT | MEM_RESERVE,
+        PAGE_READWRITE);
+    // Shouldn't fail, but if it does we'll just continue and try next block.
+    if (NT_SUCCESS(status)) {
+      return candidate;
+    }
   }
   return nullptr;
 }
@@ -182,6 +213,15 @@ static_assert(offsetof(PARTIAL_TEB, ProcessEnvironmentBlock) ==
 
 namespace sandbox {
 
+bool CanAllocateNearTo(void* source, size_t size) {
+#if defined(_WIN64)
+  return FreeSpaceNearTo(source, size).Next() != nullptr;
+#else
+  // Any address is near to `source` in a 32-bit address space.
+  return true;
+#endif  // defined(_WIN64).
+}
+
 // Handle for our private heap.
 void* g_heap = nullptr;
 
@@ -222,8 +262,8 @@ bool MapGlobalMemory() {
       g_shared_policy_memory =
           reinterpret_cast<char*>(g_shared_IPC_memory) + g_shared_IPC_size;
     }
-    // TODO(1435571) make this a read-only mapping in the child, distinct from
-    // the IPC & policy memory as it should be const.
+    // TODO(crbug.com/40265190) make this a read-only mapping in the child,
+    // distinct from the IPC & policy memory as it should be const.
     if (g_delegate_data_size > 0) {
       g_shared_delegate_data = reinterpret_cast<char*>(g_shared_IPC_memory) +
                                g_shared_IPC_size + g_shared_policy_size;
@@ -245,16 +285,15 @@ void* GetGlobalPolicyMemoryForTesting() {
   return g_shared_policy_memory;
 }
 
-absl::optional<base::span<const uint8_t>> GetGlobalDelegateData() {
+std::optional<base::span<const uint8_t>> GetGlobalDelegateData() {
   if (!g_delegate_data_size) {
-    return absl::nullopt;
+    return std::nullopt;
   }
   if (!MapGlobalMemory()) {
-    return absl::nullopt;
+    return std::nullopt;
   }
-  return base::make_span(
-      reinterpret_cast<const uint8_t*>(g_shared_delegate_data),
-      g_delegate_data_size);
+  return base::span(reinterpret_cast<const uint8_t*>(g_shared_delegate_data),
+                    g_delegate_data_size);
 }
 
 const NtExports* GetNtExports() {
@@ -323,59 +362,62 @@ NTSTATUS CopyData(void* destination, const void* source, size_t bytes) {
   return ret;
 }
 
-NTSTATUS CopyNameAndAttributes(
-    const OBJECT_ATTRIBUTES* in_object,
-    std::unique_ptr<wchar_t, NtAllocDeleter>* out_name,
-    size_t* out_name_len,
-    uint32_t* attributes) {
-  if (!InitHeap())
-    return STATUS_NO_MEMORY;
-
-  DCHECK_NT(out_name);
-  DCHECK_NT(out_name_len);
-  NTSTATUS ret = STATUS_UNSUCCESSFUL;
-  __try {
-    do {
-      if (in_object->RootDirectory != nullptr)
-        break;
-      if (!in_object->ObjectName)
-        break;
-      if (!in_object->ObjectName->Buffer)
-        break;
-
-      size_t size = in_object->ObjectName->Length / sizeof(wchar_t);
-      out_name->reset(new (NT_ALLOC) wchar_t[size + 1]);
-      if (!*out_name)
-        break;
-
-      ret = CopyData(out_name->get(), in_object->ObjectName->Buffer,
-                     size * sizeof(wchar_t));
-      if (!NT_SUCCESS(ret))
-        break;
-
-      *out_name_len = size;
-      out_name->get()[size] = L'\0';
-      if (attributes)
-        *attributes = in_object->Attributes;
-
-      ret = STATUS_SUCCESS;
-    } while (false);
-  } __except (EXCEPTION_EXECUTE_HANDLER) {
-    ret = (NTSTATUS)GetExceptionCode();
+NtHeapWString::NtHeapWString(std::initializer_list<std::wstring_view> parts) {
+  size_t total = 0;
+  for (auto part : parts) {
+    total += part.size();
   }
 
-  if (!NT_SUCCESS(ret) && *out_name)
-    out_name->reset(nullptr);
+  data_.reset(new (NT_ALLOC) wchar_t[total + 1]);
+  if (!data_) {
+    return;
+  }
 
-  return ret;
+  wchar_t* dst = data_.get();
+  for (auto part : parts) {
+    NTSTATUS ret = CopyData(dst, part.data(), part.size() * sizeof(wchar_t));
+    if (!NT_SUCCESS(ret)) {
+      data_.reset();
+      return;
+    }
+    dst += part.size();
+  }
+  *dst = L'\0';
+  length_ = total;
 }
-NTSTATUS AllocAndGetFullPath(
-    HANDLE root, const wchar_t* path,
-    std::unique_ptr<wchar_t, NtAllocDeleter>* full_path) {
-  if (!InitHeap()) return STATUS_NO_MEMORY;
 
-  DCHECK_NT(full_path);
-  DCHECK_NT(path);
+bool NtHeapWString::is_valid() const {
+  return data_ != nullptr;
+}
+
+std::wstring_view NtHeapWString::view() const {
+  return {data_.get(), length_};
+}
+
+void ResolveNTFunctionPtr(const char* name, void* ptr) {
+  static volatile HMODULE ntdll = nullptr;
+
+  if (!ntdll) {
+    HMODULE ntdll_local = ::GetModuleHandle(sandbox::kNtdllName);
+    // Use PEImage to sanity-check that we have a valid ntdll handle.
+    base::win::PEImage ntdll_peimage(ntdll_local);
+    CHECK_NT(ntdll_peimage.VerifyMagic());
+    // Race-safe way to set static ntdll.
+    ::InterlockedCompareExchangePointer(
+        reinterpret_cast<PVOID volatile*>(&ntdll), ntdll_local, nullptr);
+  }
+
+  CHECK_NT(ntdll);
+  FARPROC* function_ptr = reinterpret_cast<FARPROC*>(ptr);
+  *function_ptr = ::GetProcAddress(ntdll, name);
+  CHECK_NT(*function_ptr);
+}
+
+NtHeapWString AllocAndGetFullPath(HANDLE root, const std::wstring_view& path) {
+  if (!InitHeap()) return {};
+
+  DCHECK_NT(!path.empty());
+  NtHeapWString result;
   NTSTATUS ret = STATUS_UNSUCCESSFUL;
   __try {
     do {
@@ -397,70 +439,16 @@ NTSTATUS AllocAndGetFullPath(
                             size, &size);
       }
 
-      if (STATUS_SUCCESS != ret) break;
+      if (!NT_SUCCESS(ret)) break;
 
-      // Space for path + '\' + name + '\0'.
-      size_t name_length =
-          handle_name->Name.Length + (wcslen(path) + 2) * sizeof(wchar_t);
-      full_path->reset(new (NT_ALLOC) wchar_t[name_length / sizeof(wchar_t)]);
-      if (!*full_path) break;
-      wchar_t* off = full_path->get();
-      ret = CopyData(off, handle_name->Name.Buffer,
-                     handle_name->Name.Length);
-      if (!NT_SUCCESS(ret)) break;
-      off += handle_name->Name.Length / sizeof(wchar_t);
-      *off = L'\\';
-      off += 1;
-      ret = CopyData(off, path, wcslen(path) * sizeof(wchar_t));
-      if (!NT_SUCCESS(ret)) break;
-      off += wcslen(path);
-      *off = L'\0';
+      size_t handle_name_len = handle_name->Name.Length / sizeof(wchar_t);
+      result = NtHeapWString(
+          {{handle_name->Name.Buffer, handle_name_len}, L"\\", path});
     } while (false);
   } __except (EXCEPTION_EXECUTE_HANDLER) {
-    ret = GetExceptionCode();
   }
 
-  if (!NT_SUCCESS(ret) && *full_path) full_path->reset(nullptr);
-
-  return ret;
-}
-
-// Hacky code... replace with AllocAndCopyObjectAttributes.
-NTSTATUS AllocAndCopyName(const OBJECT_ATTRIBUTES* in_object,
-                          std::unique_ptr<wchar_t, NtAllocDeleter>* out_name,
-                          uint32_t* attributes, HANDLE* root) {
-  if (!InitHeap()) return STATUS_NO_MEMORY;
-
-  DCHECK_NT(out_name);
-  NTSTATUS ret = STATUS_UNSUCCESSFUL;
-  __try {
-    do {
-      if (in_object->RootDirectory != static_cast<HANDLE>(0) && !root) break;
-      if (!in_object->ObjectName) break;
-      if (!in_object->ObjectName->Buffer) break;
-
-      size_t size = in_object->ObjectName->Length + sizeof(wchar_t);
-      out_name->reset(new (NT_ALLOC) wchar_t[size / sizeof(wchar_t)]);
-      if (!*out_name) break;
-
-      ret = CopyData(out_name->get(), in_object->ObjectName->Buffer,
-                     size - sizeof(wchar_t));
-      if (!NT_SUCCESS(ret)) break;
-
-      out_name->get()[size / sizeof(wchar_t) - 1] = L'\0';
-
-      if (attributes) *attributes = in_object->Attributes;
-
-      if (root) *root = in_object->RootDirectory;
-      ret = STATUS_SUCCESS;
-    } while (false);
-  } __except (EXCEPTION_EXECUTE_HANDLER) {
-    ret = GetExceptionCode();
-  }
-
-  if (!NT_SUCCESS(ret) && *out_name) out_name->reset(nullptr);
-
-  return ret;
+  return result;
 }
 
 NTSTATUS GetProcessId(HANDLE process, DWORD* process_id) {
@@ -715,6 +703,19 @@ UNICODE_STRING* ExtractModuleName(const UNICODE_STRING* module_path) {
   return out_string;
 }
 
+std::optional<bool> EqualUnicodeString(std::wstring_view left,
+                                       std::wstring_view right) {
+  UNICODE_STRING left_ustr;
+  UNICODE_STRING right_ustr;
+  if (!base::win::ViewToUnicodeString(left, left_ustr) ||
+      !base::win::ViewToUnicodeString(right, right_ustr)) {
+    return std::nullopt;
+  }
+
+  return GetNtExports()->RtlCompareUnicodeString(&left_ustr, &right_ustr,
+                                                 TRUE) == 0;
+}
+
 NTSTATUS AutoProtectMemory::ChangeProtection(void* address,
                                              size_t bytes,
                                              ULONG protect) {
@@ -782,41 +783,6 @@ bool IsSupportedRenameCall(FILE_RENAME_INFORMATION* file_info,
       file_info->FileName[3] != kPathPrefix[3])
     return false;
 
-  return true;
-}
-
-bool NtGetPathFromHandle(HANDLE handle,
-                         std::unique_ptr<wchar_t, NtAllocDeleter>* path) {
-  OBJECT_NAME_INFORMATION initial_buffer;
-  OBJECT_NAME_INFORMATION* name;
-  ULONG size = 0;
-  // Query the name information a first time to get the size of the name.
-  NTSTATUS status = GetNtExports()->QueryObject(handle, ObjectNameInformation,
-                                                &initial_buffer, size, &size);
-
-  if (!NT_SUCCESS(status) && status != STATUS_INFO_LENGTH_MISMATCH)
-    return false;
-
-  std::unique_ptr<BYTE[], NtAllocDeleter> name_ptr;
-  if (!size)
-    return false;
-  name_ptr.reset(new (NT_ALLOC) BYTE[size]);
-  name = reinterpret_cast<OBJECT_NAME_INFORMATION*>(name_ptr.get());
-
-  // Query the name information a second time to get the name of the
-  // object referenced by the handle.
-  status = GetNtExports()->QueryObject(handle, ObjectNameInformation, name,
-                                       size, &size);
-
-  if (STATUS_SUCCESS != status)
-    return false;
-  size_t num_path_wchars = (name->Name.Length / sizeof(wchar_t)) + 1;
-  path->reset(new (NT_ALLOC) wchar_t[num_path_wchars]);
-  status =
-      CopyData(path->get(), name->Name.Buffer, name->Name.Length);
-  path->get()[num_path_wchars - 1] = L'\0';
-  if (STATUS_SUCCESS != status)
-    return false;
   return true;
 }
 

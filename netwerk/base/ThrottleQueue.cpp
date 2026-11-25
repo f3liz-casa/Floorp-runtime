@@ -1,18 +1,16 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "ThrottleQueue.h"
+
 #include "mozilla/Components.h"
-#include "mozilla/net/InputChannelThrottleQueueParent.h"
-#include "nsISeekableStream.h"
 #include "nsIAsyncInputStream.h"
 #include "nsIOService.h"
+#include "nsISeekableStream.h"
+#include "nsNetUtil.h"
 #include "nsSocketTransportService2.h"
 #include "nsStreamUtils.h"
-#include "nsNetUtil.h"
 
 namespace mozilla {
 namespace net {
@@ -232,13 +230,7 @@ void ThrottleInputStream::AllowInput() {
 already_AddRefed<nsIInputChannelThrottleQueue> ThrottleQueue::Create() {
   MOZ_ASSERT(XRE_IsParentProcess());
 
-  nsCOMPtr<nsIInputChannelThrottleQueue> tq;
-  if (nsIOService::UseSocketProcess()) {
-    tq = new InputChannelThrottleQueueParent();
-  } else {
-    tq = new ThrottleQueue();
-  }
-
+  nsCOMPtr<nsIInputChannelThrottleQueue> tq = new ThrottleQueue();
   return tq.forget();
 }
 

@@ -1,20 +1,21 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
+#include "OpenVRSession.h"
+
 #include <fstream>
-#include "mozilla/JSONStringWriteFuncs.h"
+#include <numbers>
+
 #include "mozilla/ClearOnShutdown.h"
+#include "mozilla/JSONStringWriteFuncs.h"
+#include "mozilla/StaticPrefs_dom.h"
 #include "nsIThread.h"
 #include "nsString.h"
 
-#include "OpenVRSession.h"
-#include "mozilla/StaticPrefs_dom.h"
-
 #if defined(XP_WIN)
 #  include <d3d11.h>
+
 #  include "mozilla/gfx/DeviceManagerDx.h"
 #elif defined(XP_MACOSX)
 #  include "mozilla/gfx/MacIOSurface.h"
@@ -24,15 +25,15 @@
 #  include <sys/stat.h>  // for umask()
 #endif
 
-#include "mozilla/dom/GamepadEventTypes.h"
-#include "mozilla/dom/GamepadBinding.h"
-#include "binding/OpenVRCosmosBinding.h"
-#include "binding/OpenVRKnucklesBinding.h"
-#include "binding/OpenVRViveBinding.h"
 #include "OpenVRCosmosMapper.h"
 #include "OpenVRDefaultMapper.h"
 #include "OpenVRKnucklesMapper.h"
 #include "OpenVRViveMapper.h"
+#include "binding/OpenVRCosmosBinding.h"
+#include "binding/OpenVRKnucklesBinding.h"
+#include "binding/OpenVRViveBinding.h"
+#include "mozilla/dom/GamepadBinding.h"
+#include "mozilla/dom/GamepadEventTypes.h"
 #if defined(XP_WIN)  // Windows Mixed Reality is only available in Windows.
 #  include "OpenVRWMRMapper.h"
 #  include "binding/OpenVRWMRBinding.h"
@@ -71,8 +72,7 @@ class ControllerManifestFile {
   }
 
   bool IsExisting() {
-    if (mFileName.IsEmpty() ||
-        !std::ifstream(mFileName.BeginReading()).good()) {
+    if (mFileName.IsEmpty() || !std::ifstream(mFileName.get()).good()) {
       return false;
     }
     return true;
@@ -80,13 +80,13 @@ class ControllerManifestFile {
 
   void SetFileName(const char* aName) { mFileName = aName; }
 
-  const char* GetFileName() const { return mFileName.BeginReading(); }
+  const char* GetFileName() const { return mFileName.get(); }
 
  private:
   ControllerManifestFile() = default;
 
   ~ControllerManifestFile() {
-    if (!mFileName.IsEmpty() && remove(mFileName.BeginReading()) != 0) {
+    if (!mFileName.IsEmpty() && remove(mFileName.get()) != 0) {
       MOZ_ASSERT(false, "Delete controller manifest file failed.");
     }
     mFileName = "";
@@ -127,7 +127,7 @@ dom::GamepadHand GetControllerHandFromControllerRole(OpenVRHand aRole) {
 }
 
 bool FileIsExisting(const nsCString& aPath) {
-  if (aPath.IsEmpty() || !std::ifstream(aPath.BeginReading()).good()) {
+  if (aPath.IsEmpty() || !std::ifstream(aPath.get()).good()) {
     return false;
   }
   return true;
@@ -312,7 +312,7 @@ bool OpenVRSession::SetupContollerActions() {
         return false;
       }
       OpenVRViveBinding viveBinding;
-      std::ofstream viveBindingFile(viveManifest.BeginReading());
+      std::ofstream viveBindingFile(viveManifest.get());
       if (viveBindingFile.is_open()) {
         viveBindingFile << viveBinding.binding;
         viveBindingFile.close();
@@ -329,7 +329,7 @@ bool OpenVRSession::SetupContollerActions() {
         return false;
       }
       OpenVRWMRBinding WMRBinding;
-      std::ofstream WMRBindingFile(WMRManifest.BeginReading());
+      std::ofstream WMRBindingFile(WMRManifest.get());
       if (WMRBindingFile.is_open()) {
         WMRBindingFile << WMRBinding.binding;
         WMRBindingFile.close();
@@ -345,7 +345,7 @@ bool OpenVRSession::SetupContollerActions() {
         return false;
       }
       OpenVRKnucklesBinding knucklesBinding;
-      std::ofstream knucklesBindingFile(knucklesManifest.BeginReading());
+      std::ofstream knucklesBindingFile(knucklesManifest.get());
       if (knucklesBindingFile.is_open()) {
         knucklesBindingFile << knucklesBinding.binding;
         knucklesBindingFile.close();
@@ -353,14 +353,14 @@ bool OpenVRSession::SetupContollerActions() {
     }
     if (vrParent->GetOpenVRControllerManifestPath(
             VRControllerType::HTCViveCosmos, &output)) {
-      cosmosManifest = output;
+      cosmosManifest = std::move(output);
     }
     if (!cosmosManifest.Length() || !FileIsExisting(cosmosManifest)) {
       if (!GenerateTempFileName(cosmosManifest)) {
         return false;
       }
       OpenVRCosmosBinding cosmosBinding;
-      std::ofstream cosmosBindingFile(cosmosManifest.BeginReading());
+      std::ofstream cosmosBindingFile(cosmosManifest.get());
       if (cosmosBindingFile.is_open()) {
         cosmosBindingFile << cosmosBinding.binding;
         cosmosBindingFile.close();
@@ -387,7 +387,7 @@ bool OpenVRSession::SetupContollerActions() {
       if (!GenerateTempFileName(viveBindingPath)) {
         return false;
       }
-      sViveBindingFile->SetFileName(viveBindingPath.BeginReading());
+      sViveBindingFile->SetFileName(viveBindingPath.get());
       OpenVRViveBinding viveBinding;
       std::ofstream viveBindingFile(sViveBindingFile->GetFileName());
       if (viveBindingFile.is_open()) {
@@ -408,7 +408,7 @@ bool OpenVRSession::SetupContollerActions() {
       if (!GenerateTempFileName(knucklesBindingPath)) {
         return false;
       }
-      sKnucklesBindingFile->SetFileName(knucklesBindingPath.BeginReading());
+      sKnucklesBindingFile->SetFileName(knucklesBindingPath.get());
       OpenVRKnucklesBinding knucklesBinding;
       std::ofstream knucklesBindingFile(sKnucklesBindingFile->GetFileName());
       if (knucklesBindingFile.is_open()) {
@@ -429,7 +429,7 @@ bool OpenVRSession::SetupContollerActions() {
       if (!GenerateTempFileName(cosmosBindingPath)) {
         return false;
       }
-      sCosmosBindingFile->SetFileName(cosmosBindingPath.BeginReading());
+      sCosmosBindingFile->SetFileName(cosmosBindingPath.get());
       OpenVRCosmosBinding cosmosBinding;
       std::ofstream cosmosBindingFile(sCosmosBindingFile->GetFileName());
       if (cosmosBindingFile.is_open()) {
@@ -450,7 +450,7 @@ bool OpenVRSession::SetupContollerActions() {
       if (!GenerateTempFileName(WMRBindingPath)) {
         return false;
       }
-      sWMRBindingFile->SetFileName(WMRBindingPath.BeginReading());
+      sWMRBindingFile->SetFileName(WMRBindingPath.get());
       OpenVRWMRBinding WMRBinding;
       std::ofstream WMRBindingFile(sWMRBindingFile->GetFileName());
       if (WMRBindingFile.is_open()) {
@@ -562,8 +562,8 @@ bool OpenVRSession::SetupContollerActions() {
   rightContollerInfo.mActionHaptic =
       CreateControllerOutAction(R, haptic, vibration);
 
-  mControllerHand[OpenVRHand::Left] = leftContollerInfo;
-  mControllerHand[OpenVRHand::Right] = rightContollerInfo;
+  mControllerHand[OpenVRHand::Left] = std::move(leftContollerInfo);
+  mControllerHand[OpenVRHand::Right] = std::move(rightContollerInfo);
 
   if (!controllerAction.Length() || !FileIsExisting(controllerAction)) {
     if (!GenerateTempFileName(controllerAction)) {
@@ -631,7 +631,7 @@ bool OpenVRSession::SetupContollerActions() {
     actionWriter.EndArray();  // End "actions": []
     actionWriter.End();
 
-    std::ofstream actionfile(controllerAction.BeginReading());
+    std::ofstream actionfile(controllerAction.get());
     if (actionfile.is_open()) {
       actionfile << actionData.StringCRef().get();
       actionfile.close();
@@ -639,7 +639,7 @@ bool OpenVRSession::SetupContollerActions() {
   }
 
   vr::EVRInputError err =
-      vr::VRInput()->SetActionManifestPath(controllerAction.BeginReading());
+      vr::VRInput()->SetActionManifestPath(controllerAction.get());
   if (err != vr::VRInputError_None) {
     NS_WARNING("OpenVR - SetActionManifestPath failed.");
     return false;
@@ -650,22 +650,25 @@ bool OpenVRSession::SetupContollerActions() {
   if (StaticPrefs::dom_vr_process_enabled_AtStartup()) {
     NS_DispatchToMainThread(NS_NewRunnableFunction(
         "SendOpenVRControllerActionPathToParent",
-        [controllerAction, viveManifest, WMRManifest, knucklesManifest,
-         cosmosManifest]() {
+        [controllerAction = std::move(controllerAction),
+         viveManifest = std::move(viveManifest),
+         WMRManifest = std::move(WMRManifest),
+         knucklesManifest = std::move(knucklesManifest),
+         cosmosManifest = std::move(cosmosManifest)]() {
           VRParent* vrParent = VRProcessChild::GetVRParent();
-          Unused << vrParent->SendOpenVRControllerActionPathToParent(
+          (void)vrParent->SendOpenVRControllerActionPathToParent(
               controllerAction);
-          Unused << vrParent->SendOpenVRControllerManifestPathToParent(
+          (void)vrParent->SendOpenVRControllerManifestPathToParent(
               VRControllerType::HTCVive, viveManifest);
-          Unused << vrParent->SendOpenVRControllerManifestPathToParent(
+          (void)vrParent->SendOpenVRControllerManifestPathToParent(
               VRControllerType::MSMR, WMRManifest);
-          Unused << vrParent->SendOpenVRControllerManifestPathToParent(
+          (void)vrParent->SendOpenVRControllerManifestPathToParent(
               VRControllerType::ValveIndex, knucklesManifest);
-          Unused << vrParent->SendOpenVRControllerManifestPathToParent(
+          (void)vrParent->SendOpenVRControllerManifestPathToParent(
               VRControllerType::HTCViveCosmos, cosmosManifest);
         }));
   } else {
-    sControllerActionFile->SetFileName(controllerAction.BeginReading());
+    sControllerActionFile->SetFileName(controllerAction.get());
   }
 
   return true;
@@ -820,10 +823,14 @@ void OpenVRSession::UpdateEyeParameters(VRSystemState& aState) {
     float left, right, up, down;
     mVRSystem->GetProjectionRaw(static_cast<::vr::Hmd_Eye>(eye), &left, &right,
                                 &up, &down);
-    aState.displayState.eyeFOV[eye].upDegrees = atan(-up) * 180.0 / M_PI;
-    aState.displayState.eyeFOV[eye].rightDegrees = atan(right) * 180.0 / M_PI;
-    aState.displayState.eyeFOV[eye].downDegrees = atan(down) * 180.0 / M_PI;
-    aState.displayState.eyeFOV[eye].leftDegrees = atan(-left) * 180.0 / M_PI;
+    aState.displayState.eyeFOV[eye].upDegrees =
+        atan(-up) * 180.0 / std::numbers::pi;
+    aState.displayState.eyeFOV[eye].rightDegrees =
+        atan(right) * 180.0 / std::numbers::pi;
+    aState.displayState.eyeFOV[eye].downDegrees =
+        atan(down) * 180.0 / std::numbers::pi;
+    aState.displayState.eyeFOV[eye].leftDegrees =
+        atan(-left) * 180.0 / std::numbers::pi;
 
     Matrix4x4 pose;
     // NOTE! eyeToHead.m is a 3x4 matrix, not 4x4.  But
@@ -897,7 +904,7 @@ void OpenVRSession::UpdateHeadsetPose(VRSystemState& aState) {
 }
 
 void OpenVRSession::EnumerateControllers(VRSystemState& aState) {
-  MOZ_ASSERT(mVRSystem);
+  MOZ_RELEASE_ASSERT(mVRSystem);
 
   MutexAutoLock lock(mControllerHapticStateMutex);
 
@@ -926,7 +933,7 @@ void OpenVRSession::EnumerateControllers(VRSystemState& aState) {
         continue;
       }
     } else {
-      MOZ_ASSERT(false, "Unknown OpenVR hand type.");
+      MOZ_RELEASE_ASSERT(false, "Unknown OpenVR hand type.");
     }
 
     vr::InputOriginInfo_t originInfo;
@@ -947,8 +954,7 @@ void OpenVRSession::EnumerateControllers(VRSystemState& aState) {
 
         // Get controllers' action handles.
         auto SetActionsToWriter = [&](ControllerAction& aAction) {
-          vr::VRInput()->GetActionHandle(aAction.name.BeginReading(),
-                                         &aAction.handle);
+          vr::VRInput()->GetActionHandle(aAction.name.get(), &aAction.handle);
         };
 
         SetActionsToWriter(mControllerHand[handIndex].mActionPose);
@@ -1013,21 +1019,21 @@ void OpenVRSession::EnumerateControllers(VRSystemState& aState) {
   if (controllerType != VRControllerType::_empty) {
     switch (controllerType) {
       case VRControllerType::HTCVive:
-        mControllerMapper = MakeUnique<OpenVRViveMapper>();
+        mControllerMapper = std::make_unique<OpenVRViveMapper>();
         break;
       case VRControllerType::HTCViveCosmos:
-        mControllerMapper = MakeUnique<OpenVRCosmosMapper>();
+        mControllerMapper = std::make_unique<OpenVRCosmosMapper>();
         break;
 #if defined(XP_WIN)
       case VRControllerType::MSMR:
-        mControllerMapper = MakeUnique<OpenVRWMRMapper>();
+        mControllerMapper = std::make_unique<OpenVRWMRMapper>();
         break;
 #endif
       case VRControllerType::ValveIndex:
-        mControllerMapper = MakeUnique<OpenVRKnucklesMapper>();
+        mControllerMapper = std::make_unique<OpenVRKnucklesMapper>();
         break;
       default:
-        mControllerMapper = MakeUnique<OpenVRDefaultMapper>();
+        mControllerMapper = std::make_unique<OpenVRDefaultMapper>();
         NS_WARNING("Undefined controller type");
         break;
     }
@@ -1035,7 +1041,7 @@ void OpenVRSession::EnumerateControllers(VRSystemState& aState) {
 }
 
 void OpenVRSession::UpdateControllerButtons(VRSystemState& aState) {
-  MOZ_ASSERT(mVRSystem);
+  MOZ_RELEASE_ASSERT(mVRSystem);
 
   for (uint32_t stateIndex = 0; stateIndex < kVRControllerMaxCount;
        ++stateIndex) {
@@ -1052,7 +1058,7 @@ void OpenVRSession::UpdateControllerButtons(VRSystemState& aState) {
 }
 
 void OpenVRSession::UpdateControllerPoses(VRSystemState& aState) {
-  MOZ_ASSERT(mVRSystem);
+  MOZ_RELEASE_ASSERT(mVRSystem);
 
   for (uint32_t stateIndex = 0; stateIndex < kVRControllerMaxCount;
        ++stateIndex) {
@@ -1284,7 +1290,9 @@ bool OpenVRSession::SubmitFrame(const VRLayerTextureHandle& aTextureHandle,
   // We get aTextureHandle from get_SurfaceDescriptorMacIOSurface() at
   // VRDisplayExternal. scaleFactor and opaque are skipped because they always
   // are 1.0 and false.
-  RefPtr<MacIOSurface> surf = MacIOSurface::LookupSurface(aTextureHandle);
+  RefPtr<MacIOSurface> surf = MacIOSurface::LookupSurface(
+      aTextureHandle, gfx::YUVColorSpace::Identity, gfx::TransferFunction::SRGB,
+      MacIOSurface::AllowAlpha::No);
   if (!surf) {
     NS_WARNING("OpenVRSession::SubmitFrame failed to get a MacIOSurface");
     return false;
@@ -1358,7 +1366,7 @@ void OpenVRSession::VibrateHaptic(uint32_t aControllerIdx,
 }
 
 void OpenVRSession::StartHapticThread() {
-  MOZ_ASSERT(NS_IsMainThread());
+  MOZ_RELEASE_ASSERT(NS_IsMainThread());
   if (!mHapticThread) {
     mHapticThread = new VRThread("VR_OpenVR_Haptics"_ns);
   }
@@ -1384,7 +1392,7 @@ void OpenVRSession::StartHapticTimer() {
     mHapticTimer->InitWithNamedFuncCallback(
         HapticTimerCallback, this, kVRHapticUpdateInterval,
         nsITimer::TYPE_REPEATING_PRECISE_CAN_SKIP,
-        "OpenVRSession::HapticTimerCallback");
+        "OpenVRSession::HapticTimerCallback"_ns);
   }
 }
 
@@ -1404,13 +1412,13 @@ void OpenVRSession::HapticTimerCallback(nsITimer* aTimer, void* aClosure) {
    * that this function runs if and only if the VRManager object is valid.
    */
   OpenVRSession* self = static_cast<OpenVRSession*>(aClosure);
-  MOZ_ASSERT(self);
+  MOZ_RELEASE_ASSERT(self);
   self->UpdateHaptics();
 }
 
 void OpenVRSession::UpdateHaptics() {
-  MOZ_ASSERT(mHapticThread->GetThread() == NS_GetCurrentThread());
-  MOZ_ASSERT(mVRSystem);
+  MOZ_RELEASE_ASSERT(mHapticThread->GetThread() == NS_GetCurrentThread());
+  MOZ_RELEASE_ASSERT(mVRSystem);
 
   MutexAutoLock lock(mControllerHapticStateMutex);
 

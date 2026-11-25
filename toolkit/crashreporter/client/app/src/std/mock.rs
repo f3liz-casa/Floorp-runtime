@@ -268,3 +268,18 @@ pub trait MockUnwrap {
 pub fn unwrap<T: MockUnwrap>(value: T) -> T::Inner {
     value.unwrap()
 }
+
+/// A static which can be replaced with mocked values when mocking is enabled.
+///
+/// This is especially useful to avoid statics with interior mutations affecting tests.
+macro_rules! mocked_static {
+    ( $(#[$m:meta])* $vis:vis static $name:ident: $T:ty = $init:expr ;
+      mocked type = $MT:ty ;
+      $($impl:item)*
+    ) => {
+        crate::std::mock::mock_key! { $(#[$m])* #[allow(non_camel_case_types)] pub(crate) struct $name => $MT }
+        $($impl)*
+    };
+}
+
+pub(crate) use mocked_static;

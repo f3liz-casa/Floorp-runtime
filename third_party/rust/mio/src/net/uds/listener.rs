@@ -1,4 +1,4 @@
-use std::os::fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd, IntoRawFd, RawFd};
+use std::os::fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd, IntoRawFd, OwnedFd, RawFd};
 use std::os::unix::net::{self, SocketAddr};
 use std::path::Path;
 use std::{fmt, io};
@@ -41,7 +41,7 @@ impl UnixListener {
     /// The call is responsible for ensuring that the listening socket is in
     /// non-blocking mode.
     pub fn accept(&self) -> io::Result<(UnixStream, SocketAddr)> {
-        sys::uds::listener::accept(&self.inner)
+        self.inner.do_io(sys::uds::listener::accept)
     }
 
     /// Returns the local socket address of this listener.
@@ -118,8 +118,20 @@ impl From<UnixListener> for net::UnixListener {
     }
 }
 
+impl From<UnixListener> for OwnedFd {
+    fn from(unix_listener: UnixListener) -> Self {
+        unix_listener.inner.into_inner().into()
+    }
+}
+
 impl AsFd for UnixListener {
     fn as_fd(&self) -> BorrowedFd<'_> {
         self.inner.as_fd()
+    }
+}
+
+impl From<OwnedFd> for UnixListener {
+    fn from(fd: OwnedFd) -> Self {
+        UnixListener::from_std(From::from(fd))
     }
 }

@@ -1,11 +1,9 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef dom_indexeddb_dbschema_h__
-#define dom_indexeddb_dbschema_h__
+#ifndef dom_indexeddb_dbschema_h_
+#define dom_indexeddb_dbschema_h_
 
 #include <cstdint>
 
@@ -16,7 +14,7 @@ class mozIStorageConnection;
 namespace mozilla::dom::indexedDB {
 
 // Major schema version. Bump for almost everything.
-const uint32_t kMajorSchemaVersion = 26;
+const uint32_t kMajorSchemaVersion = 27;
 
 // Minor schema version. Should almost always be 0 (maybe bump on release
 // branches if we have to).

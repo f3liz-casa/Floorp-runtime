@@ -1,30 +1,34 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "nsMenuGroupOwnerX.h"
-#include "nsMenuBarX.h"
-#include "nsMenuX.h"
-#include "nsMenuItemX.h"
-#include "nsMenuUtilsX.h"
 #include "nsCocoaUtils.h"
 #include "nsCocoaWindow.h"
+#include "nsMenuBarX.h"
+#include "nsMenuItemX.h"
+#include "nsMenuUtilsX.h"
+#include "nsMenuX.h"
 
 #include "nsCOMPtr.h"
-#include "nsString.h"
 #include "nsObjCExceptions.h"
+#include "nsString.h"
 #include "nsThreadUtils.h"
 
-#include "mozilla/dom/Element.h"
-#include "nsIWidget.h"
+#include "mozilla/AutoRestore.h"
 #include "mozilla/dom/Document.h"
+#include "mozilla/dom/Element.h"
+#include "mozilla/dom/Event.h"
+#include "mozilla/dom/XULCommandEvent.h"
+#include "nsGkAtoms.h"
+#include "nsIWidget.h"
 
 #include "nsINode.h"
 
 using namespace mozilla;
 
-NS_IMPL_ISUPPORTS(nsMenuGroupOwnerX, nsIObserver, nsIMutationObserver)
+NS_IMPL_ISUPPORTS(nsMenuGroupOwnerX, nsIObserver, nsIMutationObserver,
+                  nsIDOMEventListener)
 
 nsMenuGroupOwnerX::nsMenuGroupOwnerX(mozilla::dom::Element* aElement,
                                      nsMenuBarX* aMenuBarIfMenuBar)
@@ -36,8 +40,191 @@ nsMenuGroupOwnerX::nsMenuGroupOwnerX(mozilla::dom::Element* aElement,
 nsMenuGroupOwnerX::~nsMenuGroupOwnerX() {
   MOZ_ASSERT(mContentToObserverTable.Count() == 0,
              "have outstanding mutation observers!\n");
+  if (mObservingMutationsOnRoot && mContent) {
+    mContent->RemoveMutationObserver(this);
+  }
   [mRepresentedObject setMenuGroupOwner:nullptr];
   [mRepresentedObject release];
+}
+
+static void SetOrUnsetAttr(dom::Element* aElement, nsAtom* aName,
+                           const Maybe<nsString>& aValue) {
+  if (aValue) {
+    if (!aElement->AttrValueIs(kNameSpaceID_None, aName, *aValue,
+                               eCaseMatters)) {
+      aElement->SetAttr(kNameSpaceID_None, aName, *aValue, true,
+                        dom::IsKnownNewAttr::No);
+    }
+  } else if (aElement->HasAttr(aName)) {
+    aElement->UnsetAttr(kNameSpaceID_None, aName, true);
+  }
+}
+
+// The attributes holding a key element's shortcut: the ones Gecko reads, and
+// the copies that keep the built-in shortcut while an assignment from System
+// Settings is written over them.
+struct KeyElementAttributeNames {
+  nsStaticAtom* mKey;
+  nsStaticAtom* mKeyCode;
+  nsStaticAtom* mModifiers;
+  nsStaticAtom* mL10nId;
+};
+static const KeyElementAttributeNames kLiveAttributes = {
+    nsGkAtoms::key, nsGkAtoms::keycode, nsGkAtoms::modifiers,
+    nsGkAtoms::datal10nid};
+static const KeyElementAttributeNames kBuiltInAttributes = {
+    nsGkAtoms::databuiltinkey, nsGkAtoms::databuiltinkeycode,
+    nsGkAtoms::databuiltinmodifiers, nsGkAtoms::databuiltinl10nid};
+
+static nsMenuGroupOwnerX::KeyElementAttributes ReadKeyElementAttributes(
+    dom::Element* aKeyElement, const KeyElementAttributeNames& aNames) {
+  nsMenuGroupOwnerX::KeyElementAttributes attributes;
+  auto read = [&](nsAtom* aName, Maybe<nsString>& aValue) {
+    nsString value;
+    if (aKeyElement->GetAttr(aName, value)) {
+      aValue.emplace(std::move(value));
+    }
+  };
+  read(aNames.mKey, attributes.mKey);
+  read(aNames.mKeyCode, attributes.mKeyCode);
+  read(aNames.mModifiers, attributes.mModifiers);
+  read(aNames.mL10nId, attributes.mL10nId);
+  return attributes;
+}
+
+static void WriteKeyElementAttributes(
+    dom::Element* aKeyElement, const KeyElementAttributeNames& aNames,
+    const nsMenuGroupOwnerX::KeyElementAttributes& aAttributes) {
+  SetOrUnsetAttr(aKeyElement, aNames.mKey, aAttributes.mKey);
+  SetOrUnsetAttr(aKeyElement, aNames.mKeyCode, aAttributes.mKeyCode);
+  SetOrUnsetAttr(aKeyElement, aNames.mModifiers, aAttributes.mModifiers);
+  // Fluent translates the element again when its id comes back, so this goes
+  // last, once the attributes already hold the values it will write.
+  SetOrUnsetAttr(aKeyElement, aNames.mL10nId, aAttributes.mL10nId);
+}
+
+// Expresses the key equivalent of aNativeMenuItem as XUL key element
+// attributes. Returns false for a key that XUL cannot express.
+static bool KeyElementAttributesForNativeMenuItem(
+    NSMenuItem* aNativeMenuItem,
+    nsMenuGroupOwnerX::KeyElementAttributes& aAttributes) {
+  NSString* keyEquivalent = aNativeMenuItem.keyEquivalent;
+  if (keyEquivalent.length != 1) {
+    return false;
+  }
+  unichar character = [keyEquivalent characterAtIndex:0];
+  NSEventModifierFlags modifierMask = aNativeMenuItem.keyEquivalentModifierMask;
+
+  // AppKit represents function keys with characters from the Unicode private
+  // use area, NSF1FunctionKey and friends.
+  bool isFunctionKey = character >= 0xF700 && character <= 0xF8FF;
+  if (character > ' ' && character != NSDeleteCharacter && !isFunctionKey) {
+    NSString* lowercase = keyEquivalent.lowercaseString;
+    if (![lowercase isEqualToString:keyEquivalent]) {
+      // AppKit expresses Shift through an uppercase key equivalent.
+      modifierMask |= NSEventModifierFlagShift;
+    }
+    aAttributes.mKey.emplace();
+    nsCocoaUtils::GetStringForNSString(lowercase, *aAttributes.mKey);
+  } else {
+    nsAutoString keyCodeName;
+    if (!nsCocoaUtils::GetGeckoKeyCodeNameForMacCharCode(character,
+                                                         keyCodeName)) {
+      return false;
+    }
+    aAttributes.mKeyCode.emplace(keyCodeName);
+  }
+
+  nsAutoString modifiers;
+  auto append = [&](NSEventModifierFlags aFlag, const char* aName) {
+    if (modifierMask & aFlag) {
+      if (!modifiers.IsEmpty()) {
+        modifiers.Append(',');
+      }
+      modifiers.AppendASCII(aName);
+    }
+  };
+  append(NSEventModifierFlagCommand, "meta");
+  append(NSEventModifierFlagOption, "alt");
+  append(NSEventModifierFlagControl, "control");
+  append(NSEventModifierFlagShift, "shift");
+  if (!modifiers.IsEmpty()) {
+    aAttributes.mModifiers.emplace(modifiers);
+  }
+  return true;
+}
+
+/* static */
+void nsMenuGroupOwnerX::CopyUserKeyEquivalentToKeyElement(
+    NSMenuItem* aNativeMenuItem, dom::Element* aMenuItemElement) {
+  NS_OBJC_BEGIN_TRY_ABORT_BLOCK;
+
+  // Writing the attributes below makes the menu item recompute its built-in
+  // shortcut, and AppKit posts NSMenuDidChangeItemNotification for a native
+  // item whose shortcut changes, which leads back here. The writes are ordered
+  // so that the built-in shortcut reads the same at every step, but a copy
+  // never runs inside another one.
+  static bool sIsCopying = false;
+  if (sIsCopying || !aNativeMenuItem || !aMenuItemElement) {
+    return;
+  }
+  AutoRestore<bool> restoreIsCopying(sIsCopying);
+  sIsCopying = true;
+  dom::Document* document = aMenuItemElement->GetUncomposedDoc();
+  if (!document) {
+    return;
+  }
+  nsAutoString keyElementId;
+  aMenuItemElement->GetAttr(nsGkAtoms::key, keyElementId);
+  if (keyElementId.IsEmpty()) {
+    return;
+  }
+  RefPtr<dom::Element> keyElement = document->GetElementById(keyElementId);
+  if (!keyElement) {
+    return;
+  }
+
+  bool isOverridden = keyElement->HasAttr(nsGkAtoms::datahassystemshortcut);
+  if (aNativeMenuItem.userKeyEquivalent.length == 0) {
+    if (isOverridden) {
+      // Put the built-in shortcut back before dropping the marker, so that the
+      // built-in layer reads the same throughout, then drop the copies.
+      WriteKeyElementAttributes(
+          keyElement, kLiveAttributes,
+          ReadKeyElementAttributes(keyElement, kBuiltInAttributes));
+      keyElement->UnsetAttr(kNameSpaceID_None, nsGkAtoms::datahassystemshortcut,
+                            true);
+      WriteKeyElementAttributes(keyElement, kBuiltInAttributes, {});
+    }
+    return;
+  }
+
+  KeyElementAttributes attributes;
+  if (!KeyElementAttributesForNativeMenuItem(aNativeMenuItem, attributes)) {
+    return;
+  }
+  if (!isOverridden) {
+    // Copy the built-in shortcut aside and set the marker before writing the
+    // assigned shortcut over it, so that the built-in layer reads the same
+    // throughout.
+    WriteKeyElementAttributes(
+        keyElement, kBuiltInAttributes,
+        ReadKeyElementAttributes(keyElement, kLiveAttributes));
+    keyElement->SetAttr(kNameSpaceID_None, nsGkAtoms::datahassystemshortcut,
+                        u"true"_ns, true, dom::IsKnownNewAttr::No);
+  }
+  WriteKeyElementAttributes(keyElement, kLiveAttributes, attributes);
+
+  NS_OBJC_END_TRY_ABORT_BLOCK;
+}
+
+/* static */
+nsMenuGroupOwnerX::KeyElementAttributes
+nsMenuGroupOwnerX::BuiltInKeyElementAttributes(dom::Element* aKeyElement) {
+  return ReadKeyElementAttributes(
+      aKeyElement, aKeyElement->HasAttr(nsGkAtoms::datahassystemshortcut)
+                       ? kBuiltInAttributes
+                       : kLiveAttributes);
 }
 
 void nsMenuGroupOwnerX::InstallOrUninstallRootMutationObserver() {
@@ -70,6 +257,7 @@ void nsMenuGroupOwnerX::CharacterDataChanged(nsIContent* aContent,
 
 void nsMenuGroupOwnerX::ContentAppended(nsIContent* aFirstNewContent,
                                         const ContentAppendInfo& aInfo) {
+  nsCOMPtr<nsIMutationObserver> kungFuDeathGrip(this);
   for (nsIContent* cur = aFirstNewContent; cur; cur = cur->GetNextSibling()) {
     ContentInserted(cur, aInfo);
   }
@@ -77,15 +265,12 @@ void nsMenuGroupOwnerX::ContentAppended(nsIContent* aFirstNewContent,
 
 void nsMenuGroupOwnerX::NodeWillBeDestroyed(nsINode* aNode) {}
 
-void nsMenuGroupOwnerX::AttributeWillChange(dom::Element* aElement,
-                                            int32_t aNameSpaceID,
-                                            nsAtom* aAttribute,
-                                            int32_t aModType) {}
+void nsMenuGroupOwnerX::AttributeWillChange(dom::Element*, int32_t, nsAtom*,
+                                            AttrModType) {}
 
-void nsMenuGroupOwnerX::AttributeChanged(dom::Element* aElement,
-                                         int32_t aNameSpaceID,
-                                         nsAtom* aAttribute, int32_t aModType,
-                                         const nsAttrValue* aOldValue) {
+void nsMenuGroupOwnerX::AttributeChanged(dom::Element* aElement, int32_t,
+                                         nsAtom* aAttribute, AttrModType,
+                                         const nsAttrValue*) {
   nsCOMPtr<nsIMutationObserver> kungFuDeathGrip(this);
   nsChangeObserver* obs = LookupContentChangeObserver(aElement);
   if (obs) {
@@ -130,7 +315,7 @@ void nsMenuGroupOwnerX::ContentInserted(nsIContent* aChild,
   if (obs) {
     obs->ObserveContentInserted(aChild->OwnerDoc(), container, aChild);
   } else if (container != mContent) {
-    // We do a lookup on the parent container in case things were removed
+    // We do a lookup on the parent container in case things were inserted
     // under a "menupopup" item. That is basically a wrapper for the contents
     // of a "menu" node.
     nsCOMPtr<nsIContent> parent = container->GetParent();
@@ -144,12 +329,6 @@ void nsMenuGroupOwnerX::ContentInserted(nsIContent* aChild,
 }
 
 void nsMenuGroupOwnerX::ParentChainChanged(nsIContent* aContent) {}
-
-void nsMenuGroupOwnerX::ARIAAttributeDefaultWillChange(
-    mozilla::dom::Element* aElement, nsAtom* aAttribute, int32_t aModType) {}
-
-void nsMenuGroupOwnerX::ARIAAttributeDefaultChanged(
-    mozilla::dom::Element* aElement, nsAtom* aAttribute, int32_t aModType) {}
 
 // For change management, we don't use a |nsSupportsHashtable| because
 // we know that the lifetime of all these items is bounded by the
@@ -167,7 +346,7 @@ void nsMenuGroupOwnerX::RegisterForContentChanges(
     // If aContent is outside mContent's subtree, for example if it's a
     // <command> element, we need to add a mutation observer.
     // Anything in mContent's subtree is already covered by the mutation
-    // observer we add in the nsMenuGroupOwnerX constructor.
+    // observer we add with InstallOrUninstallRootMutationObserver().
     aContent->AddMutationObserver(this);
   }
 
@@ -201,6 +380,64 @@ void nsMenuGroupOwnerX::UnregisterForLocaleChanges() {
   if (obs) {
     obs->RemoveObserver(this, "intl:app-locales-changed");
   }
+}
+
+void nsMenuGroupOwnerX::RegisterForKeyCommands() {
+  if (mContent) {
+    mContent->OwnerDoc()->AddSystemEventListener(u"command"_ns, this, true,
+                                                 false);
+  }
+}
+
+void nsMenuGroupOwnerX::UnregisterForKeyCommands() {
+  if (mContent) {
+    mContent->OwnerDoc()->RemoveSystemEventListener(u"command"_ns, this, true);
+  }
+}
+
+void nsMenuGroupOwnerX::RegisterKeyElement(dom::Element* aKeyElement,
+                                           nsMenuItemX* aMenuItem) {
+  mKeyElementToMenuItemTable.InsertOrUpdate(aKeyElement, aMenuItem);
+}
+
+void nsMenuGroupOwnerX::UnregisterKeyElement(dom::Element* aKeyElement,
+                                             nsMenuItemX* aMenuItem) {
+  if (auto entry = mKeyElementToMenuItemTable.Lookup(aKeyElement)) {
+    if (entry.Data() == aMenuItem) {
+      entry.Remove();
+    }
+  }
+}
+
+// A command run through a XUL key element reaches the document either as the
+// key element's own command event, or, when the key element names a command
+// element, as the command element's event whose source event chain starts at
+// the key element.
+NS_IMETHODIMP
+nsMenuGroupOwnerX::HandleEvent(dom::Event* aEvent) {
+  RefPtr<dom::Element> keyElement;
+  RefPtr<dom::Event> event = aEvent;
+  while (event) {
+    dom::Element* target =
+        dom::Element::FromEventTargetOrNull(event->GetOriginalTarget());
+    if (target && target->IsXULElement(nsGkAtoms::key)) {
+      keyElement = target;
+      break;
+    }
+    dom::XULCommandEvent* commandEvent = event->AsXULCommandEvent();
+    event = commandEvent ? commandEvent->GetSourceEvent() : nullptr;
+  }
+  if (!keyElement) {
+    return NS_OK;
+  }
+
+  if (nsMenuItemX* menuItem = mKeyElementToMenuItemTable.Get(keyElement)) {
+    nsMenuBarX::HighlightNativeMenuItem(menuItem->NativeNSMenuItem());
+  } else if (NSMenuItem* appMenuItem =
+                 nsMenuBarX::ApplicationMenuItemForKeyElement(keyElement)) {
+    nsMenuBarX::HighlightNativeMenuItem(appMenuItem);
+  }
+  return NS_OK;
 }
 
 NS_IMETHODIMP
@@ -260,6 +497,9 @@ nsMenuItemX* nsMenuGroupOwnerX::GetMenuItemForCommandID(uint32_t aCommandID) {
 
 - (id)initWithMenuGroupOwner:(nsMenuGroupOwnerX*)aMenuGroupOwner {
   self = [super init];
+  if (!self) {
+    return nil;
+  }
   mMenuGroupOwner = aMenuGroupOwner;
   return self;
 }

@@ -1,11 +1,13 @@
-/* -*- Mode: C++; tab-width: 20; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "nsFontMetrics.h"
-#include <math.h>                // for floor, ceil
-#include <algorithm>             // for max
+
+#include <math.h>  // for floor, ceil
+
+#include <algorithm>  // for max
+
 #include "gfxContext.h"          // for gfxContext
 #include "gfxFontConstants.h"    // for NS_FONT_{SUB,SUPER}SCRIPT_OFFSET_RATIO
 #include "gfxPlatform.h"         // for gfxPlatform
@@ -13,6 +15,8 @@
 #include "gfxRect.h"             // for gfxRect
 #include "gfxTextRun.h"          // for gfxFontGroup
 #include "gfxTypes.h"            // for gfxFloat
+#include "mozilla/Assertions.h"  // for MOZ_ASSERT
+#include "mozilla/UniquePtr.h"   // for UniquePtr
 #include "nsAtom.h"              // for nsAtom
 #include "nsBoundingMetrics.h"   // for nsBoundingMetrics
 #include "nsDebug.h"             // for NS_ERROR
@@ -21,8 +25,6 @@
 #include "nsPresContext.h"       // for nsPresContext
 #include "nsString.h"            // for nsString
 #include "nsStyleConsts.h"       // for StyleHyphens::None
-#include "mozilla/Assertions.h"  // for MOZ_ASSERT
-#include "mozilla/UniquePtr.h"   // for UniquePtr
 
 class gfxUserFontSet;
 using namespace mozilla;
@@ -101,13 +103,15 @@ class StubPropertyProvider final : public gfxTextRun::PropertyProvider {
     NS_ERROR("This shouldn't be called because we never enable hyphens");
     return 60;
   }
-  void GetSpacing(gfxTextRun::Range aRange, Spacing* aSpacing) const override {
+  bool GetSpacing(gfxTextRun::Range aRange, Spacing* aSpacing) const override {
     NS_ERROR("This shouldn't be called because we never enable spacing");
+    return false;
   }
   gfx::ShapedTextFlags GetShapedTextFlags() const override {
     NS_ERROR("This shouldn't be called because we never enable hyphens");
     return gfx::ShapedTextFlags();
   }
+  nscoord LetterSpacing() const override { return 0; }
 };
 
 }  // namespace
@@ -126,7 +130,7 @@ nsFontMetrics::nsFontMetrics(const nsFont& aFont, const Params& aParams,
       mTextRunRTL(false),
       mVertical(false),
       mTextOrientation(mozilla::StyleTextOrientation::Mixed) {
-  gfxFontStyle style(aFont.style, aFont.weight, aFont.stretch,
+  gfxFontStyle style(aFont.style, aFont.weight, aFont.width,
                      gfxFloat(aFont.size.ToAppUnits()) / mP2A, aFont.sizeAdjust,
                      aFont.family.is_system_font,
                      aContext->DeviceContext()->IsPrinterContext(),
@@ -164,6 +168,49 @@ void nsFontMetrics::Destroy() { mPresContext = nullptr; }
 #define ROUND_TO_TWIPS(x) (nscoord) floor(((x) * mP2A) + 0.5)
 #define CEIL_TO_TWIPS(x) (nscoord) ceil((x) * mP2A)
 
+static gfxFloat GetBaseline(const nsFontMetrics* aFontMetrics,
+                            gfxFont::Baseline aBaseline) {
+  RefPtr<gfxFont> font =
+      aFontMetrics->GetThebesFontGroup()->GetFirstValidFont();
+  return font->GetBaseline(aBaseline, aFontMetrics->Orientation());
+}
+
+nscoord nsFontMetrics::AlphabeticBaseline() const {
+  return ROUND_TO_TWIPS(GetBaseline(this, gfxFont::kAlphabetic));
+}
+
+nscoord nsFontMetrics::CentralBaseline() const {
+  return ROUND_TO_TWIPS(GetBaseline(this, gfxFont::kCentral));
+}
+
+nscoord nsFontMetrics::XMiddleBaseline() const {
+  return (AlphabeticBaseline() + XHeight()) / 2;
+}
+
+nscoord nsFontMetrics::IdeographicUnderBaseline() const {
+  return ROUND_TO_TWIPS(GetBaseline(this, gfxFont::kIdeographicUnder));
+}
+
+nscoord nsFontMetrics::IdeographicOverBaseline() const {
+  return ROUND_TO_TWIPS(GetBaseline(this, gfxFont::kIdeographicOver));
+}
+
+nscoord nsFontMetrics::IdeographicInkUnderBaseline() const {
+  return ROUND_TO_TWIPS(GetBaseline(this, gfxFont::kIdeographicInkUnder));
+}
+
+nscoord nsFontMetrics::IdeographicInkOverBaseline() const {
+  return ROUND_TO_TWIPS(GetBaseline(this, gfxFont::kIdeographicInkOver));
+}
+
+nscoord nsFontMetrics::HangingBaseline() const {
+  return ROUND_TO_TWIPS(GetBaseline(this, gfxFont::kHanging));
+}
+
+nscoord nsFontMetrics::MathBaseline() const {
+  return ROUND_TO_TWIPS(GetBaseline(this, gfxFont::kMath));
+}
+
 static const gfxFont::Metrics& GetMetrics(
     const nsFontMetrics* aFontMetrics,
     nsFontMetrics::FontOrientation aOrientation) {
@@ -195,8 +242,9 @@ nscoord nsFontMetrics::SubscriptOffset() const {
 }
 
 void nsFontMetrics::GetStrikeout(nscoord& aOffset, nscoord& aSize) const {
-  aOffset = ROUND_TO_TWIPS(GetMetrics(this).strikeoutOffset);
-  aSize = ROUND_TO_TWIPS(GetMetrics(this).strikeoutSize);
+  const auto& m = GetMetrics(this);
+  aOffset = ROUND_TO_TWIPS(m.strikeoutOffset);
+  aSize = ROUND_TO_TWIPS(m.strikeoutSize);
 }
 
 void nsFontMetrics::GetUnderline(nscoord& aOffset, nscoord& aSize) const {
@@ -233,17 +281,34 @@ nscoord nsFontMetrics::EmHeight() const {
   return ROUND_TO_TWIPS(GetMetrics(this).emHeight);
 }
 
-nscoord nsFontMetrics::EmAscent() const {
-  return ROUND_TO_TWIPS(GetMetrics(this).emAscent);
+nscoord nsFontMetrics::CalcNormalLineHeight() const {
+  RefPtr font = mFontGroup->GetFirstValidFont();
+  const auto& m = font->GetMetrics(eHorizontal);
+  auto leading =
+      ROUND_TO_TWIPS(m.internalLeading) + ROUND_TO_TWIPS(m.externalLeading);
+  // If there's some leading in the metrics, or if the metrics have been
+  // explicitly overriden, just use them.
+  if (leading > 0.0 || font->HasMetricsOverride()) {
+    return ROUND_TO_TWIPS(m.emHeight) + leading;
+  }
+  // Otherwise, fall back to kNormalLineHeightFactor.
+  return ROUND_TO_TWIPS(m.emHeight * kNormalLineHeightFactor);
 }
 
-nscoord nsFontMetrics::EmDescent() const {
-  return ROUND_TO_TWIPS(GetMetrics(this).emDescent);
+nscoord nsFontMetrics::TrimmedAscent() const {
+  const auto& m = GetMetrics(this);
+  return ROUND_TO_TWIPS(std::max(0.0, m.maxAscent - m.internalLeading / 2));
+}
+
+nscoord nsFontMetrics::TrimmedDescent() const {
+  const auto& m = GetMetrics(this);
+  return ROUND_TO_TWIPS(std::max(0.0, m.maxDescent - m.internalLeading / 2));
 }
 
 nscoord nsFontMetrics::MaxHeight() const {
-  return CEIL_TO_TWIPS(ComputeMaxAscent(GetMetrics(this))) +
-         CEIL_TO_TWIPS(ComputeMaxDescent(GetMetrics(this), mFontGroup));
+  const auto& m = GetMetrics(this);
+  return CEIL_TO_TWIPS(ComputeMaxAscent(m)) +
+         CEIL_TO_TWIPS(ComputeMaxDescent(m, mFontGroup));
 }
 
 nscoord nsFontMetrics::MaxAscent() const {
@@ -277,6 +342,18 @@ nscoord nsFontMetrics::SpaceWidth() const {
                      ? eVertical
                      : eHorizontal)
           .spaceWidth);
+}
+
+nscoord nsFontMetrics::InterScriptSpacingWidth(float aAutospaceSize) const {
+  const auto& m = GetMetrics(this);
+  // If there is no advance measure of the CJK water ideograph, use 1em instead.
+  // https://drafts.csswg.org/css-values-4/#ic
+  LayoutDeviceDoubleCoord ic =
+      m.ideographicWidth >= 0.0 ? m.ideographicWidth : m.emHeight;
+
+  // The inter-script spacing is text-autospace-size * ic-width.
+  return LayoutDevicePixel::ToAppUnits(ic * aAutospaceSize,
+                                       AppUnitsPerDevPixel());
 }
 
 int32_t nsFontMetrics::GetMaxStringLength() const {
@@ -340,10 +417,10 @@ void nsFontMetrics::DrawString(const char* aString, uint32_t aLength,
       pt.x += textRun->GetAdvanceWidth(range, &provider);
     }
   }
-  mozilla::gfx::PaletteCache paletteCache;
-  gfxTextRun::DrawParams params(aContext, paletteCache);
+  gfxTextRun::DrawParams params(aContext, /* aPaletteValueSet */ nullptr);
   params.provider = &provider;
-  textRun->Draw(range, pt, params);
+  mozilla::image::imgDrawingParams dummy;
+  textRun->Draw(range, pt, params, dummy);
 }
 
 void nsFontMetrics::DrawString(
@@ -366,10 +443,10 @@ void nsFontMetrics::DrawString(
       pt.x += textRun->GetAdvanceWidth(range, &provider);
     }
   }
-  mozilla::gfx::PaletteCache paletteCache;
-  gfxTextRun::DrawParams params(aContext, paletteCache);
+  gfxTextRun::DrawParams params(aContext, /* aPaletteValueSet */ nullptr);
   params.provider = &provider;
-  textRun->Draw(range, pt, params);
+  mozilla::image::imgDrawingParams dummy;
+  textRun->Draw(range, pt, params, dummy);
 }
 
 static nsBoundingMetrics GetTextBoundingMetrics(

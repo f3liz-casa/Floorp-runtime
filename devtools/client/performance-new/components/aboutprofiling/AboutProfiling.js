@@ -15,7 +15,6 @@ const {
   createFactory,
   createElement: h,
   Fragment,
-  createRef,
 } = require("resource://devtools/client/shared/vendor/react.mjs");
 const {
   connect,
@@ -44,6 +43,8 @@ const {
 const ABOUTPROFILING_HAS_DEVELOPER_OPTIONS_PREF =
   "devtools.performance.aboutprofiling.has-developer-options";
 
+const MORE_ACTIONS_MENU_ID = "perf-more-actions-menu";
+
 /**
  * This function encodes the parameter so that it can be used as an environment
  * variable value.
@@ -63,19 +64,20 @@ function encodeShellValue(value) {
 /**
  * @typedef {import("../../@types/perf").RecordingSettings} RecordingSettings
  *
- * @typedef {Object} ButtonStateProps
+ * @typedef {object} ButtonStateProps
  * @property {RecordingSettings} recordingSettings
  *
  * @typedef {ButtonStateProps} ButtonProps
  *
- * @typedef {Object} ButtonState
+ * @typedef {object} ButtonState
  * @property {boolean} hasDeveloperOptions
  */
 
 /**
  * This component implements the button that triggers the menu that makes it
  * possible to show more actions.
- * @extends {React.PureComponent<ButtonProps, ButtonState>}
+ *
+ * @augments {React.PureComponent<ButtonProps, ButtonState>}
  */
 class MoreActionsButtonImpl extends PureComponent {
   state = {
@@ -98,7 +100,6 @@ class MoreActionsButtonImpl extends PureComponent {
       this.onHasDeveloperOptionsPrefChanges
     );
   }
-  _menuRef = createRef();
 
   onHasDeveloperOptionsPrefChanges = () => {
     this.setState({
@@ -107,21 +108,6 @@ class MoreActionsButtonImpl extends PureComponent {
         false
       ),
     });
-  };
-
-  /**
-   * See the part "Showing the menu" in
-   * https://searchfox.org/mozilla-central/rev/4bacdbc8ac088f2ee516daf42c535fab2bc24a04/toolkit/content/widgets/panel-list/README.stories.md
-   * Strangely our React's type doesn't have the `detail` property for
-   * MouseEvent, so we're defining it manually.
-   * @param {React.MouseEvent & { detail: number }} e
-   */
-  handleClickOrMousedown = e => {
-    // The menu is toggled either for a "mousedown", or for a keyboard enter
-    // (which triggers a "click" event with 0 clicks (detail == 0)).
-    if (this._menuRef.current && (e.type == "mousedown" || e.detail === 0)) {
-      this._menuRef.current.toggle(e.nativeEvent, e.currentTarget);
-    }
   };
 
   /**
@@ -178,15 +164,12 @@ class MoreActionsButtonImpl extends PureComponent {
         },
         h("moz-button", {
           iconsrc: "chrome://global/skin/icons/more.svg",
-          "aria-expanded": "false",
-          "aria-haspopup": "menu",
-          onClick: this.handleClickOrMousedown,
-          onMouseDown: this.handleClickOrMousedown,
+          menuid: MORE_ACTIONS_MENU_ID,
         })
       ),
       h(
         "panel-list",
-        { ref: this._menuRef },
+        { id: MORE_ACTIONS_MENU_ID },
         Localized(
           { id: "perftools-menu-more-actions-restart-with-profiling" },
           h(
@@ -234,7 +217,7 @@ const MoreActionsButton = connect(mapStateToButtonProps)(MoreActionsButtonImpl);
 /**
  * @typedef {import("../../@types/perf").PageContext} PageContext
  *
- * @typedef {Object} StateProps
+ * @typedef {object} StateProps
  * @property {boolean?} isSupportedPlatform
  * @property {PageContext} pageContext
  * @property {string | null} promptEnvRestart
@@ -247,7 +230,7 @@ const MoreActionsButton = connect(mapStateToButtonProps)(MoreActionsButtonImpl);
  * This is the top level component for the about:profiling page. It shares components
  * with the popup and DevTools page.
  *
- * @extends {React.PureComponent<Props>}
+ * @augments {React.PureComponent<Props>}
  */
 class AboutProfiling extends PureComponent {
   render() {

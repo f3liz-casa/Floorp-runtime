@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set sw=2 ts=8 et tw=80 : */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -7,26 +5,24 @@
 #ifndef mozilla_net_WebSocketChannel_h
 #define mozilla_net_WebSocketChannel_h
 
-#include "nsISupports.h"
-#include "nsIInterfaceRequestor.h"
-#include "nsIStreamListener.h"
+#include "BaseWebSocketChannel.h"
+#include "mozilla/Atomics.h"
+#include "mozilla/Mutex.h"
+#include "nsCOMPtr.h"
+#include "nsDeque.h"
 #include "nsIAsyncInputStream.h"
 #include "nsIAsyncOutputStream.h"
-#include "nsITimer.h"
+#include "nsIChannelEventSink.h"
 #include "nsIDNSListener.h"
+#include "nsIHttpChannelInternal.h"
+#include "nsIInterfaceRequestor.h"
 #include "nsINamed.h"
 #include "nsIObserver.h"
 #include "nsIProtocolProxyCallback.h"
-#include "nsIChannelEventSink.h"
-#include "nsIHttpChannelInternal.h"
-#include "mozilla/net/WebSocketConnectionListener.h"
-#include "mozilla/Mutex.h"
-#include "BaseWebSocketChannel.h"
-
-#include "nsCOMPtr.h"
+#include "nsIStreamListener.h"
+#include "nsISupports.h"
+#include "nsITimer.h"
 #include "nsString.h"
-#include "nsDeque.h"
-#include "mozilla/Atomics.h"
 
 class nsIAsyncVerifyRedirectCallback;
 class nsIDashboardEventNotifier;
@@ -48,7 +44,6 @@ class CallOnStop;
 class CallOnServerClose;
 class CallAcknowledge;
 class WebSocketEventService;
-class WebSocketConnectionBase;
 
 [[nodiscard]] extern nsresult CalculateWebSocketHashedSecret(
     const nsACString& aKey, nsACString& aHash);
@@ -74,8 +69,7 @@ class WebSocketChannel : public BaseWebSocketChannel,
                          public nsIProtocolProxyCallback,
                          public nsIInterfaceRequestor,
                          public nsIChannelEventSink,
-                         public nsINamed,
-                         public WebSocketConnectionListener {
+                         public nsINamed {
   friend class WebSocketFrame;
 
  public:
@@ -118,11 +112,6 @@ class WebSocketChannel : public BaseWebSocketChannel,
   void GetEffectiveURL(nsAString& aEffectiveURL) const override;
   bool IsEncrypted() const override;
 
-  nsresult OnTransportAvailableInternal();
-  void OnError(nsresult aStatus) override;
-  void OnTCPClosed() override;
-  nsresult OnDataReceived(uint8_t* aData, uint32_t aCount) override;
-
   const static uint32_t kControlFrameMask = 0x8;
 
   // First byte of the header
@@ -156,7 +145,6 @@ class WebSocketChannel : public BaseWebSocketChannel,
 
   void EnqueueOutgoingMessage(nsDeque<OutboundMessage>& aQueue,
                               OutboundMessage* aMsg);
-  void DoEnqueueOutgoingMessage();
 
   void PrimeNewOutgoingMessage();
   void DeleteCurrentOutGoingMessage();
@@ -179,6 +167,18 @@ class WebSocketChannel : public BaseWebSocketChannel,
 
   void StopSession(nsresult reason);
   void DoStopSession(nsresult reason);
+
+  // Returns a strong reference to mListenerMT, or nullptr if mStopped is true.
+  // Acquires mMutex; caller must not hold it.
+  already_AddRefed<BaseWebSocketChannel::ListenerAndContextContainer>
+  GetListenerMT() MOZ_EXCLUDES(mMutex);
+
+  // Atomically moves mListenerMT out (leaving it null) under mMutex.
+  // Used only by DoStopSession so the CallOnStop runnable carries the last
+  // strong reference; CallOnStop::Run then needs no further mListenerMT write.
+  // Caller must not hold mMutex.
+  already_AddRefed<BaseWebSocketChannel::ListenerAndContextContainer>
+  TakeListenerMT() MOZ_EXCLUDES(mMutex);
   void AbortSession(nsresult reason);
   void ReleaseSession();
   void CleanupConnection();
@@ -244,7 +244,6 @@ class WebSocketChannel : public BaseWebSocketChannel,
   nsCOMPtr<nsISocketTransport> mTransport;
   nsCOMPtr<nsIAsyncInputStream> mSocketIn;
   nsCOMPtr<nsIAsyncOutputStream> mSocketOut;
-  RefPtr<WebSocketConnectionBase> mConnection;
 
   // Only used on IO Thread (accessed when known-to-be-null in DoStopSession
   // on MainThread before mDataStarted)
@@ -344,7 +343,7 @@ class WebSocketChannel : public BaseWebSocketChannel,
   uint8_t mOutHeader[kCopyBreak + 16]{0};
 
   // Set on MainThread in OnStartRequest (before mDataStarted), or in
-  // HandleExtensions() or OnTransportAvailableInternal(),used on IO Thread
+  // HandleExtensions() or OnTransportAvailable(), used on IO Thread
   // (after mDataStarted), cleared in DoStopSession on IOThread or on
   // MainThread (if mDataStarted == false).
   Mutex mCompressorMutex;
@@ -360,6 +359,8 @@ class WebSocketChannel : public BaseWebSocketChannel,
       mConnectionLogService;  // effectively const
 
   mozilla::Mutex mMutex;
+  RefPtr<BaseWebSocketChannel::ListenerAndContextContainer> mListenerMT
+      MOZ_GUARDED_BY(mMutex);
 };
 
 class WebSocketSSLChannel : public WebSocketChannel {

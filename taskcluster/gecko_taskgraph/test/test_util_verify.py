@@ -9,15 +9,19 @@ gecko_taskgraph.util.verify.verify_docs with different parameters to do the
 actual checking.
 """
 
-
 import os.path
 
 import pytest
 from mozunit import main
+from taskgraph.task import Task
 
 import gecko_taskgraph.util.verify
 from gecko_taskgraph import GECKO
-from gecko_taskgraph.util.verify import DocPaths, verify_docs
+from gecko_taskgraph.util.verify import (
+    DocPaths,
+    verify_docs,
+    verify_shipping_no_gradle_cache,
+)
 
 FF_DOCS_BASE = os.path.join(GECKO, "taskcluster", "docs")
 EXTRA_DOCS_BASE = os.path.abspath(os.path.join(os.path.dirname(__file__), "docs"))
@@ -57,13 +61,13 @@ class PyTestSingleDocPath:
         documentation exists for kinds and attributes.
         """
         verify_docs(
-            filename="kinds.rst",
+            filename="kinds.md",
             identifiers=["build", "packages", "toolchain"],
             appearing_as="heading",
         )
         with pytest.raises(Exception, match="missing from doc file"):
             verify_docs(
-                filename="kinds.rst",
+                filename="kinds.md",
                 identifiers=["build", "packages", "badvalue"],
                 appearing_as="heading",
             )
@@ -74,13 +78,13 @@ class PyTestSingleDocPath:
         task parameters and run-using functions.
         """
         verify_docs(
-            filename="parameters.rst",
+            filename="parameters.md",
             identifiers=["base_repository", "head_repository", "owner"],
             appearing_as="inline-literal",
         )
         with pytest.raises(Exception, match="missing from doc file"):
             verify_docs(
-                filename="parameters.rst",
+                filename="parameters.md",
                 identifiers=["base_repository", "head_repository", "badvalue"],
                 appearing_as="inline-literal",
             )
@@ -105,18 +109,18 @@ class PyTestTwoDocPaths:
         produce an error.
         """
         verify_docs(
-            filename="kinds.rst",
+            filename="kinds.md",
             identifiers=["build", "packages", "toolchain"],
             appearing_as="heading",
         )
         verify_docs(
-            filename="kinds.rst",
+            filename="kinds.md",
             identifiers=["build", "packages", "newkind"],
             appearing_as="heading",
         )
         with pytest.raises(Exception, match="missing from doc file"):
             verify_docs(
-                filename="kinds.rst",
+                filename="kinds.md",
                 identifiers=["build", "packages", "badvalue"],
                 appearing_as="heading",
             )
@@ -128,21 +132,61 @@ class PyTestTwoDocPaths:
         the second check looks for an identifier in the added documentation path.
         """
         verify_docs(
-            filename="parameters.rst",
+            filename="parameters.md",
             identifiers=["base_repository", "head_repository", "owner"],
             appearing_as="inline-literal",
         )
         verify_docs(
-            filename="parameters.rst",
+            filename="parameters.md",
             identifiers=["base_repository", "head_repository", "newparameter"],
             appearing_as="inline-literal",
         )
         with pytest.raises(Exception, match="missing from doc file"):
             verify_docs(
-                filename="parameters.rst",
+                filename="parameters.md",
                 identifiers=["base_repository", "head_repository", "badvalue"],
                 appearing_as="inline-literal",
             )
+
+
+@pytest.mark.parametrize(
+    "attributes,cache,raises",
+    (
+        pytest.param(
+            {"shippable": True},
+            "gecko-level-3-gradle-user-home-v3-abc",
+            True,
+            id="shippable",
+        ),
+        pytest.param(
+            {"shipping_phase": "promote"},
+            "gecko-level-3-gradle-user-home-v3-abc",
+            True,
+            id="shipping-phase",
+        ),
+        pytest.param(
+            {"shippable": True},
+            "gecko-level-3-checkouts-v3-abc",
+            False,
+            id="shippable-other-cache",
+        ),
+        pytest.param(
+            {}, "gecko-level-3-gradle-user-home-v3-abc", False, id="not-shipping"
+        ),
+    ),
+)
+def test_verify_shipping_no_gradle_cache(attributes, cache, raises):
+    task = Task(
+        kind="build",
+        label="build-android",
+        attributes=attributes,
+        task={"payload": {"cache": {cache: "/builds/worker/gradle-user-home"}}},
+    )
+    if raises:
+        with pytest.raises(Exception, match="cannot use the Gradle user home cache"):
+            verify_shipping_no_gradle_cache(task, None, None, None, None)
+    else:
+        verify_shipping_no_gradle_cache(task, None, None, None, None)
 
 
 if __name__ == "__main__":

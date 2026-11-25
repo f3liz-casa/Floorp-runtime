@@ -1,6 +1,4 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- * vim: set ts=8 sts=2 et sw=2 tw=80:
- * This Source Code Form is subject to the terms of the Mozilla Public
+/* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
@@ -18,7 +16,6 @@
 #include "js/HashTable.h"
 #include "js/UniquePtr.h"
 #include "js/Utility.h"
-
 #include "threading/ExclusiveData.h"
 
 namespace js {
@@ -134,6 +131,12 @@ class SharedImmutableStringsCache {
   [[nodiscard]] SharedImmutableTwoByteString getOrCreate(const char16_t* chars,
                                                          size_t length);
 
+  size_t numEntriesForTesting() const {
+    MOZ_ASSERT(inner_);
+    auto locked = inner_->lock();
+    return locked->set.count();
+  }
+
   size_t sizeOfExcludingThis(mozilla::MallocSizeOf mallocSizeOf) const {
     MOZ_ASSERT(inner_);
     size_t n = mallocSizeOf(inner_);
@@ -144,11 +147,9 @@ class SharedImmutableStringsCache {
     n += locked->set.shallowSizeOfExcludingThis(mallocSizeOf);
 
     // Sizes of the strings and their boxes.
-    for (auto r = locked->set.all(); !r.empty(); r.popFront()) {
-      n += mallocSizeOf(r.front().get());
-      if (const char* chars = r.front()->chars()) {
-        n += mallocSizeOf(chars);
-      }
+    for (auto iter = locked->set.iter(); !iter.done(); iter.next()) {
+      n += mallocSizeOf(iter.get().get());
+      n += mallocSizeOf(iter.get()->chars());
     }
 
     return n;
@@ -181,50 +182,39 @@ class SharedImmutableStringsCache {
   SharedImmutableStringsCache& operator=(const SharedImmutableStringsCache&) =
       delete;
 
-  /**
-   * Purge the cache of all refcount == 0 entries.
-   */
-  void purge() {
-    auto locked = inner_->lock();
-
-    for (Inner::Set::Enum e(locked->set); !e.empty(); e.popFront()) {
-      if (e.front()->refcount == 0) {
-        // The chars should be eagerly freed when refcount reaches zero.
-        MOZ_ASSERT(!e.front()->chars());
-        e.removeFront();
-      } else {
-        // The chars should exist as long as the refcount is non-zero.
-        MOZ_ASSERT(e.front()->chars());
-      }
-    }
-  }
-
  private:
   struct Inner;
+
+  // A box is removed from the cache, and freed together with its chars, as
+  // soon as its refcount drops to zero (see `~SharedImmutableString`).
+  // Therefore every box in the cache is alive and there is at most one box
+  // per distinct string.
   class StringBox {
     friend class SharedImmutableString;
 
     OwnedChars chars_;
     size_t length_;
     const ExclusiveData<Inner>* cache_;
+    HashNumber hash_;
 
    public:
     mutable size_t refcount;
 
     using Ptr = js::UniquePtr<StringBox>;
 
-    StringBox(OwnedChars&& chars, size_t length,
+    StringBox(OwnedChars&& chars, size_t length, HashNumber hash,
               const ExclusiveData<Inner>* cache)
         : chars_(std::move(chars)),
           length_(length),
           cache_(cache),
+          hash_(hash),
           refcount(0) {
       MOZ_ASSERT(chars_);
     }
 
-    static Ptr Create(OwnedChars&& chars, size_t length,
+    static Ptr Create(OwnedChars&& chars, size_t length, HashNumber hash,
                       const ExclusiveData<Inner>* cache) {
-      return js::MakeUnique<StringBox>(std::move(chars), length, cache);
+      return js::MakeUnique<StringBox>(std::move(chars), length, hash, cache);
     }
 
     StringBox(const StringBox&) = delete;
@@ -240,6 +230,7 @@ class SharedImmutableStringsCache {
 
     const char* chars() const { return chars_.get(); }
     size_t length() const { return length_; }
+    HashNumber hash() const { return hash_; }
   };
 
   struct Hasher {
@@ -287,8 +278,9 @@ class SharedImmutableStringsCache {
 
     static bool match(const StringBox::Ptr& key, const Lookup& lookup) {
       MOZ_ASSERT(lookup.chars_);
+      MOZ_ASSERT(key->chars());
 
-      if (!key->chars() || key->length() != lookup.length_) {
+      if (key->length() != lookup.length_) {
         return false;
       }
 

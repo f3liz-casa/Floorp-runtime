@@ -1,19 +1,16 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "CheckerboardReportService.h"
 
-#include "jsapi.h"                    // for JS_Now
 #include "MainThreadUtils.h"          // for NS_IsMainThread
+#include "jsapi.h"                    // for JS_Now
 #include "mozilla/Assertions.h"       // for MOZ_ASSERT
 #include "mozilla/ClearOnShutdown.h"  // for ClearOnShutdown
 #include "mozilla/Preferences.h"
 #include "mozilla/Services.h"
 #include "mozilla/StaticPrefs_apz.h"
-#include "mozilla/Unused.h"
 #include "mozilla/dom/CheckerboardReportServiceBinding.h"  // for dom::CheckerboardReports
 #include "mozilla/gfx/GPUParent.h"
 #include "mozilla/gfx/GPUProcessManager.h"
@@ -32,9 +29,9 @@ already_AddRefed<CheckerboardEventStorage>
 CheckerboardEventStorage::GetInstance() {
   // The instance in the parent process does all the work, so if this is getting
   // called in the child process something is likely wrong.
-  MOZ_ASSERT(XRE_IsParentProcess());
+  MOZ_RELEASE_ASSERT(XRE_IsParentProcess());
 
-  MOZ_ASSERT(NS_IsMainThread());
+  MOZ_RELEASE_ASSERT(NS_IsMainThread());
   if (!sInstance) {
     sInstance = new CheckerboardEventStorage();
     ClearOnShutdown(&sInstance);
@@ -58,7 +55,7 @@ void CheckerboardEventStorage::Report(uint32_t aSeverity,
   if (XRE_IsGPUProcess()) {
     if (gfx::GPUParent* gpu = gfx::GPUParent::GetSingleton()) {
       nsCString log(aLog.c_str());
-      Unused << gpu->SendReportCheckerboard(aSeverity, log);
+      (void)gpu->SendReportCheckerboard(aSeverity, log);
     }
     return;
   }
@@ -69,7 +66,7 @@ void CheckerboardEventStorage::Report(uint32_t aSeverity,
 
 void CheckerboardEventStorage::ReportCheckerboard(uint32_t aSeverity,
                                                   const std::string& aLog) {
-  MOZ_ASSERT(NS_IsMainThread());
+  MOZ_RELEASE_ASSERT(NS_IsMainThread());
 
   if (aSeverity == 0) {
     // This code assumes all checkerboard reports have a nonzero severity.
@@ -104,7 +101,7 @@ void CheckerboardEventStorage::ReportCheckerboard(uint32_t aSeverity,
   // list.
   if (severe.mSeverity) {
     MOZ_ASSERT(recent.mSeverity == 0, "recent should be empty here");
-    recent = severe;
+    recent = std::move(severe);
   }  // else |recent| may hold a report that got knocked out of the severe list.
 
   if (recent.mSeverity == 0) {
@@ -122,14 +119,14 @@ void CheckerboardEventStorage::ReportCheckerboard(uint32_t aSeverity,
     for (int j = RECENT_MAX_INDEX - 1; j > i; j--) {
       mCheckerboardReports[j] = mCheckerboardReports[j - 1];
     }
-    mCheckerboardReports[i] = recent;
+    mCheckerboardReports[i] = std::move(recent);
     break;
   }
 }
 
 void CheckerboardEventStorage::GetReports(
     nsTArray<dom::CheckerboardReport>& aOutReports) {
-  MOZ_ASSERT(NS_IsMainThread());
+  MOZ_RELEASE_ASSERT(NS_IsMainThread());
 
   for (int i = 0; i < RECENT_MAX_INDEX; i++) {
     CheckerboardReport& r = mCheckerboardReports[i];
@@ -168,8 +165,7 @@ bool CheckerboardReportService::IsEnabled(JSContext* aCtx, JSObject* aGlobal) {
 /*static*/
 already_AddRefed<CheckerboardReportService>
 CheckerboardReportService::Constructor(const dom::GlobalObject& aGlobal) {
-  RefPtr<CheckerboardReportService> ces =
-      new CheckerboardReportService(aGlobal.GetAsSupports());
+  RefPtr ces = MakeRefPtr<CheckerboardReportService>(aGlobal.GetAsSupports());
   return ces.forget();
 }
 
@@ -200,16 +196,20 @@ void CheckerboardReportService::SetRecordingEnabled(bool aEnabled) {
 }
 
 void CheckerboardReportService::FlushActiveReports() {
-  MOZ_ASSERT(XRE_IsParentProcess());
-  gfx::GPUProcessManager* gpu = gfx::GPUProcessManager::Get();
-  if (gpu && gpu->NotifyGpuObservers("APZ:FlushActiveCheckerboard")) {
+  MOZ_RELEASE_ASSERT(XRE_IsParentProcess());
+  gfx::GPUProcessManager* gpm = gfx::GPUProcessManager::Get();
+  if (gpm && gpm->FlushActiveCheckerboardReports()) {
     return;
   }
 
+  // We failed to dispatch the observer event, either because we have shutdown
+  // or the GPU process is temporarily down. In that case, let the callers know
+  // we are done.
   nsCOMPtr<nsIObserverService> obsSvc = mozilla::services::GetObserverService();
   MOZ_ASSERT(obsSvc);
   if (obsSvc) {
-    obsSvc->NotifyObservers(nullptr, "APZ:FlushActiveCheckerboard", nullptr);
+    obsSvc->NotifyObservers(nullptr, "APZ:FlushActiveCheckerboard:Done",
+                            nullptr);
   }
 }
 

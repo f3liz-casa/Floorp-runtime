@@ -38,32 +38,32 @@ struct TestParams {
   Function func;
 };
 
-typedef unsigned int (*SadMxNFunc)(const uint8_t *src_ptr, int src_stride,
-                                   const uint8_t *ref_ptr, int ref_stride);
-typedef TestParams<SadMxNFunc> SadMxNParam;
+using SadMxNFunc = unsigned int (*)(const uint8_t *src_ptr, int src_stride,
+                                    const uint8_t *ref_ptr, int ref_stride);
+using SadMxNParam = TestParams<SadMxNFunc>;
 
-typedef unsigned int (*SadSkipMxNFunc)(const uint8_t *src_ptr, int src_stride,
-                                       const uint8_t *ref_ptr, int ref_stride);
-typedef TestParams<SadSkipMxNFunc> SadSkipMxNParam;
+using SadSkipMxNFunc = unsigned int (*)(const uint8_t *src_ptr, int src_stride,
+                                        const uint8_t *ref_ptr, int ref_stride);
+using SadSkipMxNParam = TestParams<SadSkipMxNFunc>;
 
-typedef unsigned int (*SadMxNAvgFunc)(const uint8_t *src_ptr, int src_stride,
-                                      const uint8_t *ref_ptr, int ref_stride,
-                                      const uint8_t *second_pred);
-typedef TestParams<SadMxNAvgFunc> SadMxNAvgParam;
+using SadMxNAvgFunc = unsigned int (*)(const uint8_t *src_ptr, int src_stride,
+                                       const uint8_t *ref_ptr, int ref_stride,
+                                       const uint8_t *second_pred);
+using SadMxNAvgParam = TestParams<SadMxNAvgFunc>;
 
-typedef void (*SadMxNx4Func)(const uint8_t *src_ptr, int src_stride,
-                             const uint8_t *const ref_ptr[], int ref_stride,
-                             unsigned int *sad_array);
-typedef TestParams<SadMxNx4Func> SadMxNx4Param;
+using SadMxNx4Func = void (*)(const uint8_t *src_ptr, int src_stride,
+                              const uint8_t *const ref_ptr[], int ref_stride,
+                              unsigned int *sad_array);
+using SadMxNx4Param = TestParams<SadMxNx4Func>;
 
-typedef void (*SadSkipMxNx4Func)(const uint8_t *src_ptr, int src_stride,
-                                 const uint8_t *const ref_ptr[], int ref_stride,
-                                 unsigned int *sad_array);
-typedef TestParams<SadSkipMxNx4Func> SadSkipMxNx4Param;
+using SadSkipMxNx4Func = void (*)(const uint8_t *src_ptr, int src_stride,
+                                  const uint8_t *const ref_ptr[],
+                                  int ref_stride, unsigned int *sad_array);
+using SadSkipMxNx4Param = TestParams<SadSkipMxNx4Func>;
 
-typedef void (*SadMxNx8Func)(const uint8_t *src_ptr, int src_stride,
-                             const uint8_t *ref_ptr, int ref_stride,
-                             unsigned int *sad_array);
+using SadMxNx8Func = void (*)(const uint8_t *src_ptr, int src_stride,
+                              const uint8_t *ref_ptr, int ref_stride,
+                              unsigned int *sad_array);
 
 using libvpx_test::ACMRandom;
 
@@ -688,9 +688,8 @@ TEST_P(SADx4Test, DISABLED_Speed) {
   for (int block = 0; block < 4; ++block) {
     EXPECT_EQ(reference_sad[block], exp_sad[block]) << "block " << block;
   }
-  const int elapsed_time =
-      static_cast<int>(vpx_usec_timer_elapsed(&timer) / 1000);
-  printf("sad%dx%dx4 (%2dbit) time: %5d ms\n", params_.width, params_.height,
+  const double elapsed_time = vpx_usec_timer_elapsed(&timer) / 1000.0;
+  printf("sad%dx%dx4 (%2dbit) time: %8.3f ms\n", params_.width, params_.height,
          bit_depth_, elapsed_time);
 
   reference_stride_ = tmp_stride;
@@ -787,9 +786,8 @@ TEST_P(SADSkipx4Test, DISABLED_Speed) {
   for (int block = 0; block < 4; ++block) {
     EXPECT_EQ(reference_sad[block], exp_sad[block]) << "block " << block;
   }
-  const int elapsed_time =
-      static_cast<int>(vpx_usec_timer_elapsed(&timer) / 1000);
-  printf("sad%dx%dx4 (%2dbit) time: %5d ms\n", params_.width, params_.height,
+  const double elapsed_time = vpx_usec_timer_elapsed(&timer) / 1000.0;
+  printf("sad%dx%dx4 (%2dbit) time: %8.3f ms\n", params_.width, params_.height,
          bit_depth_, elapsed_time);
 
   reference_stride_ = tmp_stride;
@@ -1417,7 +1415,7 @@ const SadSkipMxNx4Param skip_x4d_neon_tests[] = {
 INSTANTIATE_TEST_SUITE_P(NEON, SADSkipx4Test,
                          ::testing::ValuesIn(skip_x4d_neon_tests));
 
-#if HAVE_NEONE_DOTPROD
+#if HAVE_NEON_DOTPROD
 const SadSkipMxNx4Param skip_x4d_neon_dotprod_tests[] = {
   SadSkipMxNx4Param(64, 64, &vpx_sad_skip_64x64x4d_neon_dotprod),
   SadSkipMxNx4Param(64, 32, &vpx_sad_skip_64x32x4d_neon_dotprod),
@@ -1435,7 +1433,7 @@ INSTANTIATE_TEST_SUITE_P(NEON_DOTPROD, SADSkipx4Test,
 
 //------------------------------------------------------------------------------
 // x86 functions
-#if HAVE_SSE2
+#if HAVE_SSE2 && HAVE_X86_ASM
 const SadMxNParam sse2_tests[] = {
   SadMxNParam(64, 64, &vpx_sad64x64_sse2),
   SadMxNParam(64, 32, &vpx_sad64x32_sse2),
@@ -1696,7 +1694,7 @@ const SadSkipMxNx4Param skip_x4d_sse2_tests[] = {
 };
 INSTANTIATE_TEST_SUITE_P(SSE2, SADSkipx4Test,
                          ::testing::ValuesIn(skip_x4d_sse2_tests));
-#endif  // HAVE_SSE2
+#endif  // HAVE_SSE2 && HAVE_X86_ASM
 
 #if HAVE_SSE3
 // Only functions are x3, which do not have tests.

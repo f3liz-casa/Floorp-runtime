@@ -1,5 +1,4 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- *
+/*
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -8,25 +7,21 @@
 
 #include <algorithm>
 
-#include "mozilla/Likely.h"
-
-#include "nsIChannel.h"
-#include "nsIFileChannel.h"
-#include "nsIObserverService.h"
-#include "nsIFile.h"
-#include "nsMimeTypes.h"
-#include "nsIRequest.h"
-
+#include "Image.h"
 #include "MultipartImage.h"
 #include "RasterImage.h"
 #include "VectorImage.h"
-#include "Image.h"
-#include "nsMediaFragmentURIParser.h"
-#include "nsContentUtils.h"
-
+#include "mozilla/MediaFragmentURIParser.h"
+#include "mozilla/ProfilerMarkers.h"
 #include "mozilla/SchedulerGroup.h"
 #include "mozilla/StaticPrefs_image.h"
-#include "mozilla/ProfilerMarkers.h"
+#include "nsContentUtils.h"
+#include "nsIChannel.h"
+#include "nsIFile.h"
+#include "nsIFileChannel.h"
+#include "nsIObserverService.h"
+#include "nsIRequest.h"
+#include "nsMimeTypes.h"
 
 namespace mozilla {
 namespace image {
@@ -34,7 +29,7 @@ namespace image {
 /*static*/
 void ImageFactory::Initialize() {}
 
-static uint32_t ComputeImageFlags(nsIURI* uri, const nsCString& aMimeType,
+static uint32_t ComputeImageFlags(nsIURI* uri, const nsCString& /*aMimeType*/,
                                   bool isMultiPart) {
   // We default to the static globals.
   bool isDiscardable = StaticPrefs::image_mem_discardable();
@@ -133,7 +128,7 @@ already_AddRefed<Image> ImageFactory::CreateImage(
 
 // Marks an image as having an error before returning it.
 template <typename T>
-static already_AddRefed<Image> BadImage(const char* aMessage,
+static already_AddRefed<Image> BadImage(const char* /*aMessage*/,
                                         RefPtr<T>& aImage) {
   aImage->SetHasError();
   return aImage.forget();

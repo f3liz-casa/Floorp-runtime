@@ -1,5 +1,4 @@
-/* vim: sw=2 ts=2 et lcs=trail\:.,tab\:>~ :
- * This Source Code Form is subject to the terms of the Mozilla Public
+/* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
@@ -15,7 +14,10 @@
  */
 
 #include "mozIStorageFunction.h"
-#include "mozilla/Attributes.h"
+
+#include "nsCOMPtr.h"
+#include "nsString.h"
+#include "nsTSubstring.h"
 
 class mozIStorageConnection;
 
@@ -205,6 +207,8 @@ class MatchAutoCompleteFunction final : public mozIStorageFunction {
  */
 class CalculateFrecencyFunction final : public mozIStorageFunction {
  public:
+  CalculateFrecencyFunction();
+
   NS_DECL_THREADSAFE_ISUPPORTS
   NS_DECL_MOZISTORAGEFUNCTION
 
@@ -218,6 +222,21 @@ class CalculateFrecencyFunction final : public mozIStorageFunction {
 
  private:
   ~CalculateFrecencyFunction() = default;
+
+  /**
+   * Builds the SQL used to calculate frecency, with the number of sampled
+   * visits inlined as the LIMIT.
+   *
+   * @param aNumSampledVisits
+   *        The maximum number of visits to sample.
+   */
+  static nsCString BuildFrecencySQL(uint32_t aNumSampledVisits);
+
+  /**
+   * The SQL used to calculate frecency. It only depends on prefs fixed at
+   * startup, so it's built once.
+   */
+  const nsCString mSQL;
 };
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -239,6 +258,8 @@ class CalculateFrecencyFunction final : public mozIStorageFunction {
  */
 class CalculateAltFrecencyFunction final : public mozIStorageFunction {
  public:
+  CalculateAltFrecencyFunction();
+
   NS_DECL_THREADSAFE_ISUPPORTS
   NS_DECL_MOZISTORAGEFUNCTION
 
@@ -252,6 +273,21 @@ class CalculateAltFrecencyFunction final : public mozIStorageFunction {
 
  private:
   ~CalculateAltFrecencyFunction() = default;
+
+  /**
+   * Builds the SQL used to calculate frecency, with the number of sampled
+   * visits inlined as the LIMIT.
+   *
+   * @param aNumSampledVisits
+   *        The maximum number of visits to sample.
+   */
+  static nsCString BuildFrecencySQL(uint32_t aNumSampledVisits);
+
+  /**
+   * The SQL used to calculate frecency. It only depends on prefs fixed at
+   * startup, so it's built once.
+   */
+  const nsCString mSQL;
 };
 
 /**
@@ -556,32 +592,6 @@ class StripPrefixAndUserinfoFunction final : public mozIStorageFunction {
 
  private:
   ~StripPrefixAndUserinfoFunction() = default;
-};
-
-////////////////////////////////////////////////////////////////////////////////
-//// Is frecency decaying function
-
-/**
- * Returns nsNavHistory::IsFrecencyDecaying().
- *
- * @return
- *        True if frecency is currently decaying and false otherwise.
- */
-class IsFrecencyDecayingFunction final : public mozIStorageFunction {
- public:
-  NS_DECL_THREADSAFE_ISUPPORTS
-  NS_DECL_MOZISTORAGEFUNCTION
-
-  /**
-   * Registers the function with the specified database connection.
-   *
-   * @param aDBConn
-   *        The database connection to register with.
-   */
-  static nsresult create(mozIStorageConnection* aDBConn);
-
- private:
-  ~IsFrecencyDecayingFunction() = default;
 };
 
 ////////////////////////////////////////////////////////////////////////////////

@@ -20,7 +20,7 @@ namespace mozilla::intl {
 /*static*/ Result<UniquePtr<NumberRangeFormat>, ICUError>
 NumberRangeFormat::TryCreate(std::string_view aLocale,
                              const NumberRangeFormatOptions& aOptions) {
-  UniquePtr<NumberRangeFormat> nrf = MakeUnique<NumberRangeFormat>();
+  auto nrf = std::make_unique<NumberRangeFormat>();
   MOZ_TRY(nrf->initialize(aLocale, aOptions));
   return nrf;
 }
@@ -55,6 +55,24 @@ Result<Ok, ICUError> NumberRangeFormat::initialize(
 Result<int32_t, ICUError> NumberRangeFormat::selectForRange(
     double start, double end, char16_t* keyword, int32_t keywordSize,
     const UPluralRules* pluralRules) const {
+  MOZ_ASSERT(keyword);
+  MOZ_ASSERT(pluralRules);
+
+  MOZ_TRY(format(start, end));
+
+  UErrorCode status = U_ZERO_ERROR;
+  int32_t utf16KeywordLength = uplrules_selectForRange(
+      pluralRules, mFormattedNumberRange, keyword, keywordSize, &status);
+  if (U_FAILURE(status)) {
+    return Err(ToICUError(status));
+  }
+
+  return utf16KeywordLength;
+}
+
+Result<int32_t, ICUError> NumberRangeFormat::selectForRange(
+    std::string_view start, std::string_view end, char16_t* keyword,
+    int32_t keywordSize, const UPluralRules* pluralRules) const {
   MOZ_ASSERT(keyword);
   MOZ_ASSERT(pluralRules);
 

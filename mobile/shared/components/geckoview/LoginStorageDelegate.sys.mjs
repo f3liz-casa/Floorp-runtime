@@ -8,7 +8,8 @@ const lazy = {};
 
 ChromeUtils.defineESModuleGetters(lazy, {
   GeckoViewAutocomplete: "resource://gre/modules/GeckoViewAutocomplete.sys.mjs",
-  GeckoViewPrompter: "resource://gre/modules/GeckoViewPrompter.sys.mjs",
+  GeckoViewPrompter:
+    "moz-src:///mobile/shared/components/geckoview/GeckoViewPrompter.sys.mjs",
   LoginEntry: "resource://gre/modules/GeckoViewAutocomplete.sys.mjs",
 });
 
@@ -39,7 +40,7 @@ export class LoginStorageDelegate {
   }
 
   promptToSavePassword(aBrowser, aLogin, dismissed = false) {
-    const prompt = new lazy.GeckoViewPrompter(aBrowser.ownerGlobal);
+    const prompt = new lazy.GeckoViewPrompter(aBrowser.documentGlobal);
     prompt.asyncShowPrompt(
       this._createMessage({ dismissed }, [
         lazy.LoginEntry.fromLoginInfo(aLogin),
@@ -80,7 +81,7 @@ export class LoginStorageDelegate {
     newLogin.password = aNewLogin.password;
     newLogin.username = aNewLogin.username;
 
-    const prompt = new lazy.GeckoViewPrompter(aBrowser.ownerGlobal);
+    const prompt = new lazy.GeckoViewPrompter(aBrowser.documentGlobal);
     prompt.asyncShowPrompt(
       this._createMessage({ dismissed, autoSavedLoginGuid }, [newLogin]),
       result => {

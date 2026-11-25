@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -8,12 +6,13 @@
 
 #include "js/StructuredClone.h"
 #include "js/TypeDecls.h"
-#include "mozilla/ArrayUtils.h"
 #include "mozilla/ErrorResult.h"
 #include "mozilla/HoldDropJSObjects.h"
+#include "mozilla/StaticPrefs_dom.h"
 #include "mozilla/dom/DOMExceptionBinding.h"
 #include "mozilla/dom/Document.h"
 #include "mozilla/dom/Exceptions.h"
+#include "mozilla/dom/QuotaExceededError.h"
 #include "nsCOMPtr.h"
 #include "nsContentUtils.h"
 #include "nsIException.h"
@@ -73,10 +72,13 @@ enum DOM4ErrorTypeCodeMap {
 
   /* Push API errors */
   NotAllowedError = 0,
+
+  /* Web Serial API errors https://wicg.github.io/serial/ */
+  ParityError = 0,
 };
 
 #define DOM4_MSG_DEF(name, message, nsresult) \
-  {(nsresult), name, #name, message},
+  {(nsresult), DOM4ErrorTypeCodeMap::name, #name, message},
 #define DOM_MSG_DEF(val, message) \
   {(val), NS_ERROR_GET_CODE(val), #val, message},
 
@@ -97,13 +99,11 @@ static void NSResultToNameAndMessage(nsresult aNSResult, nsCString& aName,
   aName.Truncate();
   aMessage.Truncate();
   *aCode = 0;
-  for (uint32_t idx = 0; idx < std::size(sDOMErrorMsgMap); idx++) {
-    if (aNSResult == sDOMErrorMsgMap[idx].mNSResult) {
-      aName.Rebind(sDOMErrorMsgMap[idx].mName,
-                   strlen(sDOMErrorMsgMap[idx].mName));
-      aMessage.Rebind(sDOMErrorMsgMap[idx].mMessage,
-                      strlen(sDOMErrorMsgMap[idx].mMessage));
-      *aCode = sDOMErrorMsgMap[idx].mCode;
+  for (const auto& entry : sDOMErrorMsgMap) {
+    if (aNSResult == entry.mNSResult) {
+      aName.Rebind(entry.mName, strlen(entry.mName));
+      aMessage.Rebind(entry.mMessage, strlen(entry.mMessage));
+      *aCode = entry.mCode;
       return;
     }
   }
@@ -121,8 +121,8 @@ nsresult NS_GetNameAndMessageForDOMNSResult(nsresult aNSResult,
   NSResultToNameAndMessage(aNSResult, name, message, &code);
 
   if (!name.IsEmpty() && !message.IsEmpty()) {
-    aName = name;
-    aMessage = message;
+    aName = std::move(name);
+    aMessage = std::move(message);
     if (aCode) {
       *aCode = code;
     }
@@ -290,7 +290,13 @@ uint32_t Exception::LineNumber(JSContext* aCx) const {
   return 0;
 }
 
-uint32_t Exception::ColumnNumber() const { return 0; }
+uint32_t Exception::ColumnNumber(JSContext* aCx) const {
+  if (mLocation) {
+    return mLocation->GetColumnNumber(aCx);
+  }
+
+  return 0;
+}
 
 already_AddRefed<nsIStackFrame> Exception::GetLocation() const {
   nsCOMPtr<nsIStackFrame> location = mLocation;
@@ -353,10 +359,10 @@ already_AddRefed<DOMException> DOMException::Constructor(
 
   if (aName.WasPassed()) {
     CopyUTF16toUTF8(aName.Value(), name);
-    for (uint32_t idx = 0; idx < std::size(sDOMErrorMsgMap); idx++) {
-      if (name.EqualsASCII(sDOMErrorMsgMap[idx].mName)) {
-        exceptionResult = sDOMErrorMsgMap[idx].mNSResult;
-        exceptionCode = sDOMErrorMsgMap[idx].mCode;
+    for (const auto& entry : sDOMErrorMsgMap) {
+      if (name.EqualsASCII(entry.mName)) {
+        exceptionResult = entry.mNSResult;
+        exceptionCode = entry.mCode;
         break;
       }
     }
@@ -372,14 +378,25 @@ JSObject* DOMException::WrapObject(JSContext* aCx,
   return DOMException_Binding::Wrap(aCx, this, aGivenProto);
 }
 
+static already_AddRefed<DOMException> CreateDOMExceptionForCode(
+    nsresult aRv, const nsACString& aMessage, const nsACString& aName,
+    uint16_t aCode) {
+  if (aCode == DOMException_Binding::QUOTA_EXCEEDED_ERR &&
+      StaticPrefs::dom_quota_exceeded_error_enabled()) {
+    return do_AddRef(new QuotaExceededError(aRv, aMessage));
+  }
+
+  RefPtr<DOMException> inst = new DOMException(aRv, aMessage, aName, aCode);
+  return inst.forget();
+}
+
 /* static */
 already_AddRefed<DOMException> DOMException::Create(nsresult aRv) {
   nsCString name;
   nsCString message;
   uint16_t code;
   NSResultToNameAndMessage(aRv, name, message, &code);
-  RefPtr<DOMException> inst = new DOMException(aRv, message, name, code);
-  return inst.forget();
+  return CreateDOMExceptionForCode(aRv, message, name, code);
 }
 
 /* static */
@@ -389,8 +406,7 @@ already_AddRefed<DOMException> DOMException::Create(
   nsCString message;
   uint16_t code;
   NSResultToNameAndMessage(aRv, name, message, &code);
-  RefPtr<DOMException> inst = new DOMException(aRv, aMessage, name, code);
-  return inst.forget();
+  return CreateDOMExceptionForCode(aRv, aMessage, name, code);
 }
 
 static bool ReadAsCString(JSContext* aCx, JSStructuredCloneReader* aReader,
@@ -402,20 +418,30 @@ static bool ReadAsCString(JSContext* aCx, JSStructuredCloneReader* aReader,
   return AssignJSString(aCx, aString, jsMessage);
 }
 
+/* static */
+bool DOMException::ReadStructuredCloneFields(JSContext* aCx,
+                                             JSStructuredCloneReader* aReader,
+                                             nsresult& aRv, nsCString& aMessage,
+                                             nsCString& aName,
+                                             uint16_t& aCode) {
+  uint32_t reserved;
+  return JS_ReadBytes(aReader, &reserved, 4) &&
+         JS_ReadBytes(aReader, &aRv, 4) &&
+         ReadAsCString(aCx, aReader, aMessage) &&
+         ReadAsCString(aCx, aReader, aName) && JS_ReadBytes(aReader, &aCode, 2);
+}
+
 already_AddRefed<DOMException> DOMException::ReadStructuredClone(
     JSContext* aCx, nsIGlobalObject* aGlobal,
     JSStructuredCloneReader* aReader) {
-  uint32_t reserved;
   nsresult rv;
   nsCString message;
   nsCString name;
   uint16_t code;
 
-  if (!JS_ReadBytes(aReader, &reserved, 4) || !JS_ReadBytes(aReader, &rv, 4) ||
-      !ReadAsCString(aCx, aReader, message) ||
-      !ReadAsCString(aCx, aReader, name) || !JS_ReadBytes(aReader, &code, 2)) {
+  if (!ReadStructuredCloneFields(aCx, aReader, rv, message, name, code)) {
     return nullptr;
-  };
+  }
 
   return do_AddRef(
       new DOMException(rv, std::move(message), std::move(name), code));

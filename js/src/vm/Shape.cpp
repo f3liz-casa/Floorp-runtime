@@ -1,27 +1,30 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- * vim: set ts=8 sts=2 et sw=2 tw=80:
- * This Source Code Form is subject to the terms of the Mozilla Public
+/* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#include "vm/Shape-inl.h"
-
-#include "mozilla/MathAlgorithms.h"
-
+#include "gc/GC.h"
 #include "gc/HashUtil.h"
 #include "js/friend/WindowProxy.h"  // js::IsWindow
 #include "js/HashTable.h"
+#include "js/Prefs.h"
 #include "js/Printer.h"  // js::GenericPrinter, js::Fprinter
 #include "js/UniquePtr.h"
+#include "vm/ArrayObject.h"
+#include "vm/BoundFunctionObject.h"
+#include "vm/DisposableRecord.h"
+#include "vm/ErrorObject.h"
 #include "vm/JSObject.h"
 #include "vm/JSONPrinter.h"  // js::JSONPrinter
+#include "vm/RegExpObject.h"
 #include "vm/ShapeZone.h"
+#include "vm/StringObject.h"
 #include "vm/Watchtower.h"
 
 #include "gc/StableCellHasher-inl.h"
 #include "vm/JSContext-inl.h"
 #include "vm/JSObject-inl.h"
 #include "vm/NativeObject-inl.h"
+#include "vm/Shape-inl.h"
 
 using namespace js;
 
@@ -130,10 +133,16 @@ bool js::NativeObject::toDictionaryMode(JSContext* cx,
     return false;
   }
 
-  obj->setShape(shape);
-
-  MOZ_ASSERT(obj->inDictionaryMode());
   obj->setDictionaryModeSlotSpan(span);
+
+  // Ensure concurrent marking can't see the new shape without the dictionary
+  // mode slot span.
+  gc::MemoryReleaseFence(obj->zone());
+
+  gc::MaybeSleepForConcurrentMarkingDelays(cx);
+
+  obj->setShape(shape);
+  MOZ_ASSERT(obj->inDictionaryMode());
 
   return true;
 }
@@ -800,7 +809,13 @@ void NativeObject::maybeFreeDictionaryPropSlots(JSContext* cx,
 
   // Trigger write barriers on the old slots before reallocating.
   prepareSlotRangeForOverwrite(newSpan, oldSpan);
+
+#ifdef JS_GC_CONCURRENT_MARKING
+  // Clear previously used slots on shrink, including fixed slots.
+  initializeSlotRange(newSpan, oldSpan);
+#else
   invalidateSlotRange(newSpan, oldSpan);
+#endif
 
   uint32_t oldCapacity = numDynamicSlots();
   uint32_t newCapacity =
@@ -859,7 +874,9 @@ bool NativeObject::removeProperty(JSContext* cx, Handle<NativeObject*> obj,
   }
 
   PropertyInfo prop = propMap->getPropertyInfo(propIndex);
-  if (!Watchtower::watchPropertyRemove(cx, obj, id, prop)) {
+  bool wasTrackedObjectFuseProp = false;
+  if (!Watchtower::watchPropertyRemove(cx, obj, id, prop,
+                                       &wasTrackedObjectFuseProp)) {
     return false;
   }
 
@@ -877,7 +894,19 @@ bool NativeObject::removeProperty(JSContext* cx, Handle<NativeObject*> obj,
     // Fast path for removing the last property from a SharedPropMap. In this
     // case we can just call getPrevious and then look up a shape for the
     // resulting map/mapLength.
-    if (propMap == map && propIndex == mapLength - 1) {
+    //
+    // Don't reuse a previously-used Shape if the object has an ObjectFuse and
+    // we are removing a tracked property, to avoid the following bug:
+    //
+    // 1) The object has Shape S1 and a property P that was marked NotConstant.
+    // 2) We attach a SetSlot IC stub that guards on the object + S1 and stores
+    //    a new value for this property.
+    // 3) We remove property P (we are here now).
+    // 4) We add a new property P, reuse Shape S1, and mark P Constant.
+    // 5) We use the SetSlot IC stub again but this is invalid because P is
+    //    still marked Constant.
+    if (propMap == map && propIndex == mapLength - 1 &&
+        !wasTrackedObjectFuseProp) {
       MOZ_ASSERT(obj->getLastProperty().key() == id);
 
       Rooted<SharedPropMap*> sharedMap(cx, map->asShared());
@@ -957,19 +986,33 @@ bool NativeObject::removeProperty(JSContext* cx, Handle<NativeObject*> obj,
     obj->maybeFreeDictionaryPropSlots(cx, dictMap, mapLength);
   }
 
+  if (wasTrackedObjectFuseProp) {
+    Watchtower::finishPropertyRemove(cx, obj, prop);
+  }
+
   return true;
 }
 
 /* static */
 bool NativeObject::densifySparseElements(JSContext* cx,
-                                         Handle<NativeObject*> obj) {
+                                         Handle<NativeObject*> obj,
+                                         uint32_t newInitializedLength) {
   AutoCheckShapeConsistency check(obj);
   MOZ_ASSERT(obj->inDictionaryMode());
+  MOZ_ASSERT(newInitializedLength <= obj->getDenseCapacity());
 
-  // First generate a new dictionary shape so that the shape and map can then
-  // be updated infallibly.
+  // First generate a new dictionary shape so that the elements, shape and map
+  // can then be updated infallibly.
   if (!NativeObject::generateNewDictionaryShape(cx, obj)) {
     return false;
+  }
+
+  obj->ensureDenseInitializedLength(newInitializedLength, 0);
+
+  if (obj->compartment()->objectMaybeInIteration(obj)) {
+    // Mark the densified elements as maybe-in-iteration. See also the comment
+    // in GetIterator.
+    obj->markDenseElementsMaybeInIteration();
   }
 
   Rooted<DictionaryPropMap*> map(cx, obj->shape()->propMap()->asDictionary());
@@ -1054,16 +1097,35 @@ bool NativeObject::generateNewDictionaryShape(JSContext* cx,
   return true;
 }
 
-/* static */
-bool JSObject::setFlag(JSContext* cx, HandleObject obj, ObjectFlag flag) {
-  MOZ_ASSERT(cx->compartment() == obj->compartment());
+static bool ShouldUseObjectFuseForPrototype(JSObject* obj) {
+  if (!obj->is<NativeObject>()) {
+    return false;
+  }
+  return ShouldUseObjectFuses() && JS::Prefs::objectfuse_for_all_protos();
+}
 
-  if (obj->hasFlag(flag)) {
+// static
+bool JSObject::setIsUsedAsPrototype(JSContext* cx, JS::HandleObject obj) {
+  js::ObjectFlags flags = {js::ObjectFlag::IsUsedAsPrototype};
+  if (ShouldUseObjectFuseForPrototype(obj)) {
+    flags.setFlag(js::ObjectFlag::HasObjectFuse);
+  }
+  return setFlags(cx, obj, flags);
+}
+
+/* static */
+bool JSObject::setFlags(JSContext* cx, HandleObject obj, ObjectFlags flags) {
+  MOZ_ASSERT(cx->compartment() == obj->compartment());
+  MOZ_ASSERT_IF(flags.hasFlag(ObjectFlag::IsUsedAsPrototype) &&
+                    ShouldUseObjectFuseForPrototype(obj),
+                flags.hasFlag(ObjectFlag::HasObjectFuse));
+
+  if (obj->hasAllFlags(flags)) {
     return true;
   }
 
   ObjectFlags objectFlags = obj->shape()->objectFlags();
-  objectFlags.setFlag(flag);
+  objectFlags.setFlags(flags);
 
   uint32_t numFixed =
       obj->is<NativeObject>() ? obj->as<NativeObject>().numFixedSlots() : 0;
@@ -1111,16 +1173,6 @@ bool JSObject::setProtoUnchecked(JSContext* cx, HandleObject obj,
                              numFixed);
 }
 
-/* static */
-bool NativeObject::changeNumFixedSlotsAfterSwap(JSContext* cx,
-                                                Handle<NativeObject*> obj,
-                                                uint32_t nfixed) {
-  MOZ_ASSERT(nfixed != obj->shape()->numFixedSlots());
-
-  return Shape::replaceShape(cx, obj, obj->shape()->objectFlags(),
-                             obj->shape()->proto(), nfixed);
-}
-
 BaseShape::BaseShape(JSContext* cx, const JSClass* clasp, JS::Realm* realm,
                      TaggedProto proto)
     : TenuredCellWithNonGCPointer(clasp), realm_(realm), proto_(proto) {
@@ -1136,7 +1188,8 @@ BaseShape::BaseShape(JSContext* cx, const JSClass* clasp, JS::Realm* realm,
   MOZ_ASSERT_IF(proto.isObject(), !IsWindow(proto.toObject()));
 
   if (MOZ_UNLIKELY(clasp->emulatesUndefined())) {
-    cx->runtime()->hasSeenObjectEmulateUndefinedFuse.ref().popFuse(cx);
+    cx->runtime()->runtimeFuses.ref().hasSeenObjectEmulateUndefinedFuse.popFuse(
+        cx);
   }
 
 #ifdef DEBUG
@@ -1168,6 +1221,25 @@ BaseShape* BaseShape::get(JSContext* cx, const JSClass* clasp, JS::Realm* realm,
   }
 
   return nbase;
+}
+
+// Returns true for classes that use the SharedShape::insertInitialShape
+// mechanism.
+static bool HasCustomInitialShape(const JSClass* clasp) {
+  return clasp == &ArrayObject::class_ || ErrorObject::isErrorClass(clasp) ||
+         clasp == &RegExpObject::class_ || clasp == &StringObject::class_ ||
+         clasp == &BoundFunctionObject::class_ ||
+         clasp == &DisposableRecordObject::class_;
+}
+
+SharedShape::SharedShape(BaseShape* base, ObjectFlags objectFlags,
+                         uint32_t nfixed, SharedPropMap* map,
+                         uint32_t mapLength)
+    : NativeShape(Kind::Shared, base, objectFlags, nfixed, map, mapLength) {
+  initSmallSlotSpan();
+  if (mapLength == 0 && HasCustomInitialShape(base->clasp())) {
+    immutableFlags |= REPLACEABLE_INITIAL_SHAPE_BIT;
+  }
 }
 
 // static
@@ -1280,8 +1352,8 @@ void Shape::dump(js::JSONPrinter& json) const {
 
 template <typename KnownF, typename UnknownF>
 void ForEachObjectFlag(ObjectFlags flags, KnownF known, UnknownF unknown) {
-  uint16_t raw = flags.toRaw();
-  for (uint16_t i = 1; i; i = i << 1) {
+  uint32_t raw = flags.toRaw();
+  for (uint32_t i = 1; i; i = i << 1) {
     if (!(raw & i)) {
       continue;
     }
@@ -1331,11 +1403,17 @@ void ForEachObjectFlag(ObjectFlags flags, KnownF known, UnknownF unknown) {
       case ObjectFlag::HasRealmFuseProperty:
         known("HasRealmFuseProperty");
         break;
+      case ObjectFlag::HasObjectFuse:
+        known("HasObjectFuse");
+        break;
       case ObjectFlag::HasPreservedWrapper:
         known("HasPreservedWrapper");
         break;
       case ObjectFlag::HasNonFunctionAccessor:
         known("HasNonFunctionAccessor");
+        break;
+      case ObjectFlag::LegacyFeaturesDisabled:
+        known("LegacyFeaturesDisabled");
         break;
       default:
         unknown(i);
@@ -1476,16 +1554,18 @@ SharedShape* SharedShape::getInitialShape(JSContext* cx, const JSClass* clasp,
   auto ptr = MakeDependentAddPtr(
       cx, table, Lookup(clasp, realm, proto, nfixed, objectFlags));
   if (ptr) {
-    // Cache the result of this lookup on the prototype's shape.
-    if (proto.isObject()) {
+    // Cache the result of this lookup on the prototype's shape. Don't cache
+    // shapes that insertInitialShape can replace later.
+    SharedShape* shape = *ptr;
+    if (proto.isObject() && !shape->isReplaceableInitialShape()) {
       JSObject* protoObj = proto.toObject();
       Shape* protoShape = protoObj->shape();
       if (!protoShape->cache().isForAdd() &&
           RegisterShapeCache(cx, protoShape)) {
-        protoShape->cacheRef().setShapeWithProto(*ptr);
+        protoShape->cacheRef().setShapeWithProto(shape);
       }
     }
-    return *ptr;
+    return shape;
   }
 
   Rooted<TaggedProto> protoRoot(cx, proto);
@@ -1582,13 +1662,15 @@ SharedShape* SharedShape::getInitialOrPropMapShape(
 /* static */
 void SharedShape::insertInitialShape(JSContext* cx,
                                      Handle<SharedShape*> shape) {
+  MOZ_ASSERT(HasCustomInitialShape(shape->getObjectClass()));
+
   using Lookup = InitialShapeHasher::Lookup;
   Lookup lookup(shape->getObjectClass(), shape->realm(), shape->proto(),
                 shape->numFixedSlots(), shape->objectFlags());
 
   auto& table = cx->zone()->shapeZone().initialShapes;
   InitialShapeSet::Ptr p = table.lookup(lookup);
-  MOZ_ASSERT(p);
+  MOZ_RELEASE_ASSERT(p);
 
   // The metadata callback can end up causing redundant changes of the initial
   // shape.
@@ -1597,19 +1679,22 @@ void SharedShape::insertInitialShape(JSContext* cx,
     return;
   }
 
+  MOZ_ASSERT(initialShape->isReplaceableInitialShape());
+
   MOZ_ASSERT(initialShape->numFixedSlots() == shape->numFixedSlots());
   MOZ_ASSERT(initialShape->base() == shape->base());
   MOZ_ASSERT(initialShape->objectFlags() == shape->objectFlags());
 
   table.replaceKey(p, lookup, shape.get());
 
-  // Purge the prototype's shape cache entry.
+#ifdef DEBUG
+  // Replaceable initial shapes are never stored in the prototype's shape cache.
   if (shape->proto().isObject()) {
-    JSObject* protoObj = shape->proto().toObject();
-    if (protoObj->shape()->cache().isShapeWithProto()) {
-      protoObj->shape()->cacheRef().setNone();
-    }
+    ShapeCachePtr cache = shape->proto().toObject()->shape()->cache();
+    MOZ_ASSERT_IF(cache.isShapeWithProto(),
+                  cache.toShapeWithProto() != initialShape);
   }
+#endif
 }
 
 /* static */

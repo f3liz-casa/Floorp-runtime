@@ -21,11 +21,9 @@
 #  include <shobjidl.h>
 #  include "mozilla/ipc/WindowsMessageLoop.h"
 #  ifdef MOZ_SANDBOX
-#    include "mozilla/RandomNum.h"
 #  endif
 #  include "mozilla/ScopeExit.h"
 #  include "mozilla/WinDllServices.h"
-#  include "mozilla/WindowsBCryptInitialization.h"
 #  include "WinUtils.h"
 #endif
 
@@ -83,13 +81,12 @@
 
 #include "GMPProcessChild.h"
 #include "mozilla/gfx/GPUProcessImpl.h"
-#include "mozilla/net/SocketProcessImpl.h"
 
 #include "ProfilerControl.h"
 
 #if defined(MOZ_SANDBOX) && defined(XP_WIN)
 #  include "mozilla/sandboxTarget.h"
-#  include "mozilla/sandboxing/loggingCallbacks.h"
+#  include "mozilla/sandboxing/TargetGeckoServicesImpl.h"
 #endif
 
 #if defined(MOZ_SANDBOX)
@@ -113,7 +110,6 @@
 
 #if defined(XP_WIN) && defined(MOZ_SANDBOX)
 #  include "mozilla/sandboxing/SandboxInitialization.h"
-#  include "mozilla/sandboxing/sandboxLogging.h"
 #endif
 
 #if defined(MOZ_ENABLE_FORKSERVER)
@@ -125,6 +121,7 @@
 #endif
 
 #include "VRProcessChild.h"
+#include "nsTraceRefcnt.h"
 
 using namespace mozilla;
 
@@ -156,7 +153,7 @@ const char* XRE_GeckoProcessTypeToString(GeckoProcessType aProcessType) {
                            webidl_typename, allcaps_name)                     \
   case GeckoProcessType::GeckoProcessType_##enum_name:                        \
     return string_name;
-#include "mozilla/GeckoProcessTypes.h"
+#include "mozilla/GeckoProcessTypes.inc"
 #undef GECKO_PROCESS_TYPE
     default:
       return "invalid";
@@ -284,27 +281,30 @@ nsresult XRE_InitChildProcess(int aArgc, char* aArgv[],
   // It will succeed when the parent process is a command line,
   // so that stdio will be displayed in it.
   UseParentConsole();
-
-#  if defined(MOZ_SANDBOX)
-  if (aChildData->sandboxTargetServices) {
-    SandboxTarget::Instance()->SetTargetServices(
-        aChildData->sandboxTargetServices);
-  }
-#  endif
 #endif
 
   // NB: This must be called before profiler_init
   ScopedLogging logger;
 
   mozilla::LogModule::Init(aArgc, aArgv);
+  nsTraceRefcnt::EarlyInit();
 
   AUTO_BASE_PROFILER_LABEL("XRE_InitChildProcess (around Gecko Profiler)",
                            OTHER);
   AUTO_PROFILER_INIT;
   AUTO_PROFILER_LABEL("XRE_InitChildProcess", OTHER);
 
+#if defined(XP_WIN) && defined(MOZ_SANDBOX)
+  mozilla::sandboxing::InitTargetGeckoServices(
+      aChildData->setTargetGeckoServices);
+  if (aChildData->sandboxTargetServices) {
+    SandboxTarget::Instance()->SetTargetServices(
+        aChildData->sandboxTargetServices);
+  }
+#endif
+
 #ifdef XP_MACOSX
-  gfxPlatformMac::RegisterSupplementalFonts();
+  auto _supplementalFontThread = gfxPlatformMac::RegisterSupplementalFonts();
 #endif
 
   // Ensure AbstractThread is minimally setup, so async IPC messages
@@ -329,12 +329,14 @@ nsresult XRE_InitChildProcess(int aArgc, char* aArgv[],
   const int kTimeoutMs = 1000;
 
   std::vector<mozilla::UniqueMachSendRight> sendRights;
-  if (NS_WARN_IF(
-          !MachChildProcessCheckIn(mach_port_name, kTimeoutMs, sendRights))) {
+  std::vector<mozilla::UniqueMachReceiveRight> receiveRights;
+  if (NS_WARN_IF(!MachChildProcessCheckIn(mach_port_name, kTimeoutMs,
+                                          sendRights, receiveRights))) {
     return NS_ERROR_FAILURE;
   }
 
   geckoargs::SetPassedMachSendRights(std::move(sendRights));
+  geckoargs::SetPassedMachReceiveRights(std::move(receiveRights));
 
 #  if defined(MOZ_SANDBOX)
   std::string sandboxError;
@@ -350,17 +352,13 @@ nsresult XRE_InitChildProcess(int aArgc, char* aArgv[],
 
   bool exceptionHandlerIsSet = false;
   if (!CrashReporter::IsDummy()) {
-    auto crashReporterArg = geckoargs::sCrashReporter.Get(aArgc, aArgv);
-    auto crashHelperArg = geckoargs::sCrashHelper.Get(aArgc, aArgv);
-    if (crashReporterArg && crashHelperArg) {
-      exceptionHandlerIsSet = CrashReporter::SetRemoteExceptionHandler(
-          std::move(*crashReporterArg), std::move(*crashHelperArg));
-      MOZ_ASSERT(exceptionHandlerIsSet,
-                 "Should have been able to set remote exception handler");
+    if (geckoargs::sCrashReporter.IsPresent(aArgc, aArgv)) {
+      exceptionHandlerIsSet =
+          CrashReporter::SetRemoteExceptionHandler(aArgc, aArgv);
 
       if (!exceptionHandlerIsSet) {
         // Bug 684322 will add better visibility into this condition
-        NS_WARNING("Could not setup crash reporting\n");
+        NS_WARNING("Could not setup crash reporting");
       }
     } else {
       // We might have registered a runtime exception module very early in
@@ -452,7 +450,8 @@ nsresult XRE_InitChildProcess(int aArgc, char* aArgv[],
   }
 
   nsID messageChannelId{};
-  if (NS_WARN_IF(!messageChannelId.Parse(*initialChannelIdString))) {
+  if (NS_WARN_IF(!messageChannelId.Parse(
+          nsDependentCString(*initialChannelIdString)))) {
     return NS_ERROR_FAILURE;
   }
 
@@ -470,7 +469,6 @@ nsresult XRE_InitChildProcess(int aArgc, char* aArgv[],
     case GeckoProcessType_IPDLUnitTest:
     case GeckoProcessType_VR:
     case GeckoProcessType_RDD:
-    case GeckoProcessType_Socket:
     case GeckoProcessType_Utility:
       // Content processes need the XPCOM/chromium frankenventloop
       uiLoopType = MessageLoop::TYPE_MOZILLA_CHILD;
@@ -485,13 +483,6 @@ nsresult XRE_InitChildProcess(int aArgc, char* aArgv[],
       uiLoopType = MessageLoop::TYPE_UI;
       break;
   }
-
-#if defined(XP_WIN)
-  {
-    DebugOnly<bool> result = mozilla::WindowsBCryptInitialization();
-    MOZ_ASSERT(result);
-  }
-#endif  // defined(XP_WIN)
 
   {
     // This is a lexical scope for the MessageLoop below.  We want it
@@ -512,8 +503,8 @@ nsresult XRE_InitChildProcess(int aArgc, char* aArgv[],
 
         case GeckoProcessType_Content:
           ioInterposerGuard.Init();
-          process = MakeUnique<ContentProcess>(std::move(*clientChannel),
-                                               *parentPID, messageChannelId);
+          process = std::make_unique<ContentProcess>(
+              std::move(*clientChannel), *parentPID, messageChannelId);
           break;
 
         case GeckoProcessType_IPDLUnitTest:
@@ -524,33 +515,27 @@ nsresult XRE_InitChildProcess(int aArgc, char* aArgv[],
           break;
 
         case GeckoProcessType_GMPlugin:
-          process = MakeUnique<gmp::GMPProcessChild>(
+          process = std::make_unique<gmp::GMPProcessChild>(
               std::move(*clientChannel), *parentPID, messageChannelId);
           break;
 
         case GeckoProcessType_GPU:
-          process = MakeUnique<gfx::GPUProcessImpl>(
+          process = std::make_unique<gfx::GPUProcessImpl>(
               std::move(*clientChannel), *parentPID, messageChannelId);
           break;
 
         case GeckoProcessType_VR:
-          process = MakeUnique<gfx::VRProcessChild>(
+          process = std::make_unique<gfx::VRProcessChild>(
               std::move(*clientChannel), *parentPID, messageChannelId);
           break;
 
         case GeckoProcessType_RDD:
-          process = MakeUnique<RDDProcessImpl>(std::move(*clientChannel),
-                                               *parentPID, messageChannelId);
-          break;
-
-        case GeckoProcessType_Socket:
-          ioInterposerGuard.Init();
-          process = MakeUnique<net::SocketProcessImpl>(
+          process = std::make_unique<RDDProcessImpl>(
               std::move(*clientChannel), *parentPID, messageChannelId);
           break;
 
         case GeckoProcessType_Utility:
-          process = MakeUnique<ipc::UtilityProcessImpl>(
+          process = std::make_unique<ipc::UtilityProcessImpl>(
               std::move(*clientChannel), *parentPID, messageChannelId);
           break;
 
@@ -578,12 +563,6 @@ nsresult XRE_InitChildProcess(int aArgc, char* aArgv[],
           MakeScopeExit([&dllSvc]() { dllSvc->DisableFull(); });
 #endif
 
-#if defined(MOZ_SANDBOX) && defined(XP_WIN)
-      // We need to do this after the process has been initialised, as
-      // InitLoggingIfRequired may need access to prefs.
-      mozilla::sandboxing::InitLoggingIfRequired(
-          aChildData->ProvideLogFunction);
-#endif
       mozilla::FilePreferences::InitDirectoriesAllowlist();
       mozilla::FilePreferences::InitPrefs();
 
@@ -685,27 +664,30 @@ void XRE_ShutdownChildProcess() {
 }
 
 namespace {
+
 UniqueContentParentKeepAlive& TestShellContentParent() {
   static NeverDestroyed<UniqueContentParentKeepAlive> sContentParent;
   return *sContentParent;
 }
 
-TestShellParent* GetOrCreateTestShellParent() {
+already_AddRefed<TestShellParent> GetOrCreateTestShellParent() {
   if (!TestShellContentParent()) {
     // Use a "web" child process by default.  File a bug if you don't like
     // this and you're sure you wouldn't be better off writing a "browser"
     // chrome mochitest where you can have multiple types of content
     // processes.
-    TestShellContentParent() =
-        ContentParent::GetNewOrUsedBrowserProcess(DEFAULT_REMOTE_TYPE);
+    TestShellContentParent() = ContentParent::GetNewOrUsedBrowserProcess(
+        mozilla::dom::RemoteType::SharedWeb({}));
   } else if (TestShellContentParent()->IsShuttingDown()) {
     return nullptr;
   }
-  TestShellParent* tsp = TestShellContentParent()->GetTestShellSingleton();
+
+  RefPtr<TestShellParent> tsp =
+      TestShellContentParent()->GetTestShellSingleton();
   if (!tsp) {
     tsp = TestShellContentParent()->CreateTestShell();
   }
-  return tsp;
+  return tsp.forget();
 }
 
 }  // namespace
@@ -713,7 +695,7 @@ TestShellParent* GetOrCreateTestShellParent() {
 bool XRE_SendTestShellCommand(JSContext* aCx, JSString* aCommand,
                               JS::Value* aCallback) {
   JS::Rooted<JSString*> cmd(aCx, aCommand);
-  TestShellParent* tsp = GetOrCreateTestShellParent();
+  RefPtr<TestShellParent> tsp = GetOrCreateTestShellParent();
   NS_ENSURE_TRUE(tsp, false);
 
   nsAutoJSString command;
@@ -738,8 +720,9 @@ bool XRE_ShutdownTestShell() {
   }
   bool ret = true;
   if (TestShellContentParent()->IsAlive()) {
-    ret = TestShellContentParent()->DestroyTestShell(
-        TestShellContentParent()->GetTestShellSingleton());
+    RefPtr<TestShellParent> tsp =
+        TestShellContentParent()->GetTestShellSingleton();
+    ret = TestShellContentParent()->DestroyTestShell(tsp);
   }
   TestShellContentParent().reset();
   return ret;

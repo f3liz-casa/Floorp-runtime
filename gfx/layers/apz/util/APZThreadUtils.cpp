@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -9,7 +7,6 @@
 #include "mozilla/ClearOnShutdown.h"
 #include "mozilla/ProfilerRunnable.h"
 #include "mozilla/StaticMutex.h"
-
 #include "nsISerialEventTarget.h"
 #include "nsThreadUtils.h"
 #include "nsXULAppAPI.h"
@@ -58,8 +55,8 @@ void APZThreadUtils::AssertOnControllerThread() {
 }
 
 /*static*/
-void APZThreadUtils::RunOnControllerThread(RefPtr<Runnable>&& aTask,
-                                           uint32_t flags) {
+void APZThreadUtils::RunOnControllerThread(
+    RefPtr<Runnable>&& aTask, nsIEventTarget::DispatchFlags flags) {
   RefPtr<nsISerialEventTarget> thread;
   {
     StaticMutexAutoLock lock(sControllerThreadMutex);
@@ -102,8 +99,8 @@ bool APZThreadUtils::IsControllerThreadAlive() {
 /*static*/
 void APZThreadUtils::DelayedDispatch(already_AddRefed<Runnable> aRunnable,
                                      int aDelayMs) {
-  MOZ_ASSERT(!XRE_IsContentProcess(),
-             "ContentProcessController should only be used remotely.");
+  MOZ_RELEASE_ASSERT(!XRE_IsContentProcess(),
+                     "ContentProcessController should only be used remotely.");
   RefPtr<nsISerialEventTarget> thread;
   {
     StaticMutexAutoLock lock(sControllerThreadMutex);

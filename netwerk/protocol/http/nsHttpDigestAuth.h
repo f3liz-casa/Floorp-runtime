@@ -1,18 +1,16 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- *
+/*
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef nsDigestAuth_h__
-#define nsDigestAuth_h__
+#ifndef nsDigestAuth_h_
+#define nsDigestAuth_h_
 
+#include "mozilla/StaticPtr.h"
+#include "nsCOMPtr.h"
 #include "nsICryptoHash.h"
 #include "nsIHttpAuthenticator.h"
 #include "nsStringFwd.h"
-#include "nsCOMPtr.h"
-#include "mozilla/Attributes.h"
-#include "mozilla/StaticPtr.h"
 
 namespace mozilla {
 namespace net {
@@ -86,6 +84,7 @@ class nsHttpDigestAuth final : public nsIHttpAuthenticator {
                                             nsACString& aHeaderLine);
 
  protected:
+  // Per-call scratch state on a shared singleton: main thread only.
   nsCOMPtr<nsICryptoHash> mVerifier;
   char mHashBuf[SHA256_DIGEST_LENGTH]{0};
 

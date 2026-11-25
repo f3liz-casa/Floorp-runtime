@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -7,13 +5,13 @@
 #ifndef mozilla_Sandbox_h
 #define mozilla_Sandbox_h
 
+#include <vector>
+
 #include "mozilla/Maybe.h"
 #include "mozilla/Types.h"
 #include "mozilla/UniquePtrExtensions.h"
-#include "nsXULAppAPI.h"
-#include <vector>
-
 #include "mozilla/ipc/UtilityProcessSandboxing.h"
+#include "nsXULAppAPI.h"
 
 // This defines the entry points for a content process to start
 // sandboxing itself.  See also SandboxInfo.h for what parts of
@@ -54,23 +52,6 @@ struct ContentProcessSandboxParams {
       const Maybe<ipc::FileDescriptor>& aBroker);
 };
 
-// Similarly to ContentProcessSandboxParams, a collection of
-// parameters for the socket process.  Currently this is just the
-// level (and the broker), but in the future there could be more.
-struct SocketProcessSandboxParams {
-  // Socket process sandbox level; see also GetEffectiveSandboxLevel
-  // and the comments for "security.sandbox.socket.process.level" in
-  // browser/app/profile/firefox.js
-  int mLevel = 0;
-
-  // The filesystem broker client fd; this *is* a RAII class so it
-  // needs to be `release()`d or moved to consume it.
-  mozilla::UniqueFileHandle mBroker;
-
-  static SocketProcessSandboxParams ForThisProcess(
-      const Maybe<ipc::FileDescriptor>& aBroker);
-};
-
 // Call only if SandboxInfo::CanSandboxContent() returns true.
 // (No-op if the sandbox is disabled.)
 // isFileProcess determines whether we allow system wide file reads.
@@ -82,8 +63,6 @@ MOZ_EXPORT bool SetContentProcessSandbox(ContentProcessSandboxParams&& aParams);
 MOZ_EXPORT void SetMediaPluginSandbox(const char* aFilePath);
 
 MOZ_EXPORT void SetRemoteDataDecoderSandbox(int aBroker);
-
-MOZ_EXPORT void SetSocketProcessSandbox(SocketProcessSandboxParams&& aParams);
 
 MOZ_EXPORT void SetUtilitySandbox(int aBroker, ipc::SandboxingKind aKind);
 

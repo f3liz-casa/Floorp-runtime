@@ -378,7 +378,7 @@ _cairo_scaled_font_map_lock (void)
     CAIRO_MUTEX_LOCK (_cairo_scaled_font_map_mutex);
 
     if (cairo_scaled_font_map == NULL) {
-	cairo_scaled_font_map = _cairo_malloc (sizeof (cairo_scaled_font_map_t));
+	cairo_scaled_font_map = _cairo_calloc (sizeof (cairo_scaled_font_map_t));
 	if (unlikely (cairo_scaled_font_map == NULL))
 	    goto CLEANUP_MUTEX_LOCK;
 
@@ -519,7 +519,7 @@ _cairo_scaled_font_register_placeholder_and_unlock_font_map (cairo_scaled_font_t
     if (unlikely (status))
 	return status;
 
-    placeholder_scaled_font = _cairo_malloc (sizeof (cairo_scaled_font_t));
+    placeholder_scaled_font = _cairo_calloc (sizeof (cairo_scaled_font_t));
     if (unlikely (placeholder_scaled_font == NULL))
 	return _cairo_error (CAIRO_STATUS_NO_MEMORY);
 
@@ -692,6 +692,7 @@ _cairo_scaled_font_keys_equal (const void *abstract_key_a,
     const cairo_scaled_font_t *key_b = abstract_key_b;
 
     return key_a->original_font_face == key_b->original_font_face &&
+           key_a->font_face == key_b->font_face &&
 	    memcmp ((unsigned char *)(&key_a->font_matrix.xx),
 		    (unsigned char *)(&key_b->font_matrix.xx),
 		    sizeof(cairo_matrix_t)) == 0 &&
@@ -1263,7 +1264,7 @@ _cairo_scaled_font_create_in_error (cairo_status_t status)
     CAIRO_MUTEX_LOCK (_cairo_scaled_font_error_mutex);
     scaled_font = _cairo_scaled_font_nil_objects[status];
     if (unlikely (scaled_font == NULL)) {
-	scaled_font = _cairo_malloc (sizeof (cairo_scaled_font_t));
+	scaled_font = _cairo_calloc (sizeof (cairo_scaled_font_t));
 	if (unlikely (scaled_font == NULL)) {
 	    CAIRO_MUTEX_UNLOCK (_cairo_scaled_font_error_mutex);
 	    _cairo_error_throw (CAIRO_STATUS_NO_MEMORY);
@@ -2759,7 +2760,7 @@ _cairo_scaled_font_allocate_glyph (cairo_scaled_font_t *scaled_font,
         }
     }
 
-    page = _cairo_malloc (sizeof (cairo_scaled_glyph_page_t));
+    page = _cairo_calloc (sizeof (cairo_scaled_glyph_page_t));
     if (unlikely (page == NULL))
 	return _cairo_error (CAIRO_STATUS_NO_MEMORY);
 

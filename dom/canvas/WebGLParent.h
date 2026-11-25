@@ -1,4 +1,3 @@
-/* -*- Mode: C++; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -53,13 +52,14 @@ class WebGLParent : public PWebGLParent, public SupportsWeakPtr {
 
   IPCResult RecvGetBufferSubData(GLenum target, uint64_t srcByteOffset,
                                  uint64_t byteSize, mozilla::ipc::Shmem* ret);
-  IPCResult GetFrontBufferSnapshot(webgl::FrontBufferSnapshotIpc* ret,
-                                   IProtocol* aProtocol);
+  IPCResult GetFrontBufferSnapshot(webgl::FrontBufferSnapshotIpc* ret);
   IPCResult RecvGetFrontBufferSnapshot(webgl::FrontBufferSnapshotIpc* ret);
   IPCResult RecvReadPixels(const webgl::ReadPixelsDesc&,
                            ReadPixelsBuffer&& buffer,
                            webgl::ReadPixelsResultIpc* ret);
-
+  IPCResult RecvReadPixelsAsync(const webgl::ReadPixelsDesc& aDesc,
+                                uint64_t aByteSize,
+                                ReadPixelsAsyncResolver&& aResolve);
   // -
 
   using ObjectId = webgl::ObjectId;

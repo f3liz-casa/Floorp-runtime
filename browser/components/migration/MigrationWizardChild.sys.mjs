@@ -23,6 +23,22 @@ export class MigrationWizardChild extends JSWindowActorChild {
   #wizardEl = null;
 
   /**
+   * Returns true if the current OS is macOS Sequoia (macOS 15) or later.
+   * Safari's password export UI changed in Sequoia, so we show a different
+   * set of import instructions before and after this version. macOS 15 maps
+   * to Darwin kernel version 24, which is what Services.sysinfo reports as
+   * the platform "version" on macOS.
+   *
+   * This is a static method (rather than an inline check) so that tests can
+   * stub it to exercise both instruction variants.
+   *
+   * @returns {boolean}
+   */
+  static isMacOSSequoiaOrLater() {
+    return AppConstants.isPlatformAndVersionAtLeast("macosx", "24.0.0");
+  }
+
+  /**
    * Retrieves the list of browsers and profiles from the parent process, and then
    * puts the migration wizard onto the selection page showing the list that they
    * can import from.
@@ -159,7 +175,10 @@ export class MigrationWizardChild extends JSWindowActorChild {
           key: event.detail.key,
         });
         if (success) {
-          await this.#requestState(true /* allowOnlyFileMigrators */);
+          await this.#requestState(
+            true /* allowOnlyFileMigrators */,
+            event.detail.key
+          );
         }
         break;
       }
@@ -171,15 +190,20 @@ export class MigrationWizardChild extends JSWindowActorChild {
         });
         break;
       }
+
+      case "MigrationWizard:LaunchMacOSPasswordsApp": {
+        this.sendAsyncMessage("LaunchMacOSPasswordsApp");
+        break;
+      }
     }
   }
 
-  async #requestState(allowOnlyFileMigrators) {
+  async #requestState(allowOnlyFileMigrators, migratorKey) {
     this.setComponentState({
       page: MigrationWizardConstants.PAGES.LOADING,
     });
 
-    await this.#populateMigrators(allowOnlyFileMigrators);
+    await this.#populateMigrators(allowOnlyFileMigrators, migratorKey);
 
     this.#wizardEl.dispatchEvent(
       new this.contentWindow.CustomEvent("MigrationWizard:Ready", {
@@ -198,6 +222,23 @@ export class MigrationWizardChild extends JSWindowActorChild {
    */
   #sendTelemetryEvent(type, args) {
     this.sendAsyncMessage("RecordEvent", { type, args });
+  }
+
+  /**
+   * Returns where the <migration-wizard> was opened from, as set by its host
+   * page in the entrypoint attribute. The parent validates this against
+   * MigrationUtils.MIGRATION_ENTRYPOINTS.
+   *
+   * @returns {string|null}
+   */
+  #getEntrypoint() {
+    if (this.#wizardEl.hasAttribute("entrypoint")) {
+      return this.#wizardEl.getAttribute("entrypoint");
+    }
+    if (this.#wizardEl.hasAttribute("in-aboutwelcome-bundle")) {
+      return "aboutwelcome";
+    }
+    return null;
   }
 
   /**
@@ -327,7 +368,10 @@ export class MigrationWizardChild extends JSWindowActorChild {
       if (migrationDetails.key == "safari") {
         this.#sendTelemetryEvent("safariPasswordFile");
         this.setComponentState({
-          page: MigrationWizardConstants.PAGES.SAFARI_PASSWORD_PERMISSION,
+          page: MigrationWizardChild.isMacOSSequoiaOrLater()
+            ? MigrationWizardConstants.PAGES.SAFARI_PASSWORD_PERMISSION
+            : MigrationWizardConstants.PAGES
+                .SAFARI_PASSWORD_PERMISSION_PRE_SEQUOIA,
         });
         return;
       } else if (
@@ -346,6 +390,7 @@ export class MigrationWizardChild extends JSWindowActorChild {
     extraArgs = await this.sendQuery("Migrate", {
       migrationDetails,
       extraArgs,
+      entrypoint: this.#getEntrypoint(),
     });
     this.#sendTelemetryEvent("migrationFinished", extraArgs);
 
@@ -409,8 +454,8 @@ export class MigrationWizardChild extends JSWindowActorChild {
     Cu.waiveXrays(this.#wizardEl).setState(
       Cu.cloneInto(
         state,
-        // ownerGlobal doesn't exist in content windows.
-        // eslint-disable-next-line mozilla/use-ownerGlobal
+        // documentGlobal doesn't exist in content windows.
+        // eslint-disable-next-line mozilla/use-documentGlobal
         this.#wizardEl.ownerDocument.defaultView
       )
     );

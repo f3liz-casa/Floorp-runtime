@@ -6,9 +6,9 @@
 
 // The following functions are used to build UnicodeSets
 // for special cases where the case-folding algorithm used by
-// UnicodeSet::closeOver(USET_CASE_INSENSITIVE) does not match
-// the algorithm defined in ECMAScript 2020 21.2.2.8.2 (Runtime
-// Semantics: Canonicalize) step 3.
+// UnicodeSet::closeOver(USET_SIMPLE_CASE_INSENSITIVE) does
+// not match the algorithm defined in ECMAScript 2020 21.2.2.8.2
+// (Runtime Semantics: Canonicalize) step 3.
 
 #ifdef V8_INTL_SUPPORT
 #include "irregexp/imported/special-case.h"
@@ -16,6 +16,7 @@
 #include "unicode/uniset.h"
 namespace v8 {
 namespace internal {
+namespace regexp {
 
 icu::UnicodeSet BuildIgnoreSet() {
   icu::UnicodeSet set;
@@ -47,42 +48,32 @@ struct IgnoreSetData {
 };
 
 //static
-const icu::UnicodeSet& RegExpCaseFolding::IgnoreSet() {
+const icu::UnicodeSet& CaseFolding::IgnoreSet() {
   static base::LazyInstance<IgnoreSetData>::type set =
       LAZY_INSTANCE_INITIALIZER;
   return set.Pointer()->set;
 }
 
-icu::UnicodeSet BuildSpecialAddSet() {
+icu::UnicodeSet BuildSupplementaryEquivalentsSet() {
   icu::UnicodeSet set;
-  set.add(0x4b);
-  set.add(0x53);
-  set.add(0x6b);
-  set.add(0x73);
-  set.add(0xc5);
-  set.add(0xe5);
-  set.add(0x398);
-  set.add(0x3a9);
-  set.add(0x3b8);
-  set.add(0x3c9);
-  set.add(0x3d1);
   set.freeze();
   return set;
 }
 
-struct SpecialAddSetData {
-  SpecialAddSetData() : set(BuildSpecialAddSet()) {}
+struct SupplementaryEquivalentsSetData {
+  SupplementaryEquivalentsSetData() : set(BuildSupplementaryEquivalentsSet()) {}
   const icu::UnicodeSet set;
 };
 
 //static
-const icu::UnicodeSet& RegExpCaseFolding::SpecialAddSet() {
-  static base::LazyInstance<SpecialAddSetData>::type set =
+const icu::UnicodeSet& CaseFolding::SupplementaryEquivalentsSet() {
+  static base::LazyInstance<SupplementaryEquivalentsSetData>::type set =
       LAZY_INSTANCE_INITIALIZER;
   return set.Pointer()->set;
 }
 
 
+}  // namespace regexp
 }  // namespace internal
 }  // namespace v8
 #endif  // V8_INTL_SUPPORT

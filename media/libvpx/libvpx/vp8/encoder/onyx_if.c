@@ -9,44 +9,48 @@
  */
 
 #include "vpx_config.h"
-#include "./vpx_scale_rtcd.h"
-#include "./vpx_dsp_rtcd.h"
 #include "./vp8_rtcd.h"
-#include "bitstream.h"
-#include "vp8/common/onyxc_int.h"
-#include "vp8/common/blockd.h"
-#include "onyx_int.h"
-#include "vp8/common/systemdependent.h"
-#include "vp8/common/vp8_skin_detection.h"
-#include "vp8/encoder/quantize.h"
+#include "./vpx_dsp_rtcd.h"
+#include "./vpx_scale_rtcd.h"
+
 #include "vp8/common/alloccommon.h"
-#include "mcomp.h"
-#include "firstpass.h"
-#include "vpx_dsp/psnr.h"
-#include "vpx_dsp/vpx_dsp_common.h"
-#include "vpx_scale/vpx_scale.h"
+#include "vp8/common/blockd.h"
 #include "vp8/common/extend.h"
-#include "ratectrl.h"
+#include "vp8/common/onyxc_int.h"
 #include "vp8/common/quant_common.h"
-#include "segmentation.h"
+#include "vp8/common/reconintra.h"
+#include "vp8/common/swapyv12buffer.h"
+#include "vp8/common/systemdependent.h"
+#include "vp8/common/threading.h"
+#include "vp8/common/vp8_skin_detection.h"
 #if CONFIG_POSTPROC
 #include "vp8/common/postproc.h"
 #endif
+
+#include "vp8/encoder/bitstream.h"
+#include "vp8/encoder/block.h"
+#include "vp8/encoder/encodeframe.h"
+#include "vp8/encoder/firstpass.h"
+#include "vp8/encoder/mcomp.h"
+#include "vp8/encoder/onyx_int.h"
+#include "vp8/encoder/quantize.h"
+#include "vp8/encoder/ratectrl.h"
+#include "vp8/encoder/segmentation.h"
+#if CONFIG_MULTI_RES_ENCODING
+#include "vp8/encoder/mr_dissim.h"
+#endif
+
+#include "vpx_dsp/psnr.h"
+#include "vpx_dsp/vpx_dsp_common.h"
 #include "vpx_mem/vpx_mem.h"
-#include "vp8/common/reconintra.h"
-#include "vp8/common/swapyv12buffer.h"
-#include "vp8/common/threading.h"
 #include "vpx_ports/system_state.h"
 #include "vpx_ports/vpx_once.h"
 #include "vpx_ports/vpx_timer.h"
+#include "vpx_scale/vpx_scale.h"
 #include "vpx_util/vpx_write_yuv_frame.h"
 #if VPX_ARCH_ARM
 #include "vpx_ports/arm.h"
 #endif
-#if CONFIG_MULTI_RES_ENCODING
-#include "mr_dissim.h"
-#endif
-#include "encodeframe.h"
 #if CONFIG_MULTITHREAD
 #include "ethreading.h"
 #endif
@@ -435,6 +439,7 @@ static void dealloc_compressor_data(VP8_COMP *cpi) {
 
   vp8_yv12_de_alloc_frame_buffer(&cpi->pick_lf_lvl_frame);
   vp8_yv12_de_alloc_frame_buffer(&cpi->scaled_source);
+  vp8_yv12_de_alloc_frame_buffer(&cpi->raw_source_frame);
   dealloc_raw_frame_buffers(cpi);
 
   vpx_free(cpi->tok);
@@ -965,6 +970,7 @@ void vp8_set_speed_features(VP8_COMP *cpi) {
         if (cpi->oxcf.encode_breakout > 2000) min = cpi->oxcf.encode_breakout;
 
         min >>= 7;
+        if (min >= MAX_ERROR_BINS) min = MAX_ERROR_BINS - 1;
 
         for (i = 0; i < min; ++i) {
           sum += cpi->mb.error_bins[i];
@@ -1117,6 +1123,9 @@ static void dealloc_raw_frame_buffers(VP8_COMP *cpi) {
   vp8_yv12_de_alloc_frame_buffer(&cpi->alt_ref_buffer);
 #endif
   vp8_lookahead_destroy(cpi->lookahead);
+#if CONFIG_TEMPORAL_DENOISING
+  vp8_denoiser_free(&cpi->denoiser);
+#endif
 }
 
 static int vp8_alloc_partition_data(VP8_COMP *cpi) {
@@ -2357,7 +2366,10 @@ static uint64_t calc_plane_error(unsigned char *orig, int orig_stride,
 }
 
 static void generate_psnr_packet(VP8_COMP *cpi) {
-  YV12_BUFFER_CONFIG *orig = cpi->Source;
+  YV12_BUFFER_CONFIG *orig =
+      (cpi->oxcf.noise_sensitivity > 0 && cpi->raw_source_frame.buffer_alloc)
+          ? &cpi->raw_source_frame
+          : cpi->Source;
   YV12_BUFFER_CONFIG *recon = cpi->common.frame_to_show;
   struct vpx_codec_cx_pkt pkt;
   uint64_t sse;
@@ -2436,6 +2448,11 @@ int vp8_get_reference(VP8_COMP *cpi, enum vpx_ref_frame_type ref_frame_flag,
     return -1;
   }
 
+  if (cm->yv12_fb[ref_fb_idx].y_width != sd->y_width ||
+      cm->yv12_fb[ref_fb_idx].y_height != sd->y_height) {
+    return -1;
+  }
+
   vp8_yv12_copy_frame(&cm->yv12_fb[ref_fb_idx], sd);
 
   return 0;
@@ -2453,6 +2470,11 @@ int vp8_set_reference(VP8_COMP *cpi, enum vpx_ref_frame_type ref_frame_flag,
   } else if (ref_frame_flag == VP8_ALTR_FRAME) {
     ref_fb_idx = cm->alt_fb_idx;
   } else {
+    return -1;
+  }
+
+  if (cm->yv12_fb[ref_fb_idx].y_width != sd->y_width ||
+      cm->yv12_fb[ref_fb_idx].y_height != sd->y_height) {
     return -1;
   }
 
@@ -2607,6 +2629,7 @@ static void update_golden_frame_stats(VP8_COMP *cpi) {
          */
         cpi->gf_overspend_bits +=
             (cpi->projected_frame_size - cpi->inter_frame_target);
+        cpi->gf_overspend_bits = VPXMAX(0, cpi->gf_overspend_bits);
       }
 
       cpi->non_gf_bitrate_adjustment =
@@ -2972,8 +2995,15 @@ static void update_reference_frames(VP8_COMP *cpi) {
                             &cpi->denoiser.yv12_running_avg[GOLDEN_FRAME]);
       }
       if (cm->refresh_last_frame) {
-        vp8_yv12_copy_frame(&cpi->denoiser.yv12_running_avg[INTRA_FRAME],
-                            &cpi->denoiser.yv12_running_avg[LAST_FRAME]);
+        if (cpi->denoiser.denoiser_mode == kDenoiserOnYOnly) {
+          vp8_yv12_copy_frame(&cpi->denoiser.yv12_running_avg[INTRA_FRAME],
+                              &cpi->denoiser.yv12_running_avg[LAST_FRAME]);
+        } else {
+          YV12_BUFFER_CONFIG tmp = cpi->denoiser.yv12_running_avg[INTRA_FRAME];
+          cpi->denoiser.yv12_running_avg[INTRA_FRAME] =
+              cpi->denoiser.yv12_running_avg[LAST_FRAME];
+          cpi->denoiser.yv12_running_avg[LAST_FRAME] = tmp;
+        }
       }
     }
     if (cpi->oxcf.noise_sensitivity == 4)
@@ -3796,6 +3826,21 @@ static void encode_frame_to_data_rate(VP8_COMP *cpi, size_t *size,
   vp8_save_coding_context(cpi);
 
   scale_and_extend_source(cpi->un_scaled_source, cpi);
+
+  if (cpi->b_calculate_psnr && cpi->pass != 1 && cm->show_frame &&
+      cpi->oxcf.noise_sensitivity > 0) {
+    if (cpi->raw_source_frame.y_width != cpi->Source->y_width ||
+        cpi->raw_source_frame.y_height != cpi->Source->y_height) {
+      vp8_yv12_de_alloc_frame_buffer(&cpi->raw_source_frame);
+      if (vp8_yv12_alloc_frame_buffer(
+              &cpi->raw_source_frame, cpi->Source->y_width,
+              cpi->Source->y_height, VP8BORDERINPIXELS) < 0) {
+        vpx_internal_error(&cm->error, VPX_CODEC_MEM_ERROR,
+                           "Failed to allocate raw source frame buffer");
+      }
+    }
+    vp8_yv12_copy_frame(cpi->Source, &cpi->raw_source_frame);
+  }
 
 #if CONFIG_TEMPORAL_DENOISING && CONFIG_POSTPROC
   // Option to apply spatial blur under the aggressive or adaptive
@@ -5183,7 +5228,10 @@ int vp8_get_compressed_data(VP8_COMP *cpi, unsigned int *frame_flags,
       if (cpi->b_calculate_psnr) {
         uint64_t ye, ue, ve;
         double frame_psnr;
-        YV12_BUFFER_CONFIG *orig = cpi->Source;
+        YV12_BUFFER_CONFIG *orig = (cpi->oxcf.noise_sensitivity > 0 &&
+                                    cpi->raw_source_frame.buffer_alloc)
+                                       ? &cpi->raw_source_frame
+                                       : cpi->Source;
         YV12_BUFFER_CONFIG *recon = cpi->common.frame_to_show;
         unsigned int y_width = cpi->common.Width;
         unsigned int y_height = cpi->common.Height;

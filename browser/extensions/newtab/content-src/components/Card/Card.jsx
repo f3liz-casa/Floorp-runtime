@@ -6,7 +6,11 @@ import { actionCreators as ac, actionTypes as at } from "common/Actions.mjs";
 import { cardContextTypes } from "./types";
 import { connect } from "react-redux";
 import { ContextMenuButton } from "content-src/components/ContextMenu/ContextMenuButton";
+import { formatRelativeDate } from "content-src/lib/utils";
+import { getLinkMenuOptions } from "content-src/lib/link-menu-options";
 import { LinkMenu } from "content-src/components/LinkMenu/LinkMenu";
+import { PanelListItems } from "content-src/components/LinkMenu/PanelListItems";
+import { subscribePanelListToggle } from "content-src/lib/panel-list-utils";
 import React from "react";
 import { ScreenshotUtils } from "content-src/lib/screenshot-utils";
 
@@ -32,6 +36,7 @@ export class _Card extends React.PureComponent {
     };
     this.onMenuButtonUpdate = this.onMenuButtonUpdate.bind(this);
     this.onLinkClick = this.onLinkClick.bind(this);
+    this.panelListRef = React.createRef();
   }
 
   /**
@@ -83,18 +88,7 @@ export class _Card extends React.PureComponent {
     }
   }
 
-  /**
-   * Helper to obtain the next state based on nextProps and prevState.
-   *
-   * NOTE: Rename this method to getDerivedStateFromProps when we update React
-   *       to >= 16.3. We will need to update tests as well. We cannot rename this
-   *       method to getDerivedStateFromProps now because there is a mismatch in
-   *       the React version that we are using for both testing and production.
-   *       (i.e. react-test-render => "16.3.2", react => "16.2.0").
-   *
-   * See https://github.com/airbnb/enzyme/blob/master/packages/enzyme-adapter-react-16/package.json#L43.
-   */
-  static getNextStateFromProps(nextProps, prevState) {
+  static getDerivedStateFromProps(nextProps, prevState) {
     const { image } = nextProps.link;
     const imageInState = ScreenshotUtils.isRemoteImageLocal(
       prevState.cardImage,
@@ -198,34 +192,23 @@ export class _Card extends React.PureComponent {
 
   componentDidMount() {
     this.maybeLoadImage();
+    // Nova only: mirror the panel-list's open state into the card's active state
+    this.teardownMenuEvents = subscribePanelListToggle(
+      this.panelListRef.current,
+      {
+        onShown: () => this.onMenuButtonUpdate(true),
+        onHidden: () => this.onMenuButtonUpdate(false),
+      }
+    );
   }
 
   componentDidUpdate() {
     this.maybeLoadImage();
   }
 
-  // NOTE: Remove this function when we update React to >= 16.3 since React will
-  //       call getDerivedStateFromProps automatically. We will also need to
-  //       rename getNextStateFromProps to getDerivedStateFromProps.
-  componentWillMount() {
-    const nextState = _Card.getNextStateFromProps(this.props, this.state);
-    if (nextState) {
-      this.setState(nextState);
-    }
-  }
-
-  // NOTE: Remove this function when we update React to >= 16.3 since React will
-  //       call getDerivedStateFromProps automatically. We will also need to
-  //       rename getNextStateFromProps to getDerivedStateFromProps.
-  componentWillReceiveProps(nextProps) {
-    const nextState = _Card.getNextStateFromProps(nextProps, this.state);
-    if (nextState) {
-      this.setState(nextState);
-    }
-  }
-
   componentWillUnmount() {
     ScreenshotUtils.maybeRevokeBlobObjectURL(this.state.cardImage);
+    this.teardownMenuEvents?.();
   }
 
   render() {
@@ -258,6 +241,92 @@ export class _Card extends React.PureComponent {
     ]
       .filter(v => v)
       .join(" ");
+
+    // @nova-cleanup(remove-conditional): Keep only the Nova markup
+    if (props.novaEnabled) {
+      const visitDate = link.lastVisitDate ?? link.date_added;
+      const menuId = `highlight-context-menu-${index}`;
+      return (
+        <li className={outerClassName}>
+          <a
+            href={link.url}
+            onClick={!props.placeholder ? this.onLinkClick : undefined}
+          >
+            <div className="card">
+              <div className="card-preview-image-outer">
+                {hasImage && (
+                  <div
+                    className={`card-preview-image${
+                      this.state.imageLoaded ? " loaded" : ""
+                    }`}
+                    style={imageStyle}
+                  />
+                )}
+              </div>
+              <div className="card-details">
+                <div className="card-host-name">
+                  {link.hostname?.slice(0, 100)}
+                </div>
+                <h4 className="card-title clamp" dir="auto">
+                  {title}
+                </h4>
+                {!props.placeholder && (
+                  <div className="card-context">
+                    {icon && (
+                      <span className={`card-context-icon icon icon-${icon}`} />
+                    )}
+                    {fluentID && (
+                      <span
+                        className="card-context-type"
+                        data-l10n-id={fluentID}
+                      />
+                    )}
+                    {visitDate && (
+                      <span className="card-context-label">
+                        {formatRelativeDate(visitDate, props.locale)}
+                      </span>
+                    )}
+                  </div>
+                )}
+              </div>
+            </div>
+          </a>
+          {!props.placeholder && (
+            <>
+              <moz-button
+                class="context-menu-button"
+                type="icon ghost"
+                size="small"
+                iconsrc="chrome://global/skin/icons/more.svg"
+                data-l10n-id="newtab-menu-content-tooltip"
+                data-l10n-args={JSON.stringify({ title })}
+                menuId={menuId}
+              />
+              <panel-list
+                className="panel-list-no-icons"
+                id={menuId}
+                ref={this.panelListRef}
+              >
+                <PanelListItems
+                  options={getLinkMenuOptions({
+                    dispatch,
+                    index,
+                    source: eventSource,
+                    isPrivateBrowsingEnabled: props.isPrivateBrowsingEnabled,
+                    platform: props.platform,
+                    privacyInfoUrl: props.privacyInfoUrl,
+                    options: link.contextMenuOptions || contextMenuOptions,
+                    site: link,
+                    siteInfo: this._getTelemetryInfo(),
+                    shouldSendImpressionStats,
+                  })}
+                />
+              </panel-list>
+            </>
+          )}
+        </li>
+      );
+    }
 
     return (
       <li className={outerClassName}>
@@ -352,6 +421,11 @@ export class _Card extends React.PureComponent {
 _Card.defaultProps = { link: {} };
 export const Card = connect(state => ({
   platform: state.Prefs.values.platform,
+  // @nova-cleanup(remove-pref): Remove novaEnabled
+  novaEnabled: state.Prefs.values["nova.enabled"],
+  locale: state.App.locale,
+  isPrivateBrowsingEnabled: state.Prefs.values.isPrivateBrowsingEnabled,
+  privacyInfoUrl: state.Prefs.values["privacyInfo.url"],
 }))(_Card);
 export const PlaceholderCard = props => (
   <Card placeholder={true} className={props.className} />

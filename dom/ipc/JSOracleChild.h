@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -23,7 +21,9 @@ struct JSFrontendContextHolder {
     MOZ_RELEASE_ASSERT(JS_IsInitialized(),
                        "UtilityProcessChild::Init should have JS initialized");
 
-    mFc = JS::NewFrontendContext();
+    JS::FrontendContextCreationOptions options;
+    options.shareScriptData = false;
+    mFc = JS::NewFrontendContext(&options);
     if (!mFc) {
       MOZ_CRASH("Failed to create JS FrontendContext");
       return;

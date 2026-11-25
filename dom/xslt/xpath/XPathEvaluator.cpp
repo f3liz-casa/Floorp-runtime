@@ -1,4 +1,3 @@
-/* -*- Mode: C++; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -8,7 +7,6 @@
 #include <utility>
 
 #include "XPathResult.h"
-#include "mozilla/UniquePtrExtensions.h"
 #include "mozilla/dom/BindingUtils.h"
 #include "mozilla/dom/Document.h"
 #include "mozilla/dom/XPathEvaluatorBinding.h"
@@ -96,8 +94,8 @@ UniquePtr<XPathExpression> XPathEvaluator::CreateExpression(
     return nullptr;
   }
 
-  return MakeUnique<XPathExpression>(std::move(expression), mRecycler,
-                                     aDocument);
+  return std::make_unique<XPathExpression>(std::move(expression), mRecycler,
+                                           aDocument);
 }
 
 bool XPathEvaluator::WrapObject(JSContext* aCx,
@@ -109,7 +107,7 @@ bool XPathEvaluator::WrapObject(JSContext* aCx,
 /* static */
 UniquePtr<XPathEvaluator> XPathEvaluator::Constructor(
     const GlobalObject& aGlobal) {
-  return MakeUnique<XPathEvaluator>(nullptr);
+  return std::make_unique<XPathEvaluator>(nullptr);
 }
 
 already_AddRefed<XPathResult> XPathEvaluator::Evaluate(

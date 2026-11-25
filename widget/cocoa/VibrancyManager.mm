@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -7,12 +5,11 @@
 #include "VibrancyManager.h"
 #include "ViewRegion.h"
 #include "nsRegion.h"
-#include "ViewRegion.h"
 
 #import <objc/message.h>
 
-#include "nsCocoaWindow.h"
 #include "mozilla/StaticPrefs_widget.h"
+#include "nsCocoaWindow.h"
 
 using namespace mozilla;
 
@@ -125,7 +122,7 @@ bool VibrancyManager::UpdateVibrantRegion(
     return hadRegion;
   }
   if (!slot) {
-    slot = MakeUnique<ViewRegion>();
+    slot = std::make_unique<ViewRegion>();
   }
   return slot->UpdateRegion(aRegion, mCoordinateConverter, mContainerView, ^() {
     return [[MOZVibrantView alloc] initWithFrame:NSZeroRect vibrancyType:aType];

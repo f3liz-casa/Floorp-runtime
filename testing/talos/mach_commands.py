@@ -26,7 +26,7 @@ class TalosRunner(MozbuildObject):
         3. Run mozharness
         """
         # Validate that the user is using a supported python version before doing anything else
-        max_py_major, max_py_minor = 3, 12
+        max_py_major, max_py_minor = 3, 13
         sys_maj, sys_min = sys.version_info.major, sys.version_info.minor
         if sys_min > max_py_minor:
             raise PythonVersionException(
@@ -68,12 +68,10 @@ class TalosRunner(MozbuildObject):
 
     def make_config(self):
         default_actions = ["populate-webroot"]
-        default_actions.extend(
-            [
-                "create-virtualenv",
-                "run-tests",
-            ]
-        )
+        default_actions.extend([
+            "create-virtualenv",
+            "run-tests",
+        ])
         self.config = {
             "run_local": True,
             "talos_json": self.talos_json,
@@ -131,14 +129,54 @@ def create_parser():
     return create_parser(mach_interface=True)
 
 
+TALOS_PDFS_INDEX = "gecko.cache.level-3.toolchains.v3.talos-pdfs.latest"
+TALOS_PDFS_ARTIFACT = "project/gecko/talos-pdfs/talos-pdfs.tar.zst"
+
+
 def setup_toolchain_artifacts(args, command_context):
-    if not any(arg.lower() == "pdfpaint" for arg in args):
+    if not any(arg.lower().startswith("pdfpaint") for arg in args):
         return
 
-    from mozbuild.bootstrap import bootstrap_toolchain
+    from mozbuild.util import (
+        TASKCLUSTER_ROOT_URL,
+        find_task_from_index,
+        set_taskcluster_root_url,
+    )
 
-    print("Setting up pdfpaint PDFs...")
-    bootstrap_toolchain("talos-pdfs")
+    set_taskcluster_root_url()
+    try:
+        task_id = find_task_from_index([TALOS_PDFS_INDEX])
+    except Exception:
+        task_id = None
+
+    if task_id:
+        link = f"{TASKCLUSTER_ROOT_URL}/tasks/{task_id}"
+    else:
+        namespace, _, name = TALOS_PDFS_INDEX.rpartition(".")
+        link = f"{TASKCLUSTER_ROOT_URL}/tasks/index/{namespace}/{name}"
+
+    local_task_id = None
+    state_dir = get_state_dir()
+    pdfs_dir = os.path.join(state_dir, "talos-pdfs")
+    if os.path.isdir(pdfs_dir):
+        task_id_path = os.path.join(pdfs_dir, "task-id.txt")
+        if os.path.isfile(task_id_path):
+            with open(task_id_path) as f:
+                local_task_id = f.read().strip()
+
+    if task_id and local_task_id == task_id:
+        return
+
+    raise Exception(
+        "The PDFs for the pdfpaint test are missing or outdated (local task "
+        f"{local_task_id or 'unknown'}, latest task {task_id}). "
+        "They come from a private repository, so they can't be downloaded automatically.\n"
+        f"Sign in to Taskcluster, and download the {TALOS_PDFS_ARTIFACT} "
+        f"artifact from:\n\n    {link}\n\n"
+        "Then extract it so that its talos-pdfs folder ends up in "
+        f"{state_dir}, for instance with:\n\n"
+        f"    tar --zstd -xf talos-pdfs.tar.zst -C {state_dir}\n"
+    )
 
 
 @Command(

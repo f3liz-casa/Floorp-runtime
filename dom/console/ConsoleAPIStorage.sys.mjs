@@ -6,6 +6,31 @@ const STORAGE_MAX_EVENTS = 1000;
 
 var _consoleStorage = new Map();
 
+// The process type never changes, so read it once rather than paying an
+// XPConnect getter on every recorded console event.
+const _isParentProcess =
+  Services.appinfo.processType === Services.appinfo.PROCESS_TYPE_DEFAULT;
+
+/**
+ * Check whether aId is the inner window ID of a window that no longer exists.
+ *
+ * @param string aId
+ *        The inner window ID to check.
+ * @returns boolean
+ *          true if aId identifies a destroyed inner window.
+ */
+function _isDestroyedInnerWindow(aId) {
+  // Inner window IDs are positive; "" (a chrome call without a stack frame)
+  // would otherwise read as 0.
+  let innerId = Number(aId);
+  if (!Number.isInteger(innerId) || innerId <= 0) {
+    return false;
+  }
+  return _isParentProcess
+    ? !WindowGlobalParent.getByInnerWindowId(innerId)
+    : !WindowGlobalChild.getByInnerWindowId(innerId);
+}
+
 // NOTE: these listeners used to just be added as observers and notified via
 // Services.obs.notifyObservers. However, that has enough overhead to be a
 // problem for this. Using an explicit global array is much cheaper, and
@@ -149,17 +174,22 @@ ConsoleAPIStorageService.prototype = {
    *        A JavaScript object you want to store.
    */
   recordEvent: function CS_recordEvent(aId, aEvent) {
-    if (!_consoleStorage.has(aId)) {
-      _consoleStorage.set(aId, []);
-    }
+    // Skip the cache for late events from already-destroyed inner windows:
+    // caching would keep the destroyed window's global alive. Listeners
+    // (e.g. devtools) are still notified.
+    if (!_isDestroyedInnerWindow(aId)) {
+      if (!_consoleStorage.has(aId)) {
+        _consoleStorage.set(aId, []);
+      }
 
-    let storage = _consoleStorage.get(aId);
+      let storage = _consoleStorage.get(aId);
 
-    storage.push(aEvent);
+      storage.push(aEvent);
 
-    // truncate
-    if (storage.length > STORAGE_MAX_EVENTS) {
-      storage.shift();
+      // truncate
+      if (storage.length > STORAGE_MAX_EVENTS) {
+        storage.shift();
+      }
     }
 
     for (let { callback, clone } of _logEventListeners) {

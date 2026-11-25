@@ -42,15 +42,15 @@ be brought up to our design systems standards.
 * When there is only one action.
 * When the actions are frequently needed.
 * In the browser chrome, you probably want to use
-  [menupopup](https://searchfox.org/mozilla-central/source/toolkit/content/widgets/menupopup.js)
+  [menupopup](https://searchfox.org/firefox-main/source/toolkit/content/widgets/menupopup.js)
   or
-  [panel](https://searchfox.org/mozilla-central/source/toolkit/content/widgets/panel.js)
+  [panel](https://searchfox.org/firefox-main/source/toolkit/content/widgets/panel.js)
   instead.
 
 ## Basic usage
 
 The source for `panel-list` can be found under
-[toolkit/content/widgets/panel-list/panel-list.js](https://searchfox.org/mozilla-central/source/toolkit/content/widgets/panel-list/panel-list.js).
+[toolkit/content/widgets/panel-list/panel-list.mjs](https://searchfox.org/firefox-main/source/toolkit/content/widgets/panel-list/panel-list.mjs).
 You can find an examples of `panel-list` in use in the Firefox codebase in both
 [about:addons](https://searchfox.org/mozilla-central/rev/6f4bc07bd9eb07ed34774841ecf3b1f3678791e8/toolkit/mozapps/extensions/content/aboutaddons.html#209,252,280)
 and the
@@ -68,7 +68,10 @@ a template.
 In non-chrome documents it can be imported into `.html`/`.xhtml` files:
 
 ```html
-<script src="chrome://global/content/elements/panel-list.js"></script>
+<script
+  src="chrome://global/content/elements/panel-list.mjs"
+  type="module"
+></script>
 ```
 
 And used as follows:
@@ -85,10 +88,14 @@ And used as follows:
 ```
 
 The `toggle` method takes the event you received on your anchor button and opens
-the menu attached to that element.
+the menu attached to that element. The anchor button also needs to be
+registered as the menu's popover invoker, see
+[Showing the menu](#showing-the-menu) for the full setup.
 
 ```js
+anchorButton.popoverTargetElement = panelList;
 anchorButton.addEventListener("mousedown", e => panelList.toggle(e));
+anchorButton.addEventListener("click", e => e.preventDefault());
 ```
 
 Accesskeys are activated with the bare accesskey letter when the menu is opened.
@@ -142,21 +149,37 @@ the `event.inputSource` property in chrome contexts or `event.detail` in
 non-chrome contexts (`event.detail` will be the click count which is `0` when a
 click is from the keyboard).
 
+Since the menu uses `popover="auto"`, its anchor must be registered as an
+invoker via `popoverTargetElement`, otherwise the mouse release after the
+`mousedown` that opened the menu light-dismisses it. Call `preventDefault()` on
+`click` so `panel-list` handles toggling.
+
+The invoker must be a `<button>` or `<input type="button">`.
+
 ```js
+let panelList = document.querySelector("panel-list");
+
 function openMenu(event) {
+  if (event.type == "click") {
+    event.preventDefault();
+  }
   if (
     event.type == "mousedown" ||
     event.inputSource == MouseEvent.MOZ_SOURCE_KEYBOARD ||
     !event.detail
   ) {
-    document.querySelector("panel-list").toggle(event);
+    panelList.toggle(event);
   }
 }
 
 let menuButton = document.getElementById("open-menu-button");
+menuButton.popoverTargetElement = panelList;
 menuButton.addEventListener("mousedown", openMenu);
 menuButton.addEventListener("click", openMenu);
 ```
+
+`moz-button` handles all of this when its `menuId` is set to the `id` of the
+`panel-list`.
 
 
 ### Checkbox
@@ -196,8 +219,8 @@ panel-item[action="save"]::part(button) {
 
 ### Badging
 
-Icons may be badged by setting the `badged` attribute. This adds a dot next to
-the icon.
+There are two types of badging. Icons may be badged by setting the `badged`
+attribute. This adds a dot next to the icon.
 
 ```html
 <panel-list>
@@ -210,6 +233,44 @@ the icon.
 <panel-list stay-open open>
   <panel-item action="new">New</panel-item>
   <panel-item action="save" badged>Save</panel-item>
+</panel-list>
+```
+
+A `moz-badge` element can be added next to the label by setting the `badge-type`
+attribute.
+
+```html
+<panel-list>
+  <panel-item action="new">New</panel-item>
+  <panel-item action="save" badge-type="new">Save</panel-item>
+  <panel-item action="delete" badge-type="beta">Delete</panel-item>
+</panel-list>
+```
+
+```html story
+<panel-list stay-open open>
+  <panel-item action="new">New</panel-item>
+  <panel-item action="save" badge-type="new">Save</panel-item>
+  <panel-item action="delete" badge-type="beta">Delete</panel-item>
+</panel-list>
+```
+
+### Keyboard shortcuts
+
+Setting the `shortcut` attribute shows a keyboard shortcut after the label. The
+shortcut text is part of the item's accessible name.
+
+```html
+<panel-list>
+  <panel-item shortcut="Ctrl+N">New</panel-item>
+  <panel-item shortcut="Ctrl+S">Save</panel-item>
+</panel-list>
+```
+
+```html story
+<panel-list stay-open open>
+  <panel-item shortcut="Ctrl+N">New</panel-item>
+  <panel-item shortcut="Ctrl+S">Save</panel-item>
 </panel-list>
 ```
 
@@ -226,6 +287,18 @@ menu to match its anchor's width when it is opened.
 <panel-list min-width-from-anchor>
   <panel-item>Apples</panel-list>
   <panel-item>Bananas</panel-list>
+</panel-list>
+```
+
+### Suppressing the context menu
+
+Setting the `suppress-contextmenu` attribute prevents a contextmenu from being
+triggered on the items within a panel-list.
+
+```html
+<panel-list suppress-contextmenu>
+  <panel-item>Open in a new tab</panel-item>
+  <panel-item>Open in a new window</panel-item>
 </panel-list>
 ```
 

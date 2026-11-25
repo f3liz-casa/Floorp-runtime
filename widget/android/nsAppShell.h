@@ -1,10 +1,9 @@
-/* -*- Mode: c++; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 2; -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef nsAppShell_h__
-#define nsAppShell_h__
+#ifndef nsAppShell_h_
+#define nsAppShell_h_
 
 #include <time.h>
 
@@ -17,7 +16,6 @@
 #include "mozilla/StaticPtr.h"
 #include "mozilla/TimeStamp.h"  // for mozilla::TimeDuration
 #include "mozilla/UniquePtr.h"
-#include "mozilla/Unused.h"
 #include "mozilla/jni/Natives.h"
 #include "nsBaseAppShell.h"
 #include "nsCOMPtr.h"
@@ -102,7 +100,7 @@ class nsAppShell : public nsBaseAppShell {
   bool ProcessNextNativeEvent(bool mayWait) override;
 
   // Post a subclass of Event.
-  // e.g. PostEvent(mozilla::MakeUnique<MyEvent>());
+  // e.g. PostEvent(std::make_unique<MyEvent>());
   template <typename T, typename D>
   static void PostEvent(mozilla::UniquePtr<T, D>&& event) {
     mozilla::MutexAutoLock lock(*sAppShellLock);
@@ -121,7 +119,7 @@ class nsAppShell : public nsBaseAppShell {
       return;
     }
     sAppShell->mEventQueue.Post(
-        mozilla::MakeUnique<LambdaEvent<T>>(std::move(lambda)));
+        std::make_unique<LambdaEvent<T>>(std::move(lambda)));
   }
 
   // Post a event and wait for it to finish running on the Gecko thread.
@@ -159,7 +157,7 @@ class nsAppShell : public nsBaseAppShell {
   };
 
   void ScheduleNativeEventCallback() override {
-    mEventQueue.Post(mozilla::MakeUnique<NativeCallbackEvent>(this));
+    mEventQueue.Post(std::make_unique<NativeCallbackEvent>(this));
   }
 
   class Queue {
@@ -184,7 +182,7 @@ class nsAppShell : public nsBaseAppShell {
       if (event->isInList()) {
         event->mPostTime = Event::GetTime();
         // Ownership of event object transfers to the queue.
-        mozilla::Unused << event.release();
+        (void)event.release();
       }
       lock.NotifyAll();
     }
@@ -214,4 +212,4 @@ class nsAppShell : public nsBaseAppShell {
   nsInterfaceHashtable<nsStringHashKey, nsIObserver> mObserversHash;
 };
 
-#endif  // nsAppShell_h__
+#endif  // nsAppShell_h_

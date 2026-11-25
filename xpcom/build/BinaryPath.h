@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -13,9 +11,9 @@
 #elif defined(XP_DARWIN)
 #  include <CoreFoundation/CoreFoundation.h>
 #elif defined(XP_UNIX)
-#  include <unistd.h>
 #  include <stdlib.h>
 #  include <string.h>
+#  include <unistd.h>
 #endif
 #if defined(__FreeBSD__) || defined(__DragonFly__) || \
     defined(__FreeBSD_kernel__) || defined(__NetBSD__) || defined(__OpenBSD__)
@@ -24,7 +22,9 @@
 #if defined(__OpenBSD__)
 #  include <sys/stat.h>
 #endif
-#include "mozilla/UniquePtr.h"
+
+#include <memory>
+
 #include "mozilla/UniquePtrExtensions.h"
 
 #ifdef MOZILLA_INTERNAL_API
@@ -219,7 +219,7 @@ class BinaryPath {
       return NS_ERROR_FAILURE;
     }
 
-    auto argv = MakeUnique<const char*[]>(len / sizeof(const char*));
+    auto argv = std::make_unique<const char*[]>(len / sizeof(const char*));
     if (sysctl(mib, 4, argv.get(), &len, nullptr, 0) < 0) {
       return NS_ERROR_FAILURE;
     }

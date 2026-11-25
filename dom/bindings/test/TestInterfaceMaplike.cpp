@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -49,27 +47,26 @@ nsPIDOMWindowInner* TestInterfaceMaplike::GetParentObject() const {
 }
 
 void TestInterfaceMaplike::SetInternal(const nsAString& aKey, int32_t aValue) {
-  ErrorResult rv;
-  TestInterfaceMaplike_Binding::MaplikeHelpers::Set(this, aKey, aValue, rv);
+  Maplike().Set(aKey, aValue);
 }
 
-void TestInterfaceMaplike::ClearInternal() {
-  ErrorResult rv;
-  TestInterfaceMaplike_Binding::MaplikeHelpers::Clear(this, rv);
-}
+void TestInterfaceMaplike::ClearInternal() { Maplike().Clear(); }
 
 bool TestInterfaceMaplike::DeleteInternal(const nsAString& aKey) {
-  ErrorResult rv;
-  return TestInterfaceMaplike_Binding::MaplikeHelpers::Delete(this, aKey, rv);
+  return Maplike().Delete(aKey);
 }
 
 bool TestInterfaceMaplike::HasInternal(const nsAString& aKey) {
-  ErrorResult rv;
-  return TestInterfaceMaplike_Binding::MaplikeHelpers::Has(this, aKey, rv);
+  return Maplike().Has(aKey);
 }
 
 int32_t TestInterfaceMaplike::GetInternal(const nsAString& aKey,
                                           ErrorResult& aRv) {
-  return TestInterfaceMaplike_Binding::MaplikeHelpers::Get(this, aKey, aRv);
+  const auto* value = Maplike().Get(aKey);
+  if (!value) {
+    aRv.Throw(NS_ERROR_NOT_AVAILABLE);
+    return 0;
+  }
+  return *value;
 }
 }  // namespace mozilla::dom

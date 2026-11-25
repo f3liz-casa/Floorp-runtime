@@ -1,29 +1,27 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#include "nsTHashtable.h"
-#include "nsBaseHashtable.h"
-#include "nsTHashMap.h"
-#include "nsInterfaceHashtable.h"
-#include "nsClassHashtable.h"
-#include "nsRefCountedHashtable.h"
-
-#include "nsCOMPtr.h"
-#include "nsIMemoryReporter.h"
-#include "nsISupports.h"
-#include "nsCOMArray.h"
-#include "mozilla/Attributes.h"
-#include "mozilla/Unused.h"
-
-#include "gtest/gtest.h"
-
+#include <functional>
 #include <numeric>
 
+#include "gtest/gtest.h"
+#include "mozilla/Attributes.h"
+#include "mozilla/ThreadSafeWeakPtr.h"
+#include "nsBaseHashtable.h"
+#include "nsCOMArray.h"
+#include "nsCOMPtr.h"
+#include "nsClassHashtable.h"
+#include "nsIMemoryReporter.h"
+#include "nsISupports.h"
+#include "nsInterfaceHashtable.h"
+#include "nsRefCountedHashtable.h"
+#include "nsTHashMap.h"
+#include "nsTHashtable.h"
+
 using mozilla::MakeRefPtr;
-using mozilla::MakeUnique;
+using mozilla::SupportsThreadSafeWeakPtr;
+using mozilla::ThreadSafeWeakPtr;
 using mozilla::UniquePtr;
 
 namespace TestHashtables {
@@ -109,7 +107,7 @@ class EntityToUnicodeEntry : public PLDHashEntryHdr {
   typedef const char* KeyType;
   typedef const char* KeyTypePointer;
 
-  explicit EntityToUnicodeEntry(const char* aKey) { mNode = nullptr; }
+  explicit EntityToUnicodeEntry(const char* /*aKey*/) { mNode = nullptr; }
   EntityToUnicodeEntry(const EntityToUnicodeEntry& aEntry) {
     mNode = aEntry.mNode;
   }
@@ -120,7 +118,7 @@ class EntityToUnicodeEntry : public PLDHashEntryHdr {
   }
   static const char* KeyToPointer(const char* aEntity) { return aEntity; }
   static PLDHashNumber HashKey(const char* aEntity) {
-    return mozilla::HashString(aEntity);
+    return mozilla::HashString(aEntity, strlen(aEntity));
   }
   enum { ALLOW_MEMMOVE = true };
 
@@ -239,7 +237,7 @@ MozExternalRefCountType IFoo::Release() {
 }
 
 nsresult IFoo::QueryInterface(const nsIID& aIID, void** aResult) {
-  nsISupports* rawPtr = 0;
+  nsISupports* rawPtr = nullptr;
   nsresult status = NS_OK;
 
   if (aIID.Equals(NS_GET_IID(IFoo)))
@@ -495,7 +493,7 @@ auto MakeEmptyBaseHashtable() {
 
 template <typename TypeParam>
 auto MakeUniqueEmptyBaseHashtable() {
-  return MakeUnique<
+  return std::make_unique<
       nsBaseHashtable<nsUint64HashKey, typename TypeParam::DataType,
                       typename TypeParam::UserDataType>>();
 }
@@ -1078,8 +1076,6 @@ TEST(Hashtables, DataHashtable)
 
 TEST(Hashtables, DataHashtable_STLIterators)
 {
-  using mozilla::Unused;
-
   nsTHashMap<nsUint32HashKey, const char*> UniToEntity(ENTITY_COUNT);
 
   for (auto& entity : gEntities) {
@@ -1102,18 +1098,17 @@ TEST(Hashtables, DataHashtable_STLIterators)
   // with the actual syntactical requirements of those algorithms).
   std::for_each(UniToEntity.cbegin(), UniToEntity.cend(),
                 [](const auto& entry) {});
-  Unused << std::find_if(
-      UniToEntity.cbegin(), UniToEntity.cend(),
-      [](const auto& entry) { return entry.GetKey() == 42; });
-  Unused << std::accumulate(
+  (void)std::find_if(UniToEntity.cbegin(), UniToEntity.cend(),
+                     [](const auto& entry) { return entry.GetKey() == 42; });
+  (void)std::accumulate(
       UniToEntity.cbegin(), UniToEntity.cend(), 0u,
       [](size_t sum, const auto& entry) { return sum + entry.GetKey(); });
-  Unused << std::any_of(UniToEntity.cbegin(), UniToEntity.cend(),
-                        [](const auto& entry) { return entry.GetKey() == 42; });
-  Unused << std::max_element(UniToEntity.cbegin(), UniToEntity.cend(),
-                             [](const auto& lhs, const auto& rhs) {
-                               return lhs.GetKey() > rhs.GetKey();
-                             });
+  (void)std::any_of(UniToEntity.cbegin(), UniToEntity.cend(),
+                    [](const auto& entry) { return entry.GetKey() == 42; });
+  (void)std::max_element(UniToEntity.cbegin(), UniToEntity.cend(),
+                         [](const auto& lhs, const auto& rhs) {
+                           return lhs.GetKey() > rhs.GetKey();
+                         });
 
   // const range-based for
   {
@@ -1165,7 +1160,7 @@ TEST(Hashtables, ClassHashtable)
     // InsertOrUpdate.
     EntToUniClass.InsertOrUpdate(
         nsDependentCString(entity.mStr),
-        mozilla::MakeUnique<TestUniCharDerived>(entity.mUnicode));
+        std::make_unique<TestUniCharDerived>(entity.mUnicode));
   }
 
   TestUniChar* myChar;
@@ -1197,8 +1192,9 @@ TEST(Hashtables, ClassHashtable_RangeBasedFor)
   nsClassHashtable<nsCStringHashKey, TestUniChar> EntToUniClass(ENTITY_COUNT);
 
   for (auto& entity : gEntities) {
-    EntToUniClass.InsertOrUpdate(nsDependentCString(entity.mStr),
-                                 MakeUnique<TestUniChar>(entity.mUnicode));
+    EntToUniClass.InsertOrUpdate(
+        nsDependentCString(entity.mStr),
+        std::make_unique<TestUniChar>(entity.mUnicode));
   }
 
   // const range-based for
@@ -1483,7 +1479,7 @@ TEST(Hashtables, ClassHashtable_GetOrInsertNew_Present)
   for (const auto& entity : gEntities) {
     EntToUniClass.InsertOrUpdate(
         nsDependentCString(entity.mStr),
-        mozilla::MakeUnique<TestUniCharDerived>(entity.mUnicode));
+        std::make_unique<TestUniCharDerived>(entity.mUnicode));
   }
 
   auto* entry = EntToUniClass.GetOrInsertNew("uml"_ns, 42);
@@ -1506,11 +1502,11 @@ TEST(Hashtables, ClassHashtable_LookupOrInsertWith_Present)
   for (const auto& entity : gEntities) {
     EntToUniClass.InsertOrUpdate(
         nsDependentCString(entity.mStr),
-        mozilla::MakeUnique<TestUniCharDerived>(entity.mUnicode));
+        std::make_unique<TestUniCharDerived>(entity.mUnicode));
   }
 
   const auto& entry = EntToUniClass.LookupOrInsertWith(
-      "uml"_ns, [] { return mozilla::MakeUnique<TestUniCharDerived>(42); });
+      "uml"_ns, [] { return std::make_unique<TestUniCharDerived>(42); });
   EXPECT_EQ(168u, entry->GetChar());
 }
 
@@ -1520,7 +1516,7 @@ TEST(Hashtables, ClassHashtable_LookupOrInsertWith_NotPresent)
 
   // This is going to insert a TestUniCharDerived.
   const auto& entry = EntToUniClass.LookupOrInsertWith(
-      "uml"_ns, [] { return mozilla::MakeUnique<TestUniCharDerived>(42); });
+      "uml"_ns, [] { return std::make_unique<TestUniCharDerived>(42); });
   EXPECT_EQ(42u, entry->GetChar());
 }
 
@@ -1623,4 +1619,57 @@ TEST(Hashtables, Values)
   values.Sort();
 
   EXPECT_EQ((nsTArray<uint64_t>{0, 1, 2, 3, 4, 5, 6, 7, 8, 9}), values);
+}
+
+struct HasThreadSafeWeak : public SupportsThreadSafeWeakPtr<HasThreadSafeWeak> {
+  MOZ_DECLARE_REFCOUNTED_TYPENAME(HasThreadSafeWeak)
+  ~HasThreadSafeWeak() { mOnDestroy(this); }
+  std::function<void(HasThreadSafeWeak*)> mOnDestroy;
+};
+
+TEST(Hashtables, ThreadSafeWeakPtrAsKey)
+{
+  nsTHashMap<ThreadSafeWeakPtr<HasThreadSafeWeak>, int32_t> table;
+  RefPtr<HasThreadSafeWeak> alive = new HasThreadSafeWeak;
+
+  ThreadSafeWeakPtr<HasThreadSafeWeak> weak(alive);
+  EXPECT_FALSE(weak.IsDead());
+  EXPECT_FALSE(weak.IsNull());
+
+  table.InsertOrUpdate(weak, 1);
+  table.InsertOrUpdate(nullptr, 0);
+
+  auto origHash = weak.Hash();
+
+  bool destructorRan = false;
+  alive->mOnDestroy = [&](HasThreadSafeWeak* aDyingObject) {
+    destructorRan = true;
+    EXPECT_TRUE(weak.IsDead()) << "no longer upgradable";
+    EXPECT_FALSE(weak.IsNull());
+    EXPECT_EQ(weak, aDyingObject) << "still compares equal";
+
+    ThreadSafeWeakPtr<HasThreadSafeWeak> weak2(aDyingObject);
+    EXPECT_TRUE(weak2.IsDead());
+    EXPECT_FALSE(weak2.IsNull());
+    EXPECT_EQ(weak, weak2) << "still compares equal";
+    EXPECT_NE(weak, nullptr) << "is not == nullptr";
+
+    EXPECT_TRUE(table.Contains(aDyingObject));
+    EXPECT_EQ(table.Get(aDyingObject), 1);
+
+    EXPECT_EQ(origHash, weak2.Hash());
+    EXPECT_EQ(origHash, weak.Hash());
+  };
+
+  EXPECT_FALSE(destructorRan);
+  alive = nullptr;
+  EXPECT_TRUE(destructorRan);
+
+  EXPECT_TRUE(table.Contains(weak));
+  EXPECT_EQ(table.Get(weak), 1);
+
+  table.Remove(weak);
+
+  EXPECT_FALSE(table.Contains(weak));
+  EXPECT_TRUE(table.Contains(nullptr));
 }

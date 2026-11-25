@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -270,7 +268,8 @@ int64_t FileBlobImpl::GetLastModified(ErrorResult& aRv) {
 
 const uint32_t sFileStreamFlags =
     nsIFileInputStream::CLOSE_ON_EOF | nsIFileInputStream::REOPEN_ON_REWIND |
-    nsIFileInputStream::DEFER_OPEN | nsIFileInputStream::SHARE_DELETE;
+    nsIFileInputStream::DEFER_OPEN | nsIFileInputStream::SHARE_DELETE |
+    nsIFileInputStream::NO_MAGIC_FILES;
 
 void FileBlobImpl::CreateInputStream(nsIInputStream** aStream,
                                      ErrorResult& aRv) const {

@@ -1,4 +1,3 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -46,7 +45,7 @@ class WhiteSpaceVisibilityKeeper final {
   using InsertTextTo = EditorBase::InsertTextTo;
   using LineBreakType = HTMLEditor::LineBreakType;
   using PointPosition = WSRunScanner::PointPosition;
-  using Scan = WSRunScanner::Scan;
+  using ReferHTMLDefaultStyle = WSRunScanner::ReferHTMLDefaultStyle;
   using TextFragmentData = WSRunScanner::TextFragmentData;
   using VisibleWhiteSpacesData = WSRunScanner::VisibleWhiteSpacesData;
 
@@ -237,20 +236,26 @@ class WhiteSpaceVisibilityKeeper final {
    * to white-spaces around the insertion point.
    *
    * @param aStringToInsert     The string to insert.
-   * @param aRangeToBeReplaced  The range to be replaced.
+   * @param aPointToInsert      The point where the string should be inserted.
+   * @param aExtantUnnecessaryLineBreak
+   *                            If there is an extant line break this should be
+   *                            set. It won't be deleted by this call.
    * @param aInsertTextTo       Whether forcibly creates a new `Text` node in
    *                            specific condition or use existing `Text` if
    *                            available.
+   * @param aEditingHost        The editing host at aPointToInsert.
    */
   template <typename EditorDOMPointType>
   [[nodiscard]] MOZ_CAN_RUN_SCRIPT static Result<InsertTextResult, nsresult>
   InsertText(HTMLEditor& aHTMLEditor, const nsAString& aStringToInsert,
              const EditorDOMPointType& aPointToInsert,
-             InsertTextTo aInsertTextTo) {
+             const Maybe<EditorLineBreak>& aExtantUnnecessaryLineBreak,
+             InsertTextTo aInsertTextTo, const Element& aEditingHost) {
     return WhiteSpaceVisibilityKeeper::
         InsertTextOrInsertOrUpdateCompositionString(
             aHTMLEditor, aStringToInsert, EditorDOMRange(aPointToInsert),
-            aInsertTextTo, InsertTextFor::NormalText);
+            aExtantUnnecessaryLineBreak, aInsertTextTo,
+            InsertTextFor::NormalText, aEditingHost);
   }
 
   /**
@@ -265,16 +270,23 @@ class WhiteSpaceVisibilityKeeper final {
    *                            If there is old composition string, this should
    *                            cover all of it.  Otherwise, this should be
    *                            collapsed and indicate the insertion point.
+   * @param aExtantUnnecessaryLineBreak
+   *                            If there is an extant line break this should be
+   *                            set. It won't be deleted by this call.
+   * @param aEditingHost        The editing host at aCompositionStringRange.
    */
   [[nodiscard]] MOZ_CAN_RUN_SCRIPT static Result<InsertTextResult, nsresult>
-  InsertOrUpdateCompositionString(HTMLEditor& aHTMLEditor,
-                                  const nsAString& aCompositionString,
-                                  const EditorDOMRange& aCompositionStringRange,
-                                  InsertTextFor aPurpose) {
+  InsertOrUpdateCompositionString(
+      HTMLEditor& aHTMLEditor, const nsAString& aCompositionString,
+      const EditorDOMRange& aCompositionStringRange,
+      const Maybe<EditorLineBreak>& aExtantUnnecessaryLineBreak,
+      InsertTextFor aPurpose, const Element& aEditingHost) {
     MOZ_ASSERT(EditorBase::InsertingTextForComposition(aPurpose));
     return InsertTextOrInsertOrUpdateCompositionString(
         aHTMLEditor, aCompositionString, aCompositionStringRange,
-        HTMLEditor::InsertTextTo::ExistingTextNodeIfAvailable, aPurpose);
+        aExtantUnnecessaryLineBreak,
+        HTMLEditor::InsertTextTo::ExistingTextNodeIfAvailable, aPurpose,
+        aEditingHost);
   }
 
   /**
@@ -297,19 +309,6 @@ class WhiteSpaceVisibilityKeeper final {
                                             const Element& aEditingHost);
 
  private:
-  /**
-   * ReplaceTextAndRemoveEmptyTextNodes() replaces the range between
-   * aRangeToReplace with aReplaceString simply.  Additionally, removes
-   * empty text nodes in the range.
-   *
-   * @param aRangeToReplace     Range to replace text.
-   * @param aReplaceString      The new string.  Empty string is allowed.
-   */
-  [[nodiscard]] MOZ_CAN_RUN_SCRIPT static nsresult
-  ReplaceTextAndRemoveEmptyTextNodes(
-      HTMLEditor& aHTMLEditor, const EditorDOMRangeInTexts& aRangeToReplace,
-      const nsAString& aReplaceString);
-
   /**
    * Normalize surrounding white-spaces of aPointToSplit.
    *
@@ -385,17 +384,23 @@ class WhiteSpaceVisibilityKeeper final {
    *                            normalizing the new composition string.
    *                            Therefore, this should match the range of the
    *                            latest composition string.
+   * @param aExtantUnnecessaryLineBreak
+   *                            If there is an extant line break this should be
+   *                            set. It won't be deleted by this call.
    * @param aInsertTextTo       Whether forcibly creates a new `Text` node in
    *                            specific condition or use existing `Text` if
    *                            available.
    * @param aPurpose            Whether it's handling normal text input or
    *                            updating composition.
+   * @param aEditingHost        The editing host at aRangeToBeReplaced.
    */
   [[nodiscard]] MOZ_CAN_RUN_SCRIPT static Result<InsertTextResult, nsresult>
   InsertTextOrInsertOrUpdateCompositionString(
       HTMLEditor& aHTMLEditor, const nsAString& aStringToInsert,
-      const EditorDOMRange& aRangeToBeReplaced, InsertTextTo aInsertTextTo,
-      InsertTextFor aPurpose);
+      const EditorDOMRange& aRangeToBeReplaced,
+      const Maybe<EditorLineBreak>& aExtantUnnecessaryLineBreak,
+      InsertTextTo aInsertTextTo, InsertTextFor aPurpose,
+      const Element& aEditingHost);
 };
 
 }  // namespace mozilla

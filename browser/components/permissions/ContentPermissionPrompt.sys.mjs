@@ -57,14 +57,22 @@ const ContentPermissionIntegration = {
       case "midi": {
         return new lazy.PermissionUI.MIDIPermissionPrompt(request);
       }
+      case "serial": {
+        return new lazy.PermissionUI.SerialPermissionPrompt(request);
+      }
       case "storage-access": {
         return new lazy.PermissionUI.StorageAccessPermissionPrompt(request);
       }
-      case "localhost": {
-        return new lazy.PermissionUI.LocalHostPermissionPrompt(request);
+      case "loopback-network": {
+        return new lazy.PermissionUI.LoopbackNetworkPermissionPrompt(request);
       }
       case "local-network": {
         return new lazy.PermissionUI.LocalNetworkPermissionPrompt(request);
+      }
+      case "speech-recognition-model-download": {
+        return new lazy.PermissionUI.SpeechRecognitionModelDownloadPermissionPrompt(
+          request
+        );
       }
     }
     return undefined;
@@ -94,14 +102,6 @@ ContentPermissionPrompt.prototype = {
    *        The request that we're to show a prompt for.
    */
   prompt(request) {
-    if (request.element && request.element.fxrPermissionPrompt) {
-      // For Firefox Reality on Desktop, switch to a different mechanism to
-      // prompt the user since fewer permissions are available and since many
-      // UI dependencies are not availabe.
-      request.element.fxrPermissionPrompt(request);
-      return;
-    }
-
     let type;
     try {
       // Only allow exactly one permission request here.

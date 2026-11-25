@@ -1,9 +1,10 @@
-/* -*- Mode: C++; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "txNodeSorter.h"
+
+#include <memory>
 
 #include "mozilla/CheckedInt.h"
 #include "mozilla/UniquePtrExtensions.h"
@@ -16,7 +17,6 @@
 #include "txXPathResultComparator.h"
 
 using mozilla::CheckedUint32;
-using mozilla::MakeUnique;
 using mozilla::MakeUniqueFallible;
 using mozilla::nsRFPService;
 using mozilla::RFPTarget;
@@ -41,7 +41,7 @@ nsresult txNodeSorter::addSortElement(Expr* aSelectExpr, Expr* aLangExpr,
                                       Expr* aDataTypeExpr, Expr* aOrderExpr,
                                       Expr* aCaseOrderExpr,
                                       txIEvalContext* aContext) {
-  UniquePtr<SortKey> key(new SortKey);
+  auto key = std::make_unique<SortKey>();
   nsresult rv = NS_OK;
 
   // Select
@@ -73,15 +73,11 @@ nsresult txNodeSorter::addSortElement(Expr* aSelectExpr, Expr* aLangExpr,
     // Text comparator
 
     // Language
-    nsAutoString lang;
+    nsAutoCStringN<6> lang;
     if (aLangExpr) {
-      rv = aLangExpr->evaluateToString(aContext, lang);
+      nsAutoStringN<6> utf16lang;
+      rv = aLangExpr->evaluateToString(aContext, utf16lang);
       NS_ENSURE_SUCCESS(rv, rv);
-    }
-    if (lang.IsEmpty() &&
-        aContext->getContextNode().OwnerDoc()->ShouldResistFingerprinting(
-            RFPTarget::JSLocale)) {
-      CopyUTF8toUTF16(nsRFPService::GetSpoofedJSLocale(), lang);
     }
 
     // Case-order
@@ -100,9 +96,11 @@ nsresult txNodeSorter::addSortElement(Expr* aSelectExpr, Expr* aLangExpr,
       }
     }
 
-    UniquePtr<txResultStringComparator> comparator =
-        MakeUnique<txResultStringComparator>(ascending, upperFirst);
-    rv = comparator->init(lang);
+    auto comparator =
+        std::make_unique<txResultStringComparator>(ascending, upperFirst);
+    rv = comparator->init(
+        lang, aContext->getContextNode().OwnerDoc()->ShouldResistFingerprinting(
+                  RFPTarget::JSLocale));
     NS_ENSURE_SUCCESS(rv, rv);
 
     key->mComparator = comparator.release();
@@ -154,7 +152,7 @@ nsresult txNodeSorter::sortNodeSet(txNodeSet* aNodes, txExecutionState* aEs,
     indexes[i] = i;
   }
 
-  auto nodeSetContext = MakeUnique<txNodeSetContext>(aNodes, aEs);
+  auto nodeSetContext = std::make_unique<txNodeSetContext>(aNodes, aEs);
 
   // Sort the indexarray
   SortData sortData{this, nodeSetContext.get(), sortValues.Elements(), NS_OK};

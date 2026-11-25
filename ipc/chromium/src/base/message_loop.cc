@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 // Copyright (c) 2009 The Chromium Authors. All rights reserved.
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
@@ -13,8 +11,10 @@
 #include "base/string_util.h"
 #include "base/thread_local.h"
 #include "mozilla/Atomics.h"
+#include "mozilla/MaybeLeakRefPtr.h"
 #include "mozilla/Mutex.h"
 #include "mozilla/ProfilerRunnable.h"
+#include "mozilla/TargetShutdownTaskSet.h"
 #include "nsIEventTarget.h"
 #include "nsITargetShutdownTask.h"
 #include "nsThreadUtils.h"
@@ -75,60 +75,56 @@ static LPTOP_LEVEL_EXCEPTION_FILTER GetTopSEHFilter() {
 
 //------------------------------------------------------------------------------
 
-class MessageLoop::EventTarget : public nsISerialEventTarget,
-                                 public nsITargetShutdownTask,
-                                 public MessageLoop::DestructionObserver {
+class MessageLoop::EventTarget final : public nsISerialEventTarget,
+                                       public nsITargetShutdownTask {
  public:
   NS_DECL_THREADSAFE_ISUPPORTS
   NS_DECL_NSIEVENTTARGET_FULL
 
   void TargetShutdown() override {
-    nsTArray<nsCOMPtr<nsITargetShutdownTask>> shutdownTasks;
+    TargetShutdownTaskSet::TasksArray shutdownTasks;
     {
       mozilla::MutexAutoLock lock(mMutex);
       if (mShutdownTasksRun) {
         return;
       }
-      mShutdownTasksRun = true;
-      shutdownTasks = std::move(mShutdownTasks);
-      mShutdownTasks.Clear();
+      shutdownTasks = mShutdownTasks.Extract();
     }
-
-    for (auto& task : shutdownTasks) {
+    for (const auto& task : shutdownTasks) {
       task->TargetShutdown();
     }
   }
 
   explicit EventTarget(MessageLoop* aLoop)
       : mMutex("MessageLoop::EventTarget"), mLoop(aLoop) {
-    aLoop->AddDestructionObserver(this);
+    mThread = PR_GetCurrentThread();
   }
 
- private:
-  virtual ~EventTarget() {
-    if (mLoop) {
-      mLoop->RemoveDestructionObserver(this);
-    }
-    MOZ_ASSERT(mShutdownTasks.IsEmpty());
-  }
-
-  void WillDestroyCurrentMessageLoop() override {
+  // Called by MessageLoop in its destructor, when it will never process another
+  // event. This disables queueing of further runnables.
+  //
+  // FIXME: At some point, we should consider aligning MessageLoop and nsThread,
+  // such that dispatches during shutdown are processed instead of being racily
+  // dropped or rejected.
+  void BeginDestroy() {
     {
       mozilla::MutexAutoLock lock(mMutex);
-      // The MessageLoop is being destroyed and we are called from its
-      // destructor There's no real need to remove ourselves from the
-      // destruction observer list. But it makes things look tidier.
-      mLoop->RemoveDestructionObserver(this);
       mLoop = nullptr;
     }
 
     TargetShutdown();
   }
 
+  // Called by MessageLoop in its destructor, when no further code will run on
+  // the thread.
+  void EndDestroy() { mThread = nullptr; }
+
+ private:
+  ~EventTarget() = default;
+
   mozilla::Mutex mMutex;
   bool mShutdownTasksRun MOZ_GUARDED_BY(mMutex) = false;
-  nsTArray<nsCOMPtr<nsITargetShutdownTask>> mShutdownTasks
-      MOZ_GUARDED_BY(mMutex);
+  TargetShutdownTaskSet mShutdownTasks MOZ_GUARDED_BY(mMutex);
   MessageLoop* mLoop MOZ_GUARDED_BY(mMutex);
 };
 
@@ -137,36 +133,36 @@ NS_IMPL_ISUPPORTS(MessageLoop::EventTarget, nsIEventTarget,
 
 NS_IMETHODIMP_(bool)
 MessageLoop::EventTarget::IsOnCurrentThreadInfallible() {
-  mozilla::MutexAutoLock lock(mMutex);
-  return mLoop == MessageLoop::current();
+  // This method is only going to be called if `mThread` is null, which
+  // only happens when the thread has exited the event loop.  Therefore, when
+  // we are called, we can never be on this thread.
+  return false;
 }
 
 NS_IMETHODIMP
 MessageLoop::EventTarget::IsOnCurrentThread(bool* aResult) {
-  *aResult = IsOnCurrentThreadInfallible();
+  *aResult = IsOnCurrentThread();
   return NS_OK;
 }
 
 NS_IMETHODIMP
 MessageLoop::EventTarget::DispatchFromScript(nsIRunnable* aEvent,
-                                             uint32_t aFlags) {
-  nsCOMPtr<nsIRunnable> event(aEvent);
-  return Dispatch(event.forget(), aFlags);
+                                             DispatchFlags aFlags) {
+  return Dispatch(do_AddRef(aEvent), aFlags);
 }
 
 NS_IMETHODIMP
 MessageLoop::EventTarget::Dispatch(already_AddRefed<nsIRunnable> aEvent,
-                                   uint32_t aFlags) {
+                                   DispatchFlags aFlags) {
+  mozilla::MaybeLeakRefPtr<nsIRunnable> event(std::move(aEvent),
+                                              aFlags & NS_DISPATCH_FALLIBLE);
+
   mozilla::MutexAutoLock lock(mMutex);
   if (!mLoop) {
     return NS_ERROR_NOT_INITIALIZED;
   }
 
-  if (aFlags != NS_DISPATCH_NORMAL) {
-    return NS_ERROR_NOT_IMPLEMENTED;
-  }
-
-  mLoop->PostTask(std::move(aEvent));
+  mLoop->PostTask(event.forget());
   return NS_OK;
 }
 
@@ -174,7 +170,7 @@ NS_IMETHODIMP
 MessageLoop::EventTarget::DelayedDispatch(already_AddRefed<nsIRunnable> aEvent,
                                           uint32_t aDelayMs) {
   mozilla::MutexAutoLock lock(mMutex);
-  if (!mLoop) {
+  if (!mLoop || mShutdownTasksRun) {
     return NS_ERROR_NOT_INITIALIZED;
   }
 
@@ -188,18 +184,22 @@ MessageLoop::EventTarget::RegisterShutdownTask(nsITargetShutdownTask* aTask) {
   if (!mLoop || mShutdownTasksRun) {
     return NS_ERROR_UNEXPECTED;
   }
-  MOZ_ASSERT(!mShutdownTasks.Contains(aTask));
-  mShutdownTasks.AppendElement(aTask);
+  mShutdownTasks.AddTask(aTask);
   return NS_OK;
 }
 
 NS_IMETHODIMP
 MessageLoop::EventTarget::UnregisterShutdownTask(nsITargetShutdownTask* aTask) {
   mozilla::MutexAutoLock lock(mMutex);
-  if (!mLoop || mShutdownTasksRun) {
+  if (!mLoop) {
     return NS_ERROR_UNEXPECTED;
   }
-  return mShutdownTasks.RemoveElement(aTask) ? NS_OK : NS_ERROR_UNEXPECTED;
+  return mShutdownTasks.RemoveTask(aTask);
+}
+
+nsIEventTarget::FeatureFlags MessageLoop::EventTarget::GetFeatures() {
+  // MessageLoop::EventTarget does not SUPPORTS_SHUTDOWN_TASK_DISPATCH.
+  return FeatureFlags::SUPPORTS_SHUTDOWN_TASKS;
 }
 
 //------------------------------------------------------------------------------
@@ -218,7 +218,7 @@ MessageLoop::MessageLoop(Type type, nsISerialEventTarget* aEventTarget)
       nestable_tasks_allowed_(true),
       exception_restoration_(false),
       incoming_queue_lock_("MessageLoop Incoming Queue Lock"),
-      state_(NULL),
+      state_(nullptr),
       run_depth_base_(1),
       shutting_down_(false),
 #ifdef XP_WIN
@@ -308,6 +308,8 @@ MessageLoop::MessageLoop(Type type, nsISerialEventTarget* aEventTarget)
 MessageLoop::~MessageLoop() {
   DCHECK(this == current());
 
+  mEventTarget->BeginDestroy();
+
   // Let interested parties have one last shot at accessing this.
   FOR_EACH_OBSERVER(DestructionObserver, destruction_observers_,
                     WillDestroyCurrentMessageLoop());
@@ -330,8 +332,10 @@ MessageLoop::~MessageLoop() {
   }
   DCHECK(!did_work);
 
+  mEventTarget->EndDestroy();
+
   // OK, now make it so that no one can find us.
-  get_tls_ptr().Set(NULL);
+  get_tls_ptr().Set(nullptr);
 }
 
 void MessageLoop::AddDestructionObserver(DestructionObserver* obs) {
@@ -427,7 +431,7 @@ void MessageLoop::PostTask_Helper(already_AddRefed<nsIRunnable> task,
     if (delay_ms) {
       rv = target->DelayedDispatch(std::move(task), delay_ms);
     } else {
-      rv = target->Dispatch(std::move(task), 0);
+      rv = target->Dispatch(std::move(task), NS_DISPATCH_NORMAL);
     }
     MOZ_ALWAYS_SUCCEEDS(rv);
     return;
@@ -634,7 +638,7 @@ MessageLoop::AutoRunState::AutoRunState(MessageLoop* loop) : loop_(loop) {
   // Initialize the other fields:
   quit_received = false;
 #if defined(XP_WIN)
-  dispatcher = NULL;
+  dispatcher = nullptr;
 #endif
 }
 

@@ -1,6 +1,4 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- * vim: set ts=8 sts=2 et sw=2 tw=80:
- * This Source Code Form is subject to the terms of the Mozilla Public
+/* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
@@ -90,6 +88,7 @@ class MOZ_RAII JitContext {
 
   bool isCompilingWasm_ = false;
   bool oom_ = false;
+  bool wasmFatalError_ = false;
 #endif
 
  public:
@@ -121,6 +120,8 @@ class MOZ_RAII JitContext {
   }
   bool hasOOM() { return oom_; }
   void setOOM() { oom_ = true; }
+  bool hasWasmFatalError() { return wasmFatalError_; }
+  void setWasmFatalError() { wasmFatalError_ = true; }
 
   bool inBaselineBackend() const { return inBaselineBackend_; }
   bool inIonBackend() const { return inIonBackend_; }

@@ -17,13 +17,10 @@ kind-dependencies:
     - toolchain
 
 only-for-build-platforms:
-    - linux-shippable/opt
-    - linux-devedition/opt
     - linux64-shippable/opt
     - linux64-devedition/opt
     - linux64-aarch64-shippable/opt
     - linux64-aarch64-devedition/opt
-    - linux/opt
     - linux64/opt
     - linux64-aarch64/opt
 
@@ -32,18 +29,14 @@ tasks:
         from-deps:
             group-by: single-with-filters
         shipping-phase: promote
-        worker-type: b-linux-gcp
+        worker-type: b-linux
         worker:
             docker-image:
                 in-tree: debian12-repackage
         mozharness:
-            run-as-root: true
-            use-caches: false
+            use-caches: [checkout]
             config:
                 by-build-platform:
-                    linux\b.*:
-                        - repackage/base.py
-                        - repackage/linux32_signed.py
                     linux64\b.*:
                         - repackage/base.py
                         - repackage/linux64_signed.py

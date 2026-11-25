@@ -1,6 +1,4 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- * vim: set ts=8 sts=2 et sw=2 tw=80:
- * This Source Code Form is subject to the terms of the Mozilla Public
+/* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
@@ -14,7 +12,6 @@
 #include <string_view>
 
 #include "builtin/temporal/Calendar.h"
-#include "builtin/temporal/Crash.h"
 #include "builtin/temporal/Instant.h"
 #include "builtin/temporal/PlainDate.h"
 #include "builtin/temporal/PlainDateTime.h"
@@ -79,7 +76,7 @@ class TemporalStringBuilder {
       case TemporalStringFormat::None:
         break;
     }
-    JS_CONSTEXPR_CRASH("invalid reserve amount");
+    MOZ_CRASH("invalid reserve amount");
   }
 
  public:
@@ -549,8 +546,15 @@ JSString* js::temporal::TemporalZonedDateTimeToString(
 
   // Step 7.
   int64_t offsetNanoseconds;
-  if (!GetOffsetNanosecondsFor(cx, timeZone, epochNs, &offsetNanoseconds)) {
-    return nullptr;
+  // Use time zone cache only if rounding leaves |epochNs| unchanged.
+  if (epochNs == zonedDateTime.epochNanoseconds()) {
+    if (!GetOffsetNanosecondsFor(cx, zonedDateTime, &offsetNanoseconds)) {
+      return nullptr;
+    }
+  } else {
+    if (!GetOffsetNanosecondsFor(cx, timeZone, epochNs, &offsetNanoseconds)) {
+      return nullptr;
+    }
   }
   MOZ_ASSERT(std::abs(offsetNanoseconds) < ToNanoseconds(TemporalUnit::Day));
 

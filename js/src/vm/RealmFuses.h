@@ -1,17 +1,18 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- * vim: set ts=8 sts=2 et sw=2 tw=80:
- * This Source Code Form is subject to the terms of the Mozilla Public
+/* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #ifndef vm_RealmFuses_h
 #define vm_RealmFuses_h
 
+#include "mozilla/Maybe.h"
+
 #include "vm/GuardFuse.h"
 #include "vm/InvalidatingFuse.h"
 
 namespace js {
 
+class GlobalObject;
 class NativeObject;
 struct RealmFuses;
 
@@ -48,10 +49,23 @@ class InvalidatingRealmFuse : public InvalidatingFuse {
 // Popped when one of the following fuses is popped:
 // - ArrayPrototypeIteratorFuse (for `Array.prototype[@@iterator]`)
 // - OptimizeArrayIteratorPrototypeFuse (for `%ArrayIteratorPrototype%`)
-struct OptimizeGetIteratorFuse final : public InvalidatingRealmFuse {
+struct OptimizeGetIteratorFuse final : public RealmFuse {
   virtual const char* name() override { return "OptimizeGetIteratorFuse"; }
   virtual bool checkInvariant(JSContext* cx) override;
   virtual void popFuse(JSContext* cx, RealmFuses& realmFuses) override;
+};
+
+// This fuse is similar to OptimizeGetIteratorFuse, but additionally guards
+// there are no DebugScripts in this realm.
+//
+// This ensures JSOp::OptimizeSpreadCall and JSOp::OptimizeGetIterator only
+// optimize packed arrays when no debugger hooks can run before later bytecode
+// ops that rely on the array still being packed.
+struct OptimizeGetIteratorBytecodeFuse final : public InvalidatingRealmFuse {
+  virtual const char* name() override {
+    return "OptimizeGetIteratorBytecodeFuse";
+  }
+  virtual bool checkInvariant(JSContext* cx) override;
 };
 
 struct PopsOptimizedGetIteratorFuse : public RealmFuse {
@@ -247,20 +261,6 @@ struct OptimizeRegExpPrototypeFuse final : public InvalidatingRealmFuse {
   virtual bool checkInvariant(JSContext* cx) override;
 };
 
-// Fuse used to optimize lookups of certain symbols on String.prototype.
-// If this fuse is intact, the following invariants must hold:
-//
-// - The builtin String.prototype object has the builtin Object.prototype object
-//   as prototype.
-// - Both String.prototype and Object.prototype don't have any of the following
-//   properties: Symbol.match, Symbol.replace, Symbol.search, Symbol.split.
-struct OptimizeStringPrototypeSymbolsFuse final : public InvalidatingRealmFuse {
-  virtual const char* name() override {
-    return "OptimizeStringPrototypeSymbolsFuse";
-  }
-  virtual bool checkInvariant(JSContext* cx) override;
-};
-
 // Guard used to optimize iterating over Map objects. If this fuse is intact,
 // the following invariants must hold:
 //
@@ -325,8 +325,47 @@ struct OptimizeWeakSetPrototypeAddFuse final : public RealmFuse {
   virtual bool checkInvariant(JSContext* cx) override;
 };
 
+// If this fuse is intact, the following invariant must hold:
+// - Object.prototype has no indexed properties (no dense elements and no
+//   sparse indexed properties).
+//
+// Object.prototype's [[Prototype]] is immutable and always null, so this fuse
+// also covers the prototype chain of Object.prototype.
+struct ObjectProtoHasNoIndexedPropsFuse final : public InvalidatingRealmFuse {
+  virtual const char* name() override {
+    return "ObjectProtoHasNoIndexedPropsFuse";
+  }
+  virtual bool checkInvariant(JSContext* cx) override;
+  virtual void popFuse(JSContext* cx, RealmFuses& realmFuses) override;
+};
+
+// If this fuse is intact, the following invariants must hold:
+// - Array.prototype has no indexed properties (no dense elements and no
+//   sparse indexed properties).
+// - Array.prototype's [[Prototype]] is Object.prototype.
+// - The Object.prototype fuse (ObjectProtoHasNoIndexedPropsFuse) is intact.
+struct ArrayProtoHasNoIndexedPropsFuse final : public InvalidatingRealmFuse {
+  virtual const char* name() override {
+    return "ArrayProtoHasNoIndexedPropsFuse";
+  }
+  virtual bool checkInvariant(JSContext* cx) override;
+};
+
+// If this fuse is intact, the following invariants must hold:
+// - String.prototype has no indexed properties (no dense elements and no
+//   sparse indexed properties).
+// - String.prototype's [[Prototype]] is Object.prototype.
+// - The Object.prototype fuse (ObjectProtoHasNoIndexedPropsFuse) is intact.
+struct StringProtoHasNoIndexedPropsFuse final : public InvalidatingRealmFuse {
+  virtual const char* name() override {
+    return "StringProtoHasNoIndexedPropsFuse";
+  }
+  virtual bool checkInvariant(JSContext* cx) override;
+};
+
 #define FOR_EACH_REALM_FUSE(FUSE)                                              \
   FUSE(OptimizeGetIteratorFuse, optimizeGetIteratorFuse)                       \
+  FUSE(OptimizeGetIteratorBytecodeFuse, optimizeGetIteratorBytecodeFuse)       \
   FUSE(OptimizeArrayIteratorPrototypeFuse, optimizeArrayIteratorPrototypeFuse) \
   FUSE(ArrayPrototypeIteratorFuse, arrayPrototypeIteratorFuse)                 \
   FUSE(ArrayPrototypeIteratorNextFuse, arrayPrototypeIteratorNextFuse)         \
@@ -345,13 +384,15 @@ struct OptimizeWeakSetPrototypeAddFuse final : public RealmFuse {
   FUSE(OptimizeTypedArraySpeciesFuse, optimizeTypedArraySpeciesFuse)           \
   FUSE(OptimizePromiseLookupFuse, optimizePromiseLookupFuse)                   \
   FUSE(OptimizeRegExpPrototypeFuse, optimizeRegExpPrototypeFuse)               \
-  FUSE(OptimizeStringPrototypeSymbolsFuse, optimizeStringPrototypeSymbolsFuse) \
   FUSE(OptimizeMapObjectIteratorFuse, optimizeMapObjectIteratorFuse)           \
   FUSE(OptimizeSetObjectIteratorFuse, optimizeSetObjectIteratorFuse)           \
   FUSE(OptimizeMapPrototypeSetFuse, optimizeMapPrototypeSetFuse)               \
   FUSE(OptimizeSetPrototypeAddFuse, optimizeSetPrototypeAddFuse)               \
   FUSE(OptimizeWeakMapPrototypeSetFuse, optimizeWeakMapPrototypeSetFuse)       \
-  FUSE(OptimizeWeakSetPrototypeAddFuse, optimizeWeakSetPrototypeAddFuse)
+  FUSE(OptimizeWeakSetPrototypeAddFuse, optimizeWeakSetPrototypeAddFuse)       \
+  FUSE(ObjectProtoHasNoIndexedPropsFuse, objectProtoHasNoIndexedPropsFuse)     \
+  FUSE(ArrayProtoHasNoIndexedPropsFuse, arrayProtoHasNoIndexedPropsFuse)       \
+  FUSE(StringProtoHasNoIndexedPropsFuse, stringProtoHasNoIndexedPropsFuse)
 
 struct RealmFuses {
   RealmFuses() = default;
@@ -398,23 +439,30 @@ struct RealmFuses {
   static int32_t offsetOfFuseWordRelativeToRealm(FuseIndex index);
   static const char* getFuseName(FuseIndex index);
 
-#ifdef DEBUG
   static bool isInvalidatingFuse(FuseIndex index) {
     switch (index) {
-#  define FUSE(Name, LowerName)                                      \
-    case FuseIndex::Name:                                            \
-      static_assert(std::is_base_of_v<RealmFuse, Name> ||            \
-                    std::is_base_of_v<InvalidatingRealmFuse, Name>); \
-      return std::is_base_of_v<InvalidatingRealmFuse, Name>;
+#define FUSE(Name, LowerName)                                      \
+  case FuseIndex::Name:                                            \
+    static_assert(std::is_base_of_v<RealmFuse, Name> ||            \
+                  std::is_base_of_v<InvalidatingRealmFuse, Name>); \
+    return std::is_base_of_v<InvalidatingRealmFuse, Name>;
       FOR_EACH_REALM_FUSE(FUSE)
-#  undef FUSE
+#undef FUSE
       default:
         break;
     }
     MOZ_CRASH("Fuse Not Found");
   }
-#endif
 };
+
+// If |proto| is one of |global|'s prototypes covered by the fuses for indexed
+// properties on prototypes, returns the index of its fuse.
+mozilla::Maybe<RealmFuses::FuseIndex> MaybeGetHasNoIndexedPropsFuseIndex(
+    GlobalObject* global, JSObject* proto);
+
+// Like MaybeGetHasNoIndexedPropsFuseIndex, but for |proto|'s own realm and
+// returns the fuse or nullptr.
+InvalidatingRealmFuse* MaybeGetHasNoIndexedPropsFuse(NativeObject* proto);
 
 }  // namespace js
 

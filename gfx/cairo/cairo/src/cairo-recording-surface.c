@@ -168,7 +168,7 @@ static int bbtree_left_or_right (struct bbtree *bbt,
 static struct bbtree *
 bbtree_new (const cairo_box_t *box, cairo_command_header_t *chain)
 {
-    struct bbtree *bbt = _cairo_malloc (sizeof (*bbt));
+    struct bbtree *bbt = _cairo_calloc (sizeof (*bbt));
     if (bbt == NULL)
 	return NULL;
     bbt->extents = *box;
@@ -399,7 +399,7 @@ cairo_recording_surface_create (cairo_content_t		 content,
 {
     cairo_recording_surface_t *surface;
 
-    surface = _cairo_malloc (sizeof (cairo_recording_surface_t));
+    surface = _cairo_calloc (sizeof (cairo_recording_surface_t));
     if (unlikely (surface == NULL))
 	return _cairo_surface_create_in_error (_cairo_error (CAIRO_STATUS_NO_MEMORY));
 
@@ -521,10 +521,9 @@ _cairo_recording_surface_region_array_destroy (cairo_recording_surface_t       *
     free (region_array);
 }
 
-static cairo_status_t
-_cairo_recording_surface_finish (void *abstract_surface)
+static void
+_cairo_recording_surface_reset (cairo_recording_surface_t *surface)
 {
-    cairo_recording_surface_t *surface = abstract_surface;
     cairo_command_t **elements;
     int i, num_elements;
     cairo_recording_regions_array_t *region_array, *region_next;
@@ -592,13 +591,27 @@ _cairo_recording_surface_finish (void *abstract_surface)
     }
 
     _cairo_array_fini (&surface->commands);
+    _cairo_array_init (&surface->commands, sizeof (cairo_command_t *));
 
     if (surface->bbtree.left)
 	bbtree_del (surface->bbtree.left);
     if (surface->bbtree.right)
 	bbtree_del (surface->bbtree.right);
+    surface->bbtree.left = surface->bbtree.right = NULL;
+    surface->bbtree.chain = INVALID_CHAIN;
 
     free (surface->indices);
+    surface->indices = NULL;
+    surface->num_indices = 0;
+}
+
+static cairo_status_t
+_cairo_recording_surface_finish (void *abstract_surface)
+{
+    cairo_recording_surface_t *surface = abstract_surface;
+
+    _cairo_recording_surface_reset (surface);
+    CAIRO_MUTEX_FINI (surface->mutex);
 
     return CAIRO_STATUS_SUCCESS;
 }
@@ -653,7 +666,7 @@ attach_proxy (cairo_surface_t *source,
 {
     struct proxy *proxy;
 
-    proxy = _cairo_malloc (sizeof (*proxy));
+    proxy = _cairo_calloc (sizeof (*proxy));
     if (unlikely (proxy == NULL))
 	return _cairo_surface_create_in_error (CAIRO_STATUS_NO_MEMORY);
 
@@ -772,21 +785,6 @@ _cairo_recording_surface_commit (cairo_recording_surface_t *surface,
     return _cairo_array_append (&surface->commands, &command);
 }
 
-static void
-_cairo_recording_surface_reset (cairo_recording_surface_t *surface)
-{
-    /* Reset the commands and temporaries */
-    _cairo_recording_surface_finish (surface);
-
-    surface->bbtree.left = surface->bbtree.right = NULL;
-    surface->bbtree.chain = INVALID_CHAIN;
-
-    surface->indices = NULL;
-    surface->num_indices = 0;
-
-    _cairo_array_init (&surface->commands, sizeof (cairo_command_t *));
-}
-
 static cairo_int_status_t
 _cairo_recording_surface_paint (void			  *abstract_surface,
 				cairo_operator_t	   op,
@@ -822,7 +820,7 @@ _cairo_recording_surface_paint (void			  *abstract_surface,
     if (unlikely (status))
 	return status;
 
-    command = _cairo_malloc (sizeof (cairo_command_paint_t));
+    command = _cairo_calloc (sizeof (cairo_command_paint_t));
     if (unlikely (command == NULL)) {
 	status = _cairo_error (CAIRO_STATUS_NO_MEMORY);
 	goto CLEANUP_COMPOSITE;
@@ -878,7 +876,7 @@ _cairo_recording_surface_mask (void			*abstract_surface,
     if (unlikely (status))
 	return status;
 
-    command = _cairo_malloc (sizeof (cairo_command_mask_t));
+    command = _cairo_calloc (sizeof (cairo_command_mask_t));
     if (unlikely (command == NULL)) {
 	status = _cairo_error (CAIRO_STATUS_NO_MEMORY);
 	goto CLEANUP_COMPOSITE;
@@ -946,7 +944,7 @@ _cairo_recording_surface_stroke (void			*abstract_surface,
     if (unlikely (status))
 	return status;
 
-    command = _cairo_malloc (sizeof (cairo_command_stroke_t));
+    command = _cairo_calloc (sizeof (cairo_command_stroke_t));
     if (unlikely (command == NULL)) {
 	status = _cairo_error (CAIRO_STATUS_NO_MEMORY);
 	goto CLEANUP_COMPOSITE;
@@ -1022,7 +1020,7 @@ _cairo_recording_surface_fill (void			*abstract_surface,
     if (unlikely (status))
 	return status;
 
-    command = _cairo_malloc (sizeof (cairo_command_fill_t));
+    command = _cairo_calloc (sizeof (cairo_command_fill_t));
     if (unlikely (command == NULL)) {
 	status = _cairo_error (CAIRO_STATUS_NO_MEMORY);
 	goto CLEANUP_COMPOSITE;
@@ -1104,7 +1102,7 @@ _cairo_recording_surface_show_text_glyphs (void				*abstract_surface,
     if (unlikely (status))
 	return status;
 
-    command = _cairo_malloc (sizeof (cairo_command_show_text_glyphs_t));
+    command = _cairo_calloc (sizeof (cairo_command_show_text_glyphs_t));
     if (unlikely (command == NULL)) {
 	status = _cairo_error (CAIRO_STATUS_NO_MEMORY);
 	goto CLEANUP_COMPOSITE;
@@ -1154,6 +1152,10 @@ _cairo_recording_surface_show_text_glyphs (void				*abstract_surface,
 
     command->cluster_flags = cluster_flags;
 
+    status = scaled_font->status;
+    if (unlikely (status))
+	goto CLEANUP_ARRAYS;
+
     command->scaled_font = cairo_scaled_font_reference (scaled_font);
 
     status = _cairo_recording_surface_commit (surface, &command->header);
@@ -1193,7 +1195,7 @@ _cairo_recording_surface_tag (void			 *abstract_surface,
 
     surface->has_tags = TRUE;
 
-    command = calloc (1, sizeof (cairo_command_tag_t));
+    command = _cairo_calloc (sizeof (cairo_command_tag_t));
     if (unlikely (command == NULL)) {
 	return _cairo_error (CAIRO_STATUS_NO_MEMORY);
     }
@@ -1267,7 +1269,7 @@ _cairo_recording_surface_copy__paint (cairo_recording_surface_t *surface,
     cairo_command_paint_t *command;
     cairo_status_t status;
 
-    command = _cairo_malloc (sizeof (*command));
+    command = _cairo_calloc (sizeof (*command));
     if (unlikely (command == NULL)) {
 	status = _cairo_error (CAIRO_STATUS_NO_MEMORY);
 	goto err;
@@ -1301,7 +1303,7 @@ _cairo_recording_surface_copy__mask (cairo_recording_surface_t *surface,
     cairo_command_mask_t *command;
     cairo_status_t status;
 
-    command = _cairo_malloc (sizeof (*command));
+    command = _cairo_calloc (sizeof (*command));
     if (unlikely (command == NULL)) {
 	status = _cairo_error (CAIRO_STATUS_NO_MEMORY);
 	goto err;
@@ -1342,7 +1344,7 @@ _cairo_recording_surface_copy__stroke (cairo_recording_surface_t *surface,
     cairo_command_stroke_t *command;
     cairo_status_t status;
 
-    command = _cairo_malloc (sizeof (*command));
+    command = _cairo_calloc (sizeof (*command));
     if (unlikely (command == NULL)) {
 	status = _cairo_error (CAIRO_STATUS_NO_MEMORY);
 	goto err;
@@ -1394,7 +1396,7 @@ _cairo_recording_surface_copy__fill (cairo_recording_surface_t *surface,
     cairo_command_fill_t *command;
     cairo_status_t status;
 
-    command = _cairo_malloc (sizeof (*command));
+    command = _cairo_calloc (sizeof (*command));
     if (unlikely (command == NULL)) {
 	status = _cairo_error (CAIRO_STATUS_NO_MEMORY);
 	goto err;
@@ -1438,7 +1440,7 @@ _cairo_recording_surface_copy__glyphs (cairo_recording_surface_t *surface,
     cairo_command_show_text_glyphs_t *command;
     cairo_status_t status;
 
-    command = _cairo_malloc (sizeof (*command));
+    command = _cairo_calloc (sizeof (*command));
     if (unlikely (command == NULL)) {
 	status = _cairo_error (CAIRO_STATUS_NO_MEMORY);
 	goto err;
@@ -1516,7 +1518,7 @@ _cairo_recording_surface_copy__tag (cairo_recording_surface_t *surface,
     cairo_command_tag_t *command;
     cairo_status_t status;
 
-    command = calloc (1, sizeof (*command));
+    command = _cairo_calloc (sizeof (*command));
     if (unlikely (command == NULL)) {
 	status = _cairo_error (CAIRO_STATUS_NO_MEMORY);
 	goto err;
@@ -1623,7 +1625,7 @@ _cairo_recording_surface_snapshot (void *abstract_other)
     cairo_recording_surface_t *surface;
     cairo_status_t status;
 
-    surface = _cairo_malloc (sizeof (cairo_recording_surface_t));
+    surface = _cairo_calloc (sizeof (cairo_recording_surface_t));
     if (unlikely (surface == NULL))
 	return _cairo_surface_create_in_error (_cairo_error (CAIRO_STATUS_NO_MEMORY));
 
@@ -1731,7 +1733,7 @@ _cairo_recording_surface_regions_allocate_unique_id (void)
 	unique_id = 1;
     return unique_id;
 #else
-    cairo_atomic_int_t old, id;
+    int old, id;
 
     do {
 	old = _cairo_atomic_uint_get (&unique_id);
@@ -1772,7 +1774,7 @@ _cairo_recording_surface_region_array_attach (cairo_surface_t *abstract_surface,
 
     assert (_cairo_surface_is_recording (abstract_surface));
 
-    region_array = _cairo_malloc (sizeof (cairo_recording_regions_array_t));
+    region_array = _cairo_calloc (sizeof (cairo_recording_regions_array_t));
     if (region_array == NULL) {
 	*id = 0;
         return _cairo_error (CAIRO_STATUS_NO_MEMORY);

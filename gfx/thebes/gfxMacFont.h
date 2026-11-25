@@ -1,15 +1,14 @@
-/* -*- Mode: C++; tab-width: 20; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- * This Source Code Form is subject to the terms of the Mozilla Public
+/* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #ifndef GFX_MACFONT_H
 #define GFX_MACFONT_H
 
-#include "mozilla/MemoryReporting.h"
-#include "gfxFont.h"
 #include <CoreText/CoreText.h>
 
+#include "gfxFont.h"
+#include "mozilla/MemoryReporting.h"
 #include "mozilla/gfx/UnscaledFontMac.h"
 
 class CTFontEntry;
@@ -25,7 +24,7 @@ class gfxMacFont final : public gfxFont {
   RunMetrics Measure(const gfxTextRun* aTextRun, uint32_t aStart, uint32_t aEnd,
                      BoundingBoxType aBoundingBoxType,
                      DrawTarget* aDrawTargetForTightBoundingBox,
-                     Spacing* aSpacing,
+                     Spacing* aSpacing, nscoord aLetterSpacing,
                      mozilla::gfx::ShapedTextFlags aOrientation) override;
 
   // We need to provide hinted (non-linear) glyph widths if using a font
@@ -57,16 +56,13 @@ class gfxMacFont final : public gfxFont {
  protected:
   ~gfxMacFont() override;
 
-  const Metrics& GetHorizontalMetrics() const override { return mMetrics; }
-
   // override to prefer CoreText shaping with fonts that depend on AAT
-  bool ShapeText(DrawTarget* aDrawTarget, const char16_t* aText,
-                 uint32_t aOffset, uint32_t aLength, Script aScript,
-                 nsAtom* aLanguage, bool aVertical, RoundingFlags aRounding,
-                 gfxShapedText* aShapedText) override;
+  bool ShapeText(const char16_t* aText, uint32_t aOffset, uint32_t aLength,
+                 Script aScript, nsAtom* aLanguage, bool aVertical,
+                 RoundingFlags aRounding, gfxShapedText* aShapedText) override;
 
-  void InitMetrics();
-  void InitMetricsFromPlatform();
+  bool InitMetricsFromPlatform() override;
+  void FinishInitFontMetrics() override;
 
   // Get width and glyph ID for a character; uses aConvFactor
   // to convert font units as returned by CG to actual dimensions
@@ -81,8 +77,6 @@ class gfxMacFont final : public gfxFont {
   CTFontRef mCTFont;
 
   mozilla::UniquePtr<gfxFontShaper> mCoreTextShaper;
-
-  Metrics mMetrics;
 
   bool mVariationFont;  // true if font has OpenType variations
 };

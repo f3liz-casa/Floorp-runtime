@@ -1,4 +1,4 @@
-# Telemetry
+# DevTools telemetry
 
 We use telemetry to get metrics of usage of the different features and panels in DevTools. This will help us take better, informed decisions when prioritising our work.
 
@@ -42,7 +42,7 @@ If it's the first time you add one of these, it's advised to follow the style of
 
 New data types have been added over the years, so it's quite feasible that some of our probes are not the most suitable nowadays.
 
-There's more information about types (and telemetry in general) on [this page](https://firefox-source-docs.mozilla.org/toolkit/components/telemetry/telemetry/start/adding-a-new-probe.html) and [this other page](https://firefox-source-docs.mozilla.org/toolkit/components/telemetry/telemetry/collection/index.html).
+There's more information about types (and telemetry in general) on {doc}`this page </toolkit/components/telemetry/start/adding-a-new-probe>` and {doc}`this other page </toolkit/components/telemetry/obsolete/collection/index>`.
 
 And of course, in case of doubt, ask!
 
@@ -52,7 +52,7 @@ Our entries are prefixed with `DEVTOOLS_`. For example:
 
 ```
   "DEVTOOLS_DOM_OPENED_COUNT": {
-    "alert_emails": ["dev-developer-tools@lists.mozilla.org"],
+    "alert_emails": ["devtools-telemetry-alerts@mozilla.com"],
     "expires_in_version": "never",
     "kind": "count",
     "bug_numbers": [1343501],
@@ -60,7 +60,7 @@ Our entries are prefixed with `DEVTOOLS_`. For example:
     "releaseChannelCollection": "opt-out"
   },
   "DEVTOOLS_DOM_TIME_ACTIVE_SECONDS": {
-    "alert_emails": ["dev-developer-tools@lists.mozilla.org"],
+    "alert_emails": ["devtools-telemetry-alerts@mozilla.com"],
     "expires_in_version": "never",
     "kind": "exponential",
     "bug_numbers": [1343501],
@@ -86,7 +86,7 @@ devtools.toolbar.eyedropper:
     expires: never
     kind: uint
     notification_emails:
-      - dev-developer-tools@lists.mozilla.org
+      - devtools-telemetry-alerts@mozilla.com
     release_channel_collection: opt-out
     record_in_processes:
       - 'main'
@@ -100,7 +100,7 @@ devtools.copy.unique.css.selector:
     expires: "57"
     kind: uint
     notification_emails:
-      - dev-developer-tools@lists.mozilla.org
+      - devtools-telemetry-alerts@mozilla.com
     release_channel_collection: opt-out
     record_in_processes:
       - 'main'
@@ -115,7 +115,7 @@ devtools.main:
   open:
     objects: ["tools"]
     bug_numbers: [1416024]
-    notification_emails: ["dev-developer-tools@lists.mozilla.org", "hkirschner@mozilla.com"]
+    notification_emails: ["devtools-telemetry-alerts@mozilla.com"]
     record_in_processes: ["main"]
     description: User opens devtools toolbox.
     release_channel_collection: opt-out
@@ -154,6 +154,7 @@ Create a telemetry instance on the tool constructor:
 ```js
 this._telemetry = new Telemetry({ useSessionId: true });
 ```
+
 `useSessionId` allows to aggregate all records behind a randomly unique "session_id"
 extra attribute. For example, this helps aggregate all data recorded for one precise
 toolbox instance.

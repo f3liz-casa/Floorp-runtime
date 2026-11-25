@@ -1,6 +1,12 @@
-/* -*- Mode: indent-tabs-mode: nil; js-indent-level: 2 -*- */
-/* vim: set sts=2 sw=2 et tw=80: */
 "use strict";
+
+// Some linux WMs can't draw alpha-transparent rounded corners, so the panel
+// falls back to square corners regardless of Nova (see the -moz-platform and
+// -moz-gtk-csd-transparency-available checks in popup.css and
+// extension-popup-panel.css).
+const isLinuxWithoutCSDTransparency =
+  AppConstants.platform == "linux" &&
+  !window.matchMedia("(-moz-gtk-csd-transparency-available)").matches;
 
 add_task(async function testPopupBorderRadius() {
   let extension = ExtensionTestUtils.loadExtension({
@@ -35,10 +41,18 @@ add_task(async function testPopupBorderRadius() {
   await extension.startup();
 
   let widget = getBrowserActionWidget(extension);
-  // If the panel doesn't allows embedding in subview then
-  // radius will be 0, otherwise 8.  In practice we always
-  // disallow subview.
-  let expectedRadius = widget.disallowSubView ? "8px" : "0px";
+
+  let defaultRadius = "24px";
+
+  // If the panel is embedded in subview (in practive we always disallow
+  // subviews since the extensions action button can't be overflowed in
+  // the default overfow panel), or Firefox is running on a Linux WMs that
+  // can't draw alpha-transparent rounded corners, then the panel radius
+  // is expected to be 0.
+  let expectedRadius =
+    !widget.disallowSubView || isLinuxWithoutCSDTransparency
+      ? "0px"
+      : defaultRadius;
 
   async function testPanel(browser, standAlone = true) {
     let panel = getPanelForNode(browser);
@@ -73,19 +87,23 @@ add_task(async function testPopupBorderRadius() {
         is(
           viewStyle[prop],
           panelStyle[prop],
-          `Panel and view ${prop} should be the same`
+          `Panel and view ${prop} should be the same (${expectedRadius})`
         );
         is(
           bodyStyle.get(prop),
           panelStyle[prop],
-          `Panel and body ${prop} should be the same`
+          `Panel and body ${prop} should be the same (${expectedRadius})`
         );
       } else {
-        is(viewStyle[prop], expectedRadius, `View node ${prop} should be 0px`);
+        is(
+          viewStyle[prop],
+          expectedRadius,
+          `View node ${prop} should be ${expectedRadius}`
+        );
         is(
           bodyStyle.get(prop),
           expectedRadius,
-          `Body node ${prop} should be 0px`
+          `Body node ${prop} should be ${expectedRadius}`
         );
       }
     }
@@ -98,47 +116,6 @@ add_task(async function testPopupBorderRadius() {
     let browser = await awaitExtensionPanel(extension);
     await testPanel(browser);
     await closeBrowserAction(extension);
-  }
-
-  {
-    info("Test overflowed browserAction popup");
-    const kForceOverflowWidthPx = 450;
-    let overflowPanel = document.getElementById("widget-overflow");
-
-    let originalWindowWidth = window.outerWidth;
-    let navbar = document.getElementById(CustomizableUI.AREA_NAVBAR);
-    ok(
-      !navbar.hasAttribute("overflowing"),
-      "Should start with a non-overflowing toolbar."
-    );
-    window.resizeTo(kForceOverflowWidthPx, window.outerHeight);
-
-    await TestUtils.waitForCondition(() => navbar.hasAttribute("overflowing"));
-    ok(
-      navbar.hasAttribute("overflowing"),
-      "Should have an overflowing toolbar."
-    );
-
-    await window.gUnifiedExtensions.togglePanel();
-
-    clickBrowserAction(extension);
-    let browser = await awaitExtensionPanel(extension);
-
-    is(
-      overflowPanel.state,
-      "closed",
-      "The widget overflow panel should not be open."
-    );
-
-    await testPanel(browser, false);
-    await closeBrowserAction(extension);
-
-    window.resizeTo(originalWindowWidth, window.outerHeight);
-    await TestUtils.waitForCondition(() => !navbar.hasAttribute("overflowing"));
-    ok(
-      !navbar.hasAttribute("overflowing"),
-      "Should not have an overflowing toolbar."
-    );
   }
 
   {

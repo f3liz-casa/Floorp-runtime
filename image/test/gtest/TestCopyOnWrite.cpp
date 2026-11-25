@@ -2,9 +2,8 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#include "gtest/gtest.h"
-
 #include "CopyOnWrite.h"
+#include "gtest/gtest.h"
 
 using namespace mozilla;
 using namespace mozilla::image;
@@ -193,7 +192,7 @@ TEST(ImageCopyOnWrite, WriteRecursive)
 
             // Make sure Read() inside a Write() fails.
             cow.Read(
-                [](const Value* aValue) {
+                [](const Value* /*aValue*/) {
                   // This gets called if we can read. We shouldn't get here.
                   EXPECT_TRUE(false);
                 },
@@ -204,7 +203,7 @@ TEST(ImageCopyOnWrite, WriteRecursive)
 
             // Make sure Write() inside a Write() fails.
             cow.Write(
-                [](Value* aValue) {
+                [](Value* /*aValue*/) {
                   // This gets called if we can write. We shouldn't get here.
                   EXPECT_TRUE(false);
                 },

@@ -1,4 +1,3 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -6,15 +5,15 @@
 #ifndef mozilla_layers_NativeLayerWayland_h
 #define mozilla_layers_NativeLayerWayland_h
 
-#include <deque>
-#include <unordered_map>
-
+#include "mozilla/Atomics.h"
 #include "mozilla/Mutex.h"
 #include "mozilla/layers/NativeLayer.h"
 #include "mozilla/layers/SurfacePoolWayland.h"
 #include "mozilla/widget/DMABufFormats.h"
 #include "nsRegion.h"
 #include "nsTArray.h"
+
+class DMABufSurfaceRGBA;
 
 namespace mozilla::wr {
 class RenderDMABUFTextureHost;
@@ -43,6 +42,7 @@ struct LayerState {
   // mFrontBuffer was changed and we need to commit it to Wayland compositor
   // to show new content.
   bool mMutatedFrontBuffer : 1;
+
   // Was rendered in last cycle.
   bool mRenderedLastCycle : 1;
 
@@ -66,11 +66,13 @@ class NativeLayerRootWayland final : public NativeLayerRoot {
       RefPtr<widget::WaylandSurface> aWaylandSurface);
 
   // Overridden methods
+  NativeLayerRootWayland* AsNativeLayerRootWayland() override { return this; }
   already_AddRefed<NativeLayer> CreateLayer(
       const gfx::IntSize& aSize, bool aIsOpaque,
       SurfacePoolHandle* aSurfacePoolHandle) override;
   already_AddRefed<NativeLayer> CreateLayerForExternalTexture(
       bool aIsOpaque) override;
+  UniquePtr<NativeLayerRootSnapshotter> CreateSnapshotter() override;
 
   void AppendLayer(NativeLayer* aLayer) override;
   void RemoveLayer(NativeLayer* aLayer) override;
@@ -86,12 +88,15 @@ class NativeLayerRootWayland final : public NativeLayerRoot {
     return mRootSurface;
   }
 
-  RefPtr<widget::DRMFormat> GetDRMFormat() { return mDRMFormat; }
+  already_AddRefed<widget::DRMFormat> GetDRMFormat() {
+    return do_AddRef(static_cast<widget::DRMFormat*>(mDRMFormat));
+  }
+  void SetDRMFormat(widget::DRMFormat* aFormat);
 
-  void FrameCallbackHandler(uint32_t aTime);
+  void VSyncCallbackHandler(uint32_t aTime, bool aEmulated);
 
   RefPtr<widget::WaylandBuffer> BorrowExternalBuffer(
-      RefPtr<DMABufSurface> aDMABufSurface);
+      RefPtr<BufferSurface> aBufferSurface);
 
 #ifdef MOZ_LOGGING
   nsAutoCString GetDebugTag() const;
@@ -112,6 +117,11 @@ class NativeLayerRootWayland final : public NativeLayerRoot {
     mIsFullscreen = aIsFullscreen;
   }
 
+  NativeLayerWaylandRender* GetLayerForSnapshot();
+
+  void SetGLContext(gl::GLContext* aGL) { mGL = aGL; }
+  gl::GLContext* gl() { return mGL; }
+
  private:
   ~NativeLayerRootWayland();
 
@@ -121,6 +131,9 @@ class NativeLayerRootWayland final : public NativeLayerRoot {
   bool IsEmptyLocked(const widget::WaylandSurfaceLock& aProofOfLock);
   void ClearLayersLocked(const widget::WaylandSurfaceLock& aProofOfLock);
 
+  bool CommitToScreenLocked(widget::WaylandSurfaceLock& aLock);
+  void ConfigureScaleLocked(widget::WaylandSurfaceLock& aProofOfLock);
+
 #ifdef MOZ_LOGGING
   void LogStatsLocked(const widget::WaylandSurfaceLock& aProofOfLock);
 #endif
@@ -128,6 +141,8 @@ class NativeLayerRootWayland final : public NativeLayerRoot {
 #ifdef MOZ_LOGGING
   void* mLoggingWidget = nullptr;
 #endif
+
+  RefPtr<gl::GLContext> mGL;
 
   // WaylandSurface of nsWindow (our root window).
   // This WaylandSurface is owned by nsWindow so we don't map/unmap it
@@ -137,11 +152,11 @@ class NativeLayerRootWayland final : public NativeLayerRoot {
   RefPtr<widget::WaylandSurface> mRootSurface;
 
   // Copy of DRM format we use to create DMABuf surfaces
-  RefPtr<widget::DRMFormat> mDRMFormat;
+  Atomic<widget::DRMFormat*> mDRMFormat{nullptr};
 
   // Empty buffer attached to mSurface. We need to have something
   // attached to make mSurface and all child visible.
-  RefPtr<widget::WaylandBufferSHM> mTmpBuffer;
+  RefPtr<widget::WaylandBuffer> mTmpBuffer;
 
   // Child layers attached to this root, they're all on the same level
   // so all child layers are attached to mContainer as subsurfaces.
@@ -160,7 +175,7 @@ class NativeLayerRootWayland final : public NativeLayerRoot {
 
   // External buffers (DMABuf) used by the layers.
   // We want to cache and reuse wl_buffer of external images.
-  nsTArray<widget::WaylandBufferDMABUFHolder> mExternalBuffers;
+  nsTArray<widget::WaylandBufferHolder> mExternalBuffers;
 
   // We're between CompositorBeginFrame() / CompositorEndFrame() calls.
   mozilla::Atomic<bool, mozilla::Relaxed> mFrameInProcess{false};
@@ -174,6 +189,8 @@ class NativeLayerRootWayland final : public NativeLayerRoot {
   bool mRootAllLayersRendered = false;
   bool mMainThreadUpdateQueued = false;
   bool mIsFullscreen = false;
+  // We're missing commit to root surface
+  bool mMissingRootCommit = false;
 };
 
 class NativeLayerWayland : public NativeLayer {
@@ -206,7 +223,7 @@ class NativeLayerWayland : public NativeLayer {
 
   void RenderLayer(double aScale);
   // TODO
-  GpuFence* GetGpuFence() override { return nullptr; }
+  RefPtr<GpuFence> GetGpuFence() override { return nullptr; }
 
   RefPtr<widget::WaylandSurface> GetWaylandSurface() { return mSurface; }
 
@@ -217,7 +234,8 @@ class NativeLayerWayland : public NativeLayer {
   //
   // Also Unmap() needs to be finished on main thread.
   bool IsMapped();
-  bool Map(widget::WaylandSurfaceLock* aParentWaylandSurfaceLock);
+  bool IsVisible();
+  bool Map(widget::WaylandSurfaceLock& aParentWaylandSurfaceLock);
   void Unmap();
 
   void UpdateOnMainThread();
@@ -227,7 +245,7 @@ class NativeLayerWayland : public NativeLayer {
   void ForceCommit();
 
   void PlaceAbove(NativeLayerWayland* aLowerLayer);
-
+  void SetCoordinatesScale(uint32_t aCoordinatesScale);
 #ifdef MOZ_LOGGING
   nsAutoCString GetDebugTag() const;
 #endif
@@ -266,6 +284,8 @@ class NativeLayerWayland : public NativeLayer {
 
  protected:
   ~NativeLayerWayland();
+
+  virtual RefPtr<BufferSurface> GetSurface() { return nullptr; }
 
   // There's a cycle dependency here as NativeLayerRootWayland holds strong
   // reference to NativeLayerWayland and vice versa.
@@ -321,6 +341,9 @@ class NativeLayerWayland : public NativeLayer {
   // by WaylandSurface itself.
   Atomic<MainThreadUpdate, mozilla::Relaxed> mNeedsMainThreadUpdate{
       MainThreadUpdate::None};
+
+  void SetColorProperties(const widget::WaylandSurfaceLock& aSurfaceLock,
+                          widget::WaylandSurface* aParentSurface);
 };
 
 class NativeLayerWaylandRender final : public NativeLayerWayland {
@@ -342,6 +365,9 @@ class NativeLayerWaylandRender final : public NativeLayerWayland {
   NativeLayerWaylandRender(NativeLayerRootWayland* aRootLayer,
                            const gfx::IntSize& aSize, bool aIsOpaque,
                            SurfacePoolHandleWayland* aSurfacePoolHandle);
+
+  void CopyFrontBufferToFrameBuffer(GLuint aFB);
+  gl::GLContext* gl();
 
  private:
   ~NativeLayerWaylandRender() override;
@@ -372,10 +398,12 @@ class NativeLayerWaylandExternal final : public NativeLayerWayland {
   void NotifySurfaceReady() override {};
   void AttachExternalImage(wr::RenderTextureHost* aExternalImage) override;
   bool IsFrontBufferChanged() override;
-  RefPtr<DMABufSurface> GetSurface();
 
   NativeLayerWaylandExternal(NativeLayerRootWayland* aRootLayer,
                              bool aIsOpaque);
+
+ protected:
+  RefPtr<BufferSurface> GetSurface() override;
 
  private:
   ~NativeLayerWaylandExternal() override;
@@ -386,7 +414,42 @@ class NativeLayerWaylandExternal final : public NativeLayerWayland {
   bool CommitFrontBufferToScreenLocked(
       const widget::WaylandSurfaceLock& aProofOfLock) override;
 
-  RefPtr<wr::RenderDMABUFTextureHost> mTextureHost;
+  uintptr_t mLastSurface = 0;
+  RefPtr<wr::RenderTextureHost> mTextureHost;
+};
+
+class NativeLayerRootSnapshotterWayland final
+    : public NativeLayerRootSnapshotter {
+ public:
+  static UniquePtr<NativeLayerRootSnapshotterWayland> Create(
+      NativeLayerRootWayland* aRootLayer, gl::GLContext* aGL);
+  virtual ~NativeLayerRootSnapshotterWayland();
+
+  bool ReadbackPixels(const gfx::IntSize& aReadbackSize,
+                      gfx::SurfaceFormat aReadbackFormat,
+                      const Range<uint8_t>& aReadbackBuffer) override;
+  already_AddRefed<profiler_screenshots::RenderSource> GetWindowContents(
+      const gfx::IntSize& aWindowSize) override;
+  already_AddRefed<profiler_screenshots::DownscaleTarget> CreateDownscaleTarget(
+      const gfx::IntSize& aSize) override;
+  already_AddRefed<profiler_screenshots::AsyncReadbackBuffer>
+  CreateAsyncReadbackBuffer(const gfx::IntSize& aSize) override;
+
+#ifdef MOZ_LOGGING
+  nsAutoCString GetDebugTag() const;
+#endif
+
+ protected:
+  NativeLayerRootSnapshotterWayland(NativeLayerRootWayland* aRootLayer,
+                                    gl::GLContext* aGL);
+  void UpdateSnapshot(const gfx::IntSize& aSize);
+
+  RefPtr<NativeLayerRootWayland> mRootLayer;
+  RefPtr<NativeLayerWaylandRender> mLayerForSnapshot;
+  RefPtr<gl::GLContext> mGL;
+
+  // Can be null. Created and updated in UpdateSnapshot.
+  RefPtr<RenderSourceNLRS> mSnapshot;
 };
 
 }  // namespace mozilla::layers

@@ -1,19 +1,16 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#include "gtest/gtest.h"
-
-#include "mozilla/gfx/2D.h"
-#include "skia/src/core/SkColorPriv.h"  // for SkPMSrcOver
 #include "Common.h"
 #include "Decoder.h"
 #include "DecoderFactory.h"
 #include "SourceBuffer.h"
 #include "SurfaceFilters.h"
 #include "SurfacePipe.h"
+#include "gtest/gtest.h"
+#include "mozilla/gfx/2D.h"
+#include "skia/src/core/SkColorPriv.h"  // for SkPMSrcOver
 
 using namespace mozilla;
 using namespace mozilla::gfx;
@@ -120,7 +117,7 @@ static void TestWithBlendAnimationFilterClear(BlendMethod aBlendMethod) {
       /* aFrameNum */ 0, BlendMethod::SOURCE, DisposalMethod::KEEP};
   RawAccessFrameRef frame0 = WithBlendAnimationFilter(
       decoder, params0, IntSize(100, 100),
-      [](image::Decoder* aDecoder, SurfaceFilter* aFilter) {
+      [](image::Decoder* /*aDecoder*/, SurfaceFilter* aFilter) {
         auto result = aFilter->WritePixels<uint32_t>(
             [&] { return AsVariant(BGRAColor::Green().AsPixel()); });
         EXPECT_EQ(WriteState::FINISHED, result);
@@ -132,7 +129,7 @@ static void TestWithBlendAnimationFilterClear(BlendMethod aBlendMethod) {
       /* aFrameNum */ 1, BlendMethod::SOURCE, DisposalMethod::CLEAR};
   RawAccessFrameRef frame1 = WithBlendAnimationFilter(
       decoder, params1, IntSize(100, 100),
-      [](image::Decoder* aDecoder, SurfaceFilter* aFilter) {
+      [](image::Decoder* /*aDecoder*/, SurfaceFilter* aFilter) {
         auto result = aFilter->WritePixels<uint32_t>(
             [&] { return AsVariant(BGRAColor::Red().AsPixel()); });
         EXPECT_EQ(WriteState::FINISHED, result);
@@ -151,7 +148,7 @@ static void TestWithBlendAnimationFilterClear(BlendMethod aBlendMethod) {
       /* aFrameNum */ 2, aBlendMethod, DisposalMethod::KEEP};
   RawAccessFrameRef frame2 = WithBlendAnimationFilter(
       decoder, params2, IntSize(100, 100),
-      [](image::Decoder* aDecoder, SurfaceFilter* aFilter) {
+      [](image::Decoder* /*aDecoder*/, SurfaceFilter* aFilter) {
         auto result = aFilter->WritePixels<uint32_t>(
             [&] { return AsVariant(BGRAColor::Blue().AsPixel()); });
         EXPECT_EQ(WriteState::FINISHED, result);
@@ -186,7 +183,7 @@ TEST(ImageBlendAnimationFilter, KeepWithSource)
       /* aFrameNum */ 0, BlendMethod::SOURCE, DisposalMethod::KEEP};
   RawAccessFrameRef frame0 = WithBlendAnimationFilter(
       decoder, params0, IntSize(100, 100),
-      [](image::Decoder* aDecoder, SurfaceFilter* aFilter) {
+      [](image::Decoder* /*aDecoder*/, SurfaceFilter* aFilter) {
         auto result = aFilter->WritePixels<uint32_t>(
             [&] { return AsVariant(BGRAColor::Green().AsPixel()); });
         EXPECT_EQ(WriteState::FINISHED, result);
@@ -198,7 +195,7 @@ TEST(ImageBlendAnimationFilter, KeepWithSource)
       /* aFrameNum */ 1, BlendMethod::SOURCE, DisposalMethod::KEEP};
   RawAccessFrameRef frame1 = WithBlendAnimationFilter(
       decoder, params1, IntSize(100, 100),
-      [](image::Decoder* aDecoder, SurfaceFilter* aFilter) {
+      [](image::Decoder* /*aDecoder*/, SurfaceFilter* aFilter) {
         auto result = aFilter->WritePixels<uint32_t>(
             [&] { return AsVariant(BGRAColor::Red().AsPixel()); });
         EXPECT_EQ(WriteState::FINISHED, result);
@@ -224,7 +221,7 @@ TEST(ImageBlendAnimationFilter, KeepWithOver)
   BGRAColor frameColor0(0, 0xFF, 0, 0x40);
   RawAccessFrameRef frame0 = WithBlendAnimationFilter(
       decoder, params0, IntSize(100, 100),
-      [&](image::Decoder* aDecoder, SurfaceFilter* aFilter) {
+      [&](image::Decoder* /*aDecoder*/, SurfaceFilter* aFilter) {
         auto result = aFilter->WritePixels<uint32_t>(
             [&] { return AsVariant(frameColor0.AsPixel()); });
         EXPECT_EQ(WriteState::FINISHED, result);
@@ -237,7 +234,7 @@ TEST(ImageBlendAnimationFilter, KeepWithOver)
   BGRAColor frameColor1(0, 0, 0xFF, 0x80);
   RawAccessFrameRef frame1 = WithBlendAnimationFilter(
       decoder, params1, IntSize(100, 100),
-      [&](image::Decoder* aDecoder, SurfaceFilter* aFilter) {
+      [&](image::Decoder* /*aDecoder*/, SurfaceFilter* aFilter) {
         auto result = aFilter->WritePixels<uint32_t>(
             [&] { return AsVariant(frameColor1.AsPixel()); });
         EXPECT_EQ(WriteState::FINISHED, result);
@@ -267,7 +264,7 @@ TEST(ImageBlendAnimationFilter, RestorePreviousWithOver)
   BGRAColor frameColor0(0, 0xFF, 0, 0x40);
   RawAccessFrameRef frame0 = WithBlendAnimationFilter(
       decoder, params0, IntSize(100, 100),
-      [&](image::Decoder* aDecoder, SurfaceFilter* aFilter) {
+      [&](image::Decoder* /*aDecoder*/, SurfaceFilter* aFilter) {
         auto result = aFilter->WritePixels<uint32_t>(
             [&] { return AsVariant(frameColor0.AsPixel()); });
         EXPECT_EQ(WriteState::FINISHED, result);
@@ -280,7 +277,7 @@ TEST(ImageBlendAnimationFilter, RestorePreviousWithOver)
   BGRAColor frameColor1 = BGRAColor::Green();
   RawAccessFrameRef frame1 = WithBlendAnimationFilter(
       decoder, params1, IntSize(100, 100),
-      [&](image::Decoder* aDecoder, SurfaceFilter* aFilter) {
+      [&](image::Decoder* /*aDecoder*/, SurfaceFilter* aFilter) {
         auto result = aFilter->WritePixels<uint32_t>(
             [&] { return AsVariant(frameColor1.AsPixel()); });
         EXPECT_EQ(WriteState::FINISHED, result);
@@ -293,7 +290,7 @@ TEST(ImageBlendAnimationFilter, RestorePreviousWithOver)
   BGRAColor frameColor2(0, 0, 0xFF, 0x80);
   RawAccessFrameRef frame2 = WithBlendAnimationFilter(
       decoder, params2, IntSize(100, 100),
-      [&](image::Decoder* aDecoder, SurfaceFilter* aFilter) {
+      [&](image::Decoder* /*aDecoder*/, SurfaceFilter* aFilter) {
         auto result = aFilter->WritePixels<uint32_t>(
             [&] { return AsVariant(frameColor2.AsPixel()); });
         EXPECT_EQ(WriteState::FINISHED, result);
@@ -323,7 +320,7 @@ TEST(ImageBlendAnimationFilter, RestorePreviousWithSource)
   BGRAColor frameColor0(0, 0xFF, 0, 0x40);
   RawAccessFrameRef frame0 = WithBlendAnimationFilter(
       decoder, params0, IntSize(100, 100),
-      [&](image::Decoder* aDecoder, SurfaceFilter* aFilter) {
+      [&](image::Decoder* /*aDecoder*/, SurfaceFilter* aFilter) {
         auto result = aFilter->WritePixels<uint32_t>(
             [&] { return AsVariant(frameColor0.AsPixel()); });
         EXPECT_EQ(WriteState::FINISHED, result);
@@ -336,7 +333,7 @@ TEST(ImageBlendAnimationFilter, RestorePreviousWithSource)
   BGRAColor frameColor1 = BGRAColor::Green();
   RawAccessFrameRef frame1 = WithBlendAnimationFilter(
       decoder, params1, IntSize(100, 100),
-      [&](image::Decoder* aDecoder, SurfaceFilter* aFilter) {
+      [&](image::Decoder* /*aDecoder*/, SurfaceFilter* aFilter) {
         auto result = aFilter->WritePixels<uint32_t>(
             [&] { return AsVariant(frameColor1.AsPixel()); });
         EXPECT_EQ(WriteState::FINISHED, result);
@@ -349,7 +346,7 @@ TEST(ImageBlendAnimationFilter, RestorePreviousWithSource)
   BGRAColor frameColor2(0, 0, 0xFF, 0x80);
   RawAccessFrameRef frame2 = WithBlendAnimationFilter(
       decoder, params2, IntSize(100, 100),
-      [&](image::Decoder* aDecoder, SurfaceFilter* aFilter) {
+      [&](image::Decoder* /*aDecoder*/, SurfaceFilter* aFilter) {
         auto result = aFilter->WritePixels<uint32_t>(
             [&] { return AsVariant(frameColor2.AsPixel()); });
         EXPECT_EQ(WriteState::FINISHED, result);
@@ -375,7 +372,7 @@ TEST(ImageBlendAnimationFilter, RestorePreviousClearWithSource)
   BGRAColor frameColor0 = BGRAColor::Red();
   RawAccessFrameRef frame0 = WithBlendAnimationFilter(
       decoder, params0, IntSize(100, 100),
-      [&](image::Decoder* aDecoder, SurfaceFilter* aFilter) {
+      [&](image::Decoder* /*aDecoder*/, SurfaceFilter* aFilter) {
         auto result = aFilter->WritePixels<uint32_t>(
             [&] { return AsVariant(frameColor0.AsPixel()); });
         EXPECT_EQ(WriteState::FINISHED, result);
@@ -388,7 +385,7 @@ TEST(ImageBlendAnimationFilter, RestorePreviousClearWithSource)
   BGRAColor frameColor1 = BGRAColor::Blue();
   RawAccessFrameRef frame1 = WithBlendAnimationFilter(
       decoder, params1, IntSize(100, 100),
-      [&](image::Decoder* aDecoder, SurfaceFilter* aFilter) {
+      [&](image::Decoder* /*aDecoder*/, SurfaceFilter* aFilter) {
         auto result = aFilter->WritePixels<uint32_t>(
             [&] { return AsVariant(frameColor1.AsPixel()); });
         EXPECT_EQ(WriteState::FINISHED, result);
@@ -401,7 +398,7 @@ TEST(ImageBlendAnimationFilter, RestorePreviousClearWithSource)
   BGRAColor frameColor2 = BGRAColor::Green();
   RawAccessFrameRef frame2 = WithBlendAnimationFilter(
       decoder, params2, IntSize(100, 100),
-      [&](image::Decoder* aDecoder, SurfaceFilter* aFilter) {
+      [&](image::Decoder* /*aDecoder*/, SurfaceFilter* aFilter) {
         auto result = aFilter->WritePixels<uint32_t>(
             [&] { return AsVariant(frameColor2.AsPixel()); });
         EXPECT_EQ(WriteState::FINISHED, result);
@@ -414,7 +411,7 @@ TEST(ImageBlendAnimationFilter, RestorePreviousClearWithSource)
   BGRAColor frameColor3 = BGRAColor::Blue();
   RawAccessFrameRef frame3 = WithBlendAnimationFilter(
       decoder, params3, IntSize(100, 100),
-      [&](image::Decoder* aDecoder, SurfaceFilter* aFilter) {
+      [&](image::Decoder* /*aDecoder*/, SurfaceFilter* aFilter) {
         auto result = aFilter->WritePixels<uint32_t>(
             [&] { return AsVariant(frameColor3.AsPixel()); });
         EXPECT_EQ(WriteState::FINISHED, result);
@@ -441,7 +438,7 @@ TEST(ImageBlendAnimationFilter, PartialOverlapFrameRect)
   BGRAColor frameColor0 = BGRAColor::Red();
   RawAccessFrameRef frame0 = WithBlendAnimationFilter(
       decoder, params0, IntSize(100, 100),
-      [&](image::Decoder* aDecoder, SurfaceFilter* aFilter) {
+      [&](image::Decoder* /*aDecoder*/, SurfaceFilter* aFilter) {
         auto result = aFilter->WritePixels<uint32_t>(
             [&] { return AsVariant(frameColor0.AsPixel()); });
         EXPECT_EQ(WriteState::FINISHED, result);

@@ -11,7 +11,11 @@ import sys
 import buildconfig
 
 
-def dump_symbols(target, tracking_file, count_ctors=False):
+def dump_symbols(
+    target, tracking_file, count_ctors=False, symbols_dir="crashreporter-symbols"
+):
+    symbols_path = os.path.join(buildconfig.topobjdir, "dist", symbols_dir)
+
     # Our tracking file, if present, will contain path(s) to the previously generated
     # symbols. Remove them in this case so we don't simply accumulate old symbols
     # during incremental builds.
@@ -20,10 +24,7 @@ def dump_symbols(target, tracking_file, count_ctors=False):
             files = fh.read().splitlines()
         dirs = set(os.path.dirname(f) for f in files)
         for d in dirs:
-            shutil.rmtree(
-                os.path.join(buildconfig.topobjdir, "dist", "crashreporter-symbols", d),
-                ignore_errors=True,
-            )
+            shutil.rmtree(os.path.join(symbols_path, d), ignore_errors=True)
 
     # Build default args for symbolstore.py based on platform.
     sym_store_args = []
@@ -43,15 +44,11 @@ def dump_symbols(target, tracking_file, count_ctors=False):
     elif os_arch == "Linux":
         sym_store_args.extend(["-c", "--vcs-info"])
 
-    sym_store_args.append(
-        "--install-manifest=%s,%s"
-        % (
-            os.path.join(
-                buildconfig.topobjdir, "_build_manifests", "install", "dist_include"
-            ),
-            os.path.join(buildconfig.topobjdir, "dist", "include"),
-        )
+    install_manifest = os.path.join(
+        buildconfig.topobjdir, "_build_manifests", "install", "dist_include"
     )
+    dist_include = os.path.join(buildconfig.topobjdir, "dist", "include")
+    sym_store_args.append(f"--install-manifest={install_manifest},{dist_include}")
     objcopy = buildconfig.substs.get("OBJCOPY")
     if objcopy:
         os.environ["OBJCOPY"] = objcopy
@@ -75,14 +72,28 @@ def dump_symbols(target, tracking_file, count_ctors=False):
             "-s",
             buildconfig.topsrcdir,
             dump_syms_bin,
-            os.path.join(buildconfig.topobjdir, "dist", "crashreporter-symbols"),
+            symbols_path,
             os.path.abspath(target),
         ]
     )
     if count_ctors:
         args.append("--count-ctors")
-    print("Running: %s" % " ".join(args))
-    out_files = subprocess.check_output(args, universal_newlines=True)
+    print(f"Running: {' '.join(args)}")
+    # symbolstore.py's stderr is sometimes dropped from build logs (see bug 2027747),
+    # so capture and write it to stdout, which is logged reliably.
+    result = subprocess.run(
+        args,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.stderr:
+        sys.stdout.write(result.stderr)
+    if result.returncode != 0:
+        raise subprocess.CalledProcessError(
+            result.returncode, args, output=result.stdout
+        )
+    out_files = result.stdout
     with open(tracking_file, "w", encoding="utf-8", newline="\n") as fh:
         fh.write(out_files)
         fh.flush()
@@ -98,11 +109,21 @@ def main(argv):
         default=False,
         help="Count static initializers",
     )
+    parser.add_argument(
+        "--symbols-dir",
+        default="crashreporter-symbols",
+        help="Directory under dist/ to store the symbols in",
+    )
     parser.add_argument("library_or_program", help="Path to library or program")
     parser.add_argument("tracking_file", help="Tracking file")
     args = parser.parse_args()
 
-    return dump_symbols(args.library_or_program, args.tracking_file, args.count_ctors)
+    return dump_symbols(
+        args.library_or_program,
+        args.tracking_file,
+        args.count_ctors,
+        args.symbols_dir,
+    )
 
 
 if __name__ == "__main__":

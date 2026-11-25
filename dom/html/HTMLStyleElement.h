@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -7,7 +5,6 @@
 #ifndef mozilla_dom_HTMLStyleElement_h
 #define mozilla_dom_HTMLStyleElement_h
 
-#include "mozilla/Attributes.h"
 #include "mozilla/dom/LinkStyle.h"
 #include "nsGenericHTMLElement.h"
 #include "nsStubMutationObserver.h"
@@ -20,8 +17,8 @@ class HTMLStyleElement final : public nsGenericHTMLElement,
                                public LinkStyle,
                                public nsStubMutationObserver {
  public:
-  explicit HTMLStyleElement(
-      already_AddRefed<mozilla::dom::NodeInfo>&& aNodeInfo);
+  HTMLStyleElement(already_AddRefed<mozilla::dom::NodeInfo> aNodeInfo,
+                   FromParser aFromParser);
 
   // nsISupports
   NS_DECL_ISUPPORTS_INHERITED
@@ -38,9 +35,11 @@ class HTMLStyleElement final : public nsGenericHTMLElement,
                            mozilla::ErrorResult& aError) override;
 
  public:
-  virtual void SetTextContentInternal(const nsAString& aTextContent,
-                                      nsIPrincipal* aSubjectPrincipal,
-                                      mozilla::ErrorResult& aError) override;
+  virtual void SetTextContentInternal(
+      const nsAString& aTextContent, nsIPrincipal* aSubjectPrincipal,
+      mozilla::ErrorResult& aError,
+      MutationEffectOnScript aMutationEffectOnScript =
+          MutationEffectOnScript::DropTrustWorthiness) override;
   /**
    * Mark this style element with a devtools-specific principal that
    * skips Content Security Policy unsafe-inline checks. This triggering
@@ -102,6 +101,7 @@ class HTMLStyleElement final : public nsGenericHTMLElement,
   nsresult CopyInnerTo(HTMLStyleElement* aDest);
 
   RefPtr<nsDOMTokenList> mBlocking;
+  FromParser mCreatedByParser;
 };
 
 }  // namespace mozilla::dom

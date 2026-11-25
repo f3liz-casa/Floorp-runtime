@@ -55,9 +55,6 @@
 #include <stdarg.h>
 #include <stddef.h>
 
-#ifdef _MSC_VER
-#define _USE_MATH_DEFINES
-#endif
 #include <math.h>
 #include <limits.h>
 #include <stdio.h>
@@ -88,12 +85,6 @@
 #endif
 
 CAIRO_BEGIN_DECLS
-
-#if _WIN32 && !_WIN32_WCE /* Permissions on WinCE? No worries! */
-cairo_private FILE *
-_cairo_win32_tmpfile (void);
-#define tmpfile() _cairo_win32_tmpfile()
-#endif
 
 #undef MIN
 #define MIN(a, b) ((a) < (b) ? (a) : (b))
@@ -181,7 +172,7 @@ do {					\
 static inline int cairo_const
 _cairo_popcount (uint32_t mask)
 {
-#if __GNUC__ > 3 || (__GNUC__ == 3 && __GNUC_MINOR__ >= 4)
+#if defined (__GNUC__)
     return __builtin_popcount (mask);
 #else
 #ifdef __cplusplus
@@ -759,7 +750,7 @@ typedef struct _cairo_stroke_face {
 static inline double cairo_const
 _cairo_restrict_value (double value, double min, double max)
 {
-    if (value < min)
+    if (!(value >= min))
 	return min;
     else if (value > max)
 	return max;
@@ -1958,6 +1949,9 @@ _cairo_observers_notify (cairo_list_t *observers, void *arg);
 /* Open a file with a UTF-8 filename */
 cairo_private cairo_status_t
 _cairo_fopen (const char *filename, const char *mode, FILE **file_out);
+
+cairo_private FILE *
+_cairo_tmpfile (void);
 
 #include "cairo-mutex-private.h"
 #include "cairo-fixed-private.h"

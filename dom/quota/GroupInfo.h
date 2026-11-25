@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -18,12 +16,19 @@ namespace mozilla::dom::quota {
 
 class GroupInfoPair;
 class OriginInfo;
+class DirtyTrackingAutoLock;
+
+namespace test {
+class GTEST_CLASS(TestGroupInfo, ReplacementNullsMGroupInfo);
+}
 
 class GroupInfo final {
   friend class CanonicalQuotaObject;
+  friend class DirtyTrackingAutoLock;
   friend class GroupInfoPair;
   friend class OriginInfo;
   friend class QuotaManager;
+  friend class test::GTEST_CLASS(TestGroupInfo, ReplacementNullsMGroupInfo);
 
  public:
   GroupInfo(GroupInfoPair* aGroupInfoPair, PersistenceType aPersistenceType)
@@ -38,6 +43,8 @@ class GroupInfo final {
   NS_INLINE_DECL_THREADSAFE_REFCOUNTING(GroupInfo)
 
   PersistenceType GetPersistenceType() const { return mPersistenceType; }
+
+  const nsCString& GetGroup() const;
 
  private:
   // Private destructor, to discourage deletion outside of Release():
@@ -63,7 +70,13 @@ class GroupInfo final {
 
   GroupInfoPair* mGroupInfoPair;
   PersistenceType mPersistenceType;
-  uint64_t mUsage;
+
+  // Signed for the same reason as QuotaManager::mTemporaryStorageUsage: though
+  // it shouldn't go negative, in case that happens (transient state or bug
+  // elsewhere) don't let the value underflow, which would result in a huge
+  // number, making all integers comparisons to become buggy. See bug 2066923
+  // and bug 1585978 for details.
+  int64_t mUsage;
 };
 
 }  // namespace mozilla::dom::quota

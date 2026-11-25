@@ -1,11 +1,9 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef nsCSPUtils_h___
-#define nsCSPUtils_h___
+#ifndef nsCSPUtils_h_
+#define nsCSPUtils_h_
 
 #include "mozilla/ErrorResult.h"
 #include "nsCOMPtr.h"
@@ -116,7 +114,8 @@ CSPDirective CSP_StringToCSPDirective(const nsAString& aDir);
   MACRO(CSP_REPORT_SAMPLE, "'report-sample'")       \
   MACRO(CSP_STRICT_DYNAMIC, "'strict-dynamic'")     \
   MACRO(CSP_WASM_UNSAFE_EVAL, "'wasm-unsafe-eval'") \
-  MACRO(CSP_ALLOW_DUPLICATES, "'allow-duplicates'")
+  MACRO(CSP_ALLOW_DUPLICATES, "'allow-duplicates'") \
+  MACRO(CSP_TRUSTED_TYPES_EVAL, "'trusted-types-eval'")
 
 enum CSPKeyword {
 #define KEYWORD_ENUM(id_, string_) id_,
@@ -764,6 +763,11 @@ class nsCSPPolicy {
 
   bool allowsAllInlineBehavior(CSPDirective aDir) const;
 
+  // Bug 2072122: Trusted Types readiness experiment only, to be removed.
+  // Whether this is a strict CSP: the directive governing script elements
+  // contains 'strict-dynamic' and base-uri is 'none'.
+  bool isStrict() const;
+
   /*
    * Implements step 2.1 to 2.7 of
    * <https://w3c.github.io/trusted-types/dist/spec/#should-block-create-policy>.
@@ -792,4 +796,4 @@ class nsCSPPolicy {
   bool mDeliveredViaMetaTag;
 };
 
-#endif /* nsCSPUtils_h___ */
+#endif /* nsCSPUtils_h_ */

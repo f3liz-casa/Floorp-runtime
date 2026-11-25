@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -7,6 +5,7 @@
 #ifndef mozilla_dom_WorkletFetchHandler_h
 #define mozilla_dom_WorkletFetchHandler_h
 
+#include "js/Modules.h"  // JS::ModuleType
 #include "mozilla/dom/PromiseNativeHandler.h"
 #include "mozilla/dom/RequestBinding.h"  // RequestCredentials
 #include "nsIStreamLoader.h"
@@ -24,7 +23,7 @@ class AddModuleThrowErrorRunnable;
 // and notifies the result of addModule back to |aWorklet|.
 class WorkletFetchHandler final : public nsISupports {
  public:
-  NS_DECL_CYCLE_COLLECTING_ISUPPORTS
+  NS_DECL_CYCLE_COLLECTING_ISUPPORTS_FINAL
   NS_DECL_CYCLE_COLLECTION_SCRIPT_HOLDER_CLASS(WorkletFetchHandler)
 
   static already_AddRefed<Promise> AddModule(Worklet* aWorklet, JSContext* aCx,
@@ -33,14 +32,15 @@ class WorkletFetchHandler final : public nsISupports {
                                              ErrorResult& aRv);
 
   // Load a module script on main thread.
-  nsresult StartFetch(JSContext* aCx, nsIURI* aURI, nsIURI* aReferrer);
+  nsresult StartFetch(JSContext* aCx, nsIURI* aURI, nsIURI* aReferrer,
+                      JS::ModuleType aModuleType);
 
   void ExecutionFailed();
   void ExecutionFailed(JS::Handle<JS::Value> aError);
 
   void ExecutionSucceeded();
 
-  void HandleFetchFailed(nsIURI* aURI);
+  void HandleFetchFailed(nsIURI* aURI, JS::ModuleType aModuleType);
 
  private:
   WorkletFetchHandler(Worklet* aWorklet, Promise* aPromise,
@@ -73,7 +73,7 @@ class StartFetchRunnable final : public Runnable {
  public:
   StartFetchRunnable(
       const nsMainThreadPtrHandle<WorkletFetchHandler>& aHandlerRef,
-      nsIURI* aURI, nsIURI* aReferrer);
+      nsIURI* aURI, nsIURI* aReferrer, JS::ModuleType aModuleType);
   ~StartFetchRunnable() = default;
 
   NS_IMETHOD
@@ -83,6 +83,7 @@ class StartFetchRunnable final : public Runnable {
   nsMainThreadPtrHandle<WorkletFetchHandler> mHandlerRef;
   nsCOMPtr<nsIURI> mURI;
   nsCOMPtr<nsIURI> mReferrer;
+  JS::ModuleType mModuleType;
 };
 
 // WorkletScriptHandler is used to handle the result of fetching the module
@@ -92,7 +93,8 @@ class WorkletScriptHandler final : public PromiseNativeHandler,
  public:
   NS_DECL_THREADSAFE_ISUPPORTS
 
-  WorkletScriptHandler(Worklet* aWorklet, nsIURI* aURI);
+  WorkletScriptHandler(Worklet* aWorklet, nsIURI* aURI,
+                       JS::ModuleType aModuleType);
 
   void ResolvedCallback(JSContext* aCx, JS::Handle<JS::Value> aValue,
                         ErrorResult& aRv) override;
@@ -114,6 +116,10 @@ class WorkletScriptHandler final : public PromiseNativeHandler,
 
   RefPtr<Worklet> mWorklet;
   nsCOMPtr<nsIURI> mURI;
+  JS::ModuleType mModuleType;
+#ifdef NIGHTLY_BUILD
+  bool mHasWasmMimeTypeEssence = false;
+#endif
 };
 
 }  // namespace mozilla::dom

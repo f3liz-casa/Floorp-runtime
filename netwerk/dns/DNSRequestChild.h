@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set sw=2 ts=8 et tw=80 : */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -13,27 +11,20 @@
 namespace mozilla {
 namespace net {
 
-class DNSRequestChild final : public DNSRequestActor, public PDNSRequestChild {
+class DNSRequestChild final : public PDNSRequestChild {
  public:
   NS_INLINE_DECL_THREADSAFE_REFCOUNTING(DNSRequestChild, override)
   friend class PDNSRequestChild;
 
-  explicit DNSRequestChild(DNSRequestBase* aRequest);
-
-  bool CanSend() const override { return PDNSRequestChild::CanSend(); }
-  DNSRequestChild* AsDNSRequestChild() override { return this; }
-  DNSRequestParent* AsDNSRequestParent() override { return nullptr; }
+  explicit DNSRequestChild(DNSRequestSender* aRequest);
 
  private:
   virtual ~DNSRequestChild() = default;
 
-  mozilla::ipc::IPCResult RecvCancelDNSRequest(
-      const nsCString& hostName, const nsCString& trrServer,
-      const int32_t& port, const uint16_t& type,
-      const OriginAttributes& originAttributes,
-      const nsIDNSService::DNSFlags& flags, const nsresult& reason);
   mozilla::ipc::IPCResult RecvLookupCompleted(const DNSRequestResponse& reply);
   virtual void ActorDestroy(ActorDestroyReason why) override;
+
+  RefPtr<DNSRequestSender> mDNSRequest;
 };
 
 }  // namespace net

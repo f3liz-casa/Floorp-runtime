@@ -1,4 +1,3 @@
-/* -*- Mode: C++; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -21,13 +20,12 @@
 #include "txTextHandler.h"
 #include "txXSLTNumber.h"
 
-using mozilla::MakeUnique;
 using mozilla::UniquePtr;
 
 nsresult txApplyDefaultElementTemplate::execute(txExecutionState& aEs) {
   txExecutionState::TemplateRule* rule = aEs.getCurrentTemplateRule();
   txExpandedName mode(rule->mModeNsId, rule->mModeLocalName);
-  txStylesheet::ImportFrame* frame = 0;
+  txStylesheet::ImportFrame* frame = nullptr;
   txInstruction* templ;
   nsresult rv =
       aEs.mStylesheet->findTemplate(aEs.getEvalContext()->getContextNode(),
@@ -47,26 +45,26 @@ nsresult txApplyImportsEnd::execute(txExecutionState& aEs) {
 }
 
 nsresult txApplyImportsStart::execute(txExecutionState& aEs) {
-  txExecutionState::TemplateRule* rule = aEs.getCurrentTemplateRule();
+  txExecutionState::TemplateRule rule = *aEs.getCurrentTemplateRule();
   // The frame is set to null when there is no current template rule, or
   // when the current template rule is a default template. However this
   // instruction isn't used in default templates.
-  if (!rule->mFrame) {
+  if (!rule.mFrame) {
     // XXX ErrorReport: apply-imports instantiated without a current rule
     return NS_ERROR_XSLT_EXECUTION_FAILURE;
   }
 
-  aEs.pushParamMap(rule->mParams);
+  aEs.pushParamMap(rule.mParams);
 
-  txStylesheet::ImportFrame* frame = 0;
-  txExpandedName mode(rule->mModeNsId, rule->mModeLocalName);
+  txStylesheet::ImportFrame* frame = nullptr;
+  txExpandedName mode(rule.mModeNsId, rule.mModeLocalName);
   txInstruction* templ;
   nsresult rv =
       aEs.mStylesheet->findTemplate(aEs.getEvalContext()->getContextNode(),
-                                    mode, &aEs, rule->mFrame, &templ, &frame);
+                                    mode, &aEs, rule.mFrame, &templ, &frame);
   NS_ENSURE_SUCCESS(rv, rv);
 
-  aEs.pushTemplateRule(frame, mode, rule->mParams);
+  aEs.pushTemplateRule(frame, mode, rule.mParams);
 
   rv = aEs.runTemplate(templ);
   if (NS_FAILED(rv)) {
@@ -80,7 +78,7 @@ txApplyTemplates::txApplyTemplates(const txExpandedName& aMode)
     : mMode(aMode) {}
 
 nsresult txApplyTemplates::execute(txExecutionState& aEs) {
-  txStylesheet::ImportFrame* frame = 0;
+  txStylesheet::ImportFrame* frame = nullptr;
   txInstruction* templ;
   nsresult rv =
       aEs.mStylesheet->findTemplate(aEs.getEvalContext()->getContextNode(),
@@ -208,10 +206,11 @@ nsresult txCopyBase::copyNode(const txXPathNode& aNode, txExecutionState& aEs) {
       nsAutoString nodeValue;
       txXPathNodeUtils::appendNodeValue(aNode, nodeValue);
 
+      RefPtr<nsAtom> prefix = txXPathNodeUtils::getPrefix(aNode);
       RefPtr<nsAtom> localName = txXPathNodeUtils::getLocalName(aNode);
       return aEs.mResultHandler->attribute(
-          txXPathNodeUtils::getPrefix(aNode), localName, nullptr,
-          txXPathNodeUtils::getNamespaceID(aNode), nodeValue);
+          prefix, localName, nullptr, txXPathNodeUtils::getNamespaceID(aNode),
+          nodeValue);
     }
     case txXPathNodeType::COMMENT_NODE: {
       nsAutoString nodeValue;
@@ -230,10 +229,10 @@ nsresult txCopyBase::copyNode(const txXPathNode& aNode, txExecutionState& aEs) {
       break;
     }
     case txXPathNodeType::ELEMENT_NODE: {
+      RefPtr<nsAtom> prefix = txXPathNodeUtils::getPrefix(aNode);
       RefPtr<nsAtom> localName = txXPathNodeUtils::getLocalName(aNode);
       nsresult rv = aEs.mResultHandler->startElement(
-          txXPathNodeUtils::getPrefix(aNode), localName, nullptr,
-          txXPathNodeUtils::getNamespaceID(aNode));
+          prefix, localName, nullptr, txXPathNodeUtils::getNamespaceID(aNode));
       NS_ENSURE_SUCCESS(rv, rv);
 
       // Copy attributes
@@ -244,9 +243,10 @@ nsresult txCopyBase::copyNode(const txXPathNode& aNode, txExecutionState& aEs) {
           walker.appendNodeValue(nodeValue);
 
           const txXPathNode& attr = walker.getCurrentPosition();
+          prefix = txXPathNodeUtils::getPrefix(attr);
           localName = txXPathNodeUtils::getLocalName(attr);
           rv = aEs.mResultHandler->attribute(
-              txXPathNodeUtils::getPrefix(attr), localName, nullptr,
+              prefix, localName, nullptr,
               txXPathNodeUtils::getNamespaceID(attr), nodeValue);
           NS_ENSURE_SUCCESS(rv, rv);
         } while (walker.moveToNextAttribute());
@@ -297,10 +297,10 @@ nsresult txCopy::execute(txExecutionState& aEs) {
       break;
     }
     case txXPathNodeType::ELEMENT_NODE: {
+      RefPtr<nsAtom> prefix = txXPathNodeUtils::getPrefix(node);
       RefPtr<nsAtom> localName = txXPathNodeUtils::getLocalName(node);
       rv = aEs.mResultHandler->startElement(
-          txXPathNodeUtils::getPrefix(node), localName, nullptr,
-          txXPathNodeUtils::getNamespaceID(node));
+          prefix, localName, nullptr, txXPathNodeUtils::getNamespaceID(node));
       NS_ENSURE_SUCCESS(rv, rv);
 
       // XXX copy namespace nodes once we have them
@@ -546,7 +546,7 @@ nsresult txPushNewContext::execute(txExecutionState& aEs) {
   rv = sorter.sortNodeSet(nodes, &aEs, getter_AddRefs(sortedNodes));
   NS_ENSURE_SUCCESS(rv, rv);
 
-  auto context = MakeUnique<txNodeSetContext>(sortedNodes, &aEs);
+  auto context = std::make_unique<txNodeSetContext>(sortedNodes, &aEs);
   context->next();
 
   aEs.pushEvalContext(context.release());

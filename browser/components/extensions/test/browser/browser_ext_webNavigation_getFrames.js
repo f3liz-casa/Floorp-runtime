@@ -1,5 +1,3 @@
-/* -*- Mode: indent-tabs-mode: nil; js-indent-level: 2 -*- */
-/* vim: set sts=2 sw=2 et tw=80: */
 "use strict";
 
 add_task(async function testWebNavigationGetNonExistentTab() {
@@ -190,9 +188,7 @@ add_task(async function testWebNavigationFrames() {
       "parentFrameId"
     );
     is(getAllFramesDetail.tabId, collected.tabId, "tabId");
-
-    // This can be uncommented once Bug 1246125 has been fixed
-    // is(getAllFramesDetail.url, collected.url, "url");
+    is(getAllFramesDetail.url, collected.url, "url");
   }
 
   info("frame details content checked");
